@@ -37,7 +37,22 @@ const app = express();
 // 1) Middlewares de parsing (JSON) e CORS
 // ────────────────────────────────────────────────────────────────
 app.use(express.json());
-app.use(cors());
+const whitelist = [
+  "http://localhost:5173",                          // desenvolvimento local
+  "https://frontend-educa-e86x.vercel.app"          // produção Vercel
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin || whitelist.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Não permitido por CORS"));
+    }
+  }
+};
+
+app.use(cors(corsOptions));
 app.use(bodyParser.json());
 
 /*
