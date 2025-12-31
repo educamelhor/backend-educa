@@ -43,9 +43,9 @@ import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
 import appPaisRouter from "./routes/app_pais.js";
-import responsavelRoutes from "./modules/app-pais/responsavel/responsavel.routes.js";
+// import responsavelRoutes from "./modules/app-pais/responsavel/responsavel.routes.js";
 // ✅ NOVO — Device
-import deviceRoutes from "./modules/app-pais/device/device.routes.js";
+// import deviceRoutes from "./modules/app-pais/device/device.routes.js";
 
 // ✅ NOVO — Configurações Pedagógicas (Horários)
 import configPedagogicaRouter from "./routes/config_pedagogica.js";
@@ -237,10 +237,10 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/app-pais", appPaisRouter);
-app.use("/api/app-pais", responsavelRoutes);
+// app.use("/api/app-pais", responsavelRoutes);
 
 // ✅ NOVO — Device
-app.use("/api/app-pais", deviceRoutes);
+// app.use("/api/app-pais", deviceRoutes);
 
 
 // ============================================================================
