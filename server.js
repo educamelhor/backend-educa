@@ -145,24 +145,33 @@ app.use(
 // ============================================================================
 
 // ✅ HEALTHCHECK simples (DigitalOcean / monitoramento externo)
-app.get("/ping", (_req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: "backend-educa",
-    route: "/ping",
-    ts: new Date().toISOString(),
-  });
+// Mantém rotas na raiz e cria aliases em /api/* para ambientes que roteam com prefixo.
+const healthPayload = () => ({
+  ok: true,
+  service: "backend-educa",
+  ts: new Date().toISOString(),
 });
 
-// ✅ BUILD INFO (prova de vida + diagnóstico rápido de versão)
-app.get("/__build-info", (_req, res) => {
-  res.status(200).json({
+app.get("/ping", (_req, res) => res.json(healthPayload()));
+app.get("/api/ping", (_req, res) => res.json(healthPayload()));
+
+app.get("/__build-info", (_req, res) =>
+  res.json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
-    route: "/__build-info",
+    build_marker: "OPCAO_A_APP_PAIS_MODULOS_DESATIVADOS",
     ts: new Date().toISOString(),
-  });
-});
+  })
+);
+
+app.get("/api/__build-info", (_req, res) =>
+  res.json({
+    ok: true,
+    msg: "EDUCA BACKEND — BUILD ATIVO",
+    build_marker: "OPCAO_A_APP_PAIS_MODULOS_DESATIVADOS",
+    ts: new Date().toISOString(),
+  })
+);
 
 
 
