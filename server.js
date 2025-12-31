@@ -145,21 +145,25 @@ app.use(
 // ============================================================================
 
 // ✅ HEALTHCHECK simples (DigitalOcean / monitoramento externo)
-app.get("/ping", (_req, res) =>
-  res.json({
+app.get("/ping", (_req, res) => {
+  res.status(200).json({
     ok: true,
     service: "backend-educa",
+    route: "/ping",
     ts: new Date().toISOString(),
-  })
-);
+  });
+});
 
-app.get("/__build-info", (_req, res) =>
-  res.json({
+// ✅ BUILD INFO (prova de vida + diagnóstico rápido de versão)
+app.get("/__build-info", (_req, res) => {
+  res.status(200).json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
+    route: "/__build-info",
     ts: new Date().toISOString(),
-  })
-);
+  });
+});
+
 
 
 app.get("/api/visitantes-ping", (_req, res) =>
