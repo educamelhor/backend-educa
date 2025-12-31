@@ -7,6 +7,14 @@ import OpenAI from "openai";
 
 const router = express.Router();
 
+// Middleware para garantir que a escola esteja definida
+function verificarEscola(req, res, next) {
+  if (!req.user || !req.user.escola_id) {
+    return res.status(403).json({ error: "Acesso negado: escola não definida." });
+  }
+  next();
+}
+
 // Configura o Multer para salvar na pasta uploads/redacoes
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -24,8 +32,9 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // Rota para salvar redação e imagem
-router.post("/salvar", upload.single("imagem"), async (req, res) => {
+router.post("/salvar", verificarEscola, upload.single("imagem"), async (req, res) => {
   const { codigo, nome, turma, texto } = req.body;
+  const { escola_id } = req.user;
   const imagem = req.file ? `/uploads/redacoes/${req.file.filename}` : null;
 
   if (!codigo || !nome || !turma || !texto || !imagem) {
@@ -33,8 +42,8 @@ router.post("/salvar", upload.single("imagem"), async (req, res) => {
   }
   try {
     await pool.query(
-      "INSERT INTO redacoes (codigo, nome, turma, texto, imagem) VALUES (?, ?, ?, ?, ?)",
-      [codigo, nome, turma, texto, imagem]
+      "INSERT INTO redacoes (codigo, nome, turma, texto, imagem, escola_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [codigo, nome, turma, texto, imagem, escola_id]
     );
     res.json({ success: true });
   } catch (err) {
@@ -43,28 +52,18 @@ router.post("/salvar", upload.single("imagem"), async (req, res) => {
 });
 
 // OpenAI API setup
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ROTA PARA CORRIGIR REDAÇÃO USANDO IA
-router.post("/corrigir", async (req, res) => {
+router.post("/corrigir", verificarEscola, async (req, res) => {
   const { texto, criterio } = req.body;
   if (!texto || !criterio)
     return res.status(400).json({ error: "Texto ou critério ausente." });
 
   const prompt = `${criterio}\n\nRedação do aluno:\n${texto}`;
 
-
-
-
   console.log("Chave OpenAI:", process.env.OPENAI_API_KEY?.slice(0,8) + "...");
   console.log("Prompt de correção:", prompt.substring(0, 200) + "...");
-
-
-
-
-
-
 
   try {
     const completion = await openai.chat.completions.create({

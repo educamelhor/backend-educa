@@ -4,20 +4,38 @@ import pool from "../db.js";
 
 const router = Router();
 
+
+// Middleware para verificar se o usuário tem escola associada
+function verificarEscola(req, res, next) {
+  if (!req.user || !req.user.escola_id) {
+    return res.status(403).json({ message: "Acesso negado: escola não definida." });
+  }
+  next();
+}
+
+
+
+
 /**
  * GET /api/disciplinas
- * Lista todas as disciplinas
+ * Lista todas as disciplinas da escola do usuário
  */
-router.get("/", async (req, res) => {
+router.get("/", verificarEscola, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
+    const { escola_id } = req.user;
+    const [rows] = await pool.query(
+      `
       SELECT 
         id,
-        nome    AS disciplina,
-        carga
+        nome AS disciplina,
+        carga,
+        escola_id
       FROM disciplinas
+      WHERE escola_id = ?
       ORDER BY nome
-    `);
+      `,
+      [escola_id]
+    );
     res.json(rows);
   } catch (err) {
     console.error("Erro ao listar disciplinas:", err);
@@ -25,31 +43,30 @@ router.get("/", async (req, res) => {
   }
 });
 
+
+
+
 /**
  * POST /api/disciplinas
- * Cria uma nova disciplina. Espera no body:
- *  - nome  (string)
- *  - carga (number)
+ * Cria uma nova disciplina para a escola do usuário
  */
-router.post("/", async (req, res) => {
+router.post("/", verificarEscola, async (req, res) => {
   const { nome, carga } = req.body;
+  const { escola_id } = req.user;
 
-  // validação básica
   if (!nome || carga == null) {
     return res.status(400).json({ message: "Nome e carga são obrigatórios." });
   }
 
   try {
-    // insere a nova disciplina
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, carga, created_at, updated_at)
-       VALUES (?, ?, NOW(), NOW())`,
-      [nome, carga]
+      `INSERT INTO disciplinas (nome, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, NOW(), NOW())`,
+      [nome, carga, escola_id]
     );
 
-    // retorna o registro recém-criado
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, carga
+      `SELECT id, nome AS disciplina, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -65,17 +82,23 @@ router.post("/", async (req, res) => {
 
 
 
+
 /**
  * DELETE /api/disciplinas/:id
- * Remove uma disciplina pelo ID.
+ * Remove disciplina da escola do usuário
  */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.query("DELETE FROM disciplinas WHERE id = ?", [id]);
+    const { escola_id } = req.user;
+
+    const [result] = await pool.query(
+      "DELETE FROM disciplinas WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Disciplina não encontrada." });
+      return res.status(404).json({ message: "Disciplina não encontrada ou não pertence à sua escola." });
     }
 
     return res.json({ message: "Disciplina excluída com sucesso." });
@@ -89,23 +112,29 @@ router.delete("/:id", async (req, res) => {
 
 
 
-// PUT /api/disciplinas/:id → Atualiza uma disciplina existente
-router.put("/:id", async (req, res) => {
+/**
+ * PUT /api/disciplinas/:id
+ * Atualiza disciplina da escola do usuário
+ */
+router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { nome, carga } = req.body;
+    const { escola_id } = req.user;
 
-    if (!nome || !carga) {
+    if (!nome || carga == null) {
       return res.status(400).json({ message: "Nome e carga são obrigatórios." });
     }
 
     const [result] = await pool.query(
-      `UPDATE disciplinas SET nome = ?, carga = ? WHERE id = ?`,
-      [nome, carga, id]
+      `UPDATE disciplinas 
+       SET nome = ?, carga = ? 
+       WHERE id = ? AND escola_id = ?`,
+      [nome, carga, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Disciplina não encontrada." });
+      return res.status(404).json({ message: "Disciplina não encontrada ou não pertence à sua escola." });
     }
 
     return res.json({ message: "Disciplina atualizada com sucesso." });
@@ -114,8 +143,6 @@ router.put("/:id", async (req, res) => {
     res.status(500).json({ message: "Erro ao atualizar disciplina." });
   }
 });
-
-
 
 
 

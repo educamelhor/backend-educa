@@ -1,4 +1,11 @@
 // routes/professores.js
+// ============================================================================
+// Rotas de Professores
+// - Lista, busca por ID, cria, atualiza, inativa, exclui e importa.
+// - Revisão: campo "turno" agora pertence à tabela "professores".
+//   • POST: exige cpf, nome, disciplina_id e turno (turma_id opcional).
+//   • PUT : na edição, exige SOMENTE turno, disciplina_id e aulas.
+// ============================================================================
 
 import express from "express";
 import pool from "../db.js";
@@ -7,60 +14,50 @@ import path from "path";
 import multer from "multer";
 import { dirname as _dirname } from "path";
 import { fileURLToPath } from "url";
-
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import XLSX from "xlsx";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _dirname(__filename);
 
-
 const router = express.Router();
 
+// ────────────────────────────────────────────────
+// Middleware: verificar se usuário possui escola_id
+// ────────────────────────────────────────────────
+function verificarEscola(req, res, next) {
+  if (!req.user || !req.user.escola_id) {
+    return res.status(403).json({ error: "Acesso negado: escola não definida." });
+  }
+  next();
+}
 
-
-
-
-// ─── Se você quiser suportar upload de foto de professor ─────────────────
-
-// 1) Cria pasta uploads/professores (se não existir)
+// ────────────────────────────────────────────────
+// Configuração de upload de foto
+// ────────────────────────────────────────────────
 const profUploadDir = path.resolve(__dirname, "../uploads/professores");
 if (!fs.existsSync(profUploadDir)) {
   fs.mkdirSync(profUploadDir, { recursive: true });
 }
-
-// 2) Configura Multer para salvar em uploads/professores
 const profStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, profUploadDir);
-  },
-  filename: (_req, file, cb) => {
-    // Se existir um campo “id” na URL, poderíamos usar esse id:
-    const { id } = _req.params;
-    // Exemplo: salvar como “<id>.jpg” ou “<timestamp>_<originalname>”
-    cb(null, `${id}.jpg`);
-  },
+  destination: (_req, _file, cb) => cb(null, profUploadDir),
+  filename: (req, file, cb) => cb(null, `${req.params.id}.jpg`),
 });
-
-// 3) Podemos deixar um fileFilter específico (apenas imagens, por exemplo)
 const profFileFilter = (_req, file, cb) => {
   const permitidos = ["image/jpeg", "image/png"];
   cb(null, permitidos.includes(file.mimetype));
 };
-
 const profUpload = multer({ storage: profStorage, fileFilter: profFileFilter });
 
-// ─────────────────────────────────────────────────────────────
-
-
-
-
-
-// ─────────────────────────────────────────────────────────────
- /** GET /professores
- * Retorna todos os professores, incluindo o nome da disciplina associada (se houver).
- */
-router.get("/", async (req, res) => {
+// ────────────────────────────────────────────────
+// GET: Listar professores (com disciplina, turma e escola)
+// - Retorna p.turno (campo da própria tabela)
+// ────────────────────────────────────────────────
+router.get("/", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
   try {
-    const [rows] = await pool.query(`
+    const [rows] = await pool.query(
+      `
       SELECT
         p.id,
         p.cpf,
@@ -68,270 +65,418 @@ router.get("/", async (req, res) => {
         p.data_nascimento,
         p.sexo,
         p.aulas,
+        p.status,
         p.disciplina_id,
-        d.nome AS disciplina_nome
+        p.turno,                       -- ← agora vem de "professores"
+        d.nome AS disciplina_nome,
+        t.nome AS turma_nome,
+        e.nome AS nome_escola
       FROM professores p
       LEFT JOIN disciplinas d ON p.disciplina_id = d.id
+      LEFT JOIN turmas t      ON p.turma_id     = t.id
+      LEFT JOIN escolas e     ON p.escola_id    = e.id
+      WHERE p.escola_id = ?
       ORDER BY p.nome
-    `);
+      `,
+      [escola_id]
+    );
     res.json(rows);
   } catch (err) {
-    console.error("Erro ao buscar professores:", err);
-    res.status(500).json({ message: "Erro ao buscar professores." });
+    console.error("Erro ao listar professores:", err);
+    res.status(500).json({ message: "Erro ao listar professores." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
-
-
-
-
-// ─────────────────────────────────────────────────────────────
- /** GET /professores/:id
- * Retorna um único professor pelo ID, incluindo o nome da disciplina associada (se houver).
- */
-router.get("/:id", async (req, res) => {
+// ────────────────────────────────────────────────
+// GET: Buscar professor por ID
+// - Retorna p.turno (campo da própria tabela)
+// ────────────────────────────────────────────────
+router.get("/:id", verificarEscola, async (req, res) => {
+  const { id } = req.params;
+  const { escola_id } = req.user;
   try {
-    const { id } = req.params;
     const [rows] = await pool.query(
       `
       SELECT
-        p.id,
-        p.cpf,
-        p.nome,
-        p.data_nascimento,
-        p.sexo,
-        p.disciplina_id,
-        d.nome AS disciplina_nome
+        p.*,
+        d.nome AS disciplina_nome,
+        t.nome AS turma_nome,
+        e.nome AS nome_escola
       FROM professores p
       LEFT JOIN disciplinas d ON p.disciplina_id = d.id
-      WHERE p.id = ?
+      LEFT JOIN turmas t      ON p.turma_id     = t.id
+      LEFT JOIN escolas e     ON p.escola_id    = e.id
+      WHERE p.id = ? AND p.escola_id = ?
       `,
-      [id]
+      [id, escola_id]
     );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Professor não encontrado." });
-    }
-
+    if (!rows.length) return res.status(404).json({ message: "Professor não encontrado." });
     res.json(rows[0]);
   } catch (err) {
-    console.error("Erro ao buscar professor pelo ID:", err);
+    console.error("Erro ao buscar professor:", err);
     res.status(500).json({ message: "Erro ao buscar professor." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
-
-
-
-
-
-
-
-// ─────────────────────────────────────────────────────────────
- /** POST /professores
- * Cria um novo professor. Espera no body:
- * { cpf, nome, data_nascimento, sexo, disciplina_id }
- *
- * OBS: removemos as colunas created_at e updated_at, pois não existem nesta tabela.
- */
-router.post("/", async (req, res) => {
+// ────────────────────────────────────────────────
+/*
+POST: Criar professor
+- Unicidade lógica esperada (na camada de dados) permanece a mesma.
+- Agora exige: cpf, nome, disciplina_id e turno.
+- turma_id permanece OPCIONAL para compatibilidade; caso enviado, será gravado.
+*/
+// ────────────────────────────────────────────────
+router.post("/", verificarEscola, async (req, res) => {
   try {
-    const { cpf, nome, data_nascimento, sexo, disciplina_id, aulas } = req.body;
+    const {
+      cpf,
+      nome,
+      data_nascimento,
+      sexo,
+      disciplina_id,
+      turma_id = null, // opcional
+      aulas = 0,
+      turno,           // ← obrigatório
+    } = req.body;
+    const { escola_id } = req.user;
 
-    if (!cpf || !nome || !data_nascimento || !sexo) {
-      return res
-        .status(400)
-        .json({ message: "CPF, nome, data de nascimento e sexo são obrigatórios." });
+    if (!cpf || !nome || !disciplina_id || !turno) {
+      return res.status(400).json({ message: "CPF, nome, disciplina e turno são obrigatórios." });
     }
-
     if (aulas < 0 || aulas > 40) {
       return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
     }
 
     await pool.query(
       `
-      INSERT INTO professores (cpf, nome, data_nascimento, sexo, disciplina_id, aulas)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO professores
+        (cpf, nome, data_nascimento, sexo, disciplina_id, turma_id, aulas, turno, escola_id, status)
+      VALUES
+        (?,   UPPER(?), ?,               ?,   ?,             ?,        ?,     ?,     ?,         'ativo')
       `,
-      [cpf, nome, data_nascimento, sexo, disciplina_id || null, aulas]
+      [cpf, nome, data_nascimento || null, sexo || null, disciplina_id, turma_id, aulas, turno, escola_id]
     );
 
-    return res.status(201).json({ message: "Professor criado com sucesso." });
+    await pool.query(
+      `INSERT INTO usuarios (cpf, nome, perfil, escola_id)
+         VALUES (?, UPPER(?), 'professor', ?)
+         ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+      [cpf, nome, escola_id]
+    );
+
+    res.status(201).json({ message: "Professor cadastrado com sucesso." });
   } catch (err) {
-    console.error("Erro ao criar professor:", err);
-    res.status(500).json({ message: "Falha ao criar professor." });
+    if (err.code === "ER_DUP_ENTRY") {
+      return res
+        .status(409)
+        .json({ message: "Já existe este professor cadastrado para a mesma disciplina." });
+    }
+    console.error("Erro ao cadastrar professor:", err);
+    res.status(500).json({ message: "Erro ao cadastrar professor." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
-
-
-
-
-
-
-// ─────────────────────────────────────────────────────────────
- /** PUT /professores/:id
- * Atualiza os dados de um professor existente. Espera no body:
- * { cpf, nome, data_nascimento, sexo, disciplina_id }
- *
- * OBS: removemos updated_at, já que não há essa coluna na tabela.
- */
-router.put("/:id", async (req, res) => {
+// ────────────────────────────────────────────────
+/*
+PUT: Atualizar professor
+- Na edição (fluxo da tabela), EXIGE e atualiza APENAS:
+  • turno, disciplina_id e aulas
+- CPF, nome, data_nascimento e sexo NÃO são exigidos nem atualizados aqui.
+*/
+// ────────────────────────────────────────────────
+router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const { cpf, nome, data_nascimento, sexo, disciplina_id, aulas } = req.body;
+    const { disciplina_id, aulas, turno } = req.body;
+    const { escola_id } = req.user;
 
-    if (!cpf || !nome || !data_nascimento || !sexo) {
+    if (!turno || !disciplina_id || aulas == null) {
       return res
         .status(400)
-        .json({ message: "CPF, nome, data de nascimento e sexo são obrigatórios." });
+        .json({ message: "Turno, disciplina e aulas são obrigatórios na edição." });
     }
-
-
     if (aulas < 0 || aulas > 40) {
       return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
     }
 
-
     const [result] = await pool.query(
       `
       UPDATE professores
-      SET cpf = ?, nome = ?, data_nascimento = ?, sexo = ?, disciplina_id = ?, aulas = ?
-      WHERE id = ?
+         SET disciplina_id = ?, aulas = ?, turno = ?
+       WHERE id = ? AND escola_id = ?
       `,
-      [cpf, nome, data_nascimento, sexo, disciplina_id || null, aulas, id]
+      [disciplina_id, aulas, turno, id, escola_id]
     );
 
-    if (result.affectedRows === 0) {
+    if (!result.affectedRows) {
       return res.status(404).json({ message: "Professor não encontrado." });
     }
 
-    return res.json({ message: "Professor atualizado com sucesso." });
+    // Nenhuma atualização em "usuarios" necessária na edição (nome/CPF não mudam)
+    res.json({ message: "Professor atualizado com sucesso." });
   } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      return res
+        .status(409)
+        .json({ message: "Já existe este professor cadastrado para a mesma disciplina." });
+    }
     console.error("Erro ao atualizar professor:", err);
-    res.status(500).json({ message: "Falha ao atualizar professor." });
+    res.status(500).json({ message: "Erro ao atualizar professor." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
-
-
-
-
-// ─────────────────────────────────────────────────────────────
-//PUT /professores/inativar/:id
-
-     router.put("/inativar/:id", async (req, res) => {
-       const { id } = req.params;
-       try {
-         const [result] = await pool.query(
-           "UPDATE professores SET status = 'inativo' WHERE id = ?",
-           [id]
-         );
-         if (result.affectedRows === 0) {
-           return res.status(404).json({ message: "Professor não encontrado." });
-         }
-         return res.json({ message: "Professor inativado com sucesso." });
-       } catch (err) {
-         console.error("Erro ao inativar professor:", err);
-         return res.status(500).json({ message: "Não foi possível inativar o professor." });
-       }
-     });
-// ─────────────────────────────────────────────────────────────
-
-
-
-
-
-
-
-// ─────────────────────────────────────────────────────────────
- /** DELETE /professores/:id
- * (Opcional) Remove um professor pelo ID.
- */
-router.delete("/:id", async (req, res) => {
+// ────────────────────────────────────────────────
+// PUT: Inativar professor
+// ────────────────────────────────────────────────
+router.put("/inativar/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    const [result] = await pool.query("DELETE FROM professores WHERE id = ?", [id]);
-
-    if (result.affectedRows === 0) {
+    const [result] = await pool.query(
+      "UPDATE professores SET status = 'inativo' WHERE id = ?",
+      [req.params.id]
+    );
+    if (!result.affectedRows) {
       return res.status(404).json({ message: "Professor não encontrado." });
     }
+    res.json({ message: "Professor inativado com sucesso." });
+  } catch (err) {
+    console.error("Erro ao inativar professor:", err);
+    res.status(500).json({ message: "Erro ao inativar professor." });
+  }
+});
 
-    return res.json({ message: "Professor removido com sucesso." });
+// ────────────────────────────────────────────────
+// DELETE: Excluir professor
+// ────────────────────────────────────────────────
+router.delete("/:id", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+
+    const [[prof]] = await pool.query(
+      "SELECT cpf FROM professores WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
+
+    await pool.query("DELETE FROM professores WHERE id = ? AND escola_id = ?", [
+      id,
+      escola_id,
+    ]);
+    await pool.query(
+      "DELETE FROM usuarios WHERE cpf = ? AND perfil = 'professor' AND escola_id = ?",
+      [prof.cpf, escola_id]
+    );
+
+    res.json({ message: "Professor excluído com sucesso." });
   } catch (err) {
     console.error("Erro ao excluir professor:", err);
-    res.status(500).json({ message: "Falha ao excluir professor." });
+    res.status(500).json({ message: "Erro ao excluir professor." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
-
-
-
-
-// ─────────────────────────────────────────────────────────────
-/** Se quiser oferecer upload de foto de professor, crie este endpoint:
- * POST /professores/:id/foto
- * (a tabela `professores` precisaria ter uma coluna `foto VARCHAR(...)`)
- */
-router.post(
-  "/:id/foto",
-  profUpload.single("foto"),
-  async (req, res) => {
-    const { id } = req.params;
-    if (!req.file) {
-      return res.status(400).json({ message: "Nenhuma foto enviada." });
-    }
-    try {
-      // O Multer salvou em uploads/professores/<id>.jpg
-      const fotoPath = `/uploads/professores/${req.file.filename}`;
-      // Exemplo de UPDATE para armazenar o caminho no banco:
-      await pool.query("UPDATE professores SET foto = ? WHERE id = ?", [
-        fotoPath,
-        id,
-      ]);
-      return res.status(200).json({ foto: fotoPath });
-    } catch (err) {
-      console.error("Erro ao atualizar foto do professor no DB:", err);
-      return res
-        .status(500)
-        .json({ message: "Erro ao inserir foto do professor no servidor." });
-    }
-  }
-);
-// ─────────────────────────────────────────────────────────────
-
-
-
-
-// ─────────────────────────────────────────────────────────────
-// GET /professores/por-cpf-e-disciplina/:cpf/:disciplina_id
-router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", async (req, res) => {
-  const { cpf, disciplina_id } = req.params;
+// ────────────────────────────────────────────────
+// POST: Upload de foto do professor
+// ────────────────────────────────────────────────
+router.post("/:id/foto", profUpload.single("foto"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: "Nenhuma foto enviada." });
   try {
-    const [rows] = await pool.query(
-      `SELECT * FROM professores WHERE cpf = ? AND disciplina_id = ?`,
-      [cpf, disciplina_id]
-    );
-    if (rows.length > 0) {
-      return res.status(200).json(rows[0]);
-    } else {
-      return res.status(404).json({ message: "Nenhum professor encontrado." });
-    }
+    const fotoPath = `/uploads/professores/${req.file.filename}`;
+    await pool.query("UPDATE professores SET foto = ? WHERE id = ?", [
+      fotoPath,
+      req.params.id,
+    ]);
+    res.json({ foto: fotoPath });
   } catch (err) {
-    console.error("Erro ao verificar professor por CPF e disciplina:", err);
-    return res.status(500).json({ message: "Erro interno." });
+    console.error("Erro ao atualizar foto:", err);
+    res.status(500).json({ message: "Erro ao atualizar foto do professor." });
   }
 });
-// ─────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────
+// POST: Importar professores via PDF (com sincronização)
+// (mantido — não altera TURNO)
+// ────────────────────────────────────────────────
+const uploadPdf = multer();
+router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: "PDF não enviado." });
 
+  try {
+    const { text } = await pdfParse(req.file.buffer);
+    const linhas = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
 
+    const profs = [];
+    for (let i = 0; i < linhas.length; i++) {
+      const m = linhas[i].match(
+        /^(\d{4,}\.\d{3,}-[\dxX])\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s.]+)\s+([A-Z\s.]+)$/i
+      );
+      if (m) {
+        profs.push({
+          cpf: m[1].replace(/[^\dX]/gi, ""),
+          nome: m[2].trim(),
+          cargo: m[3].trim(),
+        });
+      }
+    }
 
+    const setCpfs = new Set(profs.map((p) => p.cpf));
+    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores");
 
+    const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
+    const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
+    const setAllCpfs = new Set(dbRowsAll.map((r) => String(r.cpf)));
+    const setActiveCpfs = new Set(dbActive.map((r) => String(r.cpf)));
+
+    const jaExistiam = profs.filter((e) => setActiveCpfs.has(e.cpf)).length;
+    const toInsert = profs.filter((e) => !setAllCpfs.has(e.cpf));
+    const toReactivate = profs.filter((e) =>
+      dbInactive.some((r) => String(r.cpf) === e.cpf)
+    );
+    const toInactivate = dbActive.filter((r) => !setCpfs.has(String(r.cpf)));
+
+    // Insere novos
+    let inseridos = 0;
+    for (const e of toInsert) {
+      await pool.query(
+        "INSERT INTO professores (cpf, nome, cargo, status) VALUES (?, UPPER(?), ?, 'ativo')",
+        [e.cpf, e.nome, e.cargo]
+      );
+      await pool.query(
+        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        [e.cpf, e.nome]
+      );
+      inseridos++;
+    }
+
+    // Reativa inativos
+    let reativados = 0;
+    for (const e of toReactivate) {
+      await pool.query(
+        "UPDATE professores SET status='ativo', nome=UPPER(?), cargo=? WHERE cpf=?",
+        [e.nome, e.cargo, e.cpf]
+      );
+      await pool.query(
+        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        [e.cpf, e.nome]
+      );
+      reativados++;
+    }
+
+    // Inativa ausentes
+    let inativados = 0;
+    for (const r of toInactivate) {
+      await pool.query("UPDATE professores SET status='inativo' WHERE id=?", [r.id]);
+      inativados++;
+    }
+
+    res.json({
+      localizados: profs.length,
+      inseridos,
+      jaExistiam,
+      reativados,
+      inativados,
+      listaProfessores: profs,
+    });
+  } catch (err) {
+    console.error("Erro ao importar PDF de professores:", err);
+    res.status(500).json({ message: "Erro ao processar PDF.", error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────
+// POST: Importar professores via XLSX (com sincronização)
+// (mantido — não altera TURNO)
+// ────────────────────────────────────────────────
+const uploadXlsx = multer();
+router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: "XLSX não enviado." });
+
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const primeiraAbaNome = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[primeiraAbaNome];
+    const dados = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+    const profs = [];
+    for (const linha of dados) {
+      let cargo = (linha.cargo || linha.Cargo || "").toString().trim().toUpperCase();
+      if (!cargo.startsWith("PROFESSOR")) continue;
+
+      let cpf = (linha.cpf || linha.CPF || "").toString().replace(/[^\dxX]/gi, "");
+      let nome = (linha.nome || linha.Nome || "").trim();
+      if (!cpf || !nome) continue;
+
+      profs.push({ cpf, nome });
+    }
+
+    const setCpfs = new Set(profs.map((p) => p.cpf));
+    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores");
+
+    const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
+    const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
+    const setAllCpfs = new Set(dbRowsAll.map((r) => String(r.cpf)));
+    const setActiveCpfs = new Set(dbActive.map((r) => String(r.cpf)));
+
+    const jaExistiam = profs.filter((e) => setActiveCpfs.has(e.cpf)).length;
+    const toInsert = profs.filter((e) => !setAllCpfs.has(e.cpf));
+    const toReactivate = profs.filter((e) =>
+      dbInactive.some((r) => String(r.cpf) === e.cpf)
+    );
+    const toInactivate = dbActive.filter((r) => !setCpfs.has(String(r.cpf)));
+
+    // Inserir novos
+    let inseridos = 0;
+    for (const e of toInsert) {
+      await pool.query(
+        "INSERT INTO professores (cpf, nome, disciplina_id, status) VALUES (?, UPPER(?), ?, 'ativo')",
+        [e.cpf, e.nome, null]
+      );
+      await pool.query(
+        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        [e.cpf, e.nome]
+      );
+      inseridos++;
+    }
+
+    // Reativar inativos
+    let reativados = 0;
+    for (const e of toReactivate) {
+      await pool.query(
+        "UPDATE professores SET status='ativo', nome=UPPER(?) WHERE cpf=?",
+        [e.nome, e.cpf]
+      );
+      await pool.query(
+        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        [e.cpf, e.nome]
+      );
+      reativados++;
+    }
+
+    // Inativar ausentes
+    let inativados = 0;
+    for (const r of toInactivate) {
+      await pool.query("UPDATE professores SET status='inativo' WHERE id=?", [r.id]);
+      inativados++;
+    }
+
+    res.json({
+      localizados: profs.length,
+      inseridos,
+      jaExistiam,
+      reativados,
+      inativados,
+      listaProfessores: profs,
+    });
+  } catch (err) {
+    console.error("Erro ao importar XLSX de professores:", err);
+    res.status(500).json({ message: "Erro ao processar XLSX.", error: err.message });
+  }
+});
 
 export default router;

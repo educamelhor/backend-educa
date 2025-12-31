@@ -1,34 +1,57 @@
-// api/routes/turmas.js
-
-import { Router } from "express";
+// src/routes/turmas.js
+import express from "express";
 import pool from "../db.js";
 
-const router = Router();
+const router = express.Router();
+
+
+// Middleware para validar e forçar filtro por escola
+function verificarEscola(req, res, next) {
+  if (!req.user || !req.user.escola_id) {
+    return res.status(403).json({ message: "Acesso negado: escola não definida." });
+  }
+  next();
+}
+
+
+
 
 /**
+ * ================================
+ * LISTAR TURMAS (somente da escola)
  * GET /api/turmas
- * Retorna todas as turmas com seus campos básicos:
- *  - id
- *  - turma (nome da turma, ex: "1A")
- *  - serie (ex: "6º ANO")
- *  - turno (ex: "Matutino" ou "Vespertino")
- *  - escola (nome da escola)
+ * ================================
  */
-router.get("/", async (req, res) => {
+router.get("/", verificarEscola, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
+    const { escola_id } = req.user;
+    const { filtro = "" } = req.query;
+
+    let sql = `
       SELECT
         t.id,
-        t.nome        AS turma,
+        t.nome AS turma,
+        t.etapa,
+        t.ano,
         t.serie,
         t.turno,
         t.escola_id,
-        e.nome        AS escola
+        e.nome AS escola
       FROM turmas t
       JOIN escolas e ON e.id = t.escola_id
-      ORDER BY t.serie, t.nome
-    `);
+      WHERE t.escola_id = ?
+    `;
+    const params = [escola_id];
 
+    if (filtro) {
+      sql += " AND (t.nome LIKE ? OR t.serie LIKE ? OR t.turno LIKE ?)";
+      const likeFiltro = `%${filtro}%`;
+      params.push(likeFiltro, likeFiltro, likeFiltro);
+    }
+
+    sql += " ORDER BY t.serie, t.nome";
+
+    const [rows] = await pool.query(sql, params);
     return res.status(200).json(rows);
   } catch (err) {
     console.error("Erro ao listar turmas:", err);
@@ -36,53 +59,29 @@ router.get("/", async (req, res) => {
   }
 });
 
+
+
+
+
 /**
+ * ================================
+ * CRIAR TURMA (vinculada à escola)
  * POST /api/turmas
- * Cria uma nova turma. Espera no body:
- *  - nome      (string)
- *  - serie     (string)
- *  - turno     (string)
- *  - escola_id (integer)
+ * ================================
  */
-router.post("/", async (req, res) => {
-  const { turma, serie, turno, escola_id } = req.body;
-
-  // validação básica
-  if (!turma || !serie || !turno || !escola_id) {
-    return res.status(400).json({ message: "Todos os campos são obrigatórios." });
-  }
-
+router.post("/", verificarEscola, async (req, res) => {
   try {
+    const { nome, etapa, ano, serie, turno } = req.body;
+    const { escola_id } = req.user;
+
     const [result] = await pool.query(
-      `INSERT INTO turmas (nome, serie, turno, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, NOW(), NOW())`,
-      [turma, serie, turno, escola_id]
+      "INSERT INTO turmas (nome, etapa, ano, serie, turno, escola_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [nome, etapa, ano, serie, turno, escola_id]
     );
-
-
-
-
-
-
-    // Opcional: retornar a turma criada
-    const [rows] = await pool.query(
-      `SELECT
-         t.id,
-         t.nome    AS turma,
-         t.serie,
-         t.turno,
-         e.nome    AS escola
-       FROM turmas t
-       JOIN escolas e
-         ON e.id = t.escola_id
-       WHERE t.id = ?`,
-      [result.insertId]
-    );
-
-    return res.status(201).json(rows[0]);
+    return res.status(201).json({ id: result.insertId });
   } catch (err) {
     console.error("Erro ao criar turma:", err);
-    return res.status(500).json({ message: "Não foi possível criar a turma." });
+    return res.status(500).json({ error: "Não foi possível criar a turma" });
   }
 });
 
@@ -90,49 +89,32 @@ router.post("/", async (req, res) => {
 
 
 
-// DELETE /api/turmas/:id → Remove uma turma pelo ID
-router.delete("/:id", async (req, res) => {
+
+/**
+ * ================================
+ * EDITAR TURMA (somente da escola)
+ * PUT /api/turmas/:id
+ * ================================
+ */
+router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.query("DELETE FROM turmas WHERE id = ?", [id]);
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Turma não encontrada." });
-    }
-
-    return res.json({ message: "Turma excluída com sucesso." });
-  } catch (err) {
-    console.error("Erro ao excluir turma:", err);
-    return res.status(500).json({ message: "Erro ao excluir turma." });
-  }
-});
-
-
-
-
-// PUT /api/turmas/:id → Atualiza uma turma existente
-router.put("/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { escola_id, turma, turno, serie } = req.body;
-
-    if (!escola_id || !turma || !turno || !serie) {
-      return res.status(400).json({ message: "Todos os campos são obrigatórios." });
-    }
+    const { nome, etapa, ano, serie, turno } = req.body;
+    const { escola_id } = req.user;
 
     const [result] = await pool.query(
-      `UPDATE turmas SET escola_id = ?, nome = ?, turno = ?, serie = ? WHERE id = ?`,
-      [escola_id, turma, turno, serie, id]
+      "UPDATE turmas SET nome=?, etapa=?, ano=?, serie=?, turno=? WHERE id=? AND escola_id=?",
+      [nome, etapa, ano, serie, turno, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Turma não encontrada." });
+      return res.status(404).json({ error: "Turma não encontrada ou não pertence à sua escola" });
     }
 
-    return res.json({ message: "Turma atualizada com sucesso." });
+    return res.status(200).json({ message: "Turma atualizada com sucesso" });
   } catch (err) {
     console.error("Erro ao atualizar turma:", err);
-    res.status(500).json({ message: "Erro ao atualizar turma." });
+    return res.status(500).json({ error: "Não foi possível atualizar a turma" });
   }
 });
 
@@ -140,5 +122,31 @@ router.put("/:id", async (req, res) => {
 
 
 
+/**
+ * ================================
+ * EXCLUIR TURMA (somente da escola)
+ * DELETE /api/turmas/:id
+ * ================================
+ */
+router.delete("/:id", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+
+    const [result] = await pool.query(
+      "DELETE FROM turmas WHERE id=? AND escola_id=?",
+      [id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Turma não encontrada ou não pertence à sua escola" });
+    }
+
+    return res.status(200).json({ message: "Turma excluída com sucesso" });
+  } catch (err) {
+    console.error("Erro ao excluir turma:", err);
+    return res.status(500).json({ error: "Não foi possível excluir a turma" });
+  }
+});
 
 export default router;

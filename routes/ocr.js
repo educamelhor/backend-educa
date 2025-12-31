@@ -8,12 +8,20 @@ dotenv.config();
 const router = express.Router();
 const upload = multer(); // arquivos em memória
 
+// Middleware para garantir que a escola esteja definida
+function verificarEscola(req, res, next) {
+  if (!req.user || !req.user.escola_id) {
+    return res.status(403).json({ error: "Acesso negado: escola não definida." });
+  }
+  next();
+}
+
 // Util para pegar URL do .env corretamente
 const AZURE_CV_ENDPOINT = process.env.AZURE_CV_ENDPOINT?.replace(/\/+$/, ""); // tira / do final se houver
 const AZURE_CV_KEY = process.env.AZURE_CV_KEY;
 
 // 1) OCR simples: só texto puro (com CROP do cabeçalho para imagens!)
-router.post("/azure-text", upload.single("file"), async (req, res) => {
+router.post("/azure-text", verificarEscola, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Arquivo não enviado." });
 
   console.log("Tamanho do arquivo recebido:", req.file.size, req.file.mimetype);
@@ -35,10 +43,9 @@ router.post("/azure-text", upload.single("file"), async (req, res) => {
   }
 
   try {
-    // Requisição para o serviço Azure (endpoint de OCR)
     const { data } = await axios.post(
       `${AZURE_CV_ENDPOINT}/vision/v3.2/ocr?language=pt&detectOrientation=true`,
-      imgBuffer, // Agora pode ser a imagem cropped!
+      imgBuffer,
       {
         headers: {
           "Ocp-Apim-Subscription-Key": AZURE_CV_KEY,
@@ -47,7 +54,6 @@ router.post("/azure-text", upload.single("file"), async (req, res) => {
       }
     );
 
-    // Junta todas as linhas em um texto único
     const lines = [];
     if (data.regions) {
       for (const region of data.regions) {
@@ -65,11 +71,10 @@ router.post("/azure-text", upload.single("file"), async (req, res) => {
 });
 
 // 2) OCR estruturado: texto + posição + palavras
-router.post("/azure-struct", upload.single("file"), async (req, res) => {
+router.post("/azure-struct", verificarEscola, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Arquivo não enviado." });
 
   try {
-    // Usa a API “Read” (mais moderna) — endpoint v3.2/read/analyze
     const resp = await axios.post(
       `${AZURE_CV_ENDPOINT}/vision/v3.2/read/analyze`,
       req.file.buffer,
@@ -80,11 +85,9 @@ router.post("/azure-struct", upload.single("file"), async (req, res) => {
         },
       }
     );
-    // A resposta inicial só tem um "operation-location" header, precisamos poll para buscar o resultado.
     const operationLocation = resp.headers["operation-location"];
     if (!operationLocation) throw new Error("operation-location não encontrado.");
 
-    // Espera o OCR processar (polling simples)
     let resultado;
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000));
@@ -99,7 +102,6 @@ router.post("/azure-struct", upload.single("file"), async (req, res) => {
     }
     if (!resultado) throw new Error("Timeout esperando resultado do OCR Azure.");
 
-    // Transforma em resposta estruturada
     const analysis = resultado.analyzeResult;
     const linhas = [];
     for (const page of analysis?.readResults || []) {
@@ -117,7 +119,7 @@ router.post("/azure-struct", upload.single("file"), async (req, res) => {
     }
     res.json({
       lines: linhas,
-      fullText: (linhas.map(l => l.text).join("\n"))
+      fullText: linhas.map(l => l.text).join("\n")
     });
   } catch (err) {
     console.error(err?.response?.data || err);
