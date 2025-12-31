@@ -52,7 +52,13 @@ router.post("/salvar", verificarEscola, upload.single("imagem"), async (req, res
 });
 
 // OpenAI API setup
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// IMPORTANTE: não instanciar OpenAI no topo do arquivo, pois se OPENAI_API_KEY não existir
+// o servidor cai no boot (derruba deploy na DigitalOcean). Criamos sob demanda.
+function getOpenAIClientOrNull() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  return new OpenAI({ apiKey });
+}
 
 // ROTA PARA CORRIGIR REDAÇÃO USANDO IA
 router.post("/corrigir", verificarEscola, async (req, res) => {
@@ -64,6 +70,14 @@ router.post("/corrigir", verificarEscola, async (req, res) => {
 
   console.log("Chave OpenAI:", process.env.OPENAI_API_KEY?.slice(0,8) + "...");
   console.log("Prompt de correção:", prompt.substring(0, 200) + "...");
+
+  // Se a chave não estiver configurada, não derruba o servidor: retorna 503 (serviço indisponível)
+  const openai = getOpenAIClientOrNull();
+  if (!openai) {
+    return res.status(503).json({
+      error: "Serviço de correção automática indisponível: OPENAI_API_KEY ausente."
+    });
+  }
 
   try {
     const completion = await openai.chat.completions.create({
