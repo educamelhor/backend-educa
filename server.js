@@ -1,8 +1,6 @@
 // ============================================================================
 // server.js — API EDUCA.MELHOR
 // ============================================================================
-
-import 'dotenv/config';
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -15,9 +13,17 @@ import pool from "./db.js";
 // ------------------------- Rotas --------------------------------------------
 import modulacaoRoutes from "./routes/modulacao.js";
 import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
-import ocrRouter from "./routes/ocr.js";
-import redacoesRouter from "./routes/redacoes.js";
-import correcoesOpenAI from "./routes/correcoes_openai.js";
+
+
+// ==========================
+// OPTIONAL ROUTES (Feature Flags)
+// (evita quebrar o boot quando arquivos/módulos ainda estão em construção)
+// ==========================
+let ocrRouter = null;
+let redacoesRouter = null;
+let correcoesOpenAI = null;
+
+
 import gabaritosRoutes from "./routes/gabaritos.js";
 import authRouter from "./routes/auth.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
@@ -42,27 +48,103 @@ import disponibilidadesRouter from "./routes/disponibilidades.js";
 import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
-import appPaisRouter from "./routes/app_pais.js";
-// import responsavelRoutes from "./modules/app-pais/responsavel/responsavel.routes.js";
-// ✅ NOVO — Device
-// import deviceRoutes from "./modules/app-pais/device/device.routes.js";
 
-// ✅ NOVO — Configurações Pedagógicas (Horários)
-import configPedagogicaRouter from "./routes/config_pedagogica.js";
-import conteudosAdminRouter from "./routes/conteudos_admin.js";
+// ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
+let appPaisRouter = null;
+let responsavelRoutes = null;
+let deviceRoutes = null;
 
-// ------------------------- Monitoramento ------------------------------------
-import monitoramentoRouter from "./routes/monitoramento.js";
-import monitoramentoEventoRouter from "./routes/monitoramento_evento.js";
-import monitoramentoOverlayRouter from "./routes/monitoramento_overlay.js";
-import monitoramentoAlertaRouter from "./routes/monitoramento_alerta.js";
-import monitoramentoPainelRouter from "./routes/monitoramento_painel.js";
-import monitoramentoVisitantesRouter from "./routes/monitoramento_visitantes.js";
-import monitoramentoCamerasRouter from "./routes/monitoramento_cameras.js";
-import monitoramentoEmbeddingsRouter from "./routes/monitoramento_embeddings.js";
-import monitoramentoIngestRouter from "./routes/monitoramento_ingest.js";
-import monitoramentoStream from "./routes/monitoramento_stream.js";
-import monitoramentoUltimosRouter from "./routes/monitoramento_ultimos.js";
+let configPedagogicaRouter = null;
+let conteudosAdminRouter = null;
+
+let monitoramentoRouter = null;
+let monitoramentoEventoRouter = null;
+let monitoramentoOverlayRouter = null;
+let monitoramentoAlertaRouter = null;
+let monitoramentoPainelRouter = null;
+let monitoramentoVisitantesRouter = null;
+let monitoramentoCamerasRouter = null;
+let monitoramentoEmbeddingsRouter = null;
+let monitoramentoIngestRouter = null;
+let monitoramentoStream = null;
+let monitoramentoUltimosRouter = null;
+
+// Carregamento seguro (NÃO quebra o boot se faltar arquivo)
+// Padrão profissional: DEV liga por padrão, PROD desliga por padrão.
+// Em produção, só liga se a ENV vier explicitamente.
+const DEFAULT_ON_DEV = process.env.NODE_ENV !== "production";
+
+const FF_APP_PAIS = ff("FF_APP_PAIS", DEFAULT_ON_DEV);
+const FF_CONFIG_PEDAGOGICA = ff("FF_CONFIG_PEDAGOGICA", DEFAULT_ON_DEV);
+const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", DEFAULT_ON_DEV);
+
+// Monitoramento é pesado/sensível: manter OFF por padrão mesmo em DEV (liga quando for trabalhar nele)
+const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
+
+
+
+
+
+
+
+
+
+if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
+  appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
+  responsavelRoutes = await safeImportDefault(
+    "FF_APP_PAIS",
+    "./modules/app-pais/responsavel/responsavel.routes.js"
+  );
+  deviceRoutes = await safeImportDefault(
+    "FF_APP_PAIS",
+    "./modules/app-pais/device/device.routes.js"
+  );
+} else if (FF_APP_PAIS) {
+  console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+if (FF_CONFIG_PEDAGOGICA) {
+  configPedagogicaRouter = await safeImportDefault(
+    "FF_CONFIG_PEDAGOGICA",
+    "./routes/config_pedagogica.js"
+  );
+}
+
+if (FF_CONTEUDOS_ADMIN) {
+  conteudosAdminRouter = await safeImportDefault(
+    "FF_CONTEUDOS_ADMIN",
+    "./routes/conteudos_admin.js"
+  );
+}
+
+if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO_TOKEN_SECRET"])) {
+  monitoramentoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento.js");
+  monitoramentoEventoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_evento.js");
+  monitoramentoOverlayRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_overlay.js");
+  monitoramentoAlertaRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_alerta.js");
+  monitoramentoPainelRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_painel.js");
+  monitoramentoVisitantesRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_visitantes.js");
+  monitoramentoCamerasRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_cameras.js");
+  monitoramentoEmbeddingsRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_embeddings.js");
+  monitoramentoIngestRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_ingest.js");
+  monitoramentoStream = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_stream.js");
+  monitoramentoUltimosRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_ultimos.js");
+} else if (FF_MONITORAMENTO) {
+  console.warn("[FF] FF_MONITORAMENTO estava ON, mas foi desativado por falta de ENV obrigatórias.");
+}
+
 
 // ------------------------- Middlewares globais ------------------------------
 import { autenticarToken } from "./middleware/autenticarToken.js";
@@ -71,6 +153,38 @@ import { verificarEscola } from "./middleware/verificarEscola.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = express();
+
+// ============================================================================
+// Feature Flags (Padrão A) + Safe Import (blindagem de módulos em construção)
+// ============================================================================
+function ff(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return ["1", "true", "yes", "on"].includes(String(raw).toLowerCase().trim());
+}
+
+async function safeImportDefault(flagName, importPath) {
+  try {
+    const mod = await import(importPath);
+    return mod?.default ?? mod;
+  } catch (err) {
+    console.warn(
+      `[FF] ${flagName}: NÃO carregado (${importPath}). Motivo: ${err?.message || err}`
+    );
+    return null; // não quebra o boot
+  }
+}
+
+function requireEnvForFeature(flagName, requiredVars = []) {
+  const missing = requiredVars.filter((k) => !process.env[k] || String(process.env[k]).trim() === "");
+  if (missing.length) {
+    console.warn(
+      `[FF] ${flagName}: DESATIVADO automaticamente — faltando ENV obrigatória(s): ${missing.join(", ")}`
+    );
+    return false;
+  }
+  return true;
+}
 
 // ============================================================================
 // CORS + Body
@@ -91,7 +205,10 @@ app.use(
   cors({
     origin(origin, cb) {
       if (!origin || whitelist.includes(origin)) return cb(null, true);
-      cb(new Error("Não permitido por CORS"));
+
+      const err = new Error(`Não permitido por CORS: ${origin}`);
+      err.status = 403;
+      return cb(err);
     },
     credentials: true,
   })
@@ -102,18 +219,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Requested-With",
-      "x-access-token",
-    ],
-  })
-);
+
 
 // Aceita JSONs maiores (necessário para foto_base64)
 app.use(express.json({ limit: "10mb" }));
@@ -144,36 +250,24 @@ app.use(
 // Pings e debugs PÚBLICOS (não exigem token)
 // ============================================================================
 
-// ✅ HEALTHCHECK simples (DigitalOcean / monitoramento externo)
-// Mantém rotas na raiz e cria aliases em /api/* para ambientes que roteam com prefixo.
-const healthPayload = () => ({
-  ok: true,
-  service: "backend-educa",
-  ts: new Date().toISOString(),
-});
 
-app.get("/ping", (_req, res) => res.json(healthPayload()));
-app.get("/api/ping", (_req, res) => res.json(healthPayload()));
+
+app.get("/health", (_req, res) =>
+  res.json({
+    ok: true,
+    status: "UP",
+    ts: new Date().toISOString(),
+  })
+);
+
 
 app.get("/__build-info", (_req, res) =>
   res.json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
-    build_marker: "OPCAO_A_APP_PAIS_MODULOS_DESATIVADOS",
     ts: new Date().toISOString(),
   })
 );
-
-app.get("/api/__build-info", (_req, res) =>
-  res.json({
-    ok: true,
-    msg: "EDUCA BACKEND — BUILD ATIVO",
-    build_marker: "OPCAO_A_APP_PAIS_MODULOS_DESATIVADOS",
-    ts: new Date().toISOString(),
-  })
-);
-
-
 
 app.get("/api/visitantes-ping", (_req, res) =>
   res.json({
@@ -181,268 +275,274 @@ app.get("/api/visitantes-ping", (_req, res) =>
     message: "router de visitantes acessível — /api/visitantes-ping",
   })
 );
-app.get("/api/monitoramento/visitantes/ping-public", (_req, res) =>
-  res.json({
-    ok: true,
-    message:
-      "router de visitantes acessível — /api/monitoramento/visitantes/ping-public",
-  })
-);
-app.get("/visitantes-ping-root", (_req, res) =>
-  res.json({
-    ok: true,
-    message: "router de visitantes acessível — /visitantes-ping-root",
-  })
-);
 
-app.get("/__visitantes-debug", (req, res) => {
-  res.json({
-    ok: true,
-    message: "DEBUG público (root) OK",
-    method: req.method,
-    url: req.originalUrl,
-    ts: new Date().toISOString(),
+// ============================================================================
+// DEBUG (somente DEV) — evita expor rotas e logs sensíveis em produção
+// ============================================================================
+const IS_PROD = process.env.NODE_ENV === "production";
+
+if (!IS_PROD) {
+  // Pings/Debugs úteis em DEV
+  app.get("/api/monitoramento/visitantes/ping-public", (_req, res) =>
+    res.json({
+      ok: true,
+      message:
+        "router de visitantes acessível — /api/monitoramento/visitantes/ping-public",
+    })
+  );
+
+  app.get("/visitantes-ping-root", (_req, res) =>
+    res.json({
+      ok: true,
+      message: "router de visitantes acessível — /visitantes-ping-root",
+    })
+  );
+
+  app.get("/api/__overlay-debug", (req, res) => {
+    res.json({
+      ok: true,
+      message: "Overlay debug OK",
+      query: req.query,
+      ts: new Date().toISOString(),
+    });
   });
-});
-app.post("/__visitantes-debug", (req, res) => {
-  res.json({
-    ok: true,
-    message: "DEBUG público (root) OK — body ecoado",
-    method: req.method,
-    url: req.originalUrl,
-    body: req.body || {},
-    ts: new Date().toISOString(),
+
+  // NUNCA logar Authorization em produção
+  app.use((req, _res, next) => {
+    console.log("[HEADERS TEST] Authorization:", req.headers.authorization);
+    next();
   });
-});
-app.get("/api/visitantes-debug", (req, res) => {
-  res.json({
-    ok: true,
-    message: "DEBUG público (/api) OK",
-    method: req.method,
-    url: req.originalUrl,
-    ts: new Date().toISOString(),
+}
+
+async function bootstrap() {
+  if (appPaisRouter) app.use("/api/app-pais", appPaisRouter);
+  if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
+  if (deviceRoutes) app.use("/api/app-pais", deviceRoutes);
+
+
+
+  // ============================================================================
+  // Monitoramento — STREAM (RTSP→MJPEG) SEM middleware global de auth
+  //  - O próprio arquivo monitoramento_stream.js protege /stream/:id.mjpeg
+  //  - /stream/ping continua público para diagnóstico
+  // ============================================================================
+  if (monitoramentoStream) {
+    app.use("/api/monitoramento", monitoramentoStream);
+  }
+
+
+  // ============================================================================
+  // Rotas protegidas principais (mantidas como estavam)
+  // ============================================================================
+  app.use("/api/auth", authRouter);
+  app.use(
+    "/api/ferramentas",
+    autenticarToken,
+    verificarEscola,
+    ferramentasIndexRouter
+  );
+  app.use("/api/alunos", autenticarToken, verificarEscola, alunosRouter);
+  app.use(
+    "/api/professores",
+    autenticarToken,
+    verificarEscola,
+    professoresRouter
+  );
+  app.use(
+    "/api/disciplinas",
+    autenticarToken,
+    verificarEscola,
+    disciplinasRouter
+  );
+  app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
+  app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
+  app.use(
+    "/api/modulacao",
+    autenticarToken,
+    verificarEscola,
+    modulacaoDiagnosticoRouter
+  );
+  app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
+  app.use(
+    "/api/questoes",
+    autenticarToken,
+    verificarEscola,
+    questoesUploadRouter
+  );
+  app.use("/api/escolas", autenticarToken, verificarEscola, escolasRouter);
+
+  if (ocrRouter) {
+    app.use("/api/ocr", autenticarToken, verificarEscola, ocrRouter);
+  } else {
+    console.log("[FF] OCR desativado");
+  }
+
+  if (redacoesRouter) {
+    app.use("/api/redacoes", autenticarToken, verificarEscola, redacoesRouter);
+  } else {
+    console.log("[FF] Redações desativadas");
+  }
+
+  if (correcoesOpenAI) {
+    app.use(
+      "/api/correcoes_openai",
+      autenticarToken,
+      verificarEscola,
+      correcoesOpenAI
+    );
+  } else {
+    console.log("[FF] Correções OpenAI desativadas");
+  }
+
+  app.use("/api/gabaritos", autenticarToken, verificarEscola, gabaritosRoutes);
+  app.use(
+    "/api/gabaritos-generator",
+    autenticarToken,
+    verificarEscola,
+    gabaritosGeneratorRoutes
+  );
+  app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
+  app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
+  app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
+  app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
+  app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
+  app.use(
+    "/api/cargas-horarias",
+    autenticarToken,
+    verificarEscola,
+    cargasHorariasRouter
+  );
+  app.use("/api/grade", autenticarToken, verificarEscola, gradeBaseRoutes);
+  app.use("/api/grade", autenticarToken, verificarEscola, gradeSolveRoutes);
+  app.use(
+    "/api/disponibilidades",
+    autenticarToken,
+    verificarEscola,
+    disponibilidadesRouter
+  );
+  app.use(
+    "/api/preferencias",
+    autenticarToken,
+    verificarEscola,
+    preferenciasRouter
+  );
+  app.use("/api/grade", autenticarToken, verificarEscola, gradeRunMockRouter);
+  app.use("/api/grade", autenticarToken, verificarEscola, gradePublishRouter);
+
+  // ✅ NOVO — Configurações Pedagógicas (protegido)
+  if (configPedagogicaRouter) {
+    app.use(
+      "/api/config-pedagogica",
+      autenticarToken,
+      verificarEscola,
+      configPedagogicaRouter
+    );
+  }
+
+  if (conteudosAdminRouter) {
+    app.use("/api", autenticarToken, verificarEscola, conteudosAdminRouter);
+  }
+
+  if (monitoramentoIngestRouter) {
+    app.use("/api/monitoramento/ingest", verificarEscola, monitoramentoIngestRouter);
+  }
+
+  if (monitoramentoUltimosRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoUltimosRouter);
+  }
+
+  if (monitoramentoEmbeddingsRouter) {
+    app.use("/api/monitoramento/embeddings", autenticarToken, verificarEscola, monitoramentoEmbeddingsRouter);
+  }
+
+  if (monitoramentoCamerasRouter) {
+    app.use("/api/monitoramento/cameras", autenticarToken, verificarEscola, monitoramentoCamerasRouter);
+  }
+
+  if (monitoramentoVisitantesRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoVisitantesRouter);
+  }
+
+  if (monitoramentoPainelRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoPainelRouter);
+    app.use("/api/monitoramento_painel", autenticarToken, verificarEscola, monitoramentoPainelRouter);
+  }
+
+  if (monitoramentoEventoRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoEventoRouter);
+  }
+
+  if (monitoramentoOverlayRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoOverlayRouter);
+    app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
+    app.use("/api/monitoramento-public", monitoramentoOverlayRouter);
+    app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
+  }
+
+  if (monitoramentoRouter) {
+    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoRouter);
+  }
+
+  if (monitoramentoAlertaRouter) {
+    app.use("/api/monitoramento_alerta", monitoramentoAlertaRouter);
+  }
+
+  // ============================================================================
+  // Error handler global (deve vir ANTES do 404)
+  //  - Em DEV: ajuda no diagnóstico
+  //  - Em PROD: não vaza detalhes internos
+  // ============================================================================
+  app.use((err, _req, res, _next) => {
+    const isProd = process.env.NODE_ENV === "production";
+    const status = err?.status || err?.statusCode || 500;
+
+    // Log sempre (operacional). Em produção, logar a mensagem é suficiente.
+    console.error("❌ ERRO:", err?.message || err);
+
+    if (isProd) {
+      return res.status(status).json({
+        ok: false,
+        message: status === 500 ? "Erro interno no servidor." : (err?.message || "Erro."),
+      });
+    }
+
+    // DEV
+    return res.status(status).json({
+      ok: false,
+      message: err?.message || "Erro.",
+      stack: err?.stack,
+    });
   });
-});
-app.post("/api/visitantes-debug", (req, res) => {
-  res.json({
-    ok: true,
-    message: "DEBUG público (/api) OK — body ecoado",
-    method: req.method,
-    url: req.originalUrl,
-    body: req.body || {},
-    ts: new Date().toISOString(),
-  });
-});
 
-// 🔎 DEBUG específico do OVERLAY (público):
-app.get("/api/__overlay-debug", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Overlay debug OK",
-    query: req.query,
-    ts: new Date().toISOString(),
-  });
-});
-
-app.use((req, res, next) => {
-  console.log("[HEADERS TEST]", req.headers.authorization);
-  next();
-});
-
-app.use("/api/app-pais", appPaisRouter);
-// app.use("/api/app-pais", responsavelRoutes);
-
-// ✅ NOVO — Device
-// app.use("/api/app-pais", deviceRoutes);
-
-
-// ============================================================================
-// Monitoramento — STREAM (RTSP→MJPEG) SEM middleware global de auth
-//  - O próprio arquivo monitoramento_stream.js protege /stream/:id.mjpeg
-//  - /stream/ping continua público para diagnóstico
-// ============================================================================
-app.use("/api/monitoramento", monitoramentoStream);
-
-// ============================================================================
-// Rotas protegidas principais (mantidas como estavam)
-// ============================================================================
-app.use("/api/auth", authRouter);
-app.use(
-  "/api/ferramentas",
-  autenticarToken,
-  verificarEscola,
-  ferramentasIndexRouter
-);
-app.use("/api/alunos", autenticarToken, verificarEscola, alunosRouter);
-app.use(
-  "/api/professores",
-  autenticarToken,
-  verificarEscola,
-  professoresRouter
-);
-app.use(
-  "/api/disciplinas",
-  autenticarToken,
-  verificarEscola,
-  disciplinasRouter
-);
-app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
-app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
-app.use(
-  "/api/modulacao",
-  autenticarToken,
-  verificarEscola,
-  modulacaoDiagnosticoRouter
-);
-app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
-app.use(
-  "/api/questoes",
-  autenticarToken,
-  verificarEscola,
-  questoesUploadRouter
-);
-app.use("/api/escolas", autenticarToken, verificarEscola, escolasRouter);
-app.use("/api/ocr", autenticarToken, verificarEscola, ocrRouter);
-app.use("/api/redacoes", autenticarToken, verificarEscola, redacoesRouter);
-app.use(
-  "/api/correcoes_openai",
-  autenticarToken,
-  verificarEscola,
-  correcoesOpenAI
-);
-app.use("/api/gabaritos", autenticarToken, verificarEscola, gabaritosRoutes);
-app.use(
-  "/api/gabaritos-generator",
-  autenticarToken,
-  verificarEscola,
-  gabaritosGeneratorRoutes
-);
-app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
-app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
-app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
-app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
-app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
-app.use(
-  "/api/cargas-horarias",
-  autenticarToken,
-  verificarEscola,
-  cargasHorariasRouter
-);
-app.use("/api/grade", autenticarToken, verificarEscola, gradeBaseRoutes);
-app.use("/api/grade", autenticarToken, verificarEscola, gradeSolveRoutes);
-app.use(
-  "/api/disponibilidades",
-  autenticarToken,
-  verificarEscola,
-  disponibilidadesRouter
-);
-app.use(
-  "/api/preferencias",
-  autenticarToken,
-  verificarEscola,
-  preferenciasRouter
-);
-app.use("/api/grade", autenticarToken, verificarEscola, gradeRunMockRouter);
-app.use("/api/grade", autenticarToken, verificarEscola, gradePublishRouter);
-
-// ✅ NOVO — Configurações Pedagógicas (protegido)
-app.use(
-  "/api/config-pedagogica",
-  autenticarToken,
-  verificarEscola,
-  configPedagogicaRouter
-);
-
-// ✅ NOVO — Conteúdos (ADMIN / Pedagógico)
-app.use(
-  "/api",
-  autenticarToken,
-  verificarEscola,
-  conteudosAdminRouter
-);
-
-
-// ============================================================================
-// Monitoramento — ajuste para permitir o worker sem JWT
-// ============================================================================
-app.use("/api/monitoramento/ingest", verificarEscola, monitoramentoIngestRouter);
-
-// Demais módulos (protegidos)
-app.use(
-  "/api/monitoramento",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoUltimosRouter
-);
-app.use(
-  "/api/monitoramento/embeddings",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoEmbeddingsRouter
-);
-app.use(
-  "/api/monitoramento/cameras",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoCamerasRouter
-);
-app.use(
-  "/api/monitoramento",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoVisitantesRouter
-);
-app.use(
-  "/api/monitoramento",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoPainelRouter
-);
-app.use(
-  "/api/monitoramento_painel",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoPainelRouter
-);
-app.use(
-  "/api/monitoramento",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoEventoRouter
-);
-app.use(
-  "/api/monitoramento",
-  autenticarToken,
-  verificarEscola,
-  monitoramentoOverlayRouter
-);
-app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoRouter);
-
-// ============================================================================
-// Alertas (SSE) e públicas diversas
-// ============================================================================
-app.use("/api/monitoramento_alerta", monitoramentoAlertaRouter);
-app.use("/api", alunosImpressaoRouter);
-app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
-app.use("/api/monitoramento-public", monitoramentoOverlayRouter);
-
-// ============================================================================
-// 404
-// ============================================================================
-app.use((req, res) => res.status(404).json({ message: "Rota não encontrada." }));
+  // ============================================================================
+  // 404 (SEMPRE por último, após registrar todas as rotas)
+  // ============================================================================
+  app.use((_req, res) =>
+    res.status(404).json({ ok: false, message: "Rota não encontrada." })
+  );
+} // ✅ fecha bootstrap()
 
 // ============================================================================
 // Boot
 // ============================================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 API rodando na porta ${PORT}`);
-  console.log("🔔 BACKEND BUILD ATIVO — verifique /__build-info");
-  console.log("🔔 PINGS/DEBUGS PÚBLICOS:");
-  console.log("    • /__visitantes-debug (GET/POST)");
-  console.log("    • /api/visitantes-debug (GET/POST)");
-  console.log("    • /api/visitantes-ping");
-  console.log("    • /api/monitoramento/visitantes/ping-public");
-  console.log("    • /visitantes-ping-root");
-  console.log("    • /api/__overlay-debug");
-});
+
+bootstrap()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`🚀 API rodando na porta ${PORT}`);
+      console.log("🔔 BACKEND BUILD ATIVO — verifique /__build-info");
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log("🔔 PINGS/DEBUGS (DEV):");
+        console.log("    • /api/visitantes-ping");
+        console.log("    • /api/monitoramento/visitantes/ping-public");
+        console.log("    • /visitantes-ping-root");
+        console.log("    • /api/__overlay-debug");
+      }
+    });
+  })
+  .catch((err) => {
+    console.error("❌ Erro crítico no bootstrap:", err);
+    process.exit(1);
+  });
