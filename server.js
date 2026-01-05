@@ -11,8 +11,12 @@ import { dirname, join } from "path";
 import pool from "./db.js";
 
 // ------------------------- Rotas --------------------------------------------
-import modulacaoRoutes from "./routes/modulacao.js";
-import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
+// ⚠️ MODULAÇÃO (temporariamente OFF)
+// Motivo: evitar quebrar o boot em produção enquanto o módulo está incompleto.
+// Quando for retomar: reativar imports + app.use abaixo e validar controllers.
+//// import modulacaoRoutes from "./routes/modulacao.js";
+//// import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
+
 
 
 // ==========================
@@ -30,7 +34,16 @@ import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
 import ferramentasIndexRouter from "./routes/ferramentas/index.js";
-import boletinsRouter from "./routes/boletins.js";
+
+
+// ⚠️ BOLETINS (temporariamente OFF)
+// Motivo: dependência pesada (puppeteer) — evitar quebrar boot em produção.
+// Reativar quando o ambiente de produção estiver preparado para puppeteer/Chromium.
+//// import boletinsRouter from "./routes/boletins.js";
+
+
+
+
 import alunosRouter from "./routes/alunos.js";
 import professoresRouter from "./routes/professores.js";
 import disciplinasRouter from "./routes/disciplinas.js";
@@ -81,14 +94,6 @@ const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", DEFAULT_ON_DEV);
 // Monitoramento é pesado/sensível: manter OFF por padrão mesmo em DEV (liga quando for trabalhar nele)
 const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
 
-
-
-
-
-
-
-
-
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
   responsavelRoutes = await safeImportDefault(
@@ -102,17 +107,6 @@ if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"]))
 } else if (FF_APP_PAIS) {
   console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
 if (FF_CONFIG_PEDAGOGICA) {
@@ -281,6 +275,12 @@ app.get("/api/visitantes-ping", (_req, res) =>
 // ============================================================================
 const IS_PROD = process.env.NODE_ENV === "production";
 
+
+if (!IS_PROD) {
+  console.log("[FF] MODULAÇÃO temporariamente DESATIVADA no server.js");
+}
+
+
 if (!IS_PROD) {
   // Pings/Debugs úteis em DEV
   app.get("/api/monitoramento/visitantes/ping-public", (_req, res) =>
@@ -355,13 +355,26 @@ async function bootstrap() {
     disciplinasRouter
   );
   app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
-  app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
-  app.use(
-    "/api/modulacao",
-    autenticarToken,
-    verificarEscola,
-    modulacaoDiagnosticoRouter
-  );
+
+
+
+
+
+  // ⚠️ MODULAÇÃO (temporariamente OFF)
+  // app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
+  // app.use(
+  //   "/api/modulacao",
+  //   autenticarToken,
+  //   verificarEscola,
+  //   modulacaoDiagnosticoRouter
+  // );
+
+
+
+
+
+
+
   app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
   app.use(
     "/api/questoes",
@@ -403,7 +416,13 @@ async function bootstrap() {
   );
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
-  app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
+
+
+  // ⚠️ BOLETINS (temporariamente OFF)
+  // app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
+
+
+
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
   app.use(
