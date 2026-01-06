@@ -94,6 +94,12 @@ const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", DEFAULT_ON_DEV);
 // Monitoramento é pesado/sensível: manter OFF por padrão mesmo em DEV (liga quando for trabalhar nele)
 const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
 
+// ✅ NOVAS FLAGS (conforme mapa PROD aprovado)
+const FF_GABARITOS = ff("FF_GABARITOS", DEFAULT_ON_DEV);
+const FF_GABARITOS_GENERATOR = ff("FF_GABARITOS_GENERATOR", DEFAULT_ON_DEV);
+const FF_QUESTOES = ff("FF_QUESTOES", DEFAULT_ON_DEV);
+const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
+
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
   responsavelRoutes = await safeImportDefault(
@@ -357,9 +363,6 @@ async function bootstrap() {
   app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
 
 
-
-
-
   // ⚠️ MODULAÇÃO (temporariamente OFF)
   // app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
   // app.use(
@@ -370,18 +373,18 @@ async function bootstrap() {
   // );
 
 
+  if (FF_QUESTOES) {
+    app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
+    app.use(
+      "/api/questoes",
+      autenticarToken,
+      verificarEscola,
+      questoesUploadRouter
+    );
+  } else {
+    console.log("[FF] Questões desativado");
+  }
 
-
-
-
-
-  app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
-  app.use(
-    "/api/questoes",
-    autenticarToken,
-    verificarEscola,
-    questoesUploadRouter
-  );
   app.use("/api/escolas", autenticarToken, verificarEscola, escolasRouter);
 
   if (ocrRouter) {
@@ -407,13 +410,23 @@ async function bootstrap() {
     console.log("[FF] Correções OpenAI desativadas");
   }
 
-  app.use("/api/gabaritos", autenticarToken, verificarEscola, gabaritosRoutes);
-  app.use(
-    "/api/gabaritos-generator",
-    autenticarToken,
-    verificarEscola,
-    gabaritosGeneratorRoutes
-  );
+  if (FF_GABARITOS) {
+    app.use("/api/gabaritos", autenticarToken, verificarEscola, gabaritosRoutes);
+  } else {
+    console.log("[FF] Gabaritos desativado");
+  }
+
+  if (FF_GABARITOS_GENERATOR) {
+    app.use(
+      "/api/gabaritos-generator",
+      autenticarToken,
+      verificarEscola,
+      gabaritosGeneratorRoutes
+    );
+  } else {
+    console.log("[FF] Gabaritos-Generator desativado");
+  }
+
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
 
@@ -421,32 +434,36 @@ async function bootstrap() {
   // ⚠️ BOLETINS (temporariamente OFF)
   // app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
-
-
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
-  app.use(
-    "/api/cargas-horarias",
-    autenticarToken,
-    verificarEscola,
-    cargasHorariasRouter
-  );
-  app.use("/api/grade", autenticarToken, verificarEscola, gradeBaseRoutes);
-  app.use("/api/grade", autenticarToken, verificarEscola, gradeSolveRoutes);
-  app.use(
-    "/api/disponibilidades",
-    autenticarToken,
-    verificarEscola,
-    disponibilidadesRouter
-  );
-  app.use(
-    "/api/preferencias",
-    autenticarToken,
-    verificarEscola,
-    preferenciasRouter
-  );
-  app.use("/api/grade", autenticarToken, verificarEscola, gradeRunMockRouter);
-  app.use("/api/grade", autenticarToken, verificarEscola, gradePublishRouter);
+
+
+  if (FF_HORARIOS) {
+    app.use(
+      "/api/cargas-horarias",
+      autenticarToken,
+      verificarEscola,
+      cargasHorariasRouter
+    );
+    app.use("/api/grade", autenticarToken, verificarEscola, gradeBaseRoutes);
+    app.use("/api/grade", autenticarToken, verificarEscola, gradeSolveRoutes);
+    app.use(
+      "/api/disponibilidades",
+      autenticarToken,
+      verificarEscola,
+      disponibilidadesRouter
+    );
+    app.use(
+      "/api/preferencias",
+      autenticarToken,
+      verificarEscola,
+      preferenciasRouter
+    );
+    app.use("/api/grade", autenticarToken, verificarEscola, gradeRunMockRouter);
+    app.use("/api/grade", autenticarToken, verificarEscola, gradePublishRouter);
+  } else {
+    console.log("[FF] Horários/Grade desativado");
+  }
 
   // ✅ NOVO — Configurações Pedagógicas (protegido)
   if (configPedagogicaRouter) {
