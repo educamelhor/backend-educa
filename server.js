@@ -262,7 +262,7 @@ app.get("/__build-info", (_req, res) =>
 );
 
 // Health check público (root)
-app.get("/health", (_req, res) =>
+app.get(["/health", "/healthz"], (_req, res) =>
   res.json({
     ok: true,
     status: "UP",
