@@ -250,8 +250,18 @@ app.use(
 // Pings e debugs PÚBLICOS (não exigem token)
 // ============================================================================
 
+// ============================================================================
+// Pings e debugs PÚBLICOS (não exigem token)
+// ============================================================================
+app.get("/__build-info", (_req, res) =>
+  res.json({
+    ok: true,
+    msg: "EDUCA BACKEND — BUILD ATIVO",
+    ts: new Date().toISOString(),
+  })
+);
 
-
+// Health check público (root)
 app.get("/health", (_req, res) =>
   res.json({
     ok: true,
@@ -260,14 +270,25 @@ app.get("/health", (_req, res) =>
   })
 );
 
-
-app.get("/__build-info", (_req, res) =>
+// Health check público (API - compatível com App Platform / Frontend)
+app.get("/api/health", (_req, res) =>
   res.json({
     ok: true,
-    msg: "EDUCA BACKEND — BUILD ATIVO",
+    status: "UP",
     ts: new Date().toISOString(),
   })
 );
+
+
+// Health check público (API - compatível com App Platform / Frontend)
+app.get("/api/health", (_req, res) =>
+  res.json({
+    ok: true,
+    status: "UP",
+    ts: new Date().toISOString(),
+  })
+);
+
 
 app.get("/api/visitantes-ping", (_req, res) =>
   res.json({
