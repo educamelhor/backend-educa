@@ -194,6 +194,7 @@ const defaultWhitelist = [
   "http://127.0.0.1:5173",
   "http://190.107.161.46:5173",
   "https://frontend-educa-e86x.vercel.app",
+  "https://sistemaeducamelhor.com.br",
 ];
 const extra = (process.env.FRONTEND_ORIGINS || "")
   .split(",")
@@ -269,16 +270,6 @@ app.get(["/health", "/healthz"], (_req, res) =>
     ts: new Date().toISOString(),
   })
 );
-
-// Health check público (API - compatível com App Platform / Frontend)
-app.get("/api/health", (_req, res) =>
-  res.json({
-    ok: true,
-    status: "UP",
-    ts: new Date().toISOString(),
-  })
-);
-
 
 // Health check público (API - compatível com App Platform / Frontend)
 app.get("/api/health", (_req, res) =>
