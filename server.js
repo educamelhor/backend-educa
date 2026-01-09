@@ -4,8 +4,23 @@
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
+import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+
+// ============================================================================
+// ENV (LOCAL): carrega .env.development (ou .env.production) antes de usar process.env
+// Em produção (DO), as variáveis vêm do painel; isso não atrapalha.
+// ============================================================================
+const __filenameEnv = fileURLToPath(import.meta.url);
+const __dirnameEnv = dirname(__filenameEnv);
+
+const envFile =
+  process.env.NODE_ENV === "production" ? ".env.production" : ".env.development";
+
+// carrega arquivo do diretório do server.js (apps/educa-backend)
+dotenv.config({ path: join(__dirnameEnv, envFile) });
+
 
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
@@ -98,7 +113,13 @@ const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
 const FF_GABARITOS = ff("FF_GABARITOS", DEFAULT_ON_DEV);
 const FF_GABARITOS_GENERATOR = ff("FF_GABARITOS_GENERATOR", DEFAULT_ON_DEV);
 const FF_QUESTOES = ff("FF_QUESTOES", DEFAULT_ON_DEV);
+
+// ✅ Cargas Horárias é CADASTRO BÁSICO (core operacional), independente do solver Urania
+const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
+
+// ⚠️ Horários/Grade (Urania/solver) fica separado e pode continuar OFF em produção
 const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
+
 
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
@@ -449,14 +470,22 @@ async function bootstrap() {
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
 
-
-  if (FF_HORARIOS) {
+  // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
+  if (FF_CARGAS_HORARIAS) {
+    console.log("[FF] Cargas Horárias ativado");
     app.use(
       "/api/cargas-horarias",
       autenticarToken,
       verificarEscola,
       cargasHorariasRouter
     );
+  } else {
+    console.log("[FF] Cargas Horárias desativado");
+  }
+
+  // ⚠️ Horários/Grade (Urania/solver) — pode ficar OFF em produção
+  if (FF_HORARIOS) {
+    console.log("[FF] Horários/Grade ativado");
     app.use("/api/grade", autenticarToken, verificarEscola, gradeBaseRoutes);
     app.use("/api/grade", autenticarToken, verificarEscola, gradeSolveRoutes);
     app.use(
