@@ -22,6 +22,26 @@ const envFile =
 dotenv.config({ path: join(__dirnameEnv, envFile) });
 
 
+
+
+
+
+// ===== JWT SECRET (blindagem) =====
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("❌ JWT_SECRET ausente em produção. Corrija as variáveis de ambiente.");
+    process.exit(1);
+  } else {
+    console.warn("⚠️ JWT_SECRET ausente em desenvolvimento. Usando fallback inseguro (apenas DEV).");
+    process.env.JWT_SECRET = "superseguro";
+  }
+}
+
+
+
+
+
+
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
 
@@ -66,7 +86,7 @@ import turmasRouter from "./routes/turmas.js";
 import questoesRouter from "./routes/questoes.js";
 import questoesUploadRouter from "./routes/questoesUpload.js";
 import escolasRouter from "./routes/escolas.js";
-import usuariosRouter from "./routes/usuarios.js";
+import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/usuarios.js";
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
 import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
@@ -467,7 +487,12 @@ async function bootstrap() {
   // ⚠️ BOLETINS (temporariamente OFF)
   // app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
+  // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
+  app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);
+
+  // 🔒 Rotas protegidas de usuários
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
+  ;
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
@@ -598,6 +623,8 @@ async function bootstrap() {
     res.status(404).json({ ok: false, message: "Rota não encontrada." })
   );
 } // ✅ fecha bootstrap()
+
+
 
 // ============================================================================
 // Boot

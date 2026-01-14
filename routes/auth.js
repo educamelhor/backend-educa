@@ -7,7 +7,10 @@ import nodemailer from "nodemailer";
 import { randomInt } from "crypto";
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "superseguro";
+function getJwtSecret() {
+  return process.env.JWT_SECRET || "superseguro";
+}
+
 
 /**
  * Função utilitária para envio de e-mail com código OTP
@@ -89,7 +92,7 @@ router.post("/confirmar", async (req, res) => {
         nome_escola: usuario?.nome_escola || null,
         perfil: usuario?.perfil || "aluno"
       },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: "8h" }
     );
 

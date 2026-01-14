@@ -5,6 +5,12 @@ import bcrypt from "bcryptjs";
 
 const router = express.Router();
 
+// ✅ Rotas públicas (sem token) — usadas no fluxo de cadastro
+// Importante: ainda exigimos escola via middleware verificarEscola (server.js)
+// e usamos req.escola_id para filtrar no banco.
+export const publicRouter = express.Router();
+
+
 // Middleware para garantir que a escola esteja definida no usuário logado
 function verificarEscola(req, res, next) {
   if (!req.user || !req.user.escola_id) {
@@ -77,20 +83,70 @@ router.get("/por-cpf/:cpf", verificarEscola, async (req, res) => {
 /**
  * GET /api/usuarios/por-email/:email
  */
+
+
+
+
+
+
+/**
+ * ✅ GET (PÚBLICO) /api/usuarios/por-email/:email
+ * - Usado no CadastroUsuario.jsx (antes do usuário ter token)
+ * - Exige escola via req.escola_id (middleware verificarEscola do server.js)
+ */
+publicRouter.get("/por-email/:email", async (req, res) => {
+  const email = req.params.email;
+  const escola_id = Number(req.escola_id);
+
+  try {
+    const [[usuario]] = await pool.query(
+      `SELECT id, cpf, nome, email, celular, perfil, escola_id,
+        (senha_hash IS NOT NULL AND senha_hash <> '') AS tem_senha
+      FROM usuarios
+      WHERE email = ? AND escola_id = ?`,
+
+      [email, escola_id]
+    );
+
+    if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
+    return res.json(usuario);
+  } catch (err) {
+    return res.status(500).json({ message: "Erro ao buscar usuário por e-mail." });
+  }
+});
+
+/**
+ * 🔒 GET (PROTEGIDO) /api/usuarios/por-email/:email
+ * - Mantido para fluxos autenticados (usa req.user.escola_id)
+ */
 router.get("/por-email/:email", verificarEscola, async (req, res) => {
   const email = req.params.email;
   const { escola_id } = req.user;
+
   try {
     const [[usuario]] = await pool.query(
-      "SELECT id, cpf, nome, email, celular, perfil, escola_id FROM usuarios WHERE email = ? AND escola_id = ?",
+      `SELECT id, cpf, nome, email, celular, perfil, escola_id,
+        (senha_hash IS NOT NULL AND senha_hash <> '') AS tem_senha
+      FROM usuarios
+      WHERE email = ? AND escola_id = ?`,
+
       [email, escola_id]
     );
+
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
-    res.json(usuario);
+    return res.json(usuario);
   } catch (err) {
-    res.status(500).json({ message: "Erro ao buscar usuário por e-mail." });
+    return res.status(500).json({ message: "Erro ao buscar usuário por e-mail." });
   }
 });
+
+
+
+
+
+
+
+
 
 /**
  * POST /api/usuarios
