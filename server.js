@@ -1,12 +1,14 @@
 // ============================================================================
 // server.js — API EDUCA.MELHOR
 // ============================================================================
+import dotenv from "dotenv";
 import express from "express";
+
 import cors from "cors";
 import bodyParser from "body-parser";
-import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+
 
 // ============================================================================
 // ENV (LOCAL): carrega .env.development (ou .env.production) antes de usar process.env
@@ -170,6 +172,16 @@ if (FF_CONTEUDOS_ADMIN) {
   );
 }
 
+// ✅ Ingest do Worker deve ser independente do FF_MONITORAMENTO (canal básico)
+const FF_MONITORAMENTO_INGEST = ff("FF_MONITORAMENTO_INGEST", true);
+
+if (FF_MONITORAMENTO_INGEST) {
+  monitoramentoIngestRouter = await safeImportDefault(
+    "FF_MONITORAMENTO_INGEST",
+    "./routes/monitoramento_ingest.js"
+  );
+}
+
 if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO_TOKEN_SECRET"])) {
   monitoramentoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento.js");
   monitoramentoEventoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_evento.js");
@@ -179,12 +191,12 @@ if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO
   monitoramentoVisitantesRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_visitantes.js");
   monitoramentoCamerasRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_cameras.js");
   monitoramentoEmbeddingsRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_embeddings.js");
-  monitoramentoIngestRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_ingest.js");
   monitoramentoStream = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_stream.js");
   monitoramentoUltimosRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_ultimos.js");
 } else if (FF_MONITORAMENTO) {
   console.warn("[FF] FF_MONITORAMENTO estava ON, mas foi desativado por falta de ENV obrigatórias.");
 }
+
 
 
 // ------------------------- Middlewares globais ------------------------------
@@ -233,10 +245,16 @@ function requireEnvForFeature(flagName, requiredVars = []) {
 const defaultWhitelist = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+
+  // ✅ Cadastro (Vite em outra porta)
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
+
   "http://190.107.161.46:5173",
   "https://frontend-educa-e86x.vercel.app",
   "https://sistemaeducamelhor.com.br",
 ];
+
 const extra = (process.env.FRONTEND_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -541,13 +559,15 @@ async function bootstrap() {
     );
   }
 
+  if (monitoramentoIngestRouter) {
+    // Ingest do Worker: sem JWT e sem verificarEscola (validação é feita por x-worker-token no próprio router)
+    app.use("/api/monitoramento/ingest", monitoramentoIngestRouter);
+  }
+
   if (conteudosAdminRouter) {
     app.use("/api", autenticarToken, verificarEscola, conteudosAdminRouter);
   }
 
-  if (monitoramentoIngestRouter) {
-    app.use("/api/monitoramento/ingest", verificarEscola, monitoramentoIngestRouter);
-  }
 
   if (monitoramentoUltimosRouter) {
     app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoUltimosRouter);
