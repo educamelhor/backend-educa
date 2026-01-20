@@ -21,7 +21,14 @@
     }
 
     req.escola_id = escola_id;
+
+    // ✅ compatibilidade: partes do sistema (multer/uploads) esperam escola_id em req.user
+    if (req.user && (req.user.escola_id == null)) {
+      req.user.escola_id = escola_id;
+    }
+
     return next();
+
   } catch (err) {
     console.error("❌ Erro ao verificar escola:", err?.message || err);
     return res.status(500).json({ ok: false, message: "Erro ao verificar escola." });

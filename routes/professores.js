@@ -17,37 +17,158 @@ import { fileURLToPath } from "url";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import XLSX from "xlsx";
 
+// ✅ auth (garante req.user disponível neste router)
+import { autenticarToken } from "../middleware/autenticarToken.js";
+import { verificarEscola } from "../middleware/verificarEscola.js";
+
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
-// ────────────────────────────────────────────────
-// Middleware: verificar se usuário possui escola_id
-// ────────────────────────────────────────────────
-function verificarEscola(req, res, next) {
-  if (!req.user || !req.user.escola_id) {
-    return res.status(403).json({ error: "Acesso negado: escola não definida." });
-  }
-  next();
-}
+
+// (REMOVIDO)
+// Usaremos o middleware oficial em ./middleware/verificarEscola.js
+// que aceita x-escola-id (header), query/body ou token e seta req.escola_id.
+
 
 // ────────────────────────────────────────────────
-// Configuração de upload de foto
+// Configuração de upload de foto (multi-escola)
+// Salva em: /uploads/<CODIGO_ESCOLA>/professores/<id>.<ext>
+// - CODIGO_ESCOLA: vem da tabela escolas (coluna "codigo"), com fallback "escola_<id>"
 // ────────────────────────────────────────────────
-const profUploadDir = path.resolve(__dirname, "../uploads/professores");
-if (!fs.existsSync(profUploadDir)) {
-  fs.mkdirSync(profUploadDir, { recursive: true });
-}
+const getExtFromMime = (mime) => {
+  if (mime === "image/png") return "png";
+  if (mime === "image/webp") return "webp";
+  return "jpg"; // default p/ jpeg
+};
+
 const profStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, profUploadDir),
-  filename: (req, file, cb) => cb(null, `${req.params.id}.jpg`),
+
+destination: (req, _file, cb) => {
+  // Multi-escola: prioriza middleware (req.escola_id), depois token, depois header
+  const escolaId =
+    req.escola_id ||
+    req.user?.escola_id ||
+    (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
+
+  if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0) {
+    return cb(new Error("Acesso negado: escola não definida."), null);
+  }
+
+  // mantém compatibilidade: algumas rotas ainda leem req.user.escola_id
+  if (req.user && !req.user.escola_id) req.user.escola_id = Number(escolaId);
+
+  // Busca o "apelido" da escola para criar a pasta (ex: CEF04_PLAN)
+  pool
+    .query("SELECT apelido FROM escolas WHERE id = ? LIMIT 1", [Number(escolaId)])
+      .then(([rows]) => {
+        const apelidoRaw = rows?.[0]?.apelido ? String(rows[0].apelido) : `escola_${escolaId}`;
+
+        // slug simples (evita espaços/acentos/caracteres ruins)
+        const apelido = apelidoRaw
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9_-]+/g, "_")
+          .replace(/_+/g, "_")
+          .replace(/^_|_$/g, "");
+
+        const dir = path.resolve(__dirname, `../uploads/${apelido}/professores`);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+        // guarda para o filename/response
+        req.__upload_escola_apelido = apelido;
+
+        cb(null, dir);
+      })
+      .catch((err) => cb(err, null));
+  },
+
+  filename: async (req, file, cb) => {
+    try {
+const escolaId =
+  req.escola_id ||
+  req.user?.escola_id ||
+  (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
+
+// 1) tenta cpf no token
+let cpf = req.user?.cpf;
+
+// 2) fallback: pega cpf no banco via id do usuário (caso o token não traga cpf)
+// (alguns tokens usam "sub" ao invés de "id")
+const userId =
+  req.user?.id ||
+  req.user?.usuario_id ||
+  req.user?.userId ||
+  req.user?.usuarioId ||
+  req.user?.user_id ||
+  req.user?.id_usuario ||
+  req.user?.uid ||
+  req.user?.sub ||
+  req.user?.user?.id ||
+  req.user?.usuario?.id;
+
+
+if (!cpf && userId) {
+  const [urows] = await pool.query(
+    "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+    [userId]
+  );
+  cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+}
+
+if (!escolaId || !cpf) {
+  return cb(new Error("Token inválido: cpf/escola ausentes."), null);
+}
+
+
+      if (!cpf && userId) {
+        const [urows] = await pool.query(
+          "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+          [userId]
+        );
+        cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+      }
+
+      if (!escolaId || !cpf) {
+        return cb(new Error("Token inválido: cpf/escola ausentes."), null);
+      }
+
+      // Descobre o professor logado nesta escola
+      const [rows] = await pool.query(
+        "SELECT id FROM professores WHERE cpf = ? AND escola_id = ? LIMIT 1",
+        [cpf, escolaId]
+      );
+      if (!rows?.length) {
+        return cb(new Error("Professor não encontrado para esta escola."), null);
+      }
+
+      const profId = rows[0].id;
+      const ext = getExtFromMime(file.mimetype);
+
+      // guarda para o handler final (atualizar banco/retornar url)
+      req.__upload_prof_id = profId;
+      req.__upload_ext = ext;
+
+      cb(null, `${profId}.${ext}`);
+    } catch (err) {
+      cb(err, null);
+    }
+  },
 });
+
 const profFileFilter = (_req, file, cb) => {
-  const permitidos = ["image/jpeg", "image/png"];
+  const permitidos = ["image/jpeg", "image/png", "image/webp"];
   cb(null, permitidos.includes(file.mimetype));
 };
-const profUpload = multer({ storage: profStorage, fileFilter: profFileFilter });
+
+const profUpload = multer({
+  storage: profStorage,
+  fileFilter: profFileFilter,
+  limits: { fileSize: 3 * 1024 * 1024 }, // 3MB
+});
+
 
 // ────────────────────────────────────────────────
 // GET: Listar professores (com disciplina, turma e escola)
@@ -86,6 +207,88 @@ router.get("/", verificarEscola, async (req, res) => {
     res.status(500).json({ message: "Erro ao listar professores." });
   }
 });
+
+// ────────────────────────────────────────────────
+// POST: Upload da foto do professor logado (multi-escola)
+// URL pública retornada: /uploads/<CODIGO_ESCOLA>/professores/<arquivo>
+// ────────────────────────────────────────────────
+router.post("/me/foto", autenticarToken, verificarEscola, profUpload.single("foto"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: "Nenhuma foto enviada." });
+
+  try {
+    const apelido = req.__upload_escola_apelido || `escola_${req.user.escola_id}`;
+    const profId = req.__upload_prof_id;
+    const ext = req.__upload_ext || "jpg";
+
+    if (!profId) {
+      return res.status(400).json({ message: "Falha ao identificar professor logado." });
+    }
+
+    const fotoUrl = `/uploads/${apelido}/professores/${profId}.${ext}`;
+
+    await pool.query(
+      "UPDATE professores SET foto = ? WHERE id = ? AND escola_id = ?",
+      [fotoUrl, profId, req.user.escola_id]
+    );
+
+    return res.json({ foto_url: fotoUrl });
+  } catch (err) {
+    console.error("Erro ao atualizar foto (me/foto):", err);
+    return res.status(500).json({ message: "Erro ao atualizar foto do professor." });
+  }
+});
+
+
+// ────────────────────────────────────────────────
+// GET: Foto do professor logado (para re-hidratar o header após novo login)
+// Retorna: { foto_url: "/uploads/<apelido>/professores/<id>.jpg" } ou { foto_url: "" }
+// ────────────────────────────────────────────────
+router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+
+    // 1) tenta cpf no token
+    let cpf = req.user?.cpf;
+
+    // 2) fallback: pega cpf no banco via id do usuário (caso o token não traga cpf)
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario ||
+      req.user?.uid ||
+      req.user?.sub ||
+      req.user?.user?.id ||
+      req.user?.usuario?.id;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query(
+        "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+        [userId]
+      );
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf) {
+      return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT foto FROM professores WHERE cpf = ? AND escola_id = ? LIMIT 1",
+      [cpf, escolaId]
+    );
+
+    const fotoUrl = rows?.[0]?.foto ? String(rows[0].foto) : "";
+    return res.json({ foto_url: fotoUrl });
+  } catch (err) {
+    console.error("Erro ao buscar foto do professor (me/foto):", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar foto do professor." });
+  }
+});
+
+
 
 // ────────────────────────────────────────────────
 // GET: Buscar professor por ID
