@@ -16,6 +16,7 @@ import { dirname as _dirname } from "path";
 import { fileURLToPath } from "url";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import XLSX from "xlsx";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // ✅ auth (garante req.user disponível neste router)
 import { autenticarToken } from "../middleware/autenticarToken.js";
@@ -26,6 +27,40 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = _dirname(__filename);
 
 const router = express.Router();
+
+// ────────────────────────────────────────────────
+// DigitalOcean Spaces (S3 compatível) — usado em PRODUÇÃO para persistir uploads
+// Mantém no banco o caminho relativo: /uploads/<APELIDO>/professores/<id>.<ext>
+// ────────────────────────────────────────────────
+const SPACES_BUCKET = process.env.DO_SPACES_BUCKET;
+const SPACES_REGION = process.env.DO_SPACES_REGION || "nyc3";
+const SPACES_ENDPOINT = process.env.DO_SPACES_ENDPOINT || "https://nyc3.digitaloceanspaces.com";
+const SPACES_KEY = process.env.DO_SPACES_KEY;
+const SPACES_SECRET = process.env.DO_SPACES_SECRET;
+
+const s3 =
+  SPACES_BUCKET && SPACES_KEY && SPACES_SECRET
+    ? new S3Client({
+        region: SPACES_REGION,
+        endpoint: SPACES_ENDPOINT,
+        credentials: { accessKeyId: SPACES_KEY, secretAccessKey: SPACES_SECRET },
+      })
+    : null;
+
+async function uploadToSpaces({ key, body, contentType }) {
+  if (!s3) return; // localhost sem Spaces configurado continua funcionando no disco
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: SPACES_BUCKET,
+      Key: key,
+      Body: body,
+      ACL: "public-read",
+      ContentType: contentType,
+      CacheControl: "public, max-age=31536000",
+    })
+  );
+}
+
 
 
 // (REMOVIDO)
@@ -212,31 +247,46 @@ router.get("/", verificarEscola, async (req, res) => {
 // POST: Upload da foto do professor logado (multi-escola)
 // URL pública retornada: /uploads/<CODIGO_ESCOLA>/professores/<arquivo>
 // ────────────────────────────────────────────────
-router.post("/me/foto", autenticarToken, verificarEscola, profUpload.single("foto"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: "Nenhuma foto enviada." });
+router.post(
+  "/me/foto",
+  autenticarToken,
+  verificarEscola,
+  profUpload.single("foto"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: "Nenhuma foto enviada." });
 
-  try {
-    const apelido = req.__upload_escola_apelido || `escola_${req.user.escola_id}`;
-    const profId = req.__upload_prof_id;
-    const ext = req.__upload_ext || "jpg";
+    try {
+      const apelido = req.__upload_escola_apelido || `escola_${req.user.escola_id}`;
+      const profId = req.__upload_prof_id;
+      const ext = req.__upload_ext || "jpg";
 
-    if (!profId) {
-      return res.status(400).json({ message: "Falha ao identificar professor logado." });
+      if (!profId) {
+        return res.status(400).json({ message: "Falha ao identificar professor logado." });
+      }
+
+      // caminho relativo (permanece no banco, igual alunos)
+      const fotoUrl = `/uploads/${apelido}/professores/${profId}.${ext}`;
+
+      // 1) Se Spaces estiver configurado, sobe o arquivo para lá também (persistência em produção)
+      // Key no bucket NÃO tem barra inicial
+      const key = fotoUrl.replace(/^\/+/, "");
+      const buffer = await fs.promises.readFile(req.file.path);
+      await uploadToSpaces({ key, body: buffer, contentType: req.file.mimetype });
+
+      // 2) Atualiza banco com o caminho relativo
+      await pool.query(
+        "UPDATE professores SET foto = ? WHERE id = ? AND escola_id = ?",
+        [fotoUrl, profId, req.user.escola_id]
+      );
+
+      return res.json({ foto_url: fotoUrl });
+    } catch (err) {
+      console.error("Erro ao atualizar foto (me/foto):", err);
+      return res.status(500).json({ message: "Erro ao atualizar foto do professor." });
     }
-
-    const fotoUrl = `/uploads/${apelido}/professores/${profId}.${ext}`;
-
-    await pool.query(
-      "UPDATE professores SET foto = ? WHERE id = ? AND escola_id = ?",
-      [fotoUrl, profId, req.user.escola_id]
-    );
-
-    return res.json({ foto_url: fotoUrl });
-  } catch (err) {
-    console.error("Erro ao atualizar foto (me/foto):", err);
-    return res.status(500).json({ message: "Erro ao atualizar foto do professor." });
   }
-});
+);
+
 
 
 // ────────────────────────────────────────────────
