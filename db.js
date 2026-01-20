@@ -28,13 +28,24 @@ const {
 let ssl = undefined;
 
 if (String(MYSQL_SSLMODE || "").toUpperCase() === "REQUIRED") {
-  if (MYSQL_SSL_CA && fs.existsSync(MYSQL_SSL_CA)) {
-    ssl = { ca: fs.readFileSync(MYSQL_SSL_CA, "utf8") };
+  // MYSQL_SSL_CA pode vir de 2 formas:
+  // 1) Conteúdo do certificado (recomendado na App Platform)
+  // 2) Caminho para um arquivo .crt (quando rodar local/servidor com arquivo)
+  if (MYSQL_SSL_CA) {
+    const looksLikePem = MYSQL_SSL_CA.includes("BEGIN CERTIFICATE");
+
+    if (looksLikePem) {
+      ssl = { ca: MYSQL_SSL_CA, rejectUnauthorized: true };
+    } else if (fs.existsSync(MYSQL_SSL_CA)) {
+      ssl = { ca: fs.readFileSync(MYSQL_SSL_CA, "utf8"), rejectUnauthorized: true };
+    } else {
+      ssl = { rejectUnauthorized: true };
+    }
   } else {
-    // fallback: ainda ativa SSL, mas sem CA explícita (pode funcionar dependendo do client)
     ssl = { rejectUnauthorized: true };
   }
 }
+
 
 // --- DEBUG (TEMP): mostrar config efetiva (sem senha) ---
 console.log("[DB] env config:", {
