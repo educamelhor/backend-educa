@@ -119,13 +119,15 @@ async function uploadToSpaces({ key, body, contentType }) {
         Bucket: SPACES_BUCKET,
         Key: key,
         Body: body,
-        // Necessário para o CDN conseguir servir a imagem publicamente
-        // (especialmente se o bucket não estiver com policy 100% pública por padrão)
+
+        // ESSENCIAL: deixa o objeto público para o CDN/HTTP
         ACL: "public-read",
+
         ContentType: contentType,
         CacheControl: "public, max-age=31536000",
       })
     );
+
 
     console.log("[SPACES] upload OK:", { key });
   } catch (err) {
