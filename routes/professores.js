@@ -32,11 +32,16 @@ const router = express.Router();
 // DigitalOcean Spaces (S3 compatível) — usado em PRODUÇÃO para persistir uploads
 // Mantém no banco o caminho relativo: /uploads/<APELIDO>/professores/<id>.<ext>
 // ────────────────────────────────────────────────
-const SPACES_BUCKET = process.env.DO_SPACES_BUCKET;
-const SPACES_REGION = process.env.DO_SPACES_REGION || "nyc3";
-const SPACES_ENDPOINT = process.env.DO_SPACES_ENDPOINT || "https://nyc3.digitaloceanspaces.com";
-const SPACES_KEY = process.env.DO_SPACES_KEY;
-const SPACES_SECRET = process.env.DO_SPACES_SECRET;
+const SPACES_BUCKET = process.env.SPACES_BUCKET || process.env.DO_SPACES_BUCKET;
+const SPACES_REGION = process.env.SPACES_REGION || process.env.DO_SPACES_REGION || "nyc3";
+const SPACES_ENDPOINT =
+  process.env.SPACES_ENDPOINT ||
+  process.env.DO_SPACES_ENDPOINT ||
+  "https://nyc3.digitaloceanspaces.com";
+
+const SPACES_KEY = process.env.SPACES_KEY || process.env.DO_SPACES_KEY;
+const SPACES_SECRET = process.env.SPACES_SECRET || process.env.DO_SPACES_SECRET;
+
 
 const s3 =
   SPACES_BUCKET && SPACES_KEY && SPACES_SECRET
