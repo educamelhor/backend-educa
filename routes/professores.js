@@ -119,7 +119,9 @@ async function uploadToSpaces({ key, body, contentType }) {
         Bucket: SPACES_BUCKET,
         Key: key,
         Body: body,
-        // Removido ACL: pode falhar dependendo da política/config do bucket
+        // Necessário para o CDN conseguir servir a imagem publicamente
+        // (especialmente se o bucket não estiver com policy 100% pública por padrão)
+        ACL: "public-read",
         ContentType: contentType,
         CacheControl: "public, max-age=31536000",
       })
