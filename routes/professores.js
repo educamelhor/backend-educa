@@ -34,10 +34,41 @@ const router = express.Router();
 // ────────────────────────────────────────────────
 const SPACES_BUCKET = process.env.SPACES_BUCKET || process.env.DO_SPACES_BUCKET;
 const SPACES_REGION = process.env.SPACES_REGION || process.env.DO_SPACES_REGION || "nyc3";
-const SPACES_ENDPOINT =
+const rawSpacesEndpoint =
   process.env.SPACES_ENDPOINT ||
   process.env.DO_SPACES_ENDPOINT ||
   "https://nyc3.digitaloceanspaces.com";
+
+// Normaliza endpoint: se vier "https://<bucket>.<region>.digitaloceanspaces.com",
+// converte para "https://<region>.digitaloceanspaces.com"
+function normalizeSpacesEndpoint(endpoint, bucket, region) {
+  try {
+    const url = new URL(endpoint);
+    const host = url.host; // ex: educa-melhor-uploads.nyc3.digitaloceanspaces.com
+
+    // Caso 1: endpoint já é regional
+    if (host === `${region}.digitaloceanspaces.com`) return url.toString();
+
+    // Caso 2: endpoint veio com bucket na frente
+    if (bucket && host === `${bucket}.${region}.digitaloceanspaces.com`) {
+      url.host = `${region}.digitaloceanspaces.com`;
+      return url.toString();
+    }
+
+    // Caso 3: alguma variação — tenta remover "<bucket>." do começo
+    if (bucket && host.startsWith(`${bucket}.`)) {
+      url.host = host.replace(`${bucket}.`, "");
+      return url.toString();
+    }
+
+    return url.toString();
+  } catch {
+    // fallback seguro
+    return `https://${region}.digitaloceanspaces.com`;
+  }
+}
+
+const SPACES_ENDPOINT = normalizeSpacesEndpoint(rawSpacesEndpoint, SPACES_BUCKET, SPACES_REGION);
 
 const SPACES_KEY = process.env.SPACES_KEY || process.env.DO_SPACES_KEY;
 const SPACES_SECRET = process.env.SPACES_SECRET || process.env.DO_SPACES_SECRET;
@@ -49,6 +80,7 @@ const s3 =
         region: SPACES_REGION,
         endpoint: SPACES_ENDPOINT,
         credentials: { accessKeyId: SPACES_KEY, secretAccessKey: SPACES_SECRET },
+        forcePathStyle: false, // importante para DO Spaces (host-style)
       })
     : null;
 
@@ -73,20 +105,41 @@ async function uploadToSpaces({ key, body, contentType }) {
     return;
   }
 
-  console.log("[SPACES] uploading object:", { bucket: SPACES_BUCKET, key, contentType });
+  console.log("[SPACES] uploading object:", {
+    bucket: SPACES_BUCKET,
+    endpoint: SPACES_ENDPOINT,
+    key,
+    contentType,
+    bytes: body?.length || null,
+  });
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: SPACES_BUCKET,
-      Key: key,
-      Body: body,
-      ACL: "public-read",
-      ContentType: contentType,
-      CacheControl: "public, max-age=31536000",
-    })
-  );
+  try {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: SPACES_BUCKET,
+        Key: key,
+        Body: body,
+        // Removido ACL: pode falhar dependendo da política/config do bucket
+        ContentType: contentType,
+        CacheControl: "public, max-age=31536000",
+      })
+    );
 
-  console.log("[SPACES] upload OK:", { key });
+    console.log("[SPACES] upload OK:", { key });
+  } catch (err) {
+    console.error("[SPACES] upload FAIL:", {
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      status: err?.$metadata?.httpStatusCode,
+      requestId: err?.$metadata?.requestId,
+      cfId: err?.$metadata?.cfId,
+      key,
+      endpoint: SPACES_ENDPOINT,
+      bucket: SPACES_BUCKET,
+    });
+    throw err; // mantém 500 para você ver claramente que o upload falhou
+  }
 }
 
 
@@ -310,7 +363,17 @@ router.post(
       return res.json({ foto_url: fotoUrl });
     } catch (err) {
       console.error("Erro ao atualizar foto (me/foto):", err);
-      return res.status(500).json({ message: "Erro ao atualizar foto do professor." });
+
+      // Diagnóstico temporário (remover depois)
+      return res.status(500).json({
+        message: "Erro ao atualizar foto do professor.",
+        debug: {
+          name: err?.name,
+          message: err?.message,
+          code: err?.code,
+          status: err?.$metadata?.httpStatusCode,
+        },
+      });
     }
   }
 );
