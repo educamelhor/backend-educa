@@ -47,8 +47,29 @@ const s3 =
       })
     : null;
 
+// ✅ DIAGNÓSTICO PRODUÇÃO (não imprime secrets)
+console.log("[SPACES] enabled?", !!s3, {
+  bucket: !!SPACES_BUCKET,
+  region: SPACES_REGION || null,
+  endpoint: SPACES_ENDPOINT || null,
+  key: SPACES_KEY ? "OK" : null,
+  secret: SPACES_SECRET ? "OK" : null,
+});
+
 async function uploadToSpaces({ key, body, contentType }) {
-  if (!s3) return; // localhost sem Spaces configurado continua funcionando no disco
+  if (!s3) {
+    console.log("[SPACES] skip upload (s3=null). Missing env?", {
+      bucket: !!SPACES_BUCKET,
+      region: SPACES_REGION || null,
+      endpoint: SPACES_ENDPOINT || null,
+      key: SPACES_KEY ? "OK" : null,
+      secret: SPACES_SECRET ? "OK" : null,
+    });
+    return;
+  }
+
+  console.log("[SPACES] uploading object:", { bucket: SPACES_BUCKET, key, contentType });
+
   await s3.send(
     new PutObjectCommand({
       Bucket: SPACES_BUCKET,
@@ -59,6 +80,8 @@ async function uploadToSpaces({ key, body, contentType }) {
       CacheControl: "public, max-age=31536000",
     })
   );
+
+  console.log("[SPACES] upload OK:", { key });
 }
 
 
