@@ -743,6 +743,174 @@ router.post("/enviar-codigo", async (req, res) => {
   }
 });
 
+
+/**
+ * RESET DE SENHA (usuário já cadastrado)
+ * Fluxo:
+ * 1) /reset-senha/enviar-codigo  -> envia OTP
+ * 2) /reset-senha/confirmar-codigo -> valida OTP (não consome ainda)
+ * 3) /reset-senha/alterar -> valida OTP + senha forte, atualiza senha e consome OTP
+ */
+router.post("/reset-senha/enviar-codigo", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "E-mail inválido." });
+  }
+
+  try {
+    const [[usuario]] = await pool.query(
+      `
+      SELECT id, email
+      FROM usuarios
+      WHERE email = ?
+        AND (senha_hash IS NOT NULL AND senha_hash <> '')
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    if (!usuario?.id) {
+      return res.status(404).json({ message: "Usuário não encontrado." });
+    }
+
+    const codigo = String(randomInt(100000, 999999));
+
+    // 🔁 Reenviar invalida códigos anteriores (por usuário e por e-mail)
+    await pool.query("DELETE FROM otp_codes WHERE usuario_id = ?", [usuario.id]);
+    await pool.query("DELETE FROM otp_codes WHERE email = ?", [email]);
+
+    await pool.query(
+      "INSERT INTO otp_codes (usuario_id, email, codigo, expira_em) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))",
+      [usuario.id, email, codigo]
+    );
+
+    await enviarCodigoEmail(usuario.email, codigo);
+
+    return res.json({ sucesso: true });
+  } catch (err) {
+    console.error("Erro ao enviar código de reset de senha:", err);
+    return res.status(500).json({ message: "Erro no servidor." });
+  }
+});
+
+router.post("/reset-senha/confirmar-codigo", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const codigo = String(req.body?.codigo || "").trim();
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "E-mail inválido." });
+  }
+  if (!codigo || codigo.length !== 6) {
+    return res.status(400).json({ message: "Código inválido." });
+  }
+
+  try {
+    const [[row]] = await pool.query(
+      `
+      SELECT id
+      FROM otp_codes
+      WHERE email = ?
+        AND codigo = ?
+        AND expira_em > NOW()
+      LIMIT 1
+      `,
+      [email, codigo]
+    );
+
+    if (!row?.id) {
+      return res.status(400).json({ message: "Código inválido ou expirado." });
+    }
+
+    // ✅ Não consome aqui — consumimos na alteração de senha (para manter o fluxo simples no front)
+    return res.json({ sucesso: true });
+  } catch (err) {
+    console.error("Erro ao confirmar código de reset de senha:", err);
+    return res.status(500).json({ message: "Erro no servidor." });
+  }
+});
+
+router.post("/reset-senha/alterar", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const codigo = String(req.body?.codigo || "").trim();
+  const senha = String(req.body?.senha || "");
+
+  // ✅ Mesmas regras do front/cadastrar-senha
+  const senhaValida =
+    typeof senha === "string" &&
+    senha.length >= 6 &&
+    /[A-Za-z]/.test(senha) &&
+    /\d/.test(senha) &&
+    /[$#@*_]/.test(senha);
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "E-mail inválido." });
+  }
+  if (!codigo || codigo.length !== 6) {
+    return res.status(400).json({ message: "Código inválido." });
+  }
+  if (!senhaValida) {
+    return res.status(400).json({
+      message:
+        "Senha fraca. Use no mínimo 6 caracteres com letras, números e pelo menos 1 destes: $#@*_",
+    });
+  }
+
+  try {
+    // 1) valida OTP (e-mail + código + expiração)
+    const [[otp]] = await pool.query(
+      `
+      SELECT id, usuario_id
+      FROM otp_codes
+      WHERE email = ?
+        AND codigo = ?
+        AND expira_em > NOW()
+      LIMIT 1
+      `,
+      [email, codigo]
+    );
+
+    if (!otp?.id) {
+      return res.status(400).json({ message: "Código inválido ou expirado." });
+    }
+
+    // 2) valida se usuário existe (e tem senha cadastrada)
+    const [[usuario]] = await pool.query(
+      `
+      SELECT id
+      FROM usuarios
+      WHERE email = ?
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    if (!usuario?.id) {
+      return res.status(404).json({ message: "Usuário não encontrado." });
+    }
+
+    // 3) atualiza senha (para TODAS as linhas com o mesmo e-mail — cobre multi-escola)
+    const senha_hash = await bcrypt.hash(senha, 10);
+
+    await pool.query(
+      `
+      UPDATE usuarios
+      SET senha_hash = ?, ativo = 1
+      WHERE email = ?
+      `,
+      [senha_hash, email]
+    );
+
+    // 4) consome OTP
+    await pool.query("DELETE FROM otp_codes WHERE id = ?", [otp.id]);
+
+    return res.json({ sucesso: true });
+  } catch (err) {
+    console.error("Erro ao alterar senha (reset):", err);
+    return res.status(500).json({ message: "Erro no servidor." });
+  }
+});
+
 /**
  * 9) Confirmar código para usuário já existente
  */
