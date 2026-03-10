@@ -1,4 +1,5 @@
 ﻿import jwt from "jsonwebtoken";
+import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
 
 export function autenticarToken(req, res, next) {
   try {
@@ -18,7 +19,27 @@ export function autenticarToken(req, res, next) {
     }
 
     const payload = jwt.verify(token, secret);
-    req.user = payload;
+
+    // ✅ Normaliza escopo:
+    // - Tokens novos da plataforma vêm com scope="plataforma"
+    // - Tokens antigos (escolares) ficam como scope="escola"
+    req.user = {
+      ...payload,
+      scope: payload?.scope || "escola",
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // RBAC: normalização para evitar undefined no restante do backend
+    // ─────────────────────────────────────────────────────────────
+    if (!Array.isArray(req.user.permissoes)) req.user.permissoes = [];
+    if (!Array.isArray(req.user.perfis)) req.user.perfis = [];
+
+    // ─────────────────────────────────────────────────────────────
+    // RBAC (fallback): se token vier sem permissoes, deriva do perfil
+    // ─────────────────────────────────────────────────────────────
+    if (req.user.permissoes.length === 0 && req.user.perfil) {
+      req.user.permissoes = getPermissoesPorPerfil(req.user.perfil);
+    }
 
     return next();
   } catch (err) {

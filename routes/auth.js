@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";;
 import jwt from "jsonwebtoken";
 import pool from "../db.js";
 import nodemailer from "nodemailer";
-import { randomInt } from "crypto";
+import { randomInt, createHash } from "crypto";
 
 import multer from "multer";
 import fs from "fs";
@@ -13,7 +13,12 @@ import path from "path";
 
 const router = express.Router();
 function getJwtSecret() {
-  return process.env.JWT_SECRET || "superseguro";
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    console.error("❌ JWT_SECRET não configurado no ambiente.");
+    throw new Error("JWT_SECRET não configurado.");
+  }
+  return secret;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -88,17 +93,358 @@ async function enviarCodigoEmail(email, codigo) {
   }
 }
 
+/**
+ * Carrega RBAC do usuário na escola:
+ * - perfis: ['professor', 'diretor', ...]
+ * - permissoes: ['conteudos.editar', ...]
+ *
+ * Obs: sem FK por enquanto (compatível com escola_id INT do usuarios).
+ */
+async function carregarRbac(usuarioId, escolaId) {
+  const uid = Number(usuarioId);
+  const eid = Number(escolaId);
+
+  if (!uid || !eid) {
+    return { perfis: [], permissoes: [] };
+  }
+
+  // 1) Perfis do usuário na escola
+  const [rowsPerfis] = await pool.query(
+    `
+    SELECT DISTINCT p.codigo
+    FROM rbac_usuario_perfis up
+    JOIN rbac_perfis p ON p.id = up.perfil_id
+    WHERE up.usuario_id = ?
+      AND p.escola_id = ?
+      AND p.ativo = 1
+    ORDER BY p.codigo
+    `,
+    [uid, eid]
+  );
+
+  const perfis = (rowsPerfis || []).map((r) => r.codigo).filter(Boolean);
+
+  // 2) Permissões vindas dos perfis
+  const [rowsPermsBase] = await pool.query(
+    `
+    SELECT DISTINCT perm.chave
+    FROM rbac_usuario_perfis up
+    JOIN rbac_perfis p ON p.id = up.perfil_id
+    JOIN rbac_perfil_permissoes pp ON pp.perfil_id = p.id
+    JOIN rbac_permissoes perm ON perm.id = pp.permissao_id
+    WHERE up.usuario_id = ?
+      AND p.escola_id = ?
+      AND p.ativo = 1
+    ORDER BY perm.chave
+    `,
+    [uid, eid]
+  );
+
+  let permissoes = new Set((rowsPermsBase || []).map((r) => r.chave).filter(Boolean));
+
+  // 3) Overrides por usuário (nega tem prioridade)
+  const [rowsOverrides] = await pool.query(
+    `
+    SELECT perm.chave, upm.permitido
+    FROM rbac_usuario_permissoes upm
+    JOIN rbac_permissoes perm ON perm.id = upm.permissao_id
+    WHERE upm.usuario_id = ?
+    `,
+    [uid]
+  );
+
+  for (const row of rowsOverrides || []) {
+    const chave = row?.chave;
+    const permitido = Number(row?.permitido) === 1;
+    if (!chave) continue;
+
+    if (permitido) permissoes.add(chave);
+    else permissoes.delete(chave); // nega tem prioridade
+  }
+
+  return { perfis, permissoes: Array.from(permissoes) };
+}
+
+
 
 /**
- * 1) Login – envia código de confirmação
+ * Helpers — Convite do Diretor (hash) + emissão de JWT escolar
+ */
+function hashConviteToken(token) {
+  const raw = String(token || "").trim();
+  if (!raw) return "";
+  return createHash("sha256").update(raw, "utf8").digest("hex");
+}
+
+async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
+  const [[escolaRow]] = await pool.query(
+    `SELECT nome FROM escolas WHERE id = ? LIMIT 1`,
+    [Number(escolaId)]
+  );
+
+  const { perfis, permissoes } = await carregarRbac(Number(usuarioId), Number(escolaId));
+
+  const payload = {
+    scope: "escola",
+    usuario_id: Number(usuarioId), // ✅ contrato novo
+    usuarioId: Number(usuarioId),  // ✅ compatibilidade com front atual
+    escola_id: Number(escolaId),
+    nome_escola: escolaRow?.nome || null,
+    perfil: perfil || "diretor",
+    perfis,
+    permissoes,
+  };
+
+  const token = jwt.sign(payload, getJwtSecret(), { expiresIn: "8h" });
+
+  return {
+    token,
+    escola_id: Number(escolaId),
+    nome_escola: escolaRow?.nome || "Escola não definida",
+    perfil: perfil || "diretor",
+    perfis,
+    permissoes,
+  };
+}
+
+/**
+ * 0.1) Validar Convite (pré-check) — Diretor
+ * POST /api/auth/convite/validar
+ */
+router.post("/convite/validar", async (req, res) => {
+  const convite_token = String(req.body?.convite_token || "").trim();
+
+  if (!convite_token) {
+    return res.status(400).json({ ok: false, message: "convite_token é obrigatório." });
+  }
+
+  try {
+    const tokenHash = hashConviteToken(convite_token);
+
+    const [[row]] = await pool.query(
+      `
+      SELECT
+        uc.id         AS convite_id,
+        uc.usuario_id AS usuario_id,
+        uc.expira_em  AS expira_em,
+        uc.usado_em   AS usado_em,
+        u.id          AS id,
+        u.nome        AS nome,
+        u.perfil      AS perfil,
+        u.escola_id   AS escola_id
+      FROM usuarios_convites uc
+      JOIN usuarios u ON u.id = uc.usuario_id
+      WHERE uc.token_hash = ?
+        AND uc.expira_em > NOW()
+        AND uc.usado_em IS NULL
+        AND u.perfil = 'diretor'
+      LIMIT 1
+      `,
+      [tokenHash]
+    );
+
+    if (!row?.id) {
+      return res.status(400).json({ ok: false, message: "Convite inválido, expirado ou já utilizado." });
+    }
+
+    return res.json({
+      ok: true,
+      usuario: {
+        id: row.id,
+        nome: row.nome,
+        perfil: row.perfil,
+        escola_id: row.escola_id,
+      },
+    });
+  } catch (err) {
+    console.error("Erro ao validar convite:", err);
+    return res.status(500).json({ ok: false, message: "Erro no servidor." });
+  }
+});
+
+/**
+ * 0.2) Ativar Conta (criar senha) — Diretor
+ * POST /api/auth/convite/ativar
+ */
+router.post("/convite/ativar", async (req, res) => {
+  const convite_token = String(req.body?.convite_token || "").trim();
+  const senha = String(req.body?.senha || "");
+
+  // ✅ validação forte mínima (mesmo padrão usado em /cadastrar-senha)
+  const senhaValida =
+    typeof senha === "string" &&
+    senha.length >= 6 &&
+    /[A-Za-z]/.test(senha) &&
+    /\d/.test(senha) &&
+    /[$#@*_]/.test(senha);
+
+  if (!convite_token) {
+    return res.status(400).json({ ok: false, message: "convite_token é obrigatório." });
+  }
+  if (!senhaValida) {
+    return res.status(400).json({
+      ok: false,
+      message: "Senha fraca. Use no mínimo 6 caracteres com letras, números e pelo menos 1 destes: $#@*_",
+    });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const tokenHash = hashConviteToken(convite_token);
+
+    // trava o convite (one-time) para evitar corrida
+    const [[row]] = await conn.query(
+      `
+      SELECT
+        uc.id         AS convite_id,
+        uc.usuario_id AS usuario_id,
+        uc.expira_em  AS expira_em,
+        uc.usado_em   AS usado_em,
+        u.perfil      AS perfil
+      FROM usuarios_convites uc
+      JOIN usuarios u ON u.id = uc.usuario_id
+      WHERE uc.token_hash = ?
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [tokenHash]
+    );
+
+    if (!row?.convite_id) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, message: "Convite inválido." });
+    }
+
+    if (row.usado_em) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, message: "Convite já utilizado." });
+    }
+
+    // expiração (garantida pelo próprio MySQL)
+    const [[expOk]] = await conn.query(
+      `SELECT 1 AS ok FROM usuarios_convites WHERE id = ? AND expira_em > NOW() LIMIT 1`,
+      [row.convite_id]
+    );
+    if (!expOk?.ok) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, message: "Convite expirado." });
+    }
+
+    if (String(row.perfil || "") !== "diretor") {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, message: "Convite não pertence a um diretor." });
+    }
+
+    const senha_hash = await bcrypt.hash(senha, 10);
+
+    await conn.query(
+      `UPDATE usuarios SET senha_hash = ?, ativo = 1 WHERE id = ? LIMIT 1`,
+      [senha_hash, row.usuario_id]
+    );
+
+    await conn.query(
+      `UPDATE usuarios_convites SET usado_em = NOW() WHERE id = ? LIMIT 1`,
+      [row.convite_id]
+    );
+
+    await conn.commit();
+    return res.json({ ok: true });
+  } catch (err) {
+    try { await conn.rollback(); } catch {}
+    console.error("Erro ao ativar convite:", err);
+    return res.status(500).json({ ok: false, message: "Erro no servidor." });
+  } finally {
+    conn.release();
+  }
+});
+
+
+/**
+ * 1) Login – envia código de confirmação (OTP) OU login escolar (CPF+senha)
  */
 router.post("/login", async (req, res) => {
-  const { emailOuCelular, senha } = req.body;
+  const cpf = String(req.body?.cpf || "").trim();
+  const senha = String(req.body?.senha || "");
+
+  // ✅ MODO A: LOGIN ESCOLAR (Diretor) — cpf + senha => JWT (scope="escola")
+  if (cpf) {
+    try {
+      const cpfLimpo = cpf.replace(/\D/g, "");
+      if (!cpfLimpo || cpfLimpo.length !== 11) {
+        return res.status(400).json({ ok: false, message: "CPF inválido." });
+      }
+
+      const [[usuario]] = await pool.query(
+        `
+        SELECT id, nome, cpf, escola_id, perfil, ativo, senha_hash
+        FROM usuarios
+        WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), '/', '') = ?
+          AND perfil = 'diretor'
+          AND escola_id IS NOT NULL
+        LIMIT 1
+        `,
+        [cpfLimpo]
+      );
+
+      if (!usuario?.id) {
+        return res.status(404).json({ ok: false, message: "Diretor não encontrado." });
+      }
+
+      if (Number(usuario.ativo) !== 1) {
+        return res.status(403).json({ ok: false, message: "Conta ainda não ativada." });
+      }
+
+      if (!usuario.senha_hash) {
+        return res.status(403).json({ ok: false, message: "Conta sem senha cadastrada." });
+      }
+
+      const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
+      if (!senhaOk) {
+        return res.status(401).json({ ok: false, message: "Senha incorreta." });
+      }
+
+      const jwtEscolar = await emitirJwtEscolar({
+        usuarioId: usuario.id,
+        escolaId: usuario.escola_id,
+        perfil: "diretor",
+      });
+
+      return res.json({
+        ok: true,
+        nome: usuario.nome || "Diretor",
+        ...jwtEscolar,
+      });
+    } catch (err) {
+      console.error("Erro no login escolar (diretor):", err);
+      return res.status(500).json({ ok: false, message: "Erro no servidor." });
+    }
+  }
+
+  // ✅ MODO B: LOGIN OTP (fluxo atual) — emailOuCelular + senha => envia código
+  const emailOuCelular = String(req.body?.emailOuCelular || "");
+  const rawLogin = String(emailOuCelular || "").trim();
+  const emailNorm = rawLogin.includes("@") ? rawLogin.toLowerCase() : "";
+  const celularNorm = rawLogin.replace(/\D/g, "");
+
   try {
     const [[usuario]] = await pool.query(
-      "SELECT * FROM usuarios WHERE email = ? OR celular = ?",
-      [emailOuCelular, emailOuCelular]
+      `
+      SELECT *
+      FROM usuarios
+      WHERE
+        (email IS NOT NULL AND email <> '' AND LOWER(email) = ?)
+        OR
+        (
+          celular IS NOT NULL AND celular <> ''
+          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(celular,'(',''),')',''),'-',''),' ',''),'+',''),'.','') = ?
+        )
+      LIMIT 1
+      `,
+      [emailNorm, celularNorm]
     );
+
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
 
     const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
@@ -172,17 +518,20 @@ router.post("/confirmar", async (req, res) => {
       return res.status(404).json({ message: "Usuário não localizado para confirmação." });
     }
 
-    // 2) Descobre todas as escolas ativas para o MESMO CPF/PERFIL (professor) com credenciais já cadastradas
-    //    (no seu cenário, existem múltiplas linhas em usuarios, uma por escola)
+    const cpfLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
+
+    // 2) Descobre todos os CONTEXTOS ativos para o MESMO CPF (multi-escola e/ou multi-perfil)
+    //    Retorna: escola_id + nome + perfil + usuario_ctx_id (id da linha em usuarios)
     const [escolasVinculadas] = await pool.query(
       `
       SELECT DISTINCT
         u.escola_id AS id,
-        e.nome      AS nome
+        e.nome      AS nome,
+        u.perfil    AS perfil,
+        u.id        AS usuario_ctx_id
       FROM usuarios u
       LEFT JOIN escolas e ON e.id = u.escola_id
-      WHERE u.cpf = ?
-        AND u.perfil = ?
+      WHERE REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), '/', '') = ?
         AND u.ativo = 1
         AND u.escola_id IS NOT NULL
         AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
@@ -191,9 +540,9 @@ router.post("/confirmar", async (req, res) => {
           OR
           (u.celular IS NOT NULL AND u.celular <> '' AND u.celular = ?)
         )
-      ORDER BY e.nome ASC
+      ORDER BY e.nome ASC, u.perfil ASC
       `,
-      [usuarioBase.cpf, usuarioBase.perfil, usuarioBase.email || "", usuarioBase.celular || ""]
+      [cpfLimpo, usuarioBase.email || "", usuarioBase.celular || ""]
     );
 
     // 3) Se houver mais de uma escola, NÃO emite token ainda — força escolha de contexto no frontend
@@ -206,32 +555,42 @@ router.post("/confirmar", async (req, res) => {
       });
     }
 
-    // 4) Caso padrão: 1 escola (ou nenhuma) — emite token normalmente
-    const escolaIdFinal = escolasVinculadas?.[0]?.id ?? usuarioBase.escola_id ?? null;
+    // 4) Caso padrão: 1 contexto — emite token usando a linha correta em `usuarios`
+    const ctx0 = escolasVinculadas?.[0] || null;
+
+    const usuarioIdFinal = ctx0?.usuario_ctx_id ?? usuarioBase.id;
+    const escolaIdFinal = ctx0?.id ?? usuarioBase.escola_id ?? null;
+    const perfilFinal = ctx0?.perfil ?? usuarioBase.perfil ?? "aluno";
 
     const [[escolaRow]] = await pool.query(
       `SELECT nome FROM escolas WHERE id = ? LIMIT 1`,
       [escolaIdFinal]
     );
 
-    const token = jwt.sign(
-      {
-        usuarioId: usuarioBase.id,
-        escola_id: escolaIdFinal,
-        nome_escola: escolaRow?.nome || null,
-        perfil: usuarioBase.perfil || "aluno",
-      },
-      getJwtSecret(),
-      { expiresIn: "8h" }
-    );
+    const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
 
-    return res.json({
-      token,
-      nome: usuarioBase.nome || "Usuário",
-      escola_id: escolaIdFinal,
-      nome_escola: escolaRow?.nome || "Escola não definida",
-      perfil: usuarioBase.perfil || "aluno",
-    });
+      const token = jwt.sign(
+        {
+          usuarioId: usuarioIdFinal,
+          escola_id: escolaIdFinal,
+          nome_escola: escolaRow?.nome || null,
+          perfil: perfilFinal, // compatibilidade
+          perfis,
+          permissoes,
+        },
+        getJwtSecret(),
+        { expiresIn: "8h" }
+      );
+
+      return res.json({
+        token,
+        nome: usuarioBase.nome || "Usuário",
+        escola_id: escolaIdFinal,
+        nome_escola: escolaRow?.nome || "Escola não definida",
+        perfil: perfilFinal, // compatibilidade
+        perfis,
+        permissoes,
+      });
   } catch (err) {
     console.error("Erro ao confirmar código:", err);
     res.status(500).json({ message: "Erro no servidor." });
@@ -942,7 +1301,7 @@ router.post("/confirmar-cadastro", async (req, res) => {
  * 2.1) Confirmar Escola (multi-escola) — emite token com escola_id correto
  */
 router.post("/confirmar-escola", async (req, res) => {
-  const { usuarioId, escola_id } = req.body;
+  const { usuarioId, escola_id, usuario_ctx_id } = req.body;
 
   try {
     const escolaId = Number(escola_id);
@@ -962,37 +1321,47 @@ router.post("/confirmar-escola", async (req, res) => {
       return res.status(404).json({ message: "Usuário não localizado." });
     }
 
-    // Valida se o usuário realmente possui vínculo com essa escola (mesmo CPF/PERFIL e mesma credencial)
+    // ✅ Valida vínculo por CONTEXTO (usuario_ctx_id) — obrigatório para multi-perfil
+    const ctxId = Number(usuario_ctx_id);
+
+    if (!ctxId) {
+      return res.status(400).json({ message: "usuario_ctx_id é obrigatório para confirmar a escola." });
+    }
+
     const [[usuarioEscola]] = await pool.query(
       `
-      SELECT u.id, u.escola_id, e.nome AS nome_escola
+      SELECT u.id, u.escola_id, u.perfil, e.nome AS nome_escola
       FROM usuarios u
       LEFT JOIN escolas e ON e.id = u.escola_id
-      WHERE u.cpf = ?
-        AND u.perfil = ?
+      WHERE u.id = ?
+        AND u.cpf = ?
         AND u.ativo = 1
         AND u.escola_id = ?
         AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
-        AND (
-          (u.email IS NOT NULL AND u.email <> '' AND u.email = ?)
-          OR
-          (u.celular IS NOT NULL AND u.celular <> '' AND u.celular = ?)
-        )
       LIMIT 1
       `,
-      [usuarioBase.cpf, usuarioBase.perfil, escolaId, usuarioBase.email || "", usuarioBase.celular || ""]
+      [ctxId, usuarioBase.cpf, escolaId]
     );
 
     if (!usuarioEscola) {
       return res.status(403).json({ message: "Você não possui vínculo válido com esta escola." });
     }
 
+    const { perfis, permissoes } = await carregarRbac(usuarioEscola.id, usuarioEscola.escola_id);
+
     const token = jwt.sign(
       {
-        usuarioId: usuarioEscola.id, // ✅ id da linha da escola escolhida
+        scope: "escola",
+
+        // ✅ compatibilidade (front antigo pode ler usuarioId; novo pode ler usuario_id)
+        usuario_id: usuarioEscola.id,
+        usuarioId: usuarioEscola.id, // ✅ id do contexto escolhido
+
         escola_id: usuarioEscola.escola_id,
         nome_escola: usuarioEscola.nome_escola || null,
-        perfil: usuarioBase.perfil || "aluno",
+        perfil: usuarioEscola.perfil || "aluno", // ✅ perfil REAL do contexto
+        perfis,
+        permissoes,
       },
       getJwtSecret(),
       { expiresIn: "8h" }
@@ -1003,7 +1372,9 @@ router.post("/confirmar-escola", async (req, res) => {
       nome: usuarioBase.nome || "Usuário",
       escola_id: usuarioEscola.escola_id,
       nome_escola: usuarioEscola.nome_escola || "Escola não definida",
-      perfil: usuarioBase.perfil || "aluno",
+      perfil: usuarioEscola.perfil || "aluno",
+      perfis,
+      permissoes,
     });
   } catch (err) {
     console.error("Erro ao confirmar escola:", err);

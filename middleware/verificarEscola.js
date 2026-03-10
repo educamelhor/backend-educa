@@ -1,5 +1,14 @@
 ﻿export function verificarEscola(req, res, next) {
   try {
+    // 🔒 Governança de escopo: token de plataforma NÃO pode acessar rotas escolares
+    const scope = req.user?.scope;
+    if (scope === "plataforma") {
+      return res.status(403).json({
+        ok: false,
+        message: "Token de plataforma não pode acessar contexto escolar.",
+      });
+    }
+
     const fromHeader = req.headers?.["x-escola-id"];
     const fromQuery = req.query?.escola_id;
     const fromBody = req.body?.escola_id;
