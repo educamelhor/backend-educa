@@ -23,11 +23,6 @@ const envFile =
 // carrega arquivo do diretório do server.js (apps/educa-backend)
 dotenv.config({ path: join(__dirnameEnv, envFile) });
 
-
-
-
-
-
 // ===== JWT SECRET (blindagem) =====
 if (!process.env.JWT_SECRET) {
   if (process.env.NODE_ENV === "production") {
@@ -39,11 +34,6 @@ if (!process.env.JWT_SECRET) {
   }
 }
 
-
-
-
-
-
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
 
@@ -53,8 +43,6 @@ import pool from "./db.js";
 // Quando for retomar: reativar imports + app.use abaixo e validar controllers.
 //// import modulacaoRoutes from "./routes/modulacao.js";
 //// import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
-
-
 
 // ==========================
 // OPTIONAL ROUTES (Feature Flags)
@@ -67,6 +55,8 @@ let correcoesOpenAI = null;
 
 import gabaritosRoutes from "./routes/gabaritos.js";
 import authRouter from "./routes/auth.js";
+import authPlataformaRouter from "./routes/auth_plataforma.js";
+import plataformaRouter from "./routes/plataforma.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
@@ -78,10 +68,8 @@ import ferramentasIndexRouter from "./routes/ferramentas/index.js";
 // Reativar quando o ambiente de produção estiver preparado para puppeteer/Chromium.
 //// import boletinsRouter from "./routes/boletins.js";
 
-
-
-
 import alunosRouter from "./routes/alunos.js";
+import matriculasRouter from "./routes/matriculas.js";
 import professoresRouter from "./routes/professores.js";
 import disciplinasRouter from "./routes/disciplinas.js";
 import turmasRouter from "./routes/turmas.js";
@@ -103,6 +91,8 @@ import gradePublishRouter from "./routes/gradePublish.js";
 let appPaisRouter = null;
 let responsavelRoutes = null;
 let deviceRoutes = null;
+
+let captureRoutes = null;
 
 let configPedagogicaRouter = null;
 let conteudosAdminRouter = null;
@@ -128,8 +118,20 @@ const FF_APP_PAIS = ff("FF_APP_PAIS", DEFAULT_ON_DEV);
 const FF_CONFIG_PEDAGOGICA = ff("FF_CONFIG_PEDAGOGICA", DEFAULT_ON_DEV);
 const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", DEFAULT_ON_DEV);
 
+const FF_EDUCA_CAPTURE = ff("FF_EDUCA_CAPTURE", DEFAULT_ON_DEV);
+
 // Monitoramento é pesado/sensível: manter OFF por padrão mesmo em DEV (liga quando for trabalhar nele)
 const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
+
+// ✅ DEBUG (DEV): confirma flags efetivas para eliminar dúvida de "rota não montou porque flag estava OFF"
+if (process.env.NODE_ENV !== "production") {
+  console.log("[FF] FLAGS efetivas:", {
+    FF_APP_PAIS,
+    FF_CONFIG_PEDAGOGICA,
+    FF_CONTEUDOS_ADMIN,
+    FF_MONITORAMENTO,
+  });
+}
 
 // ✅ NOVAS FLAGS (conforme mapa PROD aprovado)
 const FF_GABARITOS = ff("FF_GABARITOS", DEFAULT_ON_DEV);
@@ -141,7 +143,6 @@ const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 
 // ⚠️ Horários/Grade (Urania/solver) fica separado e pode continuar OFF em produção
 const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
-
 
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
@@ -157,6 +158,13 @@ if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"]))
   console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
 }
 
+if (FF_EDUCA_CAPTURE) {
+  captureRoutes = await safeImportDefault(
+    "FF_EDUCA_CAPTURE",
+    "./routes/capture.routes.js"
+  );
+}
+
 
 if (FF_CONFIG_PEDAGOGICA) {
   configPedagogicaRouter = await safeImportDefault(
@@ -166,10 +174,18 @@ if (FF_CONFIG_PEDAGOGICA) {
 }
 
 if (FF_CONTEUDOS_ADMIN) {
-  conteudosAdminRouter = await safeImportDefault(
-    "FF_CONTEUDOS_ADMIN",
-    "./routes/conteudos_admin.js"
-  );
+  conteudosAdminRouter =
+    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./routes/conteudos_admin.js")) ||
+    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./conteudos_admin.js")) ||
+    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./api/routes/conteudos_admin.js"));
+
+  if (conteudosAdminRouter) {
+    console.log("[FF] Conteúdos Admin: router carregado com sucesso.");
+  } else {
+    console.warn(
+      "[FF] Conteúdos Admin: router NÃO carregado (verifique caminho/arquivo). Rotas /api/conteudos/* ficarão 404."
+    );
+  }
 }
 
 // ✅ Ingest do Worker deve ser independente do FF_MONITORAMENTO (canal básico)
@@ -198,10 +214,10 @@ if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO
 }
 
 
-
 // ------------------------- Middlewares globais ------------------------------
 import { autenticarToken } from "./middleware/autenticarToken.js";
 import { verificarEscola } from "./middleware/verificarEscola.js";
+import { exigirEscopo } from "./middleware/verificarEscopo.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -384,17 +400,55 @@ if (!IS_PROD) {
     });
   });
 
-  // NUNCA logar Authorization em produção
-  app.use((req, _res, next) => {
-    console.log("[HEADERS TEST] Authorization:", req.headers.authorization);
+  // ✅ PASSO 4.3.1 — Observabilidade (DEV) sem vazar segredos
+  // - Gera request id
+  // - Loga somente monitoramento (sem Authorization)
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+
+    const rid =
+      req.headers["x-request-id"] ||
+      `${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
+
+    req.request_id = String(rid);
+    res.setHeader("X-Request-Id", String(rid));
+
+    const url = String(req.originalUrl || "");
+    const isMonitoramento = url.startsWith("/api/monitoramento");
+
+    res.on("finish", () => {
+      if (!isMonitoramento) return;
+
+      const ms = Date.now() - startedAt;
+      console.log(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          module: "monitoramento",
+          request_id: String(rid),
+          method: req.method,
+          url,
+          status: res.statusCode,
+          duration_ms: ms,
+        })
+      );
+    });
+
     next();
   });
 }
 
 async function bootstrap() {
+  // ============================================================================
+  // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
+  // ============================================================================
+  app.use("/api/auth-plataforma", authPlataformaRouter);
+  app.use("/api/plataforma", autenticarToken, exigirEscopo("plataforma"), plataformaRouter);
+
   if (appPaisRouter) app.use("/api/app-pais", appPaisRouter);
   if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
   if (deviceRoutes) app.use("/api/app-pais", deviceRoutes);
+
+  if (captureRoutes) app.use("/api/capture", captureRoutes);
 
 
 
@@ -419,6 +473,7 @@ async function bootstrap() {
     ferramentasIndexRouter
   );
   app.use("/api/alunos", autenticarToken, verificarEscola, alunosRouter);
+  app.use("/api/matriculas", autenticarToken, verificarEscola, matriculasRouter);
   app.use(
     "/api/professores",
     autenticarToken,
@@ -564,18 +619,55 @@ async function bootstrap() {
     app.use("/api/monitoramento/ingest", monitoramentoIngestRouter);
   }
 
-  if (conteudosAdminRouter) {
-    app.use("/api", autenticarToken, verificarEscola, conteudosAdminRouter);
+  if (monitoramentoEmbeddingsRouter) {
+    // 🔐 Autenticação delegada ao próprio router:
+    // - Worker: x-worker-token (+ x-escola-id)
+    // - Admin: JWT + RBAC + verificarEscola (dentro do router)
+    // ✅ Precisa ficar ANTES do gate "/api" do Conteúdos Admin
+    app.use("/api/monitoramento/embeddings", monitoramentoEmbeddingsRouter);
   }
 
+  if (conteudosAdminRouter) {
+
+    // ⚠️ ATENÇÃO:
+    // Este mount em "/api" aplicava autenticação em qualquer "/api/*" que não tivesse
+    // sido atendido antes, bloqueando rotas PÚBLICAS como /api/monitoramento-public.
+    // Mantemos Conteúdos Admin protegido, mas liberamos explicitamente as rotas públicas.
+
+    app.use(
+      "/api",
+      (req, res, next) => {
+        const p = String(req.path || "");
+
+        // ✅ Rotas públicas do Monitoramento (OPÇÃO A)
+        if (p.startsWith("/monitoramento-public")) return next();
+        if (p.startsWith("/monitoramento-overlay")) return next();
+
+        // ✅ Monitoramento Embeddings: auth é decidida no próprio router (Worker OU Admin)
+        if (p.startsWith("/monitoramento/embeddings")) return next();
+
+        // ✅ Rotas da Plataforma (CEO/Admin Global) — NÃO passam por verificarEscola
+        if (p.startsWith("/plataforma")) return next();
+        if (p.startsWith("/auth-plataforma")) return next();
+
+        // (opcional) manter health público mesmo se algum dia mudar a ordem
+        if (p === "/health" || p === "/healthz") return next();
+
+        // 🔒 Para o restante, exige token + escola
+        return autenticarToken(req, res, (err) => {
+          if (err) return next(err);
+          return verificarEscola(req, res, next);
+        });
+      },
+      conteudosAdminRouter
+    );
+  }
 
   if (monitoramentoUltimosRouter) {
     app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoUltimosRouter);
   }
 
-  if (monitoramentoEmbeddingsRouter) {
-    app.use("/api/monitoramento/embeddings", autenticarToken, verificarEscola, monitoramentoEmbeddingsRouter);
-  }
+  // (movido para cima, antes do gate "/api" do Conteúdos Admin)
 
   if (monitoramentoCamerasRouter) {
     app.use("/api/monitoramento/cameras", autenticarToken, verificarEscola, monitoramentoCamerasRouter);
@@ -595,11 +687,16 @@ async function bootstrap() {
   }
 
   if (monitoramentoOverlayRouter) {
-    app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoOverlayRouter);
-    app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
+    // ✅ Público (sem token) — overlay para painel operacional / TV / diagnóstico
     app.use("/api/monitoramento-public", monitoramentoOverlayRouter);
     app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
+
+    // ❌ Removido: overlay NÃO deve ser montado em /api/monitoramento (rota protegida),
+    // pois isso força autenticação e quebra o conceito de "public".
+    // app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoOverlayRouter);
   }
+
+
 
   if (monitoramentoRouter) {
     app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoRouter);
@@ -607,6 +704,22 @@ async function bootstrap() {
 
   if (monitoramentoAlertaRouter) {
     app.use("/api/monitoramento_alerta", monitoramentoAlertaRouter);
+
+    // ✅ ALIAS (compat): frontend chama /api/monitoramento/alertas-ativos e /alertas-stream
+    // Encaminha internamente para o router real:
+    // - /alertas-ativos  -> /api/monitoramento_alerta/alunos/alertas
+    // - /alertas-stream  -> /api/monitoramento_alerta/events (SSE)
+    app.use("/api/monitoramento/alertas-ativos", (req, res, next) => {
+      const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+      req.url = `/alunos/alertas${qs}`;
+      return monitoramentoAlertaRouter.handle(req, res, next);
+    });
+
+    app.use("/api/monitoramento/alertas-stream", (req, res, next) => {
+      const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+      req.url = `/events${qs}`;
+      return monitoramentoAlertaRouter.handle(req, res, next);
+    });
   }
 
   // ============================================================================
@@ -647,6 +760,83 @@ async function bootstrap() {
 
 
 // ============================================================================
+// PASSO 3.3 — Job de limpeza (PAIR CODES)
+// - Sem endpoint público
+// - Evita crescimento infinito de capture_pair_codes
+// - Seguro: lock em memória para não sobrepor execuções
+// ============================================================================
+function startCapturePairCleanupJob() {
+  const enabled = ff("CAPTURE_PAIR_CLEANUP_ENABLED", true);
+
+  // Só roda se EDUCA-CAPTURE estiver ativo no servidor
+  if (!FF_EDUCA_CAPTURE) {
+    if (!IS_PROD) console.log("[CAPTURE][PAIR][CLEANUP] skip: FF_EDUCA_CAPTURE=OFF");
+    return;
+  }
+
+  if (!enabled) {
+    console.log("[CAPTURE][PAIR][CLEANUP] desativado por CAPTURE_PAIR_CLEANUP_ENABLED=0");
+    return;
+  }
+
+  const intervalMs = Number(process.env.CAPTURE_PAIR_CLEANUP_INTERVAL_MS || 60 * 60_000); // 1h
+  const keepExpiredDays = Number(process.env.CAPTURE_PAIR_KEEP_EXPIRED_DAYS || 2); // pendentes expirados
+  const keepUsedDays = Number(process.env.CAPTURE_PAIR_KEEP_USED_DAYS || 30); // aprovados/usados
+
+  if (!Number.isFinite(intervalMs) || intervalMs < 30_000) {
+    console.warn("[CAPTURE][PAIR][CLEANUP] interval inválido. Ajuste CAPTURE_PAIR_CLEANUP_INTERVAL_MS.");
+    return;
+  }
+
+  let running = false;
+
+  const runOnce = async () => {
+    if (running) return;
+    running = true;
+
+    const cutoffExpired = new Date(Date.now() - keepExpiredDays * 24 * 60 * 60_000);
+    const cutoffUsed = new Date(Date.now() - keepUsedDays * 24 * 60 * 60_000);
+
+    try {
+      const [result] = await pool.query(
+        `
+        DELETE FROM capture_pair_codes
+        WHERE (used_at IS NULL AND expires_at < ?)
+           OR (used_at IS NOT NULL AND used_at < ?)
+        `,
+        [cutoffExpired, cutoffUsed]
+      );
+
+      const deleted = Number(result?.affectedRows || 0);
+
+      if (!IS_PROD) {
+        console.log(
+          `[CAPTURE][PAIR][CLEANUP] ok deleted=${deleted} cutoffExpired=${cutoffExpired.toISOString()} cutoffUsed=${cutoffUsed.toISOString()}`
+        );
+      } else if (deleted > 0) {
+        console.log(`[CAPTURE][PAIR][CLEANUP] ok deleted=${deleted}`);
+      }
+    } catch (err) {
+      console.error("[CAPTURE][PAIR][CLEANUP] erro:", err?.message || err);
+    } finally {
+      running = false;
+    }
+  };
+
+  // roda 1x ao subir (depois agenda)
+  runOnce();
+
+  setInterval(runOnce, intervalMs).unref?.();
+
+  console.log("[CAPTURE][PAIR][CLEANUP] job ativo", {
+    intervalMs,
+    keepExpiredDays,
+    keepUsedDays,
+  });
+}
+
+
+// ============================================================================
 // Boot
 // ============================================================================
 const PORT = process.env.PORT || 3000;
@@ -656,6 +846,9 @@ bootstrap()
     app.listen(PORT, () => {
       console.log(`🚀 API rodando na porta ${PORT}`);
       console.log("🔔 BACKEND BUILD ATIVO — verifique /__build-info");
+
+      // PASSO 3.3 — Job de limpeza de pair_codes (produção)
+      startCapturePairCleanupJob();
 
       if (process.env.NODE_ENV !== "production") {
         console.log("🔔 PINGS/DEBUGS (DEV):");
