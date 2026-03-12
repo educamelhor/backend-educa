@@ -1,0 +1,2 @@
+ALTER TABLE ocorrencias_disciplinares
+ADD COLUMN usuario_finalizacao_id INT NULL AFTER data_comparecimento_responsavel;
