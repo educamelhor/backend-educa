@@ -15,6 +15,22 @@ const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: ano letivo padrão com data de corte em 31/jan
+// (se mês <= 1 → ano anterior; senão → ano corrente)
+// ─────────────────────────────────────────────────────────────────────────────
+function anoLetivoPadrao() {
+  const hoje = new Date();
+  const mes = hoje.getMonth() + 1; // 1–12
+  return mes <= 1 ? hoje.getFullYear() - 1 : hoje.getFullYear();
+}
+
+// Base pública do Spaces (sem depender do front “adivinhar” a URL)
+// Ex.: https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/
+const SPACES_PUBLIC_BASE = String(
+  process.env.SPACES_PUBLIC_BASE || "https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/"
+).replace(/\/+$/, "") + "/";
+
 /*
  * Middleware local (defensivo) para garantir escola no req.user
  * OBS: O router já é protegido por autenticação + verificarEscola no server.js,
@@ -94,33 +110,26 @@ router.get("/", verificarEscola, async (req, res) => {
       turma_id,
       filtro = "",
       status = "",
+      ano_letivo,
       limit = 100,
       offset = 0,
     } = req.query;
     const { escola_id } = req.user;
 
-
-
-
-
+    // Ano letivo efetivo: usa o parâmetro ou calcula o padrão (corte 31/jan)
+    const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
 
     // DEBUG: o que chegou do front e do token
-    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, limit, offset });
+    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
     console.log("🔎 /api/alunos → req.user:", req.user);
 
-
-
-
-
-
-
-
-    const where = ["a.escola_id = ?"];
-    const params = [escola_id];
+    const where = ["a.escola_id = ?", "m.ano_letivo = ?"];
+    // ⚠️ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
+    const params = [SPACES_PUBLIC_BASE, escola_id, anoEfetivo];
 
     if (turma_id) {
-      where.push("a.turma_id = ?");
-      params.push(turma_id);
+      where.push("m.turma_id = ?");
+      params.push(Number(turma_id));
     }
 
     if (filtro) {
@@ -134,44 +143,63 @@ router.get("/", verificarEscola, async (req, res) => {
 
     const statusNorm = String(status || "").trim().toLowerCase();
     if (statusNorm === "ativo" || statusNorm === "inativo") {
-      where.push("a.status = ?");
+      where.push("m.status = ?");
       params.push(statusNorm);
     }
 
     const whereSql = `WHERE ${where.join(" AND ")}`;
 
-    const sql = `
-      SELECT a.id, a.codigo, a.estudante,
-             DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
-             a.sexo, a.status,
-             t.nome AS turma, t.turno
+    const countSql = `
+      SELECT COUNT(*) AS total
       FROM alunos AS a
-      LEFT JOIN turmas AS t ON t.id = a.turma_id
+      INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
+      LEFT JOIN  turmas     AS t ON t.id = m.turma_id
+      LEFT JOIN  escolas    AS e ON e.id = a.escola_id
+      ${whereSql}
+    `;
+
+    // Filtra params: SPACES_PUBLIC_BASE não deve ir para o COUNT (já que COUNT usa os mesmos binds do WHERE e ignoramos o bind inicial do SELECT principal)
+    // SPACES_PUBLIC_BASE é o params[0], então paramsCount pula ele.
+    const paramsCount = params.slice(1);
+    const [countRows] = await pool.query(countSql, paramsCount);
+    const total = countRows[0].total;
+
+    const sql = `
+      SELECT
+             a.id,
+             a.codigo,
+             a.estudante,
+             DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
+             a.sexo,
+             a.status,
+             a.foto,
+
+             -- URL canônica do Spaces (novo padrão do EDUCA-CAPTURE):
+             CASE
+               WHEN a.foto LIKE 'http%' THEN a.foto
+               ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
+             END AS foto_url,
+
+             t.nome  AS turma,
+             t.turno,
+             m.turma_id,
+             m.ano_letivo
+      FROM alunos AS a
+      -- JOIN via matriculas (fonte canônica de turma/ano a partir de 2026-03)
+      INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
+      LEFT JOIN  turmas     AS t ON t.id = m.turma_id
+      LEFT JOIN  escolas    AS e ON e.id = a.escola_id
       ${whereSql}
       ORDER BY a.estudante
       LIMIT ? OFFSET ?
     `;
     params.push(Number(limit), Number(offset));
 
-
-
-
-
-
-
-// DEBUG: consulta final que será executada
     console.log("🔎 /api/alunos → SQL:", sql.replace(/\s+/g, " ").trim());
     console.log("🔎 /api/alunos → params:", params);
 
-
-
-
-
-
-
-
     const [rows] = await pool.query(sql, params);
-    res.json(rows);
+    res.json({ alunos: rows, total });
   } catch (err) {
     console.error("Erro ao listar alunos:", err);
     res.status(500).json({ message: "Erro ao listar alunos." });
@@ -193,24 +221,56 @@ router.post("/", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Código e nome são obrigatórios." });
     }
 
-    // Impede duplicidade ativa por escola
+    const anoLetivoAtual = anoLetivoPadrao();
+
+    // Verifica se já existe na base global da escola
     const [[existe]] = await pool.query(
       "SELECT id, status FROM alunos WHERE codigo = ? AND escola_id = ?",
       [codigo, escola_id]
     );
-    if (existe && existe.status === "ativo") {
-      return res.status(409).json({ message: "Já existe um aluno ativo com esse código." });
+
+    let alunoId;
+
+    if (existe) {
+      alunoId = existe.id;
+
+      // Se existe, verifica se já está matriculado ATIVO neste mesmo ano letivo
+      const [[matr]] = await pool.query(
+        "SELECT id, status FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+        [alunoId, anoLetivoAtual, escola_id]
+      );
+      if (matr && matr.status === "ativo") {
+        return res.status(409).json({ message: "Este estudante já possui uma matrícula ativa no ano corrente." });
+      }
+
+      // Se ele já estava na base, apenas atualizamos seus dados e o validamos como ativo
+      await pool.query(
+        `UPDATE alunos SET estudante = ?, data_nascimento = ?, sexo = ?, turma_id = ?, status = 'ativo' WHERE id = ?`,
+        [estudante, data_nascimento || null, sexo || null, turma_id || null, alunoId]
+      );
+    } else {
+      // Inserção inédita na base global
+      const [result] = await pool.query(
+        `
+        INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'ativo')
+        `,
+        [codigo, estudante, data_nascimento || null, sexo || null, turma_id || null, escola_id]
+      );
+      alunoId = result.insertId;
     }
 
-    const [result] = await pool.query(
-      `
-      INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'ativo')
-      `,
-      [codigo, estudante, data_nascimento || null, sexo || null, turma_id || null, escola_id]
-    );
+    // ✅ Cria matrícula automaticamente ao cadastrar o aluno
+    if (turma_id && alunoId) {
+      await pool.query(
+        `INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status)
+         VALUES (?, ?, ?, ?, 'ativo')
+         ON DUPLICATE KEY UPDATE status = 'ativo', turma_id = ?, updated_at = CURRENT_TIMESTAMP`,
+        [escola_id, alunoId, turma_id, anoLetivoAtual, turma_id]
+      );
+    }
 
-    res.status(201).json({ id: result.insertId, message: "Aluno cadastrado com sucesso." });
+    res.status(201).json({ id: alunoId, message: "Aluno cadastrado com sucesso." });
   } catch (err) {
     console.error("Erro ao criar aluno:", err);
     res.status(500).json({ message: "Erro ao criar aluno." });
@@ -442,10 +502,15 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   }
 
   try {
+    const { escola_id } = req.user;
+    const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
+  
     const { text } = await pdfParse(req.file.buffer);
-    const turmaNome = req.file.originalname.replace(/\.pdf$/i, "").trim();
+    let turmaNomeStr = req.body.turmaNome || req.file.originalname.replace(/\.pdf$/i, "").trim();
+    // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
+    const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
 
-    const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ?", [turmaNome]);
+    const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ? AND escola_id = ?", [turmaNome, escola_id]);
     if (!turma) {
       return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada.` });
     }
@@ -496,24 +561,63 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     const toInactivate = atuais.filter((a) => !entradaSet.has(String(a.codigo)));
 
-    // Inserir novos
+    // Inserir novos (e lidar com possíveis alunos existentes em outras turmas via DUPLICATE KEY)
     let inseridos = 0;
     for (const e of toInsert) {
-      await pool.query(
-        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, status)
-         VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, 'ativo')`,
-        [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id]
+      const [result] = await pool.query(
+        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
+         VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
+         ON DUPLICATE KEY UPDATE 
+           id = LAST_INSERT_ID(id),
+           estudante = VALUES(estudante),
+           turma_id = VALUES(turma_id),
+           status = 'ativo'`,
+        [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id, escola_id]
       );
+      
+      const alunoId = result.insertId;
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
       inseridos++;
     }
 
     // Reativar inativos que voltaram
     let reativados = 0;
     for (const e of toReactivate) {
+      const atualObj = atuaisMap.get(String(e.codigo));
       await pool.query(
-        "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ?",
-        [turma_id, e.codigo]
+        "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
+        [turma_id, e.codigo, escola_id]
       );
+      
+      const alunoId = atualObj.id;
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
+
       reativados++;
     }
 
@@ -524,13 +628,18 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       if (correspondente) {
         await pool.query(
           `UPDATE alunos
-           SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y')
+           SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y'), turma_id = ?
            WHERE id = ?`,
-          [correspondente.dataBr, r.id]
+          [correspondente.dataBr, turma_id, r.id]
         );
       } else {
         await pool.query("UPDATE alunos SET status='inativo' WHERE id = ?", [r.id]);
       }
+      
+      await pool.query(
+        "UPDATE matriculas SET status='inativo' WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+        [r.id, anoLetivoAtual, escola_id]
+      );
       inativados++;
     }
 
@@ -564,6 +673,9 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
   }
 
   try {
+    const { escola_id } = req.user;
+    const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
+
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const primeiraAbaNome = workbook.SheetNames[0];
     const sheet = workbook.Sheets[primeiraAbaNome];
@@ -574,8 +686,11 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       defval: "",
     });
 
-    const turmaNome = req.file.originalname.replace(/\.[^.]+$/, "").trim();
-    const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ?", [turmaNome]);
+    let turmaNomeStr = req.body.turmaNome || req.file.originalname.replace(/\.[^.]+$/i, "").trim();
+    // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
+    const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
+
+    const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ? AND escola_id = ?", [turmaNome, escola_id]);
     if (!turma) {
       return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada.` });
     }
@@ -643,23 +758,63 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     // Inserir novos
     let inseridos = 0;
     for (const e of toInsert) {
-      await pool.query(
-        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, status)
-         VALUES (?, ?, ${e.dataBr ? "STR_TO_DATE(?, '%d/%m/%Y')" : "NULL"}, ?, ?, 'ativo')`,
+      const [result] = await pool.query(
+        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
+         VALUES (?, ?, ${e.dataBr ? "STR_TO_DATE(?, '%d/%m/%Y')" : "NULL"}, ?, ?, ?, 'ativo')
+         ON DUPLICATE KEY UPDATE 
+           id = LAST_INSERT_ID(id),
+           estudante = VALUES(estudante),
+           turma_id = VALUES(turma_id),
+           status = 'ativo'`,
         e.dataBr
-          ? [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id]
-          : [e.codigo, e.estudante, e.sexo, turma_id]
+          ? [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id, escola_id]
+          : [e.codigo, e.estudante, e.sexo, turma_id, escola_id]
       );
+      
+      const alunoId = result.insertId;
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
+      
       inseridos++;
     }
 
     // Reativar
     let reativados = 0;
     for (const e of toReactivate) {
+      const atualObj = atuaisMap.get(String(e.codigo));
       await pool.query(
-        "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ?",
-        [turma_id, e.codigo]
+        "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
+        [turma_id, e.codigo, escola_id]
       );
+      
+      const alunoId = atualObj.id;
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
+
       reativados++;
     }
 
@@ -670,13 +825,18 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       if (correspondente && correspondente.dataBr) {
         await pool.query(
           `UPDATE alunos
-           SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y')
+           SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y'), turma_id = ?
            WHERE id = ?`,
-          [correspondente.dataBr, r.id]
+          [correspondente.dataBr, turma_id, r.id]
         );
       } else {
         await pool.query("UPDATE alunos SET status='inativo' WHERE id = ?", [r.id]);
       }
+      
+      await pool.query(
+        "UPDATE matriculas SET status='inativo' WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+        [r.id, anoLetivoAtual, escola_id]
+      );
       inativados++;
     }
 
@@ -722,6 +882,158 @@ router.get("/inativos", verificarEscola, async (req, res) => {
 router.get("/testetodosalunos", async (req, res) => {
   const [rows] = await pool.query("SELECT * FROM alunos");
   res.json(rows);
+});
+
+/* ============================================================================
+ * 15) OCORRÊNCIAS DISCIPLINARES
+ * GET /api/alunos/:id/ocorrencias
+ * POST /api/alunos/:id/ocorrencias
+ * ========================================================================== */
+router.get("/:id/proxima-ocorrencia", verificarEscola, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT AUTO_INCREMENT
+       FROM information_schema.tables
+       WHERE table_name = 'ocorrencias_disciplinares'
+       AND table_schema = DATABASE()`
+    );
+
+    const proximoId = rows[0]?.AUTO_INCREMENT || 1;
+    const registroFormatado = String(proximoId).padStart(4, '0');
+
+    res.json({ proximoRegistro: registroFormatado });
+  } catch (err) {
+    console.error("Erro ao buscar proximo registro:", err);
+    res.status(500).json({ message: "Erro ao buscar próximo registro de ocorrência." });
+  }
+});
+router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+
+    // Buscar ocorrências do aluno
+    const [rows] = await pool.query(
+      `SELECT o.id, 
+              LPAD(o.id, 4, '0') AS registro, 
+              DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
+              o.motivo, 
+              o.descricao, 
+              o.convocar_responsavel, 
+              DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
+              o.status,
+              u.nome AS nome_usuario_finalizacao
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
+       WHERE o.aluno_id = ? AND o.escola_id = ?
+       ORDER BY o.data_ocorrencia DESC, o.id DESC`,
+      [id, escola_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("Erro ao buscar ocorrências:", err);
+    res.status(500).json({ message: "Erro ao buscar ocorrências disciplinares." });
+  }
+});
+
+router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+    const { data, motivo, descricao, convocarResponsavel } = req.body;
+
+    if (!data || !motivo || !descricao) {
+      return res.status(400).json({ message: "Preencha os campos obrigatórios." });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO ocorrencias_disciplinares 
+         (aluno_id, escola_id, data_ocorrencia, motivo, descricao, convocar_responsavel) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, escola_id, data, motivo, descricao, convocarResponsavel ? 1 : 0]
+    );
+
+    res.status(201).json({
+      message: "Ocorrência registrada com sucesso.",
+      id: result.insertId
+    });
+  } catch (err) {
+    console.error("Erro ao registrar ocorrência:", err);
+    res.status(500).json({ message: "Erro ao registrar ocorrência." });
+  }
+});
+
+router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const { descricao, convocarResponsavel } = req.body;
+
+    if (!descricao) {
+      return res.status(400).json({ message: "A descrição é obrigatória." });
+    }
+
+    await pool.query(
+      `UPDATE ocorrencias_disciplinares 
+       SET descricao = ?, convocar_responsavel = ? 
+       WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+      [descricao, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
+    );
+
+    res.json({ message: "Ocorrência atualizada com sucesso." });
+  } catch (err) {
+    console.error("Erro ao atualizar ocorrência:", err);
+    res.status(500).json({ message: "Erro ao atualizar ocorrência." });
+  }
+});
+
+router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const usuarioFinalizacaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+
+    const [result] = await pool.query(
+      `UPDATE ocorrencias_disciplinares 
+       SET data_comparecimento_responsavel = CASE WHEN convocar_responsavel = 1 THEN DATE_SUB(NOW(), INTERVAL 3 HOUR) ELSE data_comparecimento_responsavel END,
+           status = 'FINALIZADA',
+           usuario_finalizacao_id = ?
+       WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+      [usuarioFinalizacaoId, ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Ocorrência não encontrada." });
+    }
+
+    res.json({ message: "Ocorrência finalizada com sucesso." });
+  } catch (err) {
+    console.error("Erro ao finalizar ocorrência:", err);
+    res.status(500).json({ message: "Erro ao finalizar ocorrência." });
+  }
+});
+
+router.delete("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+
+    const [result] = await pool.query(
+      `DELETE FROM ocorrencias_disciplinares 
+       WHERE id = ? AND aluno_id = ? AND escola_id = ? AND status != 'FINALIZADA'`,
+      [ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Ocorrência não encontrada ou não pode ser excluída." });
+    }
+
+    res.json({ message: "Ocorrência excluída com sucesso." });
+  } catch (err) {
+    console.error("Erro ao excluir ocorrência:", err);
+    res.status(500).json({ message: "Erro ao excluir ocorrência." });
+  }
 });
 
 export default router;

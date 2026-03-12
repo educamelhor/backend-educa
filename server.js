@@ -80,6 +80,8 @@ import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/u
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
 import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
+import tiposOcorrenciaRouter from "./routes/tiposOcorrencia.js";
+import responsaveisRouter from "./routes/responsaveis.js";
 import gradeBaseRoutes from "./routes/gradeBase.js";
 import gradeSolveRoutes from "./routes/gradeSolve.js";
 import disponibilidadesRouter from "./routes/disponibilidades.js";
@@ -565,8 +567,9 @@ async function bootstrap() {
 
   // 🔒 Rotas protegidas de usuários
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
-  ;
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
+  app.use("/api/tipos-ocorrencia", autenticarToken, verificarEscola, tiposOcorrenciaRouter);
+  app.use("/api/responsaveis", autenticarToken, verificarEscola, responsaveisRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {

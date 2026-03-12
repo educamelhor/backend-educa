@@ -4,6 +4,7 @@ import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
 import pool from "../db.js";
 import { enviarEmail } from "../services/mailer.js";
+import { getSignedGetObjectUrl } from "../storage/spacesUpload.js";
 
 const router = express.Router();
 
@@ -67,6 +68,28 @@ function normalizarFotoAlunoParaUploadsPath(dbFoto) {
   // Se vier como "CEF04_PLAN/alunos/12586.jpg" ou "alunos/12586.jpg"
   // padroniza para /uploads/<valor>
   return `/uploads/${s}`;
+}
+
+function extrairObjectKeyDeFoto(dbFoto) {
+  if (!dbFoto) return null;
+
+  const s = String(dbFoto).trim();
+  if (!s) return null;
+
+  // Caso 1: URL absoluta do Spaces (ou CDN) contendo "/uploads/..."
+  const idx = s.indexOf("/uploads/");
+  if (idx >= 0) {
+    // remove a barra inicial para ficar "uploads/..."
+    return s.slice(idx + 1);
+  }
+
+  // Caso 2: já vem como "/uploads/..."
+  if (s.startsWith("/uploads/")) return s.slice(1);
+
+  // Caso 3: já vem como "uploads/..."
+  if (s.startsWith("uploads/")) return s;
+
+  return null;
 }
 
 function authAppPais(req, res, next) {
@@ -174,7 +197,6 @@ router.get("/alunos", authAppPais, async (req, res) => {
 
         a.id AS aluno_id,
         a.estudante AS aluno_nome,
-        a.foto AS aluno_foto,
         
         t.id   AS turma_id,
         t.nome AS turma_nome,
@@ -206,7 +228,6 @@ router.get("/alunos", authAppPais, async (req, res) => {
     const alunos = rows.map((r) => ({
       id: r.aluno_id,
       nome: r.aluno_nome,
-      foto: normalizarFotoAlunoParaUploadsPath(r.aluno_foto),
 
       escola: {
         id: r.escola_id,
@@ -238,10 +259,70 @@ router.get("/alunos", authAppPais, async (req, res) => {
         ? { id: rows[0]?.escola_id ?? null, apelido: rows[0]?.escola_apelido ?? null }
         : null;
 
+
     return res.json({ ok: true, escola, alunos });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /alunos:", error);
     return res.status(500).json({ message: "Erro ao listar alunos." });
+  }
+});
+
+// ============================================================================
+// OPÇÃO B (LGPD forte) — GET /alunos/:id/foto-url
+// - Bucket privado: App Pais pede URL assinada temporária
+// - Valida vínculo responsaveis_alunos (ativo=1) + escola_id do vínculo
+// ============================================================================
+router.get("/alunos/:id/foto-url", authAppPais, async (req, res) => {
+  const db = pool;
+
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+    const aluno_id = Number(req.params?.id);
+
+    if (!Number.isFinite(aluno_id)) {
+      return res.status(400).json({ ok: false, message: "aluno_id inválido." });
+    }
+
+    const [[row]] = await db.query(
+      `
+      SELECT
+        ra.escola_id AS escola_id,
+        a.foto AS aluno_foto
+      FROM responsaveis_alunos ra
+      INNER JOIN alunos a ON a.id = ra.aluno_id
+      WHERE ra.responsavel_id = ?
+        AND ra.aluno_id = ?
+        AND ra.ativo = 1
+      LIMIT 1
+      `,
+      [responsavel_id, aluno_id]
+    );
+
+    if (!row) {
+      return res.status(403).json({ ok: false, message: "Acesso negado a este estudante." });
+    }
+
+    const escola_id = Number(row.escola_id);
+    const objectKey = extrairObjectKeyDeFoto(row.aluno_foto);
+
+    if (!objectKey) {
+      return res.status(404).json({ ok: false, message: "Foto não disponível para este estudante." });
+    }
+
+    const ttl = Number(process.env.APP_PAIS_FOTO_URL_TTL_SECONDS || 3600);
+    const signed = await getSignedGetObjectUrl(objectKey, ttl);
+
+    return res.json({
+      ok: true,
+      escola_id,
+      aluno_id,
+      objectKey: signed.objectKey,
+      url_assinada: signed.url,
+      expires_in: signed.expiresIn,
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /alunos/:id/foto-url:", error);
+    return res.status(500).json({ ok: false, message: "Erro ao gerar URL assinada." });
   }
 });
 

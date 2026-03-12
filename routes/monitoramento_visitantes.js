@@ -14,6 +14,7 @@ import express from "express";
 import pool from "../db.js";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
 
 // ---------- NOVO: libs para salvar imagem ----------
 import fs from "fs";
@@ -31,6 +32,13 @@ router.use((req, _res, next) => {
   } catch (_) {}
   next();
 });
+
+// 🔒 RBAC — exige login + escola + permissão do módulo para TODAS as rotas do visitantes
+router.use(
+  autenticarToken,
+  autorizarPermissao("monitoramento.visualizar"),
+  verificarEscola
+);
 
 // ---------- Helpers ----------
 function getEscolaId(req) {

@@ -1,674 +1,1368 @@
-// routes/conteudos_admin.js
-// ============================================================================
-// Conteúdos (ADMIN) — CRUD para alimentar o card Conteúdos do App Pais
-// Tabelas:
-//   - conteudos_planos
-//   - conteudos_itens
-//
-// Regras:
-//   - Rotas protegidas (token + escola)
-//   - escola_id vem de req.user.escola_id (middleware verificarEscola)
-//   - Filtro obrigatório: turma_id, disciplina_id, bimestre, ano_letivo
-//   - Itens são gerenciados como lista (substituição completa) para estabilidade
-// ============================================================================
+// api/routes/conteudos_admin.js
+import { Router } from "express";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
 
-import express from "express";
-const router = express.Router();
+const router = Router();
 
-// Helpers
-function toInt(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+/**
+ * =========================================================
+ * EDUCA.MELHOR — MÓDULO CONTEÚDOS (Admin)
+ *
+ * Este router é montado no server.js em "/api" e já passa por:
+ * - autenticarToken
+ * - verificarEscola
+ *
+ * Endpoints mínimos (PASSO 4.3):
+ * 1) GET  /conteudos/admin/contexto/opcoes
+ * 2) GET  /conteudos/admin/plano/itens
+ *
+ * Observação:
+ * - req.db é injetado no server.js (pool).
+ * =========================================================
+ */
+
+function assertAuthEscola(req, res) {
+  const escolaId = req?.escola_id ?? req?.user?.escola_id;
+
+  if (!escolaId) {
+    res.status(403).json({ ok: false, message: "Acesso negado: escola não definida." });
+    return false;
+  }
+  return true;
 }
 
-function badRequest(res, message) {
-  return res.status(400).json({ ok: false, message });
+function normSerie(raw) {
+  // Mantemos string livre ("8º Ano", "8", etc). Apenas trim.
+  return String(raw || "").trim();
 }
 
-// ============================================================================
-// Helpers — Catálogo anual + Planejamento (alocações) + Código padronizado
-// Padrão final (planejamento): DISC-A{serie}-B{bimestre}-A{assunto}-T{topico}-ST{subtopico}
-// Ex.: MATE-A6-B3-A01-T02-ST03
-// Obs:
-//  - O catálogo anual NÃO carrega bimestre (bimestre = NULL no tópico do catálogo)
-//  - O código final nasce na tabela conteudos_plano_alocacoes (planejamento)
-// ============================================================================
-
-// Remove acentos e normaliza string
-function normalizeAscii(str) {
-  return String(str || "")
+function normTxt(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
-// Sigla de 4 letras da disciplina (ex.: Matemática -> MATE)
-function disciplinaSigla4(disciplinaNome) {
-  const s = normalizeAscii(disciplinaNome).toUpperCase().replace(/[^A-Z]/g, "");
-  return (s.slice(0, 4) || "DISC").padEnd(4, "X");
+// Mapeamento BNCC (componente_id) por "nome da disciplina" (fallback)
+// Ajuste/expansão conforme seu catálogo interno de disciplinas evoluir.
+
+function mapDisciplinaNomeToComponenteId(nomeDisciplina) {
+  const n = normTxt(nomeDisciplina);
+
+  if (!n) return null;
+
+  // BNCC componentes (padrão comum):
+  // 1 LP, 2 MAT, 3 CIÊNCIAS, 4 GEOG, 5 HIST, 6 ARTE, 7 ED.FÍSICA, 8 INGLÊS
+  if (n.includes("matemat")) return 2;
+  if (n.includes("portugues") || n.includes("lingua portuguesa")) return 1;
+  if (n.includes("ciencia")) return 3;
+  if (n.includes("geograf")) return 4;
+  if (n.includes("histor")) return 5;
+  if (n.includes("arte")) return 6;
+  if (n.includes("educacao fisica") || n.includes("ed fisica") || n.includes("educacao fis")) return 7;
+  if (n.includes("ingles") || n.includes("lingua inglesa")) return 8;
+
+  return null;
 }
 
-// Extrai "A6" de "6º ANO", "7 ANO", "8º", etc.
-function serieCodigoFromTurmaSerie(serieTxt) {
-  const m = String(serieTxt || "").match(/(\d+)/);
-  const n = m ? m[1] : "";
-  return `A${n || "0"}`;
+async function isDisciplinaGeometria(db, disciplina_id) {
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT nome
+      FROM disciplinas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [Number(disciplina_id)]
+    );
+
+    const nome = rows?.[0]?.nome;
+    const n = normTxt(nome);
+    return !!n && n.includes("geometria");
+  } catch (e) {
+    return false;
+  }
 }
 
-// Remove token de bimestre do código
-// Usado no catálogo anual (bimestre = NULL)
-function stripBimestreFromCodigo(codigo) {
-  const s = String(codigo || "").trim();
-  if (!s) return s;
+async function resolveBnccComponenteId(db, disciplina_id) {
 
-  let out = s;
-
-  out = out.split("-B1-").join("-");
-  out = out.split("-B2-").join("-");
-  out = out.split("-B3-").join("-");
-  out = out.split("-B4-").join("-");
-
-  if (out.endsWith("-B1")) out = out.slice(0, -3);
-  if (out.endsWith("-B2")) out = out.slice(0, -3);
-  if (out.endsWith("-B3")) out = out.slice(0, -3);
-  if (out.endsWith("-B4")) out = out.slice(0, -3);
-
-  return out;
-}
-
-
-// Injeta/atualiza bimestre no código-base
-// Aceita código-base em 2 formatos:
-//   a) "MATE-A6-A01-T02-ST03" (sem bimestre)
-//   b) "MATE-A6-B1-A01-T02-ST03" (com bimestre)
-//   c) "A01-T02-ST03" (somente sufixo)
-function buildCodigoFinal({ discSigla4, serieCodigo, bimestre, codigoBase }) {
-  const B = `B${Number(bimestre)}`;
-
-  const raw = String(codigoBase || "").trim();
-  const tokens = raw.split("-").filter(Boolean);
-
-  const hasDiscSerie =
-    tokens.length >= 2 &&
-    /^[A-Z]{4}$/.test(tokens[0]) &&
-    /^A\d+$/.test(tokens[1]);
-
-  // Extrai o "miolo" (A01-T02-ST03) removendo disc/serie e removendo Bx se existir
-  let tailTokens = tokens;
-
-  if (hasDiscSerie) {
-    tailTokens = tokens.slice(2); // remove DISC-A{serie}
+  // 1) Aceita direto SOMENTE se for um componente BNCC válido conhecido (1..10)
+  // Evita confundir disciplina_id interno (ex.: 21 = Matemática) com componente BNCC
+  if (
+    Number.isFinite(Number(disciplina_id)) &&
+    Number(disciplina_id) > 0 &&
+    Number(disciplina_id) <= 10
+  ) {
+    return Number(disciplina_id);
   }
 
-  // Remove Bx do tail se veio junto
-  tailTokens = tailTokens.filter((t) => !/^B[1-4]$/.test(t));
+  // 2) Tenta buscar nome na tabela disciplinas (se existir) e mapear para componente_id.
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT nome
+      FROM disciplinas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [Number(disciplina_id)]
+    );
 
-  // Se o código-base vier completo (incluindo A01...), tailTokens já está ok.
-  // Se vier vazio por algum motivo, garantimos pelo menos "A00"
-  if (!tailTokens.length) tailTokens = ["A00"];
+    const nome = rows?.[0]?.nome;
+    const mapped = mapDisciplinaNomeToComponenteId(nome);
+    if (Number.isFinite(Number(mapped))) return Number(mapped);
+  } catch (e) {
+    // silencioso: nem toda base tem a tabela/coluna exatamente assim
+  }
 
-  return [discSigla4, serieCodigo, B, ...tailTokens].join("-");
+  // 3) Fallback: null (para não filtrar errado)
+  return null;
 }
 
 
-// ============================================================================
-// GET /api/pedagogico/conteudos/planos
-// Lista planos (ou retorna 0/1 plano se filtros completos)
-// Query: turma_id, disciplina_id, bimestre, ano_letivo, status(opcional)
-// ============================================================================
-router.get("/pedagogico/conteudos/planos", async (req, res) => {
+/**
+ * POST /api/conteudos/admin/solicitacoes/edicao
+ *
+ * Professor registra solicitação de edição (governança premium).
+ * - NÃO libera edição
+ * - Apenas cria registro na fila (conteudos_solicitacoes_edicao)
+ *
+ * Body obrigatório:
+ * - escopo: 'CONTEXTO' | 'ITEM_EDIT' | 'ITEM_DELETE'
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ *
+ * Body condicional:
+ * - item_id (obrigatório se escopo != 'CONTEXTO')
+ * - motivo (opcional)
+ *
+ * Anti-duplicação:
+ * - Não permite 2 solicitações PENDENTE iguais
+ */
+router.post(
+  "/conteudos/admin/solicitacoes/edicao",
+  autorizarPermissao("conteudos.enviar"),
+  async (req, res) => {
   try {
-    const escola_id = req.user?.escola_id;
-    const turma_id = toInt(req.query.turma_id);
-    const disciplina_id = toInt(req.query.disciplina_id);
-    const bimestre = toInt(req.query.bimestre);
-    const ano_letivo = toInt(req.query.ano_letivo);
-    const status = req.query.status || null;
+    if (!assertAuthEscola(req, res)) return;
 
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!turma_id || !disciplina_id || !bimestre || !ano_letivo) {
-      return badRequest(res, "Informe turma_id, disciplina_id, bimestre e ano_letivo.");
+    const escola_id = Number(req.user.escola_id);
+    const solicitado_por_usuario_id = Number(req.user.usuarioId ?? req.user.id);
+
+    const {
+      escopo,
+      disciplina_id,
+      serie,
+      bimestre,
+      ano_letivo,
+      item_id,
+      motivo,
+    } = req.body ?? {};
+
+    if (
+      !escopo ||
+      !disciplina_id ||
+      !serie ||
+      !bimestre ||
+      !ano_letivo
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: "Campos obrigatórios não informados.",
+      });
     }
 
-    const params = [escola_id, turma_id, disciplina_id, ano_letivo, bimestre];
-    let sql = `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status, created_at, updated_at
-      FROM conteudos_planos
+    if (escopo !== "CONTEXTO" && !item_id) {
+      return res.status(400).json({
+        ok: false,
+        message: "item_id é obrigatório para solicitações por item.",
+      });
+    }
+
+    const db = req.db;
+
+    // 🔒 Anti-duplicação: já existe solicitação PENDENTE igual?
+    const [existente] = await db.query(
+      `
+      SELECT id
+      FROM conteudos_solicitacoes_edicao
       WHERE escola_id = ?
-        AND turma_id = ?
         AND disciplina_id = ?
-        AND ano_letivo = ?
+        AND serie = ?
         AND bimestre = ?
-    `;
+        AND ano_letivo = ?
+        AND escopo = ?
+        AND (
+          (? IS NULL AND item_id IS NULL)
+          OR item_id = ?
+        )
+        AND status = 'PENDENTE'
+      LIMIT 1
+      `,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        escopo,
+        item_id ?? null,
+        item_id ?? null,
+      ]
+    );
 
-    if (status) {
-      sql += ` AND status = ?`;
-      params.push(status);
+    if (existente?.length) {
+      return res.json({
+        ok: true,
+        ja_existente: true,
+        message: "Solicitação já registrada e aguardando análise da direção.",
+      });
     }
 
-    sql += ` ORDER BY id DESC`;
+    // ➕ Criar solicitação
+    const [ins] = await db.query(
+      `
+      INSERT INTO conteudos_solicitacoes_edicao (
+        escola_id,
+        disciplina_id,
+        serie,
+        bimestre,
+        ano_letivo,
+        escopo,
+        item_id,
+        motivo,
+        solicitado_por_usuario_id,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE')
+      `,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        escopo,
+        item_id ?? null,
+        motivo ?? null,
+        solicitado_por_usuario_id,
+      ]
+    );
 
-    const [rows] = await req.db.query(sql, params);
-
-    return res.json({ ok: true, planos: rows || [] });
+    return res.status(201).json({
+      ok: true,
+      id: ins?.insertId,
+      status: "PENDENTE",
+    });
   } catch (err) {
-    console.error("[conteudos_admin] GET /planos erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao listar planos." });
+    console.error("Erro POST /conteudos/admin/solicitacoes/edicao:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao registrar solicitação de edição.",
+    });
   }
 });
 
-// ============================================================================
-// POST /api/pedagogico/conteudos/planos
-// Cria (ou atualiza via UNIQUE) um plano
-// Body: turma_id, disciplina_id, bimestre, ano_letivo, titulo(opcional), status(opcional)
-// ============================================================================
-router.post("/pedagogico/conteudos/planos", async (req, res) => {
+
+/**
+ * POST /api/conteudos/admin/planejamento
+ *
+ * SALVAR do modal Conteúdos:
+ * - BNCC e SEEDF são catálogos globais (somente leitura)
+ * - Isolamento acontece aqui (conteudos_objetivos_escola)
+ */
+router.post(
+  "/conteudos/admin/planejamento",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
   try {
-    const escola_id = req.user?.escola_id;
-    const turma_id = toInt(req.body.turma_id);
-    const disciplina_id = toInt(req.body.disciplina_id);
-    const bimestre = toInt(req.body.bimestre);
-    const ano_letivo = toInt(req.body.ano_letivo);
-    const titulo = (req.body.titulo || "").trim() || null;
-    const status = (req.body.status || "ATIVO").toUpperCase();
+    if (!assertAuthEscola(req, res)) return;
 
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!turma_id || !disciplina_id || !bimestre || !ano_letivo) {
-      return badRequest(res, "Informe turma_id, disciplina_id, bimestre e ano_letivo.");
-    }
-    if (!["ATIVO", "INATIVO"].includes(status)) {
-      return badRequest(res, "Status inválido. Use ATIVO ou INATIVO.");
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const professor_id = Number(req.user.usuarioId ?? req.user.id);
+    const created_by = professor_id;
+
+    if (!Number.isFinite(professor_id) || professor_id <= 0) {
+      return res.status(403).json({
+        ok: false,
+        message: "Acesso negado: professor_id inválido no token (esperado usuarioId).",
+      });
     }
 
-    // INSERT com ON DUPLICATE KEY (uk_conteudos_plano já existe)
-    const sql = `
-      INSERT INTO conteudos_planos (escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+    const body = req.body ?? {};
+
+    const {
+      disciplina_id,
+      serie,
+      bimestre,
+      ano_letivo,
+      bncc_unidade_tematica_id,
+      seedf_conteudo_id,
+      texto,
+    } = body;
+
+    if (!req.body) {
+      return res.status(400).json({
+        ok: false,
+        message: "Body ausente. Envie JSON (Content-Type: application/json).",
+      });
+    }
+
+    if (
+      !disciplina_id ||
+      !serie ||
+      !bimestre ||
+      !ano_letivo ||
+      !bncc_unidade_tematica_id ||
+      !seedf_conteudo_id
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: "Campos obrigatórios não informados.",
+      });
+    }
+
+    const db = req.db;
+
+    const [result] = await db.query(
+      `
+      INSERT INTO conteudos_objetivos_escola
+      (
+        escola_id,
+        professor_id,
+        created_by,
+        disciplina_id,
+        serie,
+        bimestre,
+        ano_letivo,
+        bncc_unidade_tematica_id,
+        seedf_conteudo_id,
+        texto,
+        ativo,
+        status,
+        edicao_liberada
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0)
       ON DUPLICATE KEY UPDATE
-        titulo = VALUES(titulo),
-        status = VALUES(status),
+        texto = VALUES(texto),
+        ativo = 1,
+        status = 1,
+        edicao_liberada = 0,
         updated_at = CURRENT_TIMESTAMP
-    `;
-    await req.db.query(sql, [escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status]);
-
-    // Busca o plano (id) após upsert
-    const [rows] = await req.db.query(
-      `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status, created_at, updated_at
-      FROM conteudos_planos
-      WHERE escola_id = ? AND turma_id = ? AND disciplina_id = ? AND ano_letivo = ? AND bimestre = ?
-      LIMIT 1
       `,
-      [escola_id, turma_id, disciplina_id, ano_letivo, bimestre]
+      [
+        escola_id,
+        professor_id,
+        created_by,
+        disciplina_id,
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        Number(bncc_unidade_tematica_id),
+        Number(seedf_conteudo_id),
+        texto ?? null,
+      ]
     );
 
-    return res.json({ ok: true, plano: rows?.[0] || null });
+    return res.json({
+      ok: true,
+      id: result.insertId || null,
+    });
   } catch (err) {
-    console.error("[conteudos_admin] POST /planos erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao salvar plano." });
+    console.error("Erro POST /conteudos/admin/planejamento:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao salvar planejamento.",
+    });
   }
 });
 
-// ============================================================================
-// GET /api/pedagogico/conteudos/planos/:id
-// Retorna plano + itens (ordenados)
-// ============================================================================
-router.get("/pedagogico/conteudos/planos/:id", async (req, res) => {
+
+/**
+ * GET /api/conteudos/admin/contexto/opcoes
+ *
+ * Query:
+ * - disciplina_id (obrigatório)
+ * - serie        (obrigatório)  -> vem da turma (frontend manda)
+ * - bncc_unidade_tematica_id (opcional) -> filtrar SEEDF/OBJETIVOS
+ * - seedf_conteudo_id        (opcional) -> filtrar OBJETIVOS
+ *
+ * Retorna:
+ * {
+ *   temas:     [{id, texto}],
+ *   conteudos: [{id, texto}],
+ *   objetivos: [{id, texto}]
+ * }
+ */
+router.get(
+  "/conteudos/admin/contexto/opcoes",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
   try {
-    const escola_id = req.user?.escola_id;
-    const id = toInt(req.params.id);
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!id) return badRequest(res, "ID inválido.");
+    if (!assertAuthEscola(req, res)) return;
 
-    const [[plano]] = await req.db.query(
-      `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status, created_at, updated_at
-      FROM conteudos_planos
-      WHERE id = ? AND escola_id = ?
-      LIMIT 1
-      `,
-      [id, escola_id]
-    );
+    const escola_id = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
 
-    if (!plano) return res.status(404).json({ ok: false, message: "Plano não encontrado." });
+    // ✅ Novo contrato: serie (string) é o parâmetro oficial do contexto curricular.
+    // Compatibilidade: se vier ano_id (legado), derivamos serie como "7º ANO".
+    const ano_id = req.query.ano_id ? Number(req.query.ano_id) : null;
+    let serie = req.query.serie ? normSerie(req.query.serie) : "";
 
-    const [itens] = await req.db.query(
-      `
-      SELECT id, plano_id, ordem, texto, status, created_at, updated_at
-      FROM conteudos_itens
-      WHERE plano_id = ?
-        AND status = 'ATIVO'
-      ORDER BY ordem ASC
-      `,
-      [id]
-    );
-
-    return res.json({ ok: true, plano, itens: itens || [] });
-  } catch (err) {
-    console.error("[conteudos_admin] GET /planos/:id erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao carregar plano." });
-  }
-});
-
-// ============================================================================
-// PUT /api/pedagogico/conteudos/planos/:id
-// Atualiza título/status do plano
-// Body: titulo(opcional), status(opcional)
-// ============================================================================
-router.put("/pedagogico/conteudos/planos/:id", async (req, res) => {
-  try {
-    const escola_id = req.user?.escola_id;
-    const id = toInt(req.params.id);
-    const titulo = req.body.titulo !== undefined ? String(req.body.titulo).trim() : undefined;
-    const status = req.body.status !== undefined ? String(req.body.status).toUpperCase() : undefined;
-
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!id) return badRequest(res, "ID inválido.");
-    if (status !== undefined && !["ATIVO", "INATIVO"].includes(status)) {
-      return badRequest(res, "Status inválido. Use ATIVO ou INATIVO.");
+    if (!serie && Number.isFinite(ano_id)) {
+      serie = `${ano_id}º ANO`;
     }
 
-    // Confirma existência do plano na escola
-    const [[plano]] = await req.db.query(
-      `SELECT id FROM conteudos_planos WHERE id = ? AND escola_id = ? LIMIT 1`,
-      [id, escola_id]
-    );
-    if (!plano) return res.status(404).json({ ok: false, message: "Plano não encontrado." });
+    // BNCC exige ano_id (numérico). Se não veio, derivamos do início da série (ex.: "7º ANO" -> 7).
+    const ano_bncc = Number.isFinite(ano_id)
+      ? Number(ano_id)
+      : (() => {
+          const m = String(serie || "").trim().match(/^(\d+)/);
+          const n = m ? Number(m[1]) : null;
+          return Number.isFinite(n) ? n : null;
+        })();
 
-    const sets = [];
-    const params = [];
+    const bncc_unidade_tematica_id = req.query.bncc_unidade_tematica_id
+      ? Number(req.query.bncc_unidade_tematica_id)
+      : null;
 
-    if (titulo !== undefined) {
-      sets.push("titulo = ?");
-      params.push(titulo || null);
+    const seedf_conteudo_id = req.query.seedf_conteudo_id
+      ? Number(req.query.seedf_conteudo_id)
+      : null;
+
+    if (!disciplina_id || !serie || !Number.isFinite(ano_bncc)) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id e serie são obrigatórios (e a serie deve permitir derivar ano_id para BNCC).",
+      });
     }
-    if (status !== undefined) {
-      sets.push("status = ?");
-      params.push(status);
-    }
 
-    if (!sets.length) return badRequest(res, "Nada para atualizar.");
+    const db = req.db;
 
-    params.push(id, escola_id);
+    // 1) TEMAS — modo híbrido
+    // - Se disciplina interna for "Geometria": usa tabela interna geometria_tema (por escola/ano)
+    // - Caso contrário: usa BNCC oficial (bncc_unidades_tematicas)
+    const isGeo = await isDisciplinaGeometria(db, disciplina_id);
 
-    await req.db.query(
-      `
-      UPDATE conteudos_planos
-      SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND escola_id = ?
-      `,
-      params
-    );
+    let temas = [];
 
-    const [[updated]] = await req.db.query(
-      `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status, created_at, updated_at
-      FROM conteudos_planos
-      WHERE id = ? AND escola_id = ?
-      LIMIT 1
-      `,
-      [id, escola_id]
-    );
-
-    return res.json({ ok: true, plano: updated });
-  } catch (err) {
-    console.error("[conteudos_admin] PUT /planos/:id erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao atualizar plano." });
-  }
-});
-
-// ============================================================================
-// PUT /api/pedagogico/conteudos/planos/:id/itens
-// Substitui a lista inteira de itens (mais simples e estável)
-// Body: itens: [{ texto: string }]
-// Regras:
-//  - remove todos itens anteriores do plano (DELETE) e recria em ordem 1..n
-// ============================================================================
-router.put("/pedagogico/conteudos/planos/:id/itens", async (req, res) => {
-  try {
-    const escola_id = req.user?.escola_id;
-    const id = toInt(req.params.id);
-    const itens = Array.isArray(req.body.itens) ? req.body.itens : null;
-
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!id) return badRequest(res, "ID inválido.");
-    if (!itens) return badRequest(res, "Envie 'itens' como array.");
-
-    // Confirma plano na escola
-    const [[plano]] = await req.db.query(
-      `SELECT id FROM conteudos_planos WHERE id = ? AND escola_id = ? LIMIT 1`,
-      [id, escola_id]
-    );
-    if (!plano) return res.status(404).json({ ok: false, message: "Plano não encontrado." });
-
-    // Normaliza itens (remove vazios)
-    const normalized = itens
-      .map((x) => (x?.texto !== undefined ? String(x.texto).trim() : ""))
-      .filter((t) => t.length > 0)
-      .slice(0, 200); // segurança
-
-    // Transação simples
-    await req.db.query("START TRANSACTION");
-
-    await req.db.query(`DELETE FROM conteudos_itens WHERE plano_id = ?`, [id]);
-
-    if (normalized.length) {
-      const values = normalized.map((texto, idx) => [id, idx + 1, texto, "ATIVO"]);
-      await req.db.query(
-        `INSERT INTO conteudos_itens (plano_id, ordem, texto, status) VALUES ?`,
-        [values]
+    if (isGeo) {
+      const [rowsTemasGeo] = await db.query(
+        `
+        SELECT
+          id,
+          nome AS texto
+        FROM geometria_tema
+        WHERE escola_id = ?
+          AND ano_id = ?
+          AND ativo = 1
+        ORDER BY nome ASC
+        LIMIT 500
+        `,
+        [escola_id, ano_bncc]
       );
+
+      temas = rowsTemasGeo || [];
+    } else {
+      // ✅ disciplina_id (interno) ≠ componente_id (BNCC)
+      // Precisamos mapear antes de consultar bncc_unidades_tematicas.
+      const componente_id =
+        req.query.componente_id != null && Number.isFinite(Number(req.query.componente_id))
+          ? Number(req.query.componente_id)
+          : await resolveBnccComponenteId(db, disciplina_id);
+
+      const [rowsTemasBncc] = await db.query(
+        `
+        SELECT
+          id,
+          nome AS texto
+        FROM bncc_unidades_tematicas
+        WHERE componente_id = ?
+          AND ano_id = ?
+        ORDER BY nome ASC
+        LIMIT 500
+        `,
+        [componente_id ?? -1, ano_bncc]
+      );
+
+      temas = rowsTemasBncc || [];
     }
 
-    await req.db.query(
-      `UPDATE conteudos_planos SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND escola_id = ?`,
+    // 2) CONTEÚDOS (SEEDF) — somente leitura para professor
+    const paramsConteudos = [disciplina_id, String(serie)];
+    let whereBncc = "";
+    if (bncc_unidade_tematica_id) {
+      whereBncc = " AND (bncc_unidade_tematica_id = ?) ";
+      paramsConteudos.push(bncc_unidade_tematica_id);
+    }
+
+    const [rowsConteudos] = await db.query(
+      `
+      SELECT
+        id,
+        texto
+      FROM seedf_conteudos
+      WHERE disciplina_id = ?
+        AND serie = ?
+        AND ativo = 1
+        ${whereBncc}
+      ORDER BY texto ASC
+      LIMIT 800
+      `,
+      paramsConteudos
+    );
+
+    // 3) OBJETIVOS (ESCOLA) — catálogo reutilizável
+    // Regras:
+    // - escola_id obrigatório
+    // - filtra por disciplina/serie
+    // - se houver bncc/seedf selecionados, estreita
+    const paramsObj = [escola_id, disciplina_id, String(serie)];
+    let whereObj = "";
+
+    if (bncc_unidade_tematica_id) {
+      whereObj += " AND (bncc_unidade_tematica_id = ? OR bncc_unidade_tematica_id IS NULL) ";
+      paramsObj.push(bncc_unidade_tematica_id);
+    }
+
+    if (seedf_conteudo_id) {
+      whereObj += " AND (seedf_conteudo_id = ? OR seedf_conteudo_id IS NULL) ";
+      paramsObj.push(seedf_conteudo_id);
+    }
+
+    const [rowsObjetivos] = await db.query(
+      `
+      SELECT
+        id,
+        texto
+      FROM conteudos_objetivos_escola
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND ativo = 1
+        ${whereObj}
+      ORDER BY texto ASC
+      LIMIT 800
+      `,
+      paramsObj
+    );
+
+    return res.json({
+      ok: true,
+      temas: temas.map((t) => ({ id: t.id, texto: t.texto })),
+      conteudos: (rowsConteudos || []).map((c) => ({ id: c.id, texto: c.texto })),
+      objetivos: (rowsObjetivos || []).map((o) => ({ id: o.id, texto: o.texto })),
+    });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/contexto/opcoes:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar opções do contexto." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/solicitacoes/edicao
+ *
+ * Retorna as solicitações de edição PENDENTES do contexto (e itens) para:
+ * disciplina_id + serie + bimestre + ano_letivo, sempre filtrado por escola_id do token.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ *
+ * Retorna:
+ * {
+ *   ok: true,
+ *   contexto_pendente: boolean,
+ *   itens_pendentes: [{ id, escopo, item_id, status, created_at }],
+ *   solicitacoes: [{ id, escopo, item_id, status, motivo, created_at }]
+ * }
+ */
+router.get(
+  "/conteudos/admin/solicitacoes/edicao",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.query?.disciplina_id);
+    const serie = req.query?.serie ? normSerie(req.query.serie) : "";
+    const bimestre = Number(req.query?.bimestre);
+    const ano_letivo = Number(req.query?.ano_letivo);
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "Parâmetros obrigatórios: disciplina_id, serie, bimestre, ano_letivo.",
+      });
+    }
+
+    const db = req.db;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        escopo,
+        item_id,
+        status,
+        motivo,
+        created_at
+      FROM conteudos_solicitacoes_edicao
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND bimestre = ?
+        AND ano_letivo = ?
+        AND status = 'PENDENTE'
+      ORDER BY created_at DESC
+      LIMIT 300
+      `,
+      [escola_id, disciplina_id, serie, bimestre, ano_letivo]
+    );
+
+    const solicitacoes = (rows || []).map((r) => ({
+      id: Number(r.id),
+      escopo: String(r.escopo || ""),
+      item_id: r.item_id === null || r.item_id === undefined ? null : Number(r.item_id),
+      status: String(r.status || ""),
+      motivo: r.motivo ?? null,
+      created_at: r.created_at ?? null,
+    }));
+
+    const contexto_pendente = solicitacoes.some((s) => s.escopo === "CONTEXTO");
+
+    const itens_pendentes = solicitacoes
+      .filter((s) => s.escopo !== "CONTEXTO" && Number.isFinite(Number(s.item_id)))
+      .map((s) => ({
+        id: s.id,
+        escopo: s.escopo,
+        item_id: Number(s.item_id),
+        status: s.status,
+        created_at: s.created_at,
+      }));
+
+    return res.json({
+      ok: true,
+      contexto_pendente,
+      itens_pendentes,
+      solicitacoes,
+    });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/solicitacoes/edicao:", err);
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erro ao carregar solicitações de edição." });
+  }
+});
+
+
+
+/**
+ * DELETE /api/conteudos/admin/planejamento/itens/:id
+ *
+ * Remove (soft delete) um item do planejamento salvo (conteudos_objetivos_escola)
+ * - Marca ativo = 0
+ * - Garante que pertence à escola do token
+ */
+router.delete(
+  "/conteudos/admin/planejamento/itens/:id",
+  autorizarPermissao("conteudos.editar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const id = Number(req.params.id);
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido." });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
+      `
+      UPDATE conteudos_objetivos_escola
+      SET ativo = 0,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND escola_id = ?
+      LIMIT 1
+      `,
       [id, escola_id]
     );
 
-    await req.db.query("COMMIT");
+    if (!r?.affectedRows) {
+      return res.status(404).json({
+        ok: false,
+        message: "Item não encontrado (ou não pertence a esta escola).",
+      });
+    }
 
-    // Retorna itens atualizados
-    const [rows] = await req.db.query(
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Erro DELETE /conteudos/admin/planejamento/itens/:id:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao excluir item do planejamento." });
+  }
+});
+
+
+/**
+ * PATCH /api/conteudos/admin/direcao/planejamento/itens/:id/edicao
+ *
+ * Direção/Coordenação libera (ou revoga) edição de UMA linha do planejamento (conteudos_objetivos_escola).
+ * Body:
+ * - edicao_liberada: 0 | 1
+ *
+ * Observação:
+ * - Por enquanto, não fazemos checagem de perfil/role aqui (depende do seu modelo de auth).
+ *   Se você já tiver "req.user.perfil", podemos travar isso em seguida.
+ */
+router.patch(
+  "/conteudos/admin/direcao/planejamento/itens/:id/edicao",
+  autorizarPermissao("conteudos.aprovar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const id = Number(req.params.id);
+
+    const edicao_liberada = Number(req.body?.edicao_liberada) === 1 ? 1 : 0;
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido." });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
       `
-      SELECT id, plano_id, ordem, texto, status, created_at, updated_at
-      FROM conteudos_itens
-      WHERE plano_id = ?
-      ORDER BY ordem ASC
+      UPDATE conteudos_objetivos_escola
+      SET edicao_liberada = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND escola_id = ?
+        AND ativo = 1
+      LIMIT 1
       `,
-      [id]
+      [edicao_liberada, id, escola_id]
+    );
+
+    if (!r?.affectedRows) {
+      return res.status(404).json({
+        ok: false,
+        message: "Item não encontrado (ou não pertence a esta escola).",
+      });
+    }
+
+    return res.json({ ok: true, id, edicao_liberada });
+  } catch (err) {
+    console.error("Erro PATCH /conteudos/admin/direcao/planejamento/itens/:id/edicao:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao atualizar liberação de edição do item." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/planejamento/itens
+ *
+ * Lista o planejamento salvo via POST /planejamento/lote
+ * Fonte: conteudos_objetivos_escola
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - ano_letivo
+ * - bimestre
+ *
+ * Retorna:
+ * { ok:true, itens:[...] }
+ *
+ * Observação:
+ * - Mantém nomes compatíveis com o frontend (tema_texto_snapshot, conteudo_texto_snapshot, objetivo_texto)
+ */
+/**
+ * PATCH /api/conteudos/admin/direcao/planejamento/contexto/edicao
+ *
+ * Direção/Coordenação libera (ou revoga) edição de TODAS as linhas do contexto (set em massa).
+ *
+ * Body obrigatório:
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ * - edicao_liberada: 0 | 1
+ *
+ * Observação:
+ * - Por enquanto, sem checagem de perfil/role (depende do seu auth).
+ */
+router.patch(
+  "/conteudos/admin/direcao/planejamento/contexto/edicao",
+  autorizarPermissao("conteudos.aprovar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const serie = req.body?.serie ? normSerie(req.body.serie) : "";
+    const bimestre = Number(req.body?.bimestre);
+    const ano_letivo = Number(req.body?.ano_letivo);
+
+    const edicao_liberada = Number(req.body?.edicao_liberada) === 1 ? 1 : 0;
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, bimestre e ano_letivo são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
+      `
+      UPDATE conteudos_objetivos_escola
+      SET edicao_liberada = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND bimestre = ?
+        AND ano_letivo = ?
+        AND ativo = 1
+      `,
+      [edicao_liberada, escola_id, disciplina_id, serie, bimestre, ano_letivo]
+    );
+
+    return res.json({
+      ok: true,
+      edicao_liberada,
+      afetados: r?.affectedRows ?? 0,
+      contexto: { escola_id, disciplina_id, serie, bimestre, ano_letivo },
+    });
+  } catch (err) {
+    console.error("Erro PATCH /conteudos/admin/direcao/planejamento/contexto/edicao:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao atualizar liberação de edição do contexto." });
+  }
+});
+
+router.get(
+  "/conteudos/admin/planejamento/itens",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.query.disciplina_id);
+    const ano_letivo = Number(req.query.ano_letivo);
+    const bimestre = Number(req.query.bimestre);
+    const serie = req.query.serie ? normSerie(req.query.serie) : "";
+
+    if (!disciplina_id || !ano_letivo || !bimestre || !serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, ano_letivo e bimestre são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        coe.id,
+        NULL AS turma_id,
+        coe.disciplina_id,
+        coe.serie,
+        coe.ano_letivo,
+        coe.bimestre,
+        coe.bncc_unidade_tematica_id,
+        bt.nome AS tema_texto_snapshot,
+        coe.seedf_conteudo_id,
+        sc.texto AS conteudo_texto_snapshot,
+        coe.texto AS objetivo_texto,
+                    coe.status,
+                    coe.edicao_liberada,
+                    coe.created_at
+      FROM conteudos_objetivos_escola coe
+      LEFT JOIN bncc_unidades_tematicas bt
+        ON bt.id = coe.bncc_unidade_tematica_id
+      LEFT JOIN seedf_conteudos sc
+        ON sc.id = coe.seedf_conteudo_id
+      WHERE coe.escola_id = ?
+        AND coe.disciplina_id = ?
+        AND coe.serie = ?
+        AND coe.ano_letivo = ?
+        AND coe.bimestre = ?
+        AND coe.ativo = 1
+      ORDER BY coe.id DESC
+      LIMIT 500
+      `,
+      [escola_id, disciplina_id, serie, ano_letivo, bimestre]
     );
 
     return res.json({ ok: true, itens: rows || [] });
   } catch (err) {
-    try {
-      await req.db.query("ROLLBACK");
-    } catch {}
-    console.error("[conteudos_admin] PUT /planos/:id/itens erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao salvar itens." });
+    console.error("Erro /conteudos/admin/planejamento/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar itens do planejamento." });
   }
 });
 
 
-// ============================================================================
-// GET /api/pedagogico/conteudos/catalogo
-// Catálogo anual (BNCC-like): Unidade (Assunto) -> Objeto (Tópico) -> "Habilidade operacional" (Subtópico)
-// Query: disciplina_id, ano_ref
-// Regras:
-//  - escola_id vem do token
-//  - catálogo anual = conteudos_topicos com bimestre IS NULL
-// Retorno: { topicos: [{...topico, subtopicos:[...] }] }
-// ============================================================================
-router.get("/pedagogico/conteudos/catalogo", async (req, res) => {
+
+
+
+
+
+/**
+ * GET /api/conteudos/admin/plano/itens
+ *
+ * Query (obrigatório):
+ * - turma_id
+ * - disciplina_id
+ * - ano_letivo
+ * - bimestre
+ *
+ * Retorna:
+ * { ok:true, itens:[...] }
+ */
+router.get(
+  "/conteudos/admin/plano/itens",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
   try {
-    const escola_id = req.user?.escola_id;
-    const disciplina_id = toInt(req.query.disciplina_id);
-    const ano_ref = toInt(req.query.ano_ref);
+    if (!assertAuthEscola(req, res)) return;
 
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!disciplina_id || !ano_ref) return badRequest(res, "Informe disciplina_id e ano_ref.");
+    const escola_id = Number(req.user.escola_id);
 
-    // Catálogo anual: bimestre IS NULL
-    const [rows] = await req.db.query(
-      `
-      SELECT
-        ct.id            AS topico_id,
-        ct.escola_id,
-        ct.disciplina_id,
-        ct.ano_ref,
-        ct.bimestre,
-        ct.codigo        AS topico_codigo,
-        ct.titulo        AS topico_titulo,
-        ct.ordem         AS topico_ordem,
-        ct.status        AS topico_status,
+    // ✅ Novo contrato: plano é por SÉRIE (não por turma)
+    // Compatibilidade: se vier turma_id (legado), derivamos a série como antes.
+    const turma_id = req.query.turma_id ? Number(req.query.turma_id) : null;
+    const disciplina_id = Number(req.query.disciplina_id);
+    const ano_letivo = Number(req.query.ano_letivo);
+    const bimestre = Number(req.query.bimestre);
+    const serieParam = req.query.serie ? normSerie(req.query.serie) : "";
 
-        cs.id            AS subtopico_id,
-        cs.codigo        AS subtopico_codigo,
-        cs.titulo        AS subtopico_titulo,
-        cs.ordem         AS subtopico_ordem,
-        cs.status        AS subtopico_status
-
-      FROM conteudos_topicos ct
-      LEFT JOIN conteudos_subtopicos cs ON cs.topico_id = ct.id
-      WHERE ct.escola_id = ?
-        AND ct.disciplina_id = ?
-        AND ct.ano_ref = ?
-        AND ct.bimestre IS NULL
-        AND ct.status = 'ATIVO'
-        AND (cs.id IS NULL OR cs.status = 'ATIVO')
-      ORDER BY ct.ordem ASC, cs.ordem ASC
-      `,
-      [escola_id, disciplina_id, ano_ref]
-    );
-
-    // Monta árvore
-    const map = new Map();
-    for (const r of rows || []) {
-      if (!map.has(r.topico_id)) {
-        map.set(r.topico_id, {
-          id: r.topico_id,
-          escola_id: r.escola_id,
-          disciplina_id: r.disciplina_id,
-          ano_ref: r.ano_ref,
-          bimestre: r.bimestre, // NULL
-          codigo: stripBimestreFromCodigo(r.topico_codigo),
-          titulo: r.topico_titulo,
-          ordem: r.topico_ordem,
-          status: r.topico_status,
-          subtopicos: [],
-        });
-      }
-      if (r.subtopico_id) {
-        map.get(r.topico_id).subtopicos.push({
-          id: r.subtopico_id,
-          topico_id: r.topico_id,
-          codigo: stripBimestreFromCodigo(r.subtopico_codigo),
-          titulo: r.subtopico_titulo,
-          ordem: r.subtopico_ordem,
-          status: r.subtopico_status,
-        });
-      }
-    }
-
-    return res.json({ ok: true, topicos: Array.from(map.values()) });
-  } catch (err) {
-    console.error("[conteudos_admin] GET /catalogo erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao carregar catálogo." });
-  }
-});
-
-// ============================================================================
-// GET /api/pedagogico/conteudos/planos/:id/alocacoes
-// Retorna alocações do plano (ordenadas) com o código final já gravado
-// ============================================================================
-router.get("/pedagogico/conteudos/planos/:id/alocacoes", async (req, res) => {
-  try {
-    const escola_id = req.user?.escola_id;
-    const plano_id = toInt(req.params.id);
-
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!plano_id) return badRequest(res, "ID inválido.");
-
-    // Confirma plano na escola
-    const [[plano]] = await req.db.query(
-      `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status
-      FROM conteudos_planos
-      WHERE id = ? AND escola_id = ?
-      LIMIT 1
-      `,
-      [plano_id, escola_id]
-    );
-    if (!plano) return res.status(404).json({ ok: false, message: "Plano não encontrado." });
-
-    const [rows] = await req.db.query(
-      `
-      SELECT
-        cpa.id,
-        cpa.plano_id,
-        cpa.subtopico_id,
-        cpa.codigo,
-        cpa.ordem,
-        cpa.status,
-        cs.titulo AS subtopico_titulo
-      FROM conteudos_plano_alocacoes cpa
-      JOIN conteudos_subtopicos cs ON cs.id = cpa.subtopico_id
-      WHERE cpa.plano_id = ?
-        AND cpa.status = 'ATIVO'
-      ORDER BY cpa.ordem ASC
-      `,
-      [plano_id]
-    );
-
-    return res.json({ ok: true, plano, alocacoes: rows || [] });
-  } catch (err) {
-    console.error("[conteudos_admin] GET /planos/:id/alocacoes erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao carregar alocações." });
-  }
-});
-
-// ============================================================================
-// POST /api/pedagogico/conteudos/planos/:id/alocacoes
-// Substitui a lista inteira (estável) e recalcula 'codigo' automaticamente
-// Body: alocacoes: [{ subtopico_id: number, ordem?: number }]
-// Regras:
-//  - Valida plano na escola
-//  - Remove alocações anteriores (DELETE) e recria em ordem 1..n
-//  - Recalcula codigo (DISC + A{serie} + B{bimestre} + sufixo do catálogo)
-// ============================================================================
-router.post("/pedagogico/conteudos/planos/:id/alocacoes", async (req, res) => {
-  try {
-    const escola_id = req.user?.escola_id;
-    const plano_id = toInt(req.params.id);
-    const alocacoes = Array.isArray(req.body.alocacoes) ? req.body.alocacoes : null;
-
-    if (!escola_id) return res.status(403).json({ ok: false, message: "Escola não definida." });
-    if (!plano_id) return badRequest(res, "ID inválido.");
-    if (!alocacoes) return badRequest(res, "Envie 'alocacoes' como array.");
-
-    // Confirma plano + obtém dados necessários (bimestre, turma, disciplina)
-    const [[plano]] = await req.db.query(
-      `
-      SELECT id, escola_id, turma_id, disciplina_id, ano_letivo, bimestre, titulo, status
-      FROM conteudos_planos
-      WHERE id = ? AND escola_id = ?
-      LIMIT 1
-      `,
-      [plano_id, escola_id]
-    );
-    if (!plano) return res.status(404).json({ ok: false, message: "Plano não encontrado." });
-
-    // Normaliza lista (subtopico_id obrigatorio)
-    const normalized = alocacoes
-      .map((x) => ({ subtopico_id: toInt(x?.subtopico_id) }))
-      .filter((x) => !!x.subtopico_id)
-      .slice(0, 400); // segurança
-
-    // Remove duplicados mantendo ordem (primeira ocorrência)
-    const seen = new Set();
-    const deduped = [];
-    for (const item of normalized) {
-      if (!seen.has(item.subtopico_id)) {
-        seen.add(item.subtopico_id);
-        deduped.push(item);
-      }
-    }
-
-    // Busca disciplina + turma para gerar DISC e A{serie}
-    const [[disc]] = await req.db.query(
-      `SELECT nome FROM disciplinas WHERE id = ? LIMIT 1`,
-      [plano.disciplina_id]
-    );
-
-    const [[turma]] = await req.db.query(
-      `SELECT serie FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1`,
-      [plano.turma_id, escola_id]
-    );
-
-    const discSigla4 = disciplinaSigla4(disc?.nome);
-    const serieCodigo = serieCodigoFromTurmaSerie(turma?.serie);
-
-    // Vamos precisar do "codigoBase" do subtópico (catálogo)
-    // Observação: se o código do catálogo estiver completo ou parcial, buildCodigoFinal resolve.
-    const ids = deduped.map((x) => x.subtopico_id);
-    if (!ids.length) {
-      // Se o usuário limpou tudo
-      await req.db.query("START TRANSACTION");
-      await req.db.query(`DELETE FROM conteudos_plano_alocacoes WHERE plano_id = ?`, [plano_id]);
-      await req.db.query("COMMIT");
-      return res.json({ ok: true, plano, alocacoes: [] });
-    }
-
-    const [subs] = await req.db.query(
-      `
-      SELECT id, codigo, titulo
-      FROM conteudos_subtopicos
-      WHERE id IN (?)
-      `,
-      [ids]
-    );
-
-    const subMap = new Map((subs || []).map((s) => [Number(s.id), s]));
-
-    // Transação: substituição completa
-    await req.db.query("START TRANSACTION");
-
-    await req.db.query(`DELETE FROM conteudos_plano_alocacoes WHERE plano_id = ?`, [plano_id]);
-
-    // Insert em lote
-    const values = deduped.map((item, idx) => {
-      const sub = subMap.get(Number(item.subtopico_id));
-      const codigoBase = sub?.codigo || "A00";
-      const codigoFinal = buildCodigoFinal({
-        discSigla4,
-        serieCodigo,
-        bimestre: plano.bimestre,
-        codigoBase,
+    if (!disciplina_id || !ano_letivo || !bimestre) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, ano_letivo e bimestre são obrigatórios.",
       });
-      return [plano_id, item.subtopico_id, codigoFinal, idx + 1, "ATIVO"];
-    });
+    }
 
-    await req.db.query(
-      `INSERT INTO conteudos_plano_alocacoes (plano_id, subtopico_id, codigo, ordem, status) VALUES ?`,
-      [values]
-    );
+    const db = req.db;
 
-    await req.db.query(
-      `UPDATE conteudos_planos SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND escola_id = ?`,
-      [plano_id, escola_id]
-    );
+    let serie = serieParam;
 
-    await req.db.query("COMMIT");
+    // Compatibilidade: deriva série a partir da turma_id (se necessário)
+    if (!serie && turma_id) {
+      const [rowsTurma] = await db.query(
+        `
+        SELECT serie
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+        LIMIT 1
+        `,
+        [turma_id, escola_id]
+      );
 
-    // Retorna lista final
-    const [rows] = await req.db.query(
+      serie = String(rowsTurma?.[0]?.serie || "").trim();
+    }
+
+    if (!serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "serie é obrigatória (ou informe turma_id para derivação).",
+      });
+    }
+
+    const [rows] = await db.query(
       `
       SELECT
-        cpa.id,
-        cpa.plano_id,
-        cpa.subtopico_id,
-        cpa.codigo,
-        cpa.ordem,
-        cpa.status,
-        cs.titulo AS subtopico_titulo
-      FROM conteudos_plano_alocacoes cpa
-      JOIN conteudos_subtopicos cs ON cs.id = cpa.subtopico_id
-      WHERE cpa.plano_id = ?
-        AND cpa.status = 'ATIVO'
-      ORDER BY cpa.ordem ASC
+        id,
+        turma_id, -- turma de referência (para manter compatibilidade de schema)
+        disciplina_id,
+        serie,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        status,
+        created_at
+      FROM conteudos_plano_itens
+      WHERE escola_id = ?
+        AND serie = ?
+        AND disciplina_id = ?
+        AND ano_letivo = ?
+        AND bimestre = ?
+      ORDER BY id DESC
+      LIMIT 500
       `,
-      [plano_id]
+      [escola_id, serie, disciplina_id, ano_letivo, bimestre]
     );
 
-    return res.json({ ok: true, plano, alocacoes: rows || [] });
+    return res.json({ ok: true, itens: rows || [] });
   } catch (err) {
-    try {
-      await req.db.query("ROLLBACK");
-    } catch {}
-    console.error("[conteudos_admin] POST /planos/:id/alocacoes erro:", err);
-    return res.status(500).json({ ok: false, message: "Erro ao salvar alocações." });
+    console.error("Erro /conteudos/admin/plano/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar itens do plano." });
   }
 });
 
+/**
+ * POST /api/conteudos/admin/plano/itens
+ *
+ * Body (obrigatório):
+ * - turma_id
+ * - disciplina_id
+ * - ano_letivo
+ * - bimestre
+ * - tema_texto_snapshot
+ * - conteudo_texto_snapshot
+ *
+ * Body (opcional):
+ * - bncc_unidade_tematica_id
+ * - seedf_conteudo_id
+ * - objetivo_texto (aceita null)
+ * - serie (fallback, caso não seja possível derivar pela turma)
+ */
+router.post(
+  "/conteudos/admin/plano/itens",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    // ✅ Novo contrato: plano por SÉRIE
+    // Compatibilidade: aceita turma_id (legado) para derivar série.
+    const turma_id_body = req.body?.turma_id ? Number(req.body.turma_id) : null;
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const ano_letivo = Number(req.body?.ano_letivo);
+    const bimestre = Number(req.body?.bimestre);
+
+    const serieBody = req.body?.serie ? normSerie(req.body.serie) : "";
+
+    const bncc_unidade_tematica_id = req.body?.bncc_unidade_tematica_id
+      ? Number(req.body.bncc_unidade_tematica_id)
+      : null;
+
+    const seedf_conteudo_id = req.body?.seedf_conteudo_id
+      ? Number(req.body.seedf_conteudo_id)
+      : null;
+
+    const tema_texto_snapshot = String(req.body?.tema_texto_snapshot || "").trim();
+    const conteudo_texto_snapshot = String(req.body?.conteudo_texto_snapshot || "").trim();
+
+    // objetivo_texto pode ser null (opcional)
+    const objetivo_texto =
+      req.body?.objetivo_texto === null || typeof req.body?.objetivo_texto === "undefined"
+        ? null
+        : String(req.body.objetivo_texto).trim() || null;
+
+    if (!disciplina_id || !ano_letivo || !bimestre) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, ano_letivo e bimestre são obrigatórios.",
+      });
+    }
+
+    if (!tema_texto_snapshot || !conteudo_texto_snapshot) {
+      return res.status(400).json({
+        ok: false,
+        message: "tema_texto_snapshot e conteudo_texto_snapshot são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    let serie = serieBody;
+
+    // Compatibilidade: deriva série pela turma (se necessário)
+    if (!serie && turma_id_body) {
+      const [rowsTurma] = await db.query(
+        `
+        SELECT serie
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+        LIMIT 1
+        `,
+        [turma_id_body, escola_id]
+      );
+
+      serie = String(rowsTurma?.[0]?.serie || "").trim();
+    }
+
+    if (!serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "serie é obrigatória (ou informe turma_id para derivação).",
+      });
+    }
+
+    // ✅ Mantém compatibilidade do schema: escolhe uma turma de referência desta série
+    // Preferência: turma_id enviado (se bater com a mesma série); caso contrário, usa a primeira turma da série.
+    let turma_id = null;
+
+    if (turma_id_body) {
+      const [chk] = await db.query(
+        `
+        SELECT id
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+          AND TRIM(serie) = TRIM(?)
+        LIMIT 1
+        `,
+        [turma_id_body, escola_id, serie]
+      );
+
+      if (chk?.length) {
+        turma_id = Number(turma_id_body);
+      }
+    }
+
+    if (!turma_id) {
+      const [pick] = await db.query(
+        `
+        SELECT id
+        FROM turmas
+        WHERE escola_id = ?
+          AND TRIM(serie) = TRIM(?)
+          AND (ano IS NULL OR ano = ?)
+        ORDER BY id ASC
+        LIMIT 1
+        `,
+        [escola_id, serie, ano_letivo]
+      );
+
+      turma_id = pick?.[0]?.id ? Number(pick[0].id) : null;
+    }
+
+    if (!turma_id) {
+      return res.status(400).json({
+        ok: false,
+        message: "Não foi possível localizar uma turma de referência para a série informada.",
+      });
+    }
+
+    const [ins] = await db.query(
+      `
+      INSERT INTO conteudos_plano_itens (
+        escola_id,
+        turma_id,
+        disciplina_id,
+        serie,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        escola_id,
+        turma_id,
+        disciplina_id,
+        serie || null,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        "ATIVO",
+      ]
+    );
+
+    const item = {
+      id: ins?.insertId,
+      escola_id,
+      turma_id,
+      disciplina_id,
+      serie: serie || null,
+      ano_letivo,
+      bimestre,
+      bncc_unidade_tematica_id,
+      tema_texto_snapshot,
+      seedf_conteudo_id,
+      conteudo_texto_snapshot,
+      objetivo_texto,
+      status: "ATIVO",
+    };
+
+    return res.status(201).json({ ok: true, item });
+
+
+
+
+
+  } catch (err) {
+    console.error("Erro POST /conteudos/admin/plano/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar item do plano." });
+  }
+});
+
+/**
+ * POST /api/conteudos/admin/planejamento/lote
+ *
+ * Objetivo (OPÇÃO A):
+ * - Recebe as linhas que o professor montou no FRONT (tabela)
+ * - Persiste em conteudos_objetivos_escola somente quando clicar no SALVAR (superior)
+ *
+ * Body (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ * - itens: [{ bncc_unidade_tematica_id, seedf_conteudo_id, texto }]
+ *
+ * Observações:
+ * - "texto" é o objetivo (opcional): pode ser null/"".
+ * - professor_id e created_by virão do token (req.user.usuarioId)
+ * - escola_id vem do middleware verificarEscola (req.user.escola_id)
+ */
+router.post(
+  "/conteudos/admin/planejamento/lote",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const professor_id = Number(req.user.usuarioId); // token
+    const created_by = Number(req.user.usuarioId);   // token
+
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const serie = normSerie(req.body?.serie);
+    const bimestre = Number(req.body?.bimestre);
+    const ano_letivo = Number(req.body?.ano_letivo);
+
+    const itens = Array.isArray(req.body?.itens) ? req.body.itens : [];
+
+    if (!professor_id || !created_by) {
+      return res.status(403).json({ ok: false, message: "Acesso negado: usuário não definido no token." });
+    }
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, bimestre e ano_letivo são obrigatórios.",
+      });
+    }
+
+    if (!itens.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Nenhum item para salvar (itens vazio).",
+      });
+    }
+
+    const db = req.db;
+
+    await db.query("START TRANSACTION");
+
+    let upserts = 0;
+
+    for (const it of itens) {
+      const bncc_unidade_tematica_id = Number(it?.bncc_unidade_tematica_id);
+      const seedf_conteudo_id = Number(it?.seedf_conteudo_id);
+
+      // texto (objetivo) é opcional
+      const texto =
+        it?.texto === null || typeof it?.texto === "undefined"
+          ? null
+          : String(it.texto).trim() || null;
+
+      if (!bncc_unidade_tematica_id || !seedf_conteudo_id) {
+        await db.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          message: "Cada item deve conter bncc_unidade_tematica_id e seedf_conteudo_id.",
+        });
+      }
+
+      const [r] = await db.query(
+        `
+        INSERT INTO conteudos_objetivos_escola (
+                      escola_id,
+                      professor_id,
+                     created_by,
+                     disciplina_id,
+                     serie,
+                     bimestre,
+                    ano_letivo,
+                     bncc_unidade_tematica_id,
+                     seedf_conteudo_id,
+                    texto,
+                                                  ativo,
+                                                 status,
+                                                 edicao_liberada
+                                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0)
+                                   ON DUPLICATE KEY UPDATE
+                                         texto = VALUES(texto),
+                                         ativo = 1,
+                                         status = 1,
+                                         edicao_liberada = 0,
+                                        updated_at = CURRENT_TIMESTAMP
+        `,
+        [
+          escola_id,
+          professor_id,
+          created_by,
+          disciplina_id,
+          serie,
+          bimestre,
+          ano_letivo,
+          bncc_unidade_tematica_id,
+          seedf_conteudo_id,
+          texto,
+        ]
+      );
+
+      // mysql2: affectedRows = 1 (insert) ou 2 (update)
+      if (r?.affectedRows) upserts += 1;
+    }
+
+    await db.query("COMMIT");
+
+    return res.status(200).json({
+      ok: true,
+      message: "Planejamento salvo com sucesso.",
+      total_recebido: itens.length,
+      total_processado: upserts,
+    });
+  } catch (err) {
+    try {
+      req?.db?.query?.("ROLLBACK");
+    } catch (_) {}
+
+    console.error("Erro POST /conteudos/admin/planejamento/lote:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar planejamento (lote)." });
+  }
+});
 
 export default router;
+

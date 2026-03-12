@@ -8,7 +8,14 @@ import pool from "../db.js";
 import * as XLSX from "xlsx";
 import PDFDocument from "pdfkit";
 
+import { autenticarToken } from "../middleware/autenticarToken.js";
+import { verificarEscola } from "../middleware/verificarEscola.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
+
 const router = express.Router();
+
+// 🔒 RBAC — exige login + escola válida + permissão do módulo
+router.use(autenticarToken, verificarEscola, autorizarPermissao("monitoramento.visualizar"));
 
 // ============================================================================
 // DEBUG LOGGER (apenas para esta rota)
@@ -50,8 +57,8 @@ function toTimeStr(d) {
 // ============================================================================
 router.get("/eventos/recentes", async (req, res) => {
   try {
-    const escola_id = toNumber(req.header("x-escola-id"));
-    if (!escola_id) return res.status(422).json({ ok: false, message: "x-escola-id obrigatório" });
+    const escola_id = toNumber(req.escola_id);
+    if (!escola_id) return res.status(422).json({ ok: false, message: "escola_id obrigatório" });
 
     const limit = Math.min(Math.max(toNumber(req.query.limit, 20), 1), 200);
 
@@ -59,7 +66,7 @@ router.get("/eventos/recentes", async (req, res) => {
       SELECT
         me.id, me.escola_id, me.camera_id, me.aluno_id,
         me.status, me.conf AS score, me.bbox, me.created_at,
-        a.estudante AS aluno_nome, t.nome_turma AS turma
+        a.estudante AS aluno_nome, t.nome AS turma
       FROM monitoramento_eventos me
       LEFT JOIN alunos a   ON a.id = me.aluno_id
       LEFT JOIN turmas t   ON t.id = a.turma_id
@@ -82,8 +89,8 @@ router.get("/eventos/recentes", async (req, res) => {
 // ============================================================================
 router.get("/presencas-turno", async (req, res) => {
   try {
-    const escolaId = toNumber(req.header("x-escola-id"));
-    if (!escolaId) return res.status(422).json({ ok: false, message: "x-escola-id obrigatório" });
+    const escolaId = toNumber(req.escola_id);
+    if (!escolaId) return res.status(422).json({ ok: false, message: "escola_id obrigatório" });
 
     const hoje = new Date();
     const dataDia = (req.query.data || "").trim() || toDateOnlyStr(hoje);
@@ -94,18 +101,19 @@ router.get("/presencas-turno", async (req, res) => {
         a.id          AS aluno_id,
         a.codigo      AS codigo,
         a.estudante   AS nome,
-        t.nome_turma  AS turma,
+        t.nome        AS turma,
         pd.horario    AS horario,          -- primeira detecção / confirmação
         pd.ultima_confirmacao AS ultima    -- última fusão/refresh de presença
       FROM presencas_diarias pd
       LEFT JOIN alunos  a ON a.id   = pd.aluno_id
       LEFT JOIN turmas  t ON t.id   = a.turma_id
-     WHERE pd.data = ?
-       AND pd.turno = ?
-       AND a.escola_id = ?
+      WHERE pd.data = ?
+        AND pd.turno = ?
+        AND pd.escola_id = ?
+        AND a.escola_id = ?
      ORDER BY a.estudante ASC
     `;
-    const [rows] = await pool.query(sql, [dataDia, turno, escolaId]);
+    const [rows] = await pool.query(sql, [dataDia, turno, escolaId, escolaId]);
 
     const presentes = rows.map(r => ({
       aluno_id: r.aluno_id,
@@ -136,8 +144,8 @@ router.get("/presencas-turno", async (req, res) => {
 // ============================================================================
 router.get("/presencas-turno.xlsx", async (req, res) => {
   try {
-    const escolaId = toNumber(req.header("x-escola-id"));
-    if (!escolaId) return res.status(422).json({ ok: false, message: "x-escola-id obrigatório" });
+    const escolaId = toNumber(req.escola_id);
+    if (!escolaId) return res.status(422).json({ ok: false, message: "escola_id obrigatório" });
 
     const hoje = new Date();
     const dataDia = (req.query.data || "").trim() || toDateOnlyStr(hoje);
@@ -148,7 +156,7 @@ router.get("/presencas-turno.xlsx", async (req, res) => {
         a.id          AS aluno_id,
         a.codigo      AS codigo,
         a.estudante   AS nome,
-        t.nome_turma  AS turma,
+        t.nome        AS turma,
         pd.horario    AS horario,
         pd.ultima_confirmacao AS ultima
       FROM presencas_diarias pd
@@ -156,10 +164,11 @@ router.get("/presencas-turno.xlsx", async (req, res) => {
       LEFT JOIN turmas  t ON t.id   = a.turma_id
      WHERE pd.data = ?
        AND pd.turno = ?
+       AND pd.escola_id = ?
        AND a.escola_id = ?
      ORDER BY a.estudante ASC
     `;
-    const [rows] = await pool.query(sql, [dataDia, turno, escolaId]);
+    const [rows] = await pool.query(sql, [dataDia, turno, escolaId, escolaId]);
 
     const data = rows.map(r => ({
       "Código": (r.codigo !== null && r.codigo !== undefined) ? String(r.codigo) : "—",
@@ -189,8 +198,8 @@ router.get("/presencas-turno.xlsx", async (req, res) => {
 // ============================================================================
 router.get("/presencas-turno.pdf", async (req, res) => {
   try {
-    const escolaId = toNumber(req.header("x-escola-id"));
-    if (!escolaId) return res.status(422).json({ ok: false, message: "x-escola-id obrigatório" });
+    const escolaId = toNumber(req.escola_id);
+    if (!escolaId) return res.status(422).json({ ok: false, message: "escola_id obrigatório" });
 
     const hoje = new Date();
     const dataDia = (req.query.data || "").trim() || toDateOnlyStr(hoje);
@@ -201,7 +210,7 @@ router.get("/presencas-turno.pdf", async (req, res) => {
         a.id          AS aluno_id,
         a.codigo      AS codigo,
         a.estudante   AS nome,
-        t.nome_turma  AS turma,
+        t.nome        AS turma,
         pd.horario    AS horario,
         pd.ultima_confirmacao AS ultima
       FROM presencas_diarias pd
@@ -209,10 +218,11 @@ router.get("/presencas-turno.pdf", async (req, res) => {
       LEFT JOIN turmas  t ON t.id   = a.turma_id
      WHERE pd.data = ?
        AND pd.turno = ?
+       AND pd.escola_id = ?
        AND a.escola_id = ?
      ORDER BY a.estudante ASC
     `;
-    const [rowsPres] = await pool.query(sqlPres, [dataDia, turno, escolaId]);
+    const [rowsPres] = await pool.query(sqlPres, [dataDia, turno, escolaId, escolaId]);
 
     const presentes = rowsPres.map(r => ({
       aluno_id: r.aluno_id,

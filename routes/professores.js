@@ -385,10 +385,150 @@ router.post(
 
 
 // ────────────────────────────────────────────────
+// GET: Turmas da escola do usuário logado (para contexto de Conteúdos)
+// Retorna: { ok: true, turmas: [{ id, nome, ano, serie, turno, etapa }, ...] }
+// Observação: por governança, aqui retornamos as turmas da escola (multi-escola via token).
+// ────────────────────────────────────────────────
+router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+
+    if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0) {
+      return res.status(400).json({ ok: false, message: "Token inválido: escola ausente." });
+    }
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        t.id,
+        t.nome,
+        t.ano,
+        t.serie,
+        t.turno,
+        t.etapa
+      FROM turmas t
+      WHERE t.escola_id = ?
+      ORDER BY
+        t.ano DESC,
+        t.etapa ASC,
+        t.serie ASC,
+        t.nome ASC
+      `,
+      [Number(escolaId)]
+    );
+
+    const turmas = Array.isArray(rows)
+      ? rows
+          .map((r) => ({
+            id: Number(r?.id),
+            nome: String(r?.nome || "").trim(),
+            ano: r?.ano != null ? Number(r.ano) : null,
+            serie: String(r?.serie || "").trim() || null,
+            turno: String(r?.turno || "").trim() || null,
+            etapa: String(r?.etapa || "").trim() || null,
+          }))
+          .filter((t) => Number.isFinite(t.id) && t.nome)
+      : [];
+
+    return res.json({ ok: true, turmas });
+  } catch (err) {
+    console.error("Erro ao buscar turmas (me/turmas):", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar turmas da escola." });
+  }
+});
+
+
+// ────────────────────────────────────────────────
+// GET: Disciplinas do professor logado (para contexto de Conteúdos)
+// Retorna: { ok: true, disciplinas: [{ id, nome }, ...] }
+// ────────────────────────────────────────────────
+router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+
+    // 1) tenta cpf no token
+    let cpf = req.user?.cpf;
+
+    // 2) fallback: pega cpf no banco via id do usuário (caso o token não traga cpf)
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario ||
+      req.user?.uid ||
+      req.user?.sub ||
+      req.user?.user?.id ||
+      req.user?.usuario?.id ||
+      req.user?.usuarioId;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query(
+        "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+        [userId]
+      );
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf) {
+      return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
+    }
+
+    // Observação:
+    // - Hoje seu modelo indica 1 disciplina por professor (professores.disciplina_id),
+    //   mas retornamos como ARRAY para já nascer compatível com múltiplas no futuro.
+
+
+
+
+
+
+    const [rows] = await pool.query(
+      `
+      SELECT DISTINCT
+        d.id   AS id,
+        d.nome AS nome
+      FROM professores p
+      JOIN disciplinas d ON d.id = p.disciplina_id
+      WHERE p.escola_id = ?
+        AND p.cpf = ?
+        AND p.disciplina_id IS NOT NULL
+      ORDER BY d.nome ASC
+      `,
+      [escolaId, String(cpf).replace(/\D/g, "")]
+    );
+
+    const disciplinas = Array.isArray(rows)
+      ? rows
+          .map((r) => ({
+            id: Number(r?.id),
+            nome: String(r?.nome || "").trim(),
+          }))
+          .filter((d) => Number.isFinite(d.id) && d.nome)
+      : [];
+
+    return res.json({ ok: true, disciplinas });
+
+
+
+
+
+
+
+  } catch (err) {
+    console.error("Erro ao buscar disciplinas do professor (me/disciplinas):", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar disciplinas do professor." });
+  }
+});
+
+
+// ────────────────────────────────────────────────
 // GET: Foto do professor logado (para re-hidratar o header após novo login)
 // Retorna: { foto_url: "/uploads/<apelido>/professores/<id>.jpg" } ou { foto_url: "" }
 // ────────────────────────────────────────────────
 router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
+
   try {
     const escolaId = req.user?.escola_id;
 

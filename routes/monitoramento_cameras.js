@@ -3,7 +3,13 @@
 // Retorna lista "segura" para o painel (sem expor rtsp_url por padrão)
 
 import express from "express";
+import { autenticarToken } from "../middleware/autenticarToken.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
+
 const router = express.Router();
+
+// 🔒 RBAC — exige login + permissão do módulo
+router.use(autenticarToken, autorizarPermissao("monitoramento.visualizar"));
 
 // Util: obter escola_id do header ou token (ajuste se já houver middleware)
 function getEscolaId(req) {

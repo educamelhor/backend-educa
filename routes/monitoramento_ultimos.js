@@ -17,6 +17,7 @@ import { Router } from "express";
 import pool from "../db.js";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
 
 const router = Router();
 
@@ -43,7 +44,12 @@ async function columnExists(table, column) {
 // ---------------------------------------------------------------------------
 // GET /ultimos
 // ---------------------------------------------------------------------------
-router.get("/ultimos", autenticarToken, verificarEscola, async (req, res) => {
+router.get(
+  "/ultimos",
+  autenticarToken,
+  autorizarPermissao("monitoramento.visualizar"),
+  verificarEscola,
+  async (req, res) => {
   try {
     const { escola_id } = req.user || {};
     if (!escola_id) {
@@ -78,7 +84,7 @@ router.get("/ultimos", autenticarToken, verificarEscola, async (req, res) => {
       SELECT
         me.camera_id,
         DATE_FORMAT(${createdCol}, '%H:%i') AS hora,
-        COALESCE(a.estudante, a.nome, '—') AS nome,
+        COALESCE(a.estudante, '—') AS nome,
         COALESCE(${turmaExpr}, '—') AS turma
       FROM monitoramento_eventos AS me
       LEFT JOIN alunos AS a
@@ -118,16 +124,26 @@ router.get("/ultimos", autenticarToken, verificarEscola, async (req, res) => {
 
     return res.json({ ok: true, cameras });
   } catch (err) {
-    console.error("[monitoramento_ultimos] erro:", {
+    const errPayload = {
       message: err?.message,
       code: err?.code,
       sqlState: err?.sqlState,
       sqlMessage: err?.sqlMessage,
+    };
+
+    console.error("[monitoramento_ultimos] erro:", errPayload);
+
+    // ✅ DEV only: devolve diagnóstico no body (sem vazar segredos)
+    const isProd = process.env.NODE_ENV === "production";
+
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao consultar últimos reconhecidos.",
+      ...(isProd ? {} : { debug: errPayload }),
     });
-    return res
-      .status(500)
-      .json({ ok: false, message: "Erro ao consultar últimos reconhecidos." });
   }
-});
+  }
+);
+
 
 export default router;

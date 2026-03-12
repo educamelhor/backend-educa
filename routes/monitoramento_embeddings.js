@@ -21,11 +21,17 @@ import path from "node:path";
 import pool from "../db.js";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
+import { timingSafeEqual, createHmac, createHash } from "node:crypto";
 
 // ----------------------------------------------------------------------------
  // Infra comum
 // ----------------------------------------------------------------------------
 const router = express.Router();
+
+// 🔒 RBAC (Admin) será aplicado por rota.
+// Motivo: /embeddings/cache precisa aceitar Worker (x-worker-token + x-escola-id) sem JWT.
+
 const debug = (...args) => console.log("[embeddings]", ...args);
 const debugSQL = (...args) => console.log("[embeddings:sql]", ...args);
 
@@ -85,15 +91,145 @@ function resolveEscolaId(req) {
 // ----------------------------------------------------------------------------
 
 // GET /api/monitoramento/embeddings/ping
-router.get("/ping", autenticarToken, (req, res) => {
+router.get("/ping", autenticarToken, autorizarPermissao("monitoramento.visualizar"), (req, res) => {
   res.json({ ok: true, scope: "embeddings", ts: new Date().toISOString() });
 });
 
 // GET /api/monitoramento/embeddings/cache
-router.get("/cache", autenticarToken, verificarEscola, async (req, res) => {
-  const escolaId = resolveEscolaId(req);
+// ✅ PASSO 3.1.2 — padronizar auth do Worker reutilizando o mesmo modelo do monitoramento_ingest.js
+// Mantém compatibilidade: Worker OU Admin (JWT + verificarEscola)
+
+import crypto from "node:crypto";
+
+// --- helpers locais (iguais ao padrão do ingest) ---
+function toNumber(n, def = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : def;
+}
+
+// Requer token específico do Worker
+// - DEV: x-worker-token === MONITOR_WORKER_TOKEN
+// - PROD (quando MONITOR_WORKER_SECRET existe): exige assinatura HMAC (x-worker-signature + x-worker-ts)
+function validarTokenWorker(req, res, next) {
+  const nodeEnv = String(process.env.NODE_ENV || "").toLowerCase();
+  const isProd = nodeEnv === "production";
+
+  const tokenExpect = (process.env.MONITOR_WORKER_TOKEN || "").trim();
+  const tokenGot = (req.header("x-worker-token") || "").trim();
+
+  const secret = (process.env.MONITOR_WORKER_SECRET || "").trim();
+  const sig = (req.header("x-worker-signature") || "").trim();
+  const ts = (req.header("x-worker-ts") || "").trim();
+
+  const escolaIdHeader = toNumber(req.header("x-escola-id"), 0);
+  if (escolaIdHeader) req.escola_id = escolaIdHeader;
+
+  function safeEqualUtf8(aStr, bStr) {
+    const a = Buffer.from(String(aStr || ""), "utf8");
+    const b = Buffer.from(String(bStr || ""), "utf8");
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+
+  function sha256Hex(input) {
+    const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input ?? ""), "utf8");
+    return crypto.createHash("sha256").update(buf).digest("hex");
+  }
+
+  function hmacHex(key, msg) {
+    return crypto.createHmac("sha256", key).update(msg).digest("hex");
+  }
+
+  function safeEqualHex(aHex, bHex) {
+    const a = Buffer.from(String(aHex || ""), "hex");
+    const b = Buffer.from(String(bHex || ""), "hex");
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+
+  // 1) PROD com SECRET => exige assinatura
+  if (isProd && secret) {
+    if (!ts || !sig) {
+      return res.status(401).json({
+        ok: false,
+        message: "Assinatura do worker ausente (x-worker-ts / x-worker-signature)."
+      });
+    }
+
+    const tsNum = Number(ts);
+    if (!Number.isFinite(tsNum) || tsNum <= 0) {
+      return res.status(401).json({ ok: false, message: "x-worker-ts inválido." });
+    }
+
+    const now = Date.now();
+    const deltaMs = Math.abs(now - tsNum);
+    if (deltaMs > 120_000) {
+      return res.status(401).json({ ok: false, message: "Assinatura expirada (timestamp fora da janela)." });
+    }
+
+    let bodyForHash = "";
+    try {
+      bodyForHash = req.body == null ? "" : (Buffer.isBuffer(req.body) ? req.body : JSON.stringify(req.body));
+    } catch {
+      bodyForHash = "";
+    }
+
+    const bodyHash = sha256Hex(bodyForHash);
+
+    const base = `${ts}.${req.method}.${req.originalUrl}.${toNumber(req.escola_id, 0)}.${bodyHash}`;
+    const expectSig = hmacHex(secret, base);
+
+    if (!safeEqualHex(expectSig, sig)) {
+      return res.status(401).json({ ok: false, message: "Assinatura do worker inválida." });
+    }
+
+    return next();
+  }
+
+  // 2) DEV fallback: token simples
+  if (!tokenExpect) {
+    return res.status(500).json({ ok: false, message: "Token do worker não configurado." });
+  }
+
+  if (!safeEqualUtf8(tokenExpect, tokenGot)) {
+    return res.status(401).json({ ok: false, message: "Token do worker inválido." });
+  }
+
+  return next();
+}
+
+function exigirEscolaId(req, res, next) {
+  const escola_id = toNumber(req.escola_id, 0) || toNumber(req.header("x-escola-id"), 0);
+  if (!escola_id) {
+    return res.status(422).json({ ok: false, message: "x-escola-id obrigatório" });
+  }
+  req.escola_id = escola_id;
+  next();
+}
+
+// Worker OU Admin
+function authWorkerOuAdmin(req, res, next) {
+  const hasWorkerToken = Boolean((req.header("x-worker-token") || "").trim());
+  const hasWorkerSig = Boolean((req.header("x-worker-signature") || "").trim());
+
+  // Caminho Worker (token simples ou assinatura)
+  if (hasWorkerToken || hasWorkerSig) {
+    return validarTokenWorker(req, res, () => exigirEscolaId(req, res, () => {
+      req._auth_kind = "worker";
+      return next();
+    }));
+  }
+
+  // Caminho Admin (JWT + permissão + escola)
+  return autenticarToken(req, res, () =>
+    autorizarPermissao("monitoramento.visualizar")(req, res, () =>
+      verificarEscola(req, res, next)
+    )
+  );
+}
+
+router.get("/cache", authWorkerOuAdmin, async (req, res) => {
+  const escolaId = Number(req.escola_id || resolveEscolaId(req) || 0);
   if (!escolaId) {
-    return res.status(400).json({ error: "Escola não identificada." });
+    return res.status(400).json({ ok: false, message: "Escola não identificada." });
   }
 
   try {
@@ -129,7 +265,7 @@ router.get("/cache", autenticarToken, verificarEscola, async (req, res) => {
 });
 
 // POST /api/monitoramento/embeddings/gerar
-router.post("/gerar", autenticarToken, verificarEscola, async (req, res) => {
+router.post("/gerar", autenticarToken, autorizarPermissao("monitoramento.visualizar"), verificarEscola, async (req, res) => {
   const escolaId = resolveEscolaId(req);
   if (!escolaId) return res.status(400).json({ error: "Escola não identificada." });
 
@@ -156,7 +292,7 @@ router.post("/gerar", autenticarToken, verificarEscola, async (req, res) => {
 });
 
 // POST /api/monitoramento/embeddings/sincronizar
-router.post("/sincronizar", autenticarToken, verificarEscola, async (req, res) => {
+router.post("/sincronizar", autenticarToken, autorizarPermissao("monitoramento.visualizar"), verificarEscola, async (req, res) => {
   const escolaId = resolveEscolaId(req);
   if (!escolaId) return res.status(400).json({ error: "Escola não identificada." });
 
@@ -295,7 +431,7 @@ function __invalidateIndex(escolaId) {
 /* --------------------- ROTAS NOVAS ------------------------------------ */
 
 /** GET /api/monitoramento/embeddings/index/stats */
-router.get("/index/stats", autenticarToken, async (req, res) => {
+router.get("/index/stats", autenticarToken, autorizarPermissao("monitoramento.visualizar"), async (req, res) => {
   try {
     const escolaId = resolveEscolaId(req);
     if (!escolaId) return res.status(400).json({ error: "escola_id ausente" });
@@ -313,7 +449,7 @@ router.get("/index/stats", autenticarToken, async (req, res) => {
 });
 
 /** POST /api/monitoramento/embeddings/index/rebuild */
-router.post("/index/rebuild", autenticarToken, async (req, res) => {
+router.post("/index/rebuild", autenticarToken, autorizarPermissao("monitoramento.visualizar"), async (req, res) => {
   try {
     const escolaId = resolveEscolaId(req);
     if (!escolaId) return res.status(400).json({ error: "escola_id ausente" });
@@ -329,7 +465,7 @@ router.post("/index/rebuild", autenticarToken, async (req, res) => {
 /** POST /api/monitoramento/embeddings/search
  *  body: { vector: number[], topK?: number }
  */
-router.post("/search", autenticarToken, async (req, res) => {
+router.post("/search", autenticarToken, autorizarPermissao("monitoramento.visualizar"), async (req, res) => {
   try {
     const escolaId = resolveEscolaId(req);
     if (!escolaId) return res.status(400).json({ error: "escola_id ausente" });

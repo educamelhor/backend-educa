@@ -13,6 +13,7 @@ import { Router } from "express";
 import pool from "../db.js";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
 
 const router = Router();
 
@@ -64,6 +65,7 @@ router.get(
     next();
   },
   autenticarToken,
+  autorizarPermissao("monitoramento.visualizar"),
   verificarEscola,
   (req, res) => {
     const { escola_id } = req.user;
@@ -101,7 +103,12 @@ router.get(
 // ============================================================================
 // GET /alunos/alertas (autenticado) — lista alertas da escola
 // ============================================================================
-router.get("/alunos/alertas", autenticarToken, verificarEscola, async (req, res) => {
+router.get(
+  "/alunos/alertas",
+  autenticarToken,
+  autorizarPermissao("monitoramento.visualizar"),
+  verificarEscola,
+  async (req, res) => {
   const { escola_id } = req.user;
   try {
     const [rows] = await pool.query(
@@ -118,13 +125,20 @@ router.get("/alunos/alertas", autenticarToken, verificarEscola, async (req, res)
     console.error("[monitoramento_alerta] erro ao listar:", err);
     res.status(500).json({ message: "Erro ao listar alunos em alerta." });
   }
-});
+  }
+);
+
 
 // ============================================================================
 // PUT /alunos/:codigo/alerta (autenticado) — liga/desliga alerta por CÓDIGO
 // Body: { flag: boolean, motivo?: string }
 // ============================================================================
-router.put("/alunos/:codigo/alerta", autenticarToken, verificarEscola, async (req, res) => {
+router.put(
+  "/alunos/:codigo/alerta",
+  autenticarToken,
+  autorizarPermissao("monitoramento.visualizar"),
+  verificarEscola,
+  async (req, res) => {
   const { escola_id } = req.user;
   const { codigo } = req.params;
   const { flag, motivo } = req.body || {};
@@ -158,7 +172,9 @@ router.put("/alunos/:codigo/alerta", autenticarToken, verificarEscola, async (re
     console.error("[monitoramento_alerta] erro ao atualizar:", err);
     res.status(500).json({ message: "Erro ao atualizar alerta do aluno." });
   }
-});
+  }
+);
+
 
 // ============================================================================
 // POST /ingest-recognition (sem JWT; cabeçalho x-monitor-secret)

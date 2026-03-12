@@ -156,8 +156,11 @@ router.post("/", verificarEscola, async (req, res) => {
   const { cpf, nome, email, celular, perfil, senha } = req.body;
   const { escola_id, perfil: perfilCriador } = req.user;
 
-  if (!cpf || !nome || !email || !celular || !perfil || !senha) {
-    return res.status(400).json({ message: "Preencha todos os campos obrigatórios." });
+  const cpfLimpo = String(cpf || "").replace(/\D/g, "");
+  const emailNorm = email ? String(email).trim().toLowerCase() : null;
+
+  if (!cpfLimpo || cpfLimpo.length !== 11 || !nome || !emailNorm || !celular || !perfil || !senha) {
+    return res.status(400).json({ message: "Preencha todos os campos obrigatórios (CPF válido com 11 dígitos)." });
   }
 
   // Validação: apenas admin pode criar outro admin
@@ -170,7 +173,7 @@ router.post("/", verificarEscola, async (req, res) => {
 
     const [existe] = await pool.query(
       "SELECT id FROM usuarios WHERE (cpf = ? OR email = ?) AND escola_id = ?",
-      [cpf, email, escola_id]
+      [cpfLimpo, emailNorm, escola_id]
     );
     if (existe.length > 0) {
       return res.status(400).json({ message: "Usuário já cadastrado (CPF ou e-mail existente) na sua escola." });
@@ -178,7 +181,7 @@ router.post("/", verificarEscola, async (req, res) => {
 
     await pool.query(
       "INSERT INTO usuarios (cpf, nome, email, celular, perfil, escola_id, senha_hash, ativo) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-      [cpf, nome, email, celular, perfil, escola_id, senha_hash]
+      [cpfLimpo, nome, emailNorm, celular, perfil, escola_id, senha_hash]
     );
     res.json({ success: true, message: "Usuário cadastrado com sucesso!" });
   } catch (err) {
