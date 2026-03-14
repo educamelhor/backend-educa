@@ -6,7 +6,7 @@ router.get("/", async (req, res) => {
   const escola_id = req.user?.escola_id || 1;
   try {
     const [rows] = await req.db.query(
-      `SELECT id, motivo, ativo 
+      `SELECT id, motivo, ativo, pontos, tipo 
        FROM tipos_ocorrencia 
        WHERE escola_id = ? 
        ORDER BY ativo DESC, motivo ASC`,
@@ -30,7 +30,7 @@ router.get("/", async (req, res) => {
             );
         }
         const [newRows] = await req.db.query(
-          `SELECT id, motivo, ativo FROM tipos_ocorrencia WHERE escola_id = ? ORDER BY ativo DESC, motivo ASC`,
+          `SELECT id, motivo, ativo, pontos, tipo FROM tipos_ocorrencia WHERE escola_id = ? ORDER BY ativo DESC, motivo ASC`,
           [escola_id]
         );
         return res.json(newRows);
@@ -45,16 +45,16 @@ router.get("/", async (req, res) => {
 
 router.post("/", async (req, res) => {
   const escola_id = req.user?.escola_id || 1;
-  const { motivo, ativo = true } = req.body;
+  const { motivo, ativo = true, pontos = 0, tipo = 'leve' } = req.body;
   
   if (!motivo) return res.status(400).json({ error: "Motivo obrigatório" });
 
   try {
     const [result] = await req.db.query(
-      `INSERT INTO tipos_ocorrencia (escola_id, motivo, ativo) VALUES (?, ?, ?)`,
-      [escola_id, motivo.trim(), ativo]
+      `INSERT INTO tipos_ocorrencia (escola_id, motivo, ativo, pontos, tipo) VALUES (?, ?, ?, ?, ?)`,
+      [escola_id, motivo.trim(), ativo, pontos, tipo]
     );
-    res.status(201).json({ id: result.insertId, motivo, ativo });
+    res.status(201).json({ id: result.insertId, motivo, ativo, pontos, tipo });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
         return res.status(400).json({ error: "Ajuste já cadastrado para esta escola." });
@@ -67,7 +67,7 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   const escola_id = req.user?.escola_id || 1;
   const { id } = req.params;
-  const { motivo, ativo } = req.body;
+  const { motivo, ativo, pontos, tipo } = req.body;
 
   try {
     const fields = [];
@@ -79,6 +79,14 @@ router.put("/:id", async (req, res) => {
     if (ativo !== undefined) {
         fields.push("ativo = ?");
         values.push(ativo);
+    }
+    if (pontos !== undefined) {
+        fields.push("pontos = ?");
+        values.push(pontos);
+    }
+    if (tipo !== undefined) {
+        fields.push("tipo = ?");
+        values.push(tipo);
     }
     
     if (fields.length === 0) return res.status(400).json({ error: "Sem dados para atualizar." });

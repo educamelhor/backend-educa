@@ -1719,4 +1719,41 @@ router.get("/conteudos", authAppPais, async (req, res) => {
 });
 
 
+// ============================================================================
+// PASSO 3 — POST /device-token
+// - Registra ou atualiza o token do Expo Push Notification (mobile_devices)
+// - Para que possamos testar pelo App (educa-mobile)
+// ============================================================================
+router.post("/device-token", authAppPais, async (req, res) => {
+  const db = pool;
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+    const { token, plataforma, escola_id } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ ok: false, message: "Token é obrigatório." });
+    }
+
+    if (!escola_id) {
+      return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+    }
+
+    // Usaremos ON DUPLICATE KEY UPDATE para garantir uma chave limpa "ativo = 1"
+    const plt = plataforma || "expo";
+
+    const sql = `
+      INSERT INTO mobile_devices (responsavel_id, escola_id, plataforma, device_token, ativo)
+      VALUES (?, ?, ?, ?, 1)
+      ON DUPLICATE KEY UPDATE ativo = 1, plataforma = VALUES(plataforma)
+    `;
+
+    await db.query(sql, [responsavel_id, escola_id, plt, token]);
+
+    return res.json({ ok: true, message: "Device token registrado com sucesso!" });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro ao registrar device token:", error);
+    return res.status(500).json({ ok: false, message: "Erro ao registrar token do dispositivo." });
+  }
+});
+
 export default router;

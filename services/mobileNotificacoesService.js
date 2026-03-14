@@ -18,6 +18,10 @@
 // ============================================================================
 
 import pool from "../db.js";
+import { Expo } from "expo-server-sdk";
+
+// Instancia o cliente do Expo
+const expo = new Expo();
 
 // -------------------------------------------------------------
 // Helpers internos
@@ -219,19 +223,51 @@ export async function enviarNotificacoesEntradaAluno(params = {}) {
         }
       );
 
-      // Simulação de push (aqui entraremos com FCM no futuro)
+      // Disparo real via Expo Push (Compatível com Expo Go iOS e Android)
       if (ativos.length === 0) {
         console.log(
-          "[mobile-notificacao] (simulação) Nenhum device ativo para envio de push."
+          "[mobile-notificacao] Nenhum device ativo para envio de push."
         );
       } else {
-        const tokensResumo = ativos.map(
-          (d) => `${d.plataforma}#${String(d.device_token).slice(0, 12)}...`
-        );
-        console.log(
-          "[mobile-notificacao] (simulação) Enviaria push para devices:",
-          tokensResumo
-        );
+        const messages = [];
+        for (const device of ativos) {
+          // Verifica se é um token Expo válido (Ex: ExponentPushToken[...])
+          if (!Expo.isExpoPushToken(device.device_token)) {
+            console.warn(`[mobile-notificacao] Token inválido para o Expo: ${device.device_token}`);
+            continue;
+          }
+
+          messages.push({
+            to: device.device_token,
+            sound: "default",
+            title: titulo,
+            body: mensagem,
+            data: payload, // Recebido no app quando o usuário clica na notificação
+          });
+        }
+
+        // Divide as mensagens em blocos (chunks) suportados pelo Expo (até 100 por request)
+        const chunks = expo.chunkPushNotifications(messages);
+        
+        // Dispara o envio de todos os blocos paralelamente/em background
+        (async () => {
+          for (let chunk of chunks) {
+            try {
+              let receiptChunk = await expo.sendPushNotificationsAsync(chunk);
+              console.log("[mobile-notificacao] PUSH ENVIADO (Recibos do Expo):", receiptChunk);
+              
+              // Verifica se houve erro de desinstalação
+              receiptChunk.forEach((receipt, idx) => {
+                if (receipt.status !== "ok" && receipt.details && receipt.details.error === "DeviceNotRegistered") {
+                  // Opcional Futuro: desativar o device_token específico na tabela mobile_devices onde ativo=0
+                  console.warn("[mobile-notificacao] DeviceNotRegistered (desinstalou):", chunk[idx].to);
+                }
+              });
+            } catch (error) {
+              console.error("[mobile-notificacao] Erro ao enviar chunk de push para o Expo:", error);
+            }
+          }
+        })();
       }
     }
   } catch (err) {

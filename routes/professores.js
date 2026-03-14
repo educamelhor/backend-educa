@@ -392,14 +392,31 @@ router.post(
 router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
+    const disciplinaFiltrada = req.query.disciplina;
 
-    if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0) {
-      return res.status(400).json({ ok: false, message: "Token inválido: escola ausente." });
+    // Obtém o CPF
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
     }
 
-    const [rows] = await pool.query(
-      `
-      SELECT
+    if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0 || !cpf) {
+      return res.status(400).json({ ok: false, message: "Token inválido: escola ou cpf ausente." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    let sql = `
+      SELECT DISTINCT
         t.id,
         t.nome,
         t.ano,
@@ -408,14 +425,36 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         t.etapa
       FROM turmas t
       WHERE t.escola_id = ?
+        AND (
+          t.id IN (
+            SELECT p.turma_id FROM professores p WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+          )
+          OR
+          t.id IN (
+            SELECT m.turma_id FROM modulacao m
+            JOIN professores p ON p.id = m.professor_id
+            `;
+            
+    if (disciplinaFiltrada) {
+      sql += ` JOIN disciplinas d ON d.id = m.disciplina_id AND d.nome = ? `;
+    }
+            
+    sql += `
+            WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+          )
+        )
       ORDER BY
         t.ano DESC,
         t.etapa ASC,
         t.serie ASC,
         t.nome ASC
-      `,
-      [Number(escolaId)]
-    );
+      `;
+
+    let params = [Number(escolaId), Number(escolaId), cleanCpf];
+    if (disciplinaFiltrada) params.push(disciplinaFiltrada);
+    params.push(Number(escolaId), cleanCpf);
+
+    const [rows] = await pool.query(sql, params);
 
     const turmas = Array.isArray(rows)
       ? rows
@@ -475,7 +514,7 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
       return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
     }
 
-    // Observação:
+    const cleanCpf = String(cpf).replace(/\D/g, "");
     // - Hoje seu modelo indica 1 disciplina por professor (professores.disciplina_id),
     //   mas retornamos como ARRAY para já nascer compatível com múltiplas no futuro.
 
@@ -486,17 +525,25 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
 
     const [rows] = await pool.query(
       `
-      SELECT DISTINCT
-        d.id   AS id,
-        d.nome AS nome
+      SELECT d.id AS id, d.nome AS nome
       FROM professores p
       JOIN disciplinas d ON d.id = p.disciplina_id
       WHERE p.escola_id = ?
-        AND p.cpf = ?
+        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
         AND p.disciplina_id IS NOT NULL
-      ORDER BY d.nome ASC
+        
+      UNION
+      
+      SELECT d.id AS id, d.nome AS nome
+      FROM professores p
+      JOIN modulacao m ON m.professor_id = p.id
+      JOIN disciplinas d ON d.id = m.disciplina_id
+      WHERE p.escola_id = ?
+        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+      
+      ORDER BY nome ASC
       `,
-      [escolaId, String(cpf).replace(/\D/g, "")]
+      [escolaId, cleanCpf, escolaId, cleanCpf]
     );
 
     const disciplinas = Array.isArray(rows)
@@ -635,6 +682,15 @@ router.post("/", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
     }
 
+    const [[existente]] = await pool.query(
+      "SELECT id FROM professores WHERE cpf = ? AND escola_id = ? AND disciplina_id = ? AND turno = ? LIMIT 1",
+      [cpf, escola_id, disciplina_id, turno]
+    );
+
+    if (existente) {
+      return res.status(409).json({ message: "Já existe um pré-cadastro para este professor com esta mesma disciplina no mesmo turno." });
+    }
+
     await pool.query(
       `
       INSERT INTO professores
@@ -646,10 +702,10 @@ router.post("/", verificarEscola, async (req, res) => {
     );
 
     await pool.query(
-      `INSERT INTO usuarios (cpf, nome, perfil, escola_id)
-         VALUES (?, UPPER(?), 'professor', ?)
+      `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash)
+         VALUES (?, UPPER(?), 'professor', ?, ?)
          ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-      [cpf, nome, escola_id]
+      [cpf, nome, escola_id, ""]
     );
 
     res.status(201).json({ message: "Professor cadastrado com sucesso." });
@@ -657,7 +713,7 @@ router.post("/", verificarEscola, async (req, res) => {
     if (err.code === "ER_DUP_ENTRY") {
       return res
         .status(409)
-        .json({ message: "Já existe este professor cadastrado para a mesma disciplina." });
+        .json({ message: "Conflito de restrição no banco. Já existe este professor cadastrado com esta configuração exclusiva." });
     }
     console.error("Erro ao cadastrar professor:", err);
     res.status(500).json({ message: "Erro ao cadastrar professor." });
@@ -687,6 +743,24 @@ router.put("/:id", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
     }
 
+    const [[profAtual]] = await pool.query(
+      "SELECT cpf FROM professores WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    if (!profAtual) {
+      return res.status(404).json({ message: "Professor não encontrado." });
+    }
+
+    const [[existente]] = await pool.query(
+      "SELECT id FROM professores WHERE cpf = ? AND escola_id = ? AND disciplina_id = ? AND turno = ? AND id != ? LIMIT 1",
+      [profAtual.cpf, escola_id, disciplina_id, turno, id]
+    );
+
+    if (existente) {
+      return res.status(409).json({ message: "Já existe um pré-cadastro para este professor com esta mesma disciplina no mesmo turno." });
+    }
+
     const [result] = await pool.query(
       `
       UPDATE professores
@@ -706,7 +780,7 @@ router.put("/:id", verificarEscola, async (req, res) => {
     if (err.code === "ER_DUP_ENTRY") {
       return res
         .status(409)
-        .json({ message: "Já existe este professor cadastrado para a mesma disciplina." });
+        .json({ message: "Conflito de restrição no banco. Já existe este professor cadastrado com esta configuração exclusiva." });
     }
     console.error("Erro ao atualizar professor:", err);
     res.status(500).json({ message: "Erro ao atualizar professor." });

@@ -9,8 +9,50 @@ import express from "express";
 import crypto from "node:crypto"
 import fs from "fs";
 import path from "path";
+import { enviarNotificacoesEntradaAluno } from "../services/mobileNotificacoesService.js";
 
 const router = express.Router();
+
+// -------------------------------------------------------------
+// Cache em memória para escola_dir (evita query ao DB a cada request)
+// TTL de 5 minutos — escola.apelido raramente muda
+// -------------------------------------------------------------
+const _escolaDirCache = new Map(); // key: escola_id → { dir, ts }
+const ESCOLA_DIR_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+async function resolverEscolaDirCached(db, escola_id) {
+  const cached = _escolaDirCache.get(escola_id);
+  if (cached && (Date.now() - cached.ts) < ESCOLA_DIR_CACHE_TTL) {
+    return cached.dir;
+  }
+
+  function slugDir(input) {
+    return String(input || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 60);
+  }
+
+  let dir = "";
+  const conn = await db.getConnection();
+  try {
+    const [rows] = await conn.query(
+      "SELECT apelido FROM escolas WHERE id = ? LIMIT 1",
+      [escola_id]
+    );
+    dir = slugDir(rows?.[0]?.apelido || "");
+  } finally {
+    conn.release();
+  }
+
+  if (dir) {
+    _escolaDirCache.set(escola_id, { dir, ts: Date.now() });
+  }
+  return dir;
+}
 
 // -------------------------------------------------------------
 // Helpers
@@ -556,6 +598,16 @@ if (diffSeg < PRESENCA_JANELA_SEG) {
 
     await conn.commit();
 
+    // Dispara a notificação mobile (apenas na 1ª vez do dia)
+    if (presencaInfo?.acao === "CRIADA" && presencaInfo?.motivo === "primeira_do_dia") {
+      enviarNotificacoesEntradaAluno({
+        escolaId: escola_id,
+        alunoId: aluno_id,
+        cameraId: camera_id,
+        horario: now
+      }).catch(err => console.error("[eventos] Falha ao disparar notificacao de entrada:", err));
+    }
+
     return res.status(200).json({
       ok: true,
       escola_id,
@@ -970,35 +1022,12 @@ router.post("/faces", validarTokenWorker, exigirEscolaId, async (req, res) => {
   try {
     const escola_id = toNumber(req.escola_id, 0);
 
-    const nodeEnv = String(process.env.NODE_ENV || "").toLowerCase();
-    const isProd = nodeEnv === "production";
-
-    function slugDir(input) {
-      return String(input || "")
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "")
-        .slice(0, 60);
-    }
-
-    // ✅ PASSO 6.2.1 — NUNCA confiar em escola_dir do body (nem em DEV).
-    // Sempre resolve via x-escola-id -> DB (escolas.apelido).
+    // ✅ Usa cache em memória para resolução rápida (evita query DB a cada frame)
     let escola_dir = "";
 
     if (escola_id) {
       try {
-        const conn = await req.db.getConnection();
-        try {
-          const [rows] = await conn.query(
-            "SELECT apelido FROM escolas WHERE id = ? LIMIT 1",
-            [escola_id]
-          );
-          escola_dir = slugDir(rows?.[0]?.apelido || "");
-        } finally {
-          conn.release();
-        }
+        escola_dir = await resolverEscolaDirCached(req.db, escola_id);
       } catch (_) {
         // continua; validação abaixo decide se pode prosseguir
       }

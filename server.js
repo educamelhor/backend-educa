@@ -41,8 +41,8 @@ import pool from "./db.js";
 // ⚠️ MODULAÇÃO (temporariamente OFF)
 // Motivo: evitar quebrar o boot em produção enquanto o módulo está incompleto.
 // Quando for retomar: reativar imports + app.use abaixo e validar controllers.
-//// import modulacaoRoutes from "./routes/modulacao.js";
-//// import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
+import modulacaoRoutes from "./routes/modulacao.js";
+import modulacaoDiagnosticoRouter from "./routes/modulacao_diagnostico.js";
 
 // ==========================
 // OPTIONAL ROUTES (Feature Flags)
@@ -60,6 +60,7 @@ import plataformaRouter from "./routes/plataforma.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
+import avaliacoesRouter from "./routes/avaliacoes.js";
 import ferramentasIndexRouter from "./routes/ferramentas/index.js";
 
 
@@ -200,6 +201,15 @@ if (FF_MONITORAMENTO_INGEST) {
   );
 }
 
+// ✅ Embeddings também é canal básico do Worker (usa x-worker-token, não JWT)
+// Deve carregar independente de FF_MONITORAMENTO, assim como o ingest.
+if (FF_MONITORAMENTO_INGEST) {
+  monitoramentoEmbeddingsRouter = await safeImportDefault(
+    "FF_MONITORAMENTO_INGEST",
+    "./routes/monitoramento_embeddings.js"
+  );
+}
+
 if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO_TOKEN_SECRET"])) {
   monitoramentoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento.js");
   monitoramentoEventoRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_evento.js");
@@ -208,7 +218,7 @@ if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO
   monitoramentoPainelRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_painel.js");
   monitoramentoVisitantesRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_visitantes.js");
   monitoramentoCamerasRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_cameras.js");
-  monitoramentoEmbeddingsRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_embeddings.js");
+  // embeddings já carregado acima (independente de FF_MONITORAMENTO)
   monitoramentoStream = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_stream.js");
   monitoramentoUltimosRouter = await safeImportDefault("FF_MONITORAMENTO", "./routes/monitoramento_ultimos.js");
 } else if (FF_MONITORAMENTO) {
@@ -372,7 +382,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 
 if (!IS_PROD) {
-  console.log("[FF] MODULAÇÃO temporariamente DESATIVADA no server.js");
+  // console.log("[FF] MODULAÇÃO reativada");
 }
 
 
@@ -491,14 +501,14 @@ async function bootstrap() {
   app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
 
 
-  // ⚠️ MODULAÇÃO (temporariamente OFF)
-  // app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
-  // app.use(
-  //   "/api/modulacao",
-  //   autenticarToken,
-  //   verificarEscola,
-  //   modulacaoDiagnosticoRouter
-  // );
+  // ⚠️ MODULAÇÃO (reativado)
+  app.use("/api/modulacao", autenticarToken, verificarEscola, modulacaoRoutes);
+  app.use(
+    "/api/modulacao",
+    autenticarToken,
+    verificarEscola,
+    modulacaoDiagnosticoRouter
+  );
 
 
   if (FF_QUESTOES) {
@@ -557,6 +567,7 @@ async function bootstrap() {
 
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
+  app.use("/api/avaliacoes", autenticarToken, verificarEscola, avaliacoesRouter);
 
 
   // ⚠️ BOLETINS (temporariamente OFF)

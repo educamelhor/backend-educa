@@ -571,6 +571,8 @@ router.post("/confirmar", async (req, res) => {
 
       const token = jwt.sign(
         {
+          scope: "escola",
+          usuario_id: usuarioIdFinal,
           usuarioId: usuarioIdFinal,
           escola_id: escolaIdFinal,
           nome_escola: escolaRow?.nome || null,
@@ -622,7 +624,7 @@ router.post("/enviar-codigo-cadastro", async (req, res) => {
       `
       SELECT id
       FROM usuarios
-      WHERE cpf = ?
+      WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
         AND escola_id = ?
       LIMIT 1
       `,
@@ -645,7 +647,7 @@ router.post("/enviar-codigo-cadastro", async (req, res) => {
       [email]
     );
 
-    if (emailEmUso?.id && String(emailEmUso.cpf || "") !== cpfLimpo) {
+    if (emailEmUso?.id && String(emailEmUso.cpf || "").replace(/\D/g, "") !== cpfLimpo) {
       return res.status(409).json({
         message: "Este e-mail já está em uso. Informe outro e-mail para continuar.",
       });
@@ -696,7 +698,7 @@ router.post("/confirmar-codigo-cadastro", async (req, res) => {
       JOIN usuarios u
         ON u.id = oc.usuario_id
       LEFT JOIN professores p
-        ON p.cpf = u.cpf
+        ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
       WHERE oc.email = ?
         AND oc.codigo = ?
@@ -828,9 +830,9 @@ router.post("/validar-professor", async (req, res) => {
       LEFT JOIN escolas e
         ON e.id = u.escola_id
       LEFT JOIN professores p
-        ON p.cpf = u.cpf
+        ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
-      WHERE u.cpf = ?
+      WHERE REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = ?
         AND u.perfil = 'professor'
         AND u.escola_id IS NOT NULL
         AND (u.senha_hash IS NULL OR u.senha_hash = '')
@@ -855,7 +857,7 @@ router.post("/validar-professor", async (req, res) => {
       `
       SELECT id, perfil
       FROM usuarios
-      WHERE cpf = ?
+      WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
         AND perfil = 'professor'
         AND (senha_hash IS NOT NULL AND senha_hash <> '')
       LIMIT 1
@@ -904,9 +906,10 @@ router.post("/complementar-professor", async (req, res) => {
     let escolaIdFinal = escola_id;
 
     if (!escola_id && cpf) {
+      const cpfLimpoQuery = String(cpf || "").replace(/\D/g, "");
       const [[usuarioExistente]] = await pool.query(
-        "SELECT escola_id FROM usuarios WHERE cpf = ? AND perfil = ?",
-        [cpf, perfilFinal]
+        "SELECT escola_id FROM usuarios WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND perfil = ?",
+        [cpfLimpoQuery, perfilFinal]
       );
       escolaIdFinal = usuarioExistente?.escola_id || null;
     }
@@ -917,7 +920,7 @@ router.post("/complementar-professor", async (req, res) => {
     if (!usuarioIdAlvo) {
       const cpfLimpo = String(cpf || "").replace(/\D/g, "");
       const [[u]] = await pool.query(
-        "SELECT id FROM usuarios WHERE cpf = ? AND escola_id = ? AND perfil = ? LIMIT 1",
+        "SELECT id FROM usuarios WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? AND perfil = ? LIMIT 1",
         [cpfLimpo, escolaIdFinal, perfilFinal]
       );
       usuarioIdAlvo = u?.id || null;
@@ -938,7 +941,7 @@ router.post("/complementar-professor", async (req, res) => {
         [email]
       );
 
-      if (emailEmUso?.id && String(emailEmUso.cpf || "") !== cpfLimpoReq) {
+      if (emailEmUso?.id && String(emailEmUso.cpf || "").replace(/\D/g, "") !== cpfLimpoReq) {
         return res.status(409).json({
           message: "Este e-mail já está em uso. Informe outro e-mail para continuar.",
         });
@@ -1050,16 +1053,17 @@ router.post("/cadastrar-senha", async (req, res) => {
         [celLimpoReq]
       );
 
-      if (celEmUso?.id && String(celEmUso.cpf || "") !== cpfLimpoReq) {
+      if (celEmUso?.id && String(celEmUso.cpf || "").replace(/\D/g, "") !== cpfLimpoReq) {
         return res.status(409).json({
           message: "Este celular já está em uso. Informe outro celular para continuar.",
         });
       }
     }
 
+    const cpfLimpoQuery = String(cpf || "").replace(/\D/g, "");
     await pool.query(
-      "UPDATE usuarios SET senha_hash = ?, ativo = 1, email = COALESCE(?, email), celular = COALESCE(?, celular) WHERE cpf = ? AND perfil = ?",
-      [senha_hash, email || null, celular ? String(celular).replace(/\D/g, "") : null, cpf, perfilFinal]
+      "UPDATE usuarios SET senha_hash = ?, ativo = 1, email = COALESCE(?, email), celular = COALESCE(?, celular) WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND perfil = ?",
+      [senha_hash, email || null, celular ? String(celular).replace(/\D/g, "") : null, cpfLimpoQuery, perfilFinal]
     );
 
 

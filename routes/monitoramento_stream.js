@@ -141,26 +141,54 @@ function enviarFallbackLocal(res, localPath){
 
 async function resolverFrameLocal(escolaId, camId) {
   try {
-    // resolver pasta da escola (exatamente como no disco)
-    const escolaDir = path.join(
-      process.cwd(),
-      "uploads",
-      "CEF04_PLAN",
-      "monitoramento"
-    );
+    // Resolver apelido da escola dinamicamente (para suporte multi-escola)
+    let apelidoRaw = "";
+    try {
+      apelidoRaw = await getEscolaApelidoById(escolaId) || "";
+    } catch {}
 
-    // padrões reais que você mostrou no print
-    const candidatos = [
-      `camera_${camId}.jpg`,
-      `camera_${camId}.jpeg`,
-      `camera${camId}.jpg`,
-      `camera${camId}.jpeg`,
-    ];
+    // Slugify como faz o ingest
+    const slugDir = (s) => String(s || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 60);
 
-    for (const nome of candidatos) {
-      const full = path.join(escolaDir, nome);
-      if (fs.existsSync(full)) {
-        return full;
+    const escolaDirSlug = slugDir(apelidoRaw);
+    const camDir = `camera-${String(camId).padStart(2, "0")}`;
+
+    // Prioridade 1: frame.jpg do worker (sincronizado com bboxes)
+    // Caminho: uploads/<escola_dir>/monitoramento/camera-0X/frame.jpg
+    if (escolaDirSlug) {
+      const workerFrame = path.join(
+        process.cwd(), "uploads", escolaDirSlug, "monitoramento", camDir, "frame.jpg"
+      );
+      if (fs.existsSync(workerFrame)) return workerFrame;
+    }
+
+    // Prioridade 2: fallback com apelido original (sem slug)
+    if (apelidoRaw) {
+      const escolaDir = path.join(
+        process.cwd(), "uploads", apelidoRaw, "monitoramento"
+      );
+      const fallbackFrame = path.join(escolaDir, camDir, "frame.jpg");
+      if (fs.existsSync(fallbackFrame)) return fallbackFrame;
+    }
+
+    // Prioridade 3: padrões legados (sem sub-diretório camera-0X)
+    const legacyDirs = [escolaDirSlug, apelidoRaw, "CEF04_PLAN"].filter(Boolean);
+    for (const dir of legacyDirs) {
+      const escolaDir = path.join(process.cwd(), "uploads", dir, "monitoramento");
+      const candidatos = [
+        `camera_${camId}.jpg`,
+        `camera_${camId}.jpeg`,
+        `camera${camId}.jpg`,
+        `camera${camId}.jpeg`,
+      ];
+      for (const nome of candidatos) {
+        const full = path.join(escolaDir, nome);
+        if (fs.existsSync(full)) return full;
       }
     }
 
@@ -324,12 +352,28 @@ router.get(
     const withOverlay = String(req.query.overlay||"1")==="1";
 
     try{
-      // Se forçar fallback, tenta retornar o arquivo local ANTES de qualquer RTSP/ffmpeg
-      if (forceFallback && allowFallback) {
-
-        const local = await resolverFrameLocal(escolaId, camId);
-        if (enviarFallbackLocal(res, local)) return;
+      // ✅ SEMPRE tenta o frame do worker primeiro (sincronizado com bboxes)
+      // O worker envia frame.jpg junto com faces.json, garantindo que
+      // a imagem e o quadrado sejam do MESMO momento.
+      const workerFrame = await resolverFrameLocal(escolaId, camId);
+      if (workerFrame) {
+        // Verifica se o frame é recente (< 10s) para não mostrar frame congelado
+        try {
+          const stat = fs.statSync(workerFrame);
+          const ageSec = (Date.now() - stat.mtimeMs) / 1000;
+          if (ageSec < 10) {
+            res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Expires", "0");
+            res.setHeader("Content-Type", "image/jpeg");
+            res.setHeader("X-Source", "worker-frame");
+            fs.createReadStream(workerFrame).pipe(res);
+            return;
+          }
+        } catch {}
       }
+
+      // Fallback: se frame do worker não existe ou está obsoleto, usa ffmpeg
 
       const cam = await obterRTSP({ id:camId, escola_id:escolaId });
 
@@ -434,6 +478,48 @@ router.get(
     const forceFallback = String(req.query.force_fallback||"0")==="1"; // NOVO
 
     try{
+      // ✅ SEMPRE tenta usar frame do worker (sincronizado com bboxes)
+      // O worker atualiza frame.jpg a cada ~500ms, então o MJPEG stream
+      // sempre mostra a imagem que corresponde às detecções faciais.
+      const workerFramePath = await resolverFrameLocal(escolaId, camId);
+      const useWorkerFrame = workerFramePath && fs.existsSync(workerFramePath) && (() => {
+        try {
+          const stat = fs.statSync(workerFramePath);
+          return (Date.now() - stat.mtimeMs) / 1000 < 10; // frame < 10s
+        } catch { return false; }
+      })();
+
+      if (useWorkerFrame) {
+        const boundary="mjpeg-boundary-"+Date.now();
+        res.setHeader("Content-Type", `multipart/x-mixed-replace; boundary=${boundary}`);
+        res.setHeader("Cache-Control","no-cache, no-store, must-revalidate");
+        res.setHeader("Pragma","no-cache");
+        res.setHeader("Connection","keep-alive");
+
+        const intervalMs = Math.max(50, Math.floor(1000 / fps));
+        const timer = setInterval(async () => {
+          try {
+            let jpeg = fs.readFileSync(workerFramePath);
+            if (typeof aplicarOverlayFrame==="function") {
+              jpeg = await aplicarOverlayFrame(jpeg, camId, escolaId);
+            }
+            res.write(`--${boundary}\r\n`);
+            res.write("Content-Type: image/jpeg\r\n");
+            res.write(`Content-Length: ${jpeg.length}\r\n\r\n`);
+            res.write(jpeg);
+            res.write("\r\n");
+          } catch (e) {
+            // se falhar leitura/stream, apenas encerra
+            try { clearInterval(timer); } catch {}
+            try { res.end(); } catch {}
+          }
+        }, intervalMs);
+
+        const close = () => { try { clearInterval(timer); } catch {} try { res.end(); } catch {} };
+        req.on("close", close);
+        return;
+      }
+
       // Se forçar fallback, serve MJPEG a partir do arquivo local (sem RTSP/ffmpeg)
       if (forceFallback && allowFallback) {
         const local = await resolverFrameLocal(escolaId, camId);

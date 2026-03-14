@@ -918,6 +918,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               LPAD(o.id, 4, '0') AS registro, 
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
               o.motivo, 
+              t.tipo AS tipo,
               o.descricao, 
               o.convocar_responsavel, 
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
@@ -925,6 +926,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               u.nome AS nome_usuario_finalizacao
        FROM ocorrencias_disciplinares o
        LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
+       LEFT JOIN tipos_ocorrencia t ON t.motivo = o.motivo AND t.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`,
       [id, escola_id]
