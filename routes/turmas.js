@@ -149,4 +149,42 @@ router.delete("/:id", verificarEscola, async (req, res) => {
   }
 });
 
+/**
+ * ================================
+ * LISTAR ALUNOS DE UMA TURMA
+ * GET /api/turmas/:id/alunos
+ * ================================
+ * Busca alunos matriculados em uma turma específica (ano letivo atual).
+ * Fonte canônica: tabela `matriculas`.
+ */
+router.get("/:id/alunos", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+    const anoLetivo = req.query.ano || new Date().getFullYear();
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        a.id,
+        a.estudante AS nome,
+        a.codigo AS matricula
+      FROM matriculas m
+      INNER JOIN alunos a ON a.id = m.aluno_id
+      WHERE m.turma_id = ?
+        AND m.escola_id = ?
+        AND m.ano_letivo = ?
+        AND m.status = 'ativo'
+      ORDER BY a.estudante ASC
+      `,
+      [id, escola_id, anoLetivo]
+    );
+
+    return res.json({ ok: true, alunos: rows });
+  } catch (err) {
+    console.error("Erro ao listar alunos da turma:", err);
+    return res.status(500).json({ ok: false, error: "Não foi possível carregar os alunos da turma." });
+  }
+});
+
 export default router;

@@ -81,14 +81,16 @@ import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/u
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
 import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
-import tiposOcorrenciaRouter from "./routes/tiposOcorrencia.js";
+import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
 import responsaveisRouter from "./routes/responsaveis.js";
+import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import gradeBaseRoutes from "./routes/gradeBase.js";
 import gradeSolveRoutes from "./routes/gradeSolve.js";
 import disponibilidadesRouter from "./routes/disponibilidades.js";
 import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
+import direcaoRouter from "./routes/direcao.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 let appPaisRouter = null;
@@ -579,8 +581,12 @@ async function bootstrap() {
   // 🔒 Rotas protegidas de usuários
   app.use("/api/usuarios", autenticarToken, verificarEscola, usuariosRouter);
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
-  app.use("/api/tipos-ocorrencia", autenticarToken, verificarEscola, tiposOcorrenciaRouter);
+  app.use("/api/registros-ocorrencias", autenticarToken, verificarEscola, registrosOcorrenciasRouter);
   app.use("/api/responsaveis", autenticarToken, verificarEscola, responsaveisRouter);
+  app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
+
+  // ✅ Direção — Gestão de Equipe (Diretor Disciplinar)
+  app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {

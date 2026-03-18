@@ -492,8 +492,9 @@ router.post("/:id/foto", upload.single("foto"), async (req, res) => {
  * 11) IMPORTAR PDF (gera inserts/reativa/inativa por turma)
  * POST /api/alunos/importar-pdf (arquivo: file)
  * - Nome do arquivo (sem extensão) = nome da turma
- * - Linhas no padrão: "<codigo> <nome> <dd/mm/aaaa>"
- *   Sexo vem 2 linhas abaixo (M/F)
+ * - PDF padrão da Secretaria de Educação ("Ficha do Estudante")
+ *   Cada linha de dados: RE(4-7 dígitos) + NOME + dd/mm/yyyy + filiação...
+ *   Extraímos apenas: RE, nome do estudante, data de nascimento
  * ========================================================================== */
 const uploadPdf = multer(); // usa buffer
 router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
@@ -504,8 +505,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   try {
     const { escola_id } = req.user;
     const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
-  
-    const { text } = await pdfParse(req.file.buffer);
+
+    // Identifica turma pelo nome do arquivo
     let turmaNomeStr = req.body.turmaNome || req.file.originalname.replace(/\.pdf$/i, "").trim();
     // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
     const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
@@ -515,24 +516,145 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada.` });
     }
     const turma_id = turma.id;
-
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  
+    // ──────────────────────────────────────────────────────────────────
+    // PARSER POSICIONAL — extrai dados diretamente pelas colunas do PDF
+    // O PDF padrão da Secretaria de Educação tem colunas fixas:
+    //   x≈45 RE | x≈94 NOME | x≈376 DT NASC | x≈482 FILIAÇÃO | x≈758 RESPONSÁVEL | x≈1034 CPF
+    // Usamos getTextContent() do pdfjs para obter cada item com posição (x, y)
+    // ──────────────────────────────────────────────────────────────────
     const pdfEntries = [];
-    for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
-      const m = ln.match(/^(\d{3,})\s*([A-Za-zÀ-ÖØ-öø-ÿ\s]+?)\s*(\d{2}\/\d{2}\/\d{4})\s*$/);
-      if (!m) continue;
-      const [, codigo, nomeRaw, dataBr] = m;
-      const sexoRaw = (lines[i + 2] || "").charAt(0).toUpperCase();
-      if (!/^[MF]$/.test(sexoRaw)) continue;
+
+    // Definimos colunas por faixas de X
+    // (tolerância generosa para diferentes formatações)
+    // Posições reais observadas: RE≈45, NOME≈94, DT NASC≈352, FILIAÇÃO≈457, RESP≈755, CPF≈1035
+    const COL_RANGES = {
+      re:          { min: 20, max: 90 },
+      nome:        { min: 90, max: 345 },
+      dataNasc:    { min: 345, max: 455 },
+      filiacao:    { min: 455, max: 750 },
+      responsavel: { min: 750, max: 1030 },
+      cpf:         { min: 1030, max: 1300 },
+    };
+
+    function getCol(x) {
+      for (const [col, range] of Object.entries(COL_RANGES)) {
+        if (x >= range.min && x < range.max) return col;
+      }
+      return null;
+    }
+
+    // Extrai text items com posição usando pagerender customizado
+    const allItems = [];
+    const parseOptions = {
+      pagerender: async (pageData) => {
+        const tc = await pageData.getTextContent();
+        for (const item of tc.items) {
+          const txt = (item.str || "").trim();
+          if (!txt) continue;
+          allItems.push({
+            text: txt,
+            x: Math.round(item.transform[4]),
+            y: Math.round(item.transform[5]),
+          });
+        }
+        return ""; // pdf-parse espera string; retornamos vazio pois usamos allItems
+      },
+    };
+    await pdfParse(req.file.buffer, parseOptions);
+
+    // Agrupa items por linha (Y) → ordena por X dentro de cada linha
+    const rowsMap = {};
+    for (const it of allItems) {
+      // Agrupa Y com tolerância de 3px (variações de renderização)
+      const yKey = Math.round(it.y / 3) * 3;
+      if (!rowsMap[yKey]) rowsMap[yKey] = [];
+      rowsMap[yKey].push(it);
+    }
+
+    // Para cada linha, monta o registro se tiver um RE válido
+    const yKeys = Object.keys(rowsMap).map(Number).sort((a, b) => b - a); // top→bottom
+    for (const yKey of yKeys) {
+      const items = rowsMap[yKey].sort((a, b) => a.x - b.x);
+
+      // Classifica cada item na sua coluna
+      const rowData = {};
+      for (const it of items) {
+        const col = getCol(it.x);
+        if (col) {
+          // Se já existe texto na coluna, concatena (caso raro de wrap)
+          rowData[col] = rowData[col] ? rowData[col] + " " + it.text : it.text;
+        }
+      }
+
+      // Valida: precisa ter RE numérico e nome
+      const re = (rowData.re || "").trim();
+      if (!/^\d{4,7}$/.test(re)) continue; // ignora headers, rodapés, etc.
+
+      let estudante = (rowData.nome || "").trim();
+      let dataBr = (rowData.dataNasc || "").trim();
+      const responsavel = (rowData.responsavel || "").trim();
+      const cpfResp = (rowData.cpf || "").replace(/\D/g, "");
+
+      // Se a data vazou para o campo nome (drift de colunas), extrair e limpar
+      const dateInName = estudante.match(/\s+(\d{2}\/\d{2}\/\d{4})\s*$/);
+      if (dateInName) {
+        if (!dataBr || !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
+          dataBr = dateInName[1]; // usa a data encontrada no nome
+        }
+        estudante = estudante.replace(/\s+\d{2}\/\d{2}\/\d{4}\s*$/, "").trim();
+      }
+
+      // Valida formato de data (dd/mm/yyyy) — evita erro de STR_TO_DATE no MySQL strict mode
+      if (dataBr && !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
+        dataBr = ""; // descarta valor que não é data
+      }
+
+      if (!estudante) continue;
 
       pdfEntries.push({
-        codigo: String(codigo).trim(),
-        estudante: nomeRaw.trim(),
-        dataBr,                 // dd/mm/yyyy
-        sexo: sexoRaw,
+        codigo: re,
+        estudante,
+        dataBr,
+        sexo: null,
+        responsavel: responsavel || null,
+        cpfResponsavel: cpfResp.length === 11 ? cpfResp : null,
       });
     }
+
+    // Fallback: se parser posicional não encontrou nada, tenta regex legado
+    if (pdfEntries.length === 0) {
+      const { text } = await pdfParse(req.file.buffer);
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const regexLinha = /^(\d{4,7})([A-Za-zÀ-ÖØ-öø-ÿÇçÃãÕõÉéÍíÓóÚúÂâÊêÎîÔôÛû\s]+?)(\d{2}\/\d{2}\/\d{4})(.*)/;
+      for (const ln of lines) {
+        const m = ln.match(regexLinha);
+        if (!m) continue;
+        const [, codigo, nomeRaw, dataBr, restante] = m;
+        const cpfMatch = (restante || "").match(/(\d{11})$/);
+        const cpfResp = cpfMatch ? cpfMatch[1] : null;
+        const nomes = cpfResp ? restante.slice(0, -11).trim() : (restante || "").trim();
+        // Fallback: tenta separar nomes duplicados
+        let nomeResponsavel = nomes;
+        const ngLen = nomes.length;
+        if (ngLen > 0 && ngLen % 2 === 0) {
+          const half = ngLen / 2;
+          if (nomes.substring(0, half) === nomes.substring(half)) {
+            nomeResponsavel = nomes.substring(half);
+          }
+        }
+        pdfEntries.push({
+          codigo: String(codigo).trim(),
+          estudante: nomeRaw.trim(),
+          dataBr,
+          sexo: null,
+          responsavel: nomeResponsavel || null,
+          cpfResponsavel: cpfResp || null,
+        });
+      }
+    }
+
+    console.log(`[importar-pdf] Parser posicional extraiu ${pdfEntries.length} alunos`);
 
     // Situação atual no DB (por turma)
     const [atuais] = await pool.query(
@@ -556,6 +678,36 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         toReactivate.push(e);
       } else {
         jaExistiam++;
+        // Mesmo que o aluno já exista, precisamos vincular o responsável
+        // (caso ainda não tenha sido vinculado — ex: primeira importação não extraía resp.)
+        if (e.cpfResponsavel && e.responsavel) {
+          try {
+            const [respResult] = await pool.query(
+              `INSERT INTO responsaveis (nome, cpf)
+               VALUES (?, ?)
+               ON DUPLICATE KEY UPDATE
+                 id = LAST_INSERT_ID(id),
+                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+              [e.responsavel, e.cpfResponsavel]
+            );
+            const responsavelId = respResult.insertId;
+            if (responsavelId && atual.id) {
+              const [[vinculoExiste]] = await pool.query(
+                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+                [responsavelId, atual.id, escola_id]
+              );
+              if (!vinculoExiste) {
+                await pool.query(
+                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
+                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
+                  [escola_id, responsavelId, atual.id]
+                );
+              }
+            }
+          } catch (respErr) {
+            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno existente ${e.codigo}:`, respErr.message);
+          }
+        }
       }
     }
 
@@ -564,16 +716,38 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     // Inserir novos (e lidar com possíveis alunos existentes em outras turmas via DUPLICATE KEY)
     let inseridos = 0;
     for (const e of toInsert) {
-      const [result] = await pool.query(
-        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
+      // Se dataBr é vazio/inválido, usa NULL direto (evita STR_TO_DATE com lixo)
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+      const insertParams = dataValida
+        ? [e.codigo, e.estudante, e.dataBr, turma_id, escola_id]
+        : [e.codigo, e.estudante, turma_id, escola_id];
+      let insertSql = dataValida
+        ? `INSERT INTO alunos (codigo, estudante, data_nascimento, turma_id, escola_id, status)
+           VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, 'ativo')
+           ON DUPLICATE KEY UPDATE 
+             id = LAST_INSERT_ID(id),
+             estudante = VALUES(estudante),
+             turma_id = VALUES(turma_id),
+             status = 'ativo'`
+        : `INSERT INTO alunos (codigo, estudante, turma_id, escola_id, status)
+           VALUES (?, ?, ?, ?, 'ativo')
+           ON DUPLICATE KEY UPDATE 
+             id = LAST_INSERT_ID(id),
+             estudante = VALUES(estudante),
+             turma_id = VALUES(turma_id),
+             status = 'ativo'`;
+      // Se o PDF trouxer sexo (raro), inclui na query
+      if (e.sexo) {
+        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
          ON DUPLICATE KEY UPDATE 
            id = LAST_INSERT_ID(id),
            estudante = VALUES(estudante),
            turma_id = VALUES(turma_id),
-           status = 'ativo'`,
-        [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id, escola_id]
-      );
+           status = 'ativo'`;
+        insertParams.splice(3, 0, e.sexo); // insere sexo após dataBr
+      }
+      const [result] = await pool.query(insertSql, insertParams);
       
       const alunoId = result.insertId;
       if (alunoId) {
@@ -588,6 +762,41 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
             [escola_id, alunoId, turma_id, anoLetivoAtual]
           );
+        }
+
+        // ── RESPONSÁVEL (background) ──
+        // Insere/atualiza responsável e cria vínculo com o aluno
+        if (e.cpfResponsavel && e.responsavel) {
+          try {
+            // INSERT ou UPDATE pelo CPF (chave natural)
+            const [respResult] = await pool.query(
+              `INSERT INTO responsaveis (nome, cpf)
+               VALUES (?, ?)
+               ON DUPLICATE KEY UPDATE
+                 id = LAST_INSERT_ID(id),
+                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+              [e.responsavel, e.cpfResponsavel]
+            );
+            const responsavelId = respResult.insertId;
+
+            if (responsavelId) {
+              // Cria vínculo aluno ↔ responsável (se não existir)
+              const [[vinculoExiste]] = await pool.query(
+                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+                [responsavelId, alunoId, escola_id]
+              );
+              if (!vinculoExiste) {
+                await pool.query(
+                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
+                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
+                  [escola_id, responsavelId, alunoId]
+                );
+              }
+            }
+          } catch (respErr) {
+            // Erro ao inserir responsável não deve bloquear a importação dos alunos
+            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno ${e.codigo}:`, respErr.message);
+          }
         }
       }
       inseridos++;
@@ -616,6 +825,36 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             [escola_id, alunoId, turma_id, anoLetivoAtual]
           );
         }
+
+        // ── RESPONSÁVEL (background — reativação) ──
+        if (e.cpfResponsavel && e.responsavel) {
+          try {
+            const [respResult] = await pool.query(
+              `INSERT INTO responsaveis (nome, cpf)
+               VALUES (?, ?)
+               ON DUPLICATE KEY UPDATE
+                 id = LAST_INSERT_ID(id),
+                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+              [e.responsavel, e.cpfResponsavel]
+            );
+            const responsavelId = respResult.insertId;
+            if (responsavelId) {
+              const [[vinculoExiste]] = await pool.query(
+                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+                [responsavelId, alunoId, escola_id]
+              );
+              if (!vinculoExiste) {
+                await pool.query(
+                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
+                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
+                  [escola_id, responsavelId, alunoId]
+                );
+              }
+            }
+          } catch (respErr) {
+            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno reativado ${e.codigo}:`, respErr.message);
+          }
+        }
       }
 
       reativados++;
@@ -625,7 +864,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let inativados = 0;
     for (const r of toInactivate) {
       const correspondente = pdfEntries.find((e) => e.codigo === String(r.codigo));
-      if (correspondente) {
+      if (correspondente && correspondente.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(correspondente.dataBr)) {
         await pool.query(
           `UPDATE alunos
            SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y'), turma_id = ?
@@ -822,7 +1061,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     let inativados = 0;
     for (const r of toInactivate) {
       const correspondente = xlsxEntries.find((e) => e.codigo === String(r.codigo));
-      if (correspondente && correspondente.dataBr) {
+      if (correspondente && correspondente.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(correspondente.dataBr)) {
         await pool.query(
           `UPDATE alunos
            SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y'), turma_id = ?
@@ -918,15 +1157,18 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               LPAD(o.id, 4, '0') AS registro, 
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
               o.motivo, 
-              t.tipo AS tipo,
+              r.medida_disciplinar,
+              r.tipo_ocorrencia AS tipo,
+              r.pontos,
               o.descricao, 
-              o.convocar_responsavel, 
+              o.convocar_responsavel,
+              o.dias_suspensao,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
               o.status,
               u.nome AS nome_usuario_finalizacao
        FROM ocorrencias_disciplinares o
        LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
-       LEFT JOIN tipos_ocorrencia t ON t.motivo = o.motivo AND t.escola_id = o.escola_id
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`,
       [id, escola_id]
@@ -943,17 +1185,17 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { escola_id } = req.user;
-    const { data, motivo, descricao, convocarResponsavel } = req.body;
+    const { data, motivo, tipoOcorrencia, descricao, convocarResponsavel, diasSuspensao } = req.body;
 
-    if (!data || !motivo || !descricao) {
+    if (!data || !motivo) {
       return res.status(400).json({ message: "Preencha os campos obrigatórios." });
     }
 
     const [result] = await pool.query(
       `INSERT INTO ocorrencias_disciplinares 
-         (aluno_id, escola_id, data_ocorrencia, motivo, descricao, convocar_responsavel) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, escola_id, data, motivo, descricao, convocarResponsavel ? 1 : 0]
+         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, convocar_responsavel, dias_suspensao) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null, convocarResponsavel ? 1 : 0, diasSuspensao || null]
     );
 
     res.status(201).json({
@@ -972,9 +1214,7 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
     const { escola_id } = req.user;
     const { descricao, convocarResponsavel } = req.body;
 
-    if (!descricao) {
-      return res.status(400).json({ message: "A descrição é obrigatória." });
-    }
+
 
     await pool.query(
       `UPDATE ocorrencias_disciplinares 
@@ -1013,6 +1253,36 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
   } catch (err) {
     console.error("Erro ao finalizar ocorrência:", err);
     res.status(500).json({ message: "Erro ao finalizar ocorrência." });
+  }
+});
+
+// ============================================================================
+// PUT /api/alunos/:id/ocorrencias/:ocorrenciaId/cancelamento
+// Cancela uma medida disciplinar — reverte a pontuação do aluno
+// Registra o usuário que realizou o cancelamento
+// ============================================================================
+router.put("/:id/ocorrencias/:ocorrenciaId/cancelamento", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const usuarioCancelamentoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+
+    const [result] = await pool.query(
+      `UPDATE ocorrencias_disciplinares 
+       SET status = 'CANCELADA',
+           usuario_finalizacao_id = ?
+       WHERE id = ? AND aluno_id = ? AND escola_id = ? AND status IN ('FINALIZADA', 'REGISTRADA')`,
+      [usuarioCancelamentoId, ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Ocorrência não encontrada ou já cancelada." });
+    }
+
+    res.json({ message: "Medida disciplinar cancelada com sucesso." });
+  } catch (err) {
+    console.error("Erro ao cancelar medida disciplinar:", err);
+    res.status(500).json({ message: "Erro ao cancelar medida disciplinar." });
   }
 });
 

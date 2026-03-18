@@ -178,7 +178,7 @@ function hashConviteToken(token) {
 
 async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
   const [[escolaRow]] = await pool.query(
-    `SELECT nome FROM escolas WHERE id = ? LIMIT 1`,
+    `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
     [Number(escolaId)]
   );
 
@@ -189,7 +189,7 @@ async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
     usuario_id: Number(usuarioId), // ✅ contrato novo
     usuarioId: Number(usuarioId),  // ✅ compatibilidade com front atual
     escola_id: Number(escolaId),
-    nome_escola: escolaRow?.nome || null,
+    nome_escola: escolaRow?.apelido || null,
     perfil: perfil || "diretor",
     perfis,
     permissoes,
@@ -200,7 +200,7 @@ async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
   return {
     token,
     escola_id: Number(escolaId),
-    nome_escola: escolaRow?.nome || "Escola não definida",
+    nome_escola: escolaRow?.apelido || "Escola não definida",
     perfil: perfil || "diretor",
     perfis,
     permissoes,
@@ -527,6 +527,7 @@ router.post("/confirmar", async (req, res) => {
       SELECT DISTINCT
         u.escola_id AS id,
         e.nome      AS nome,
+        e.apelido   AS apelido,
         u.perfil    AS perfil,
         u.id        AS usuario_ctx_id
       FROM usuarios u
@@ -563,7 +564,7 @@ router.post("/confirmar", async (req, res) => {
     const perfilFinal = ctx0?.perfil ?? usuarioBase.perfil ?? "aluno";
 
     const [[escolaRow]] = await pool.query(
-      `SELECT nome FROM escolas WHERE id = ? LIMIT 1`,
+      `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
       [escolaIdFinal]
     );
 
@@ -575,7 +576,7 @@ router.post("/confirmar", async (req, res) => {
           usuario_id: usuarioIdFinal,
           usuarioId: usuarioIdFinal,
           escola_id: escolaIdFinal,
-          nome_escola: escolaRow?.nome || null,
+          nome_escola: escolaRow?.apelido || null,
           perfil: perfilFinal, // compatibilidade
           perfis,
           permissoes,
@@ -588,7 +589,7 @@ router.post("/confirmar", async (req, res) => {
         token,
         nome: usuarioBase.nome || "Usuário",
         escola_id: escolaIdFinal,
-        nome_escola: escolaRow?.nome || "Escola não definida",
+        nome_escola: escolaRow?.apelido || "Escola não definida",
         perfil: perfilFinal, // compatibilidade
         perfis,
         permissoes,
@@ -684,7 +685,7 @@ router.post("/confirmar-codigo-cadastro", async (req, res) => {
   const { email, codigo } = req.body;
 
   try {
-    // ✅ Aqui já recupera usuario_id do OTP e puxa dados do pré-cadastro (professores)
+    // ✅ Recupera usuario_id do OTP e puxa dados do pré-cadastro (professores OU equipe_escola)
     const [[row]] = await pool.query(
       `
       SELECT
@@ -692,14 +693,20 @@ router.post("/confirmar-codigo-cadastro", async (req, res) => {
         oc.usuario_id    AS usuario_id,
         u.cpf            AS cpf,
         u.escola_id      AS escola_id,
-        p.nome           AS nome_pre_cadastrado,
-        p.perfil         AS perfil_pre_cadastro
+        u.perfil         AS perfil_usuario,
+        u.nome           AS nome_usuario,
+        p.nome           AS nome_professor,
+        p.perfil         AS perfil_professor,
+        eq.nome          AS nome_equipe
       FROM otp_codes oc
       JOIN usuarios u
         ON u.id = oc.usuario_id
       LEFT JOIN professores p
         ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
+      LEFT JOIN equipe_escola eq
+        ON eq.cpf = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
+       AND eq.escola_id = u.escola_id
       WHERE oc.email = ?
         AND oc.codigo = ?
         AND oc.expira_em > NOW()
@@ -714,13 +721,18 @@ router.post("/confirmar-codigo-cadastro", async (req, res) => {
 
     await pool.query("DELETE FROM otp_codes WHERE id = ?", [row.otp_id]);
 
+    // Cascata de nome: professor → equipe_escola → usuarios
+    const nomeFinal = row.nome_professor || row.nome_equipe || row.nome_usuario || "";
+    // Cascata de perfil: professor → usuarios
+    const perfilFinal = row.perfil_professor || row.perfil_usuario || "professor";
+
     return res.json({
       sucesso: true,
       usuario_id: row.usuario_id,
       cpf: row.cpf,
       escola_id: row.escola_id,
-      nome: row.nome_pre_cadastrado || "",
-      perfil: row.perfil_pre_cadastro || "professor",
+      nome: nomeFinal,
+      perfil: perfilFinal,
     });
   } catch (err) {
     console.error("Erro ao confirmar código de cadastro:", err);
@@ -819,6 +831,7 @@ router.post("/validar-professor", async (req, res) => {
       return res.status(400).json({ ok: false, message: "CPF inválido." });
     }
 
+    // ── Busca pré-cadastros pendentes: professores + disciplinar ──
     const [rows] = await pool.query(
       `
       SELECT DISTINCT
@@ -833,7 +846,7 @@ router.post("/validar-professor", async (req, res) => {
         ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
       WHERE REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = ?
-        AND u.perfil = 'professor'
+        AND u.perfil IN ('professor', 'disciplinar')
         AND u.escola_id IS NOT NULL
         AND (u.senha_hash IS NULL OR u.senha_hash = '')
       ORDER BY e.nome ASC
@@ -858,11 +871,11 @@ router.post("/validar-professor", async (req, res) => {
       SELECT id, perfil
       FROM usuarios
       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-        AND perfil = 'professor'
+        AND perfil IN ('professor', 'disciplinar')
         AND (senha_hash IS NOT NULL AND senha_hash <> '')
       LIMIT 1
       `,
-      [cpf]
+      [cpfLimpo]
     );
 
     if (jaCadastrado) {
@@ -978,7 +991,7 @@ router.post("/complementar-professor", async (req, res) => {
       }
     }
 
-    // ✅ Atualiza usuários e professores
+    // ✅ Atualiza usuários e professores/equipe_disciplinar
 
     const celularFinal = celular ? String(celular).replace(/\D/g, "") : null;
 
@@ -988,10 +1001,20 @@ router.post("/complementar-professor", async (req, res) => {
     );
 
     const cpfLimpoFinal = String(cpf || "").replace(/\D/g, "");
-    await pool.query(
-      "UPDATE professores SET nome = ?, data_nascimento = ?, sexo = ? WHERE cpf = ? AND escola_id = ?",
-      [nome, data_nascimento, sexo, cpfLimpoFinal, escolaIdFinal]
-    );
+
+    if (perfilFinal === "disciplinar") {
+      // Atualiza equipe_escola
+      await pool.query(
+        "UPDATE equipe_escola SET nome = ?, email = ? WHERE cpf = ? AND escola_id = ?",
+        [nome, email || null, cpfLimpoFinal, escolaIdFinal]
+      );
+    } else {
+      // Atualiza professores
+      await pool.query(
+        "UPDATE professores SET nome = ?, data_nascimento = ?, sexo = ? WHERE cpf = ? AND escola_id = ?",
+        [nome, data_nascimento, sexo, cpfLimpoFinal, escolaIdFinal]
+      );
+    }
 
     return res.json({ sucesso: true });
   } catch (err) {
@@ -1334,7 +1357,7 @@ router.post("/confirmar-escola", async (req, res) => {
 
     const [[usuarioEscola]] = await pool.query(
       `
-      SELECT u.id, u.escola_id, u.perfil, e.nome AS nome_escola
+      SELECT u.id, u.escola_id, u.perfil, e.apelido AS nome_escola
       FROM usuarios u
       LEFT JOIN escolas e ON e.id = u.escola_id
       WHERE u.id = ?
