@@ -58,6 +58,7 @@ import authRouter from "./routes/auth.js";
 import authPlataformaRouter from "./routes/auth_plataforma.js";
 import plataformaRouter from "./routes/plataforma.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
+import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
 import avaliacoesRouter from "./routes/avaliacoes.js";
@@ -568,6 +569,7 @@ async function bootstrap() {
   }
 
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
+  app.use("/api/gabarito-pdf", autenticarToken, verificarEscola, gabaritoPdfRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
   app.use("/api/avaliacoes", autenticarToken, verificarEscola, avaliacoesRouter);
 
