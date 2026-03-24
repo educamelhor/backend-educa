@@ -218,7 +218,7 @@ router.get("/:alunoId", async (req, res) => {
     });
 
     res.setHeader("Content-Type", "application/pdf");
-    const nomeArquivo = `relatorio_disciplinar_${aluno.codigo || aluno.id}.pdf`;
+    const nomeArquivo = `relatorio_${aluno.codigo || aluno.id}.pdf`;
     res.setHeader("Content-Disposition", `inline; filename="${nomeArquivo}"`);
 
     const pdfChunks = [];
