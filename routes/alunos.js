@@ -1160,7 +1160,8 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               r.medida_disciplinar,
               r.tipo_ocorrencia AS tipo,
               r.pontos,
-              o.descricao, 
+              o.descricao,
+              o.registro_interno,
               o.convocar_responsavel,
               o.dias_suspensao,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
@@ -1185,7 +1186,7 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { escola_id } = req.user;
-    const { data, motivo, tipoOcorrencia, descricao, convocarResponsavel, diasSuspensao } = req.body;
+    const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao } = req.body;
 
     if (!data || !motivo) {
       return res.status(400).json({ message: "Preencha os campos obrigatórios." });
@@ -1193,9 +1194,9 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
 
     const [result] = await pool.query(
       `INSERT INTO ocorrencias_disciplinares 
-         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, convocar_responsavel, dias_suspensao) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null, convocarResponsavel ? 1 : 0, diasSuspensao || null]
+         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, dias_suspensao) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null, registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null]
     );
 
     res.status(201).json({
@@ -1212,15 +1213,13 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
   try {
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
-    const { descricao, convocarResponsavel } = req.body;
-
-
+    const { descricao, registroInterno, convocarResponsavel } = req.body;
 
     await pool.query(
       `UPDATE ocorrencias_disciplinares 
-       SET descricao = ?, convocar_responsavel = ? 
+       SET descricao = ?, registro_interno = ?, convocar_responsavel = ? 
        WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
-      [descricao, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
+      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
     );
 
     res.json({ message: "Ocorrência atualizada com sucesso." });

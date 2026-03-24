@@ -9,7 +9,7 @@ router.get("/", async (req, res) => {
     const { escola_id } = req.user;
     
     const sql = `
-      SELECT r.id, r.nome, r.cpf, r.email, r.telefone_celular, r.telefone_secundario, r.status_global,
+      SELECT r.id, r.nome, r.cpf, r.email, r.telefone_celular, r.telefone_secundario, r.endereco, r.status_global,
              GROUP_CONCAT(DISTINCT a.estudante SEPARATOR ', ') AS alunos_vinculados,
              ra.ativo AS vinculo_ativo
       FROM responsaveis r
@@ -191,11 +191,14 @@ router.post("/", async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const { escola_id } = req.user;
-    const { nome, cpf, email, telefone_celular, telefone_secundario, aluno_id, relacionamento } = req.body;
+    const { nome, cpf: cpfRaw, email, telefone_celular, telefone_secundario, endereco, aluno_id, relacionamento } = req.body;
+    const cpf = cpfRaw ? cpfRaw.replace(/\D/g, '') : null;
 
     if (!nome) return res.status(400).json({ error: "Nome é obrigatório." });
     if (!cpf) return res.status(400).json({ error: "CPF é obrigatório." });
     if (!telefone_celular) return res.status(400).json({ error: "Telefone Principal é obrigatório." });
+
+    if (!endereco) return res.status(400).json({ error: "Endereço é obrigatório." });
     if (!aluno_id) return res.status(400).json({ error: "O estudante vinculado é obrigatório." });
 
     await connection.beginTransaction();
@@ -209,16 +212,16 @@ router.post("/", async (req, res) => {
         responsavelId = exists.id;
         // Atualiza os dados básicos se já existe
         await connection.query(
-          "UPDATE responsaveis SET nome = ?, email = ?, telefone_celular = ?, telefone_secundario = ? WHERE id = ?",
-          [nome, email || null, telefone_celular || null, telefone_secundario || null, responsavelId]
+          "UPDATE responsaveis SET nome = ?, email = ?, telefone_celular = ?, telefone_secundario = ?, endereco = ? WHERE id = ?",
+          [nome, email || null, telefone_celular || null, telefone_secundario || null, endereco || null, responsavelId]
         );
       }
     }
 
     if (!responsavelId) {
       const [result] = await connection.query(
-        "INSERT INTO responsaveis (nome, cpf, email, telefone_celular, telefone_secundario) VALUES (?, ?, ?, ?, ?)",
-        [nome, cpf || null, email || null, telefone_celular || null, telefone_secundario || null]
+        "INSERT INTO responsaveis (nome, cpf, email, telefone_celular, telefone_secundario, endereco) VALUES (?, ?, ?, ?, ?, ?)",
+        [nome, cpf || null, email || null, telefone_celular || null, telefone_secundario || null, endereco || null]
       );
       responsavelId = result.insertId;
     }
@@ -257,17 +260,20 @@ router.put("/:id", async (req, res) => {
   try {
     const { escola_id } = req.user;
     const { id } = req.params;
-    const { nome, cpf, email, telefone_celular, telefone_secundario, aluno_id, relacionamento } = req.body;
+    const { nome, cpf: cpfRaw, email, telefone_celular, telefone_secundario, endereco, aluno_id, relacionamento } = req.body;
+    const cpf = cpfRaw ? cpfRaw.replace(/\D/g, '') : null;
 
     if (!nome) return res.status(400).json({ error: "Nome é obrigatório." });
     if (!cpf) return res.status(400).json({ error: "CPF é obrigatório." });
     if (!telefone_celular) return res.status(400).json({ error: "Telefone Principal é obrigatório." });
 
+    if (!endereco) return res.status(400).json({ error: "Endereço é obrigatório para edição." });
+
     await connection.beginTransaction();
 
     await connection.query(
-      "UPDATE responsaveis SET nome = ?, cpf = ?, email = ?, telefone_celular = ?, telefone_secundario = ? WHERE id = ?",
-      [nome, cpf || null, email || null, telefone_celular || null, telefone_secundario || null, id]
+      "UPDATE responsaveis SET nome = ?, cpf = ?, email = ?, telefone_celular = ?, telefone_secundario = ?, endereco = ? WHERE id = ?",
+      [nome, cpf || null, email || null, telefone_celular || null, telefone_secundario || null, endereco || null, id]
     );
 
     // Se informou um aluno para vincular na edição, vincula

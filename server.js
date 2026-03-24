@@ -59,6 +59,7 @@ import authPlataformaRouter from "./routes/auth_plataforma.js";
 import plataformaRouter from "./routes/plataforma.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
+import gabaritoAvaliacoesRouter from "./routes/gabaritoAvaliacoes.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
 import avaliacoesRouter from "./routes/avaliacoes.js";
@@ -85,6 +86,8 @@ import cargasHorariasRouter from "./routes/cargasHorarias.js";
 import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
 import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
+import taceRouter from "./routes/tace.js";
+import relatorioDisciplinarRouter from "./routes/relatorio-disciplinar.js";
 import gradeBaseRoutes from "./routes/gradeBase.js";
 import gradeSolveRoutes from "./routes/gradeSolve.js";
 import disponibilidadesRouter from "./routes/disponibilidades.js";
@@ -570,6 +573,7 @@ async function bootstrap() {
 
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
   app.use("/api/gabarito-pdf", autenticarToken, verificarEscola, gabaritoPdfRouter);
+  app.use("/api/gabarito-avaliacoes", autenticarToken, verificarEscola, gabaritoAvaliacoesRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
   app.use("/api/avaliacoes", autenticarToken, verificarEscola, avaliacoesRouter);
 
@@ -586,6 +590,8 @@ async function bootstrap() {
   app.use("/api/registros-ocorrencias", autenticarToken, verificarEscola, registrosOcorrenciasRouter);
   app.use("/api/responsaveis", autenticarToken, verificarEscola, responsaveisRouter);
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
+  app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
+  app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
 
   // ✅ Direção — Gestão de Equipe (Diretor Disciplinar)
   app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);

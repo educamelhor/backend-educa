@@ -84,7 +84,8 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
   const nA = Number(numAlternativas) || 4;
   const letras = "ABCDEFGH".slice(0, nA);
   const nomeEscola = (escola.apelido || escola.nome || "ESCOLA").toUpperCase();
-  const nomeTurma = (turma?.turma || "").toUpperCase();
+  // nomeTurma global (fallback) — será sobrescrito por aluno.turmaNome quando disponível
+  const nomeTurmaGlobal = (turma?.turma || "").toUpperCase();
 
   const doc = new PDFDocument({
     size: "A4",
@@ -103,10 +104,14 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
     const codigo = String(aluno.matricula || aluno.codigo || "000000");
     const nomeAluno = (aluno.nome || aluno.estudante || "—").toUpperCase();
 
+    // Turma individual do aluno (multi-turma) ou fallback global (turma única)
+    const nomeTurma = (aluno.turmaNome || nomeTurmaGlobal).toUpperCase();
+    const turmaId = aluno.turma_id || turma?.id || "";
+
     // Gerar QR Code com dados do aluno
     const qrData = {
       c: codigo,                          // código do aluno
-      t: turma?.id || "",                 // ID da turma
+      t: turmaId,                         // ID da turma DO ALUNO (não global)
       e: escola.id || "",                 // ID da escola
       a: descricao || "AVALIACAO",        // título da avaliação
       q: nQ,                              // total de questões
@@ -473,6 +478,48 @@ router.post("/gerar-turma/:turmaId", async (req, res) => {
   }
 });
 
+// POST /api/gabarito-pdf/gerar-turmas
+// Gera um único PDF com alunos de MÚLTIPLAS turmas selecionadas
+router.post("/gerar-turmas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { turma_ids, descricao, num_questoes, num_alternativas, modelo } = req.body;
+
+    if (!turma_ids || !Array.isArray(turma_ids) || turma_ids.length === 0) {
+      return res.status(400).json({ error: "Selecione pelo menos uma turma." });
+    }
+
+    const escola = await buscarEscola(escola_id);
+    let todosAlunos = [];
+
+    for (const tId of turma_ids) {
+      const turma = await buscarTurma(tId, escola_id);
+      if (!turma) continue;
+
+      const alunos = await buscarAlunosDaTurma(tId, escola_id);
+      // Cada aluno carrega SUA turma individual (nome + id)
+      todosAlunos.push(...alunos.map((a) => ({ ...a, turmaNome: turma.turma, turma_id: turma.id })));
+    }
+
+    if (todosAlunos.length === 0) {
+      return res.status(404).json({ error: "Nenhum aluno ativo nas turmas selecionadas." });
+    }
+
+    await gerarPdfGabarito(res, {
+      escola,
+      descricao: descricao || "AVALIAÇÃO",
+      modelo: modelo || "padrao",
+      numQuestoes: num_questoes || 25,
+      numAlternativas: num_alternativas || 4,
+      alunos: todosAlunos,
+      turma: { turma: "", id: null }, // global vazio; cada aluno tem sua turma
+    });
+  } catch (err) {
+    console.error("Erro ao gerar gabarito por múltiplas turmas:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Erro ao gerar gabarito." });
+  }
+});
+
 // POST /api/gabarito-pdf/gerar-turno/:turno
 router.post("/gerar-turno/:turno", async (req, res) => {
   try {
@@ -492,7 +539,7 @@ router.post("/gerar-turno/:turno", async (req, res) => {
     let todosAlunos = [];
     for (const t of turmas) {
       const alunos = await buscarAlunosDaTurma(t.id, escola_id);
-      todosAlunos.push(...alunos.map((a) => ({ ...a, turmaNome: t.turma })));
+      todosAlunos.push(...alunos.map((a) => ({ ...a, turmaNome: t.turma, turma_id: t.id })));
     }
 
     if (todosAlunos.length === 0) return res.status(404).json({ error: "Nenhum aluno ativo nesse turno." });

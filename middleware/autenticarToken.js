@@ -1,4 +1,4 @@
-﻿import jwt from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
 
 export function autenticarToken(req, res, next) {
@@ -6,7 +6,7 @@ export function autenticarToken(req, res, next) {
     const authHeader = req.headers?.authorization || "";
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
-      : null;
+      : (req.query?.token || null);
 
     if (!token) {
       return res.status(401).json({ ok: false, message: "Token não informado." });
