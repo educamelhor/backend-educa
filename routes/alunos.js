@@ -678,6 +678,15 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         toReactivate.push(e);
       } else {
         jaExistiam++;
+        // Se a data de nascimento estiver vazia no BD, preenche com a do arquivo
+        const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+        if (dataValida) {
+          await pool.query(
+            `UPDATE alunos SET data_nascimento = STR_TO_DATE(?, '%d/%m/%Y')
+             WHERE id = ? AND escola_id = ? AND data_nascimento IS NULL`,
+            [e.dataBr, atual.id, escola_id]
+          );
+        }
         // Mesmo que o aluno já exista, precisamos vincular o responsável
         // (caso ainda não tenha sido vinculado — ex: primeira importação não extraía resp.)
         if (e.cpfResponsavel && e.responsavel) {
@@ -727,6 +736,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
            ON DUPLICATE KEY UPDATE 
              id = LAST_INSERT_ID(id),
              estudante = VALUES(estudante),
+             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
              turma_id = VALUES(turma_id),
              status = 'ativo'`
         : `INSERT INTO alunos (codigo, estudante, turma_id, escola_id, status)
@@ -806,10 +816,20 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let reativados = 0;
     for (const e of toReactivate) {
       const atualObj = atuaisMap.get(String(e.codigo));
-      await pool.query(
-        "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
-        [turma_id, e.codigo, escola_id]
-      );
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+      if (dataValida) {
+        await pool.query(
+          `UPDATE alunos SET status='ativo', turma_id = ?,
+           data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))
+           WHERE codigo = ? AND escola_id = ?`,
+          [turma_id, e.dataBr, e.codigo, escola_id]
+        );
+      } else {
+        await pool.query(
+          "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
+          [turma_id, e.codigo, escola_id]
+        );
+      }
       
       const alunoId = atualObj.id;
       if (alunoId) {

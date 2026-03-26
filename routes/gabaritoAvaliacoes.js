@@ -337,7 +337,7 @@ router.delete("/:id", async (req, res) => {
     const { id } = req.params;
 
     const [result] = await pool.query(
-      "DELETE FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ? AND status IN ('rascunho')",
+      "DELETE FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ? AND status IN ('rascunho', 'publicada')",
       [id, escola_id]
     );
 

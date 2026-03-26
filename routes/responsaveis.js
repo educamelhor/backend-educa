@@ -101,6 +101,45 @@ router.get("/secretaria", async (req, res) => {
   }
 });
 
+// BUSCAR RESPONSÁVEL POR ID (dados completos)
+router.get("/:id/detalhe", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { id } = req.params;
+
+    const [[resp]] = await pool.query(
+      `SELECT r.id, r.nome, r.cpf, r.email,
+              r.telefone_celular, r.telefone_secundario,
+              r.endereco, r.status_global
+       FROM responsaveis r
+       INNER JOIN responsaveis_alunos ra ON ra.responsavel_id = r.id AND ra.escola_id = ?
+       WHERE r.id = ?
+       LIMIT 1`,
+      [escola_id, id]
+    );
+
+    if (!resp) {
+      return res.status(404).json({ error: "Responsável não encontrado." });
+    }
+
+    // Busca alunos vinculados
+    const [alunos] = await pool.query(
+      `SELECT ra.id AS vinculo_id, ra.aluno_id, ra.relacionamento,
+              a.estudante AS aluno_nome, a.codigo AS aluno_codigo
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       WHERE ra.responsavel_id = ? AND ra.escola_id = ? AND ra.ativo = 1
+       ORDER BY a.estudante ASC`,
+      [id, escola_id]
+    );
+
+    res.json({ ...resp, alunos_detalhes: alunos });
+  } catch (err) {
+    console.error("Erro ao buscar responsável por ID:", err);
+    res.status(500).json({ error: "Erro ao buscar responsável." });
+  }
+});
+
 // LISTAR ALUNOS VINCULADOS A UM RESPONSÁVEL (com status de consentimento)
 router.get("/:id/alunos", async (req, res) => {
   try {

@@ -303,6 +303,7 @@ router.get("/", verificarEscola, async (req, res) => {
         p.id,
         p.cpf,
         p.nome,
+        p.foto,
         p.data_nascimento,
         p.sexo,
         p.aulas,
@@ -473,6 +474,52 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("Erro ao buscar turmas (me/turmas):", err);
     return res.status(500).json({ ok: false, message: "Erro ao buscar turmas da escola." });
+  }
+});
+
+
+// ────────────────────────────────────────────────
+// GET: Professor IDs do professor logado (para módulo Gabarito)
+// Retorna: { ok: true, professor_ids: [5, 12, …] }
+// Resolve via CPF do token → tabela professores (pode ter múltiplos registros)
+// ────────────────────────────────────────────────
+router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf) {
+      return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    const [rows] = await pool.query(
+      `SELECT id FROM professores
+       WHERE escola_id = ? AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND status = 'ativo'
+       ORDER BY id`,
+      [escolaId, cleanCpf]
+    );
+
+    const ids = rows.map(r => r.id);
+
+    return res.json({ ok: true, professor_ids: ids });
+  } catch (err) {
+    console.error("Erro ao buscar professor_id (me/id):", err);
+    return res.status(500).json({ ok: false, message: "Erro ao resolver professor." });
   }
 });
 
@@ -808,6 +855,7 @@ router.put("/inativar/:id", async (req, res) => {
 
 // ────────────────────────────────────────────────
 // DELETE: Excluir professor
+// Limpa registros dependentes (modulação, preferências) antes de excluir
 // ────────────────────────────────────────────────
 router.delete("/:id", verificarEscola, async (req, res) => {
   try {
@@ -815,24 +863,89 @@ router.delete("/:id", verificarEscola, async (req, res) => {
     const { escola_id } = req.user;
 
     const [[prof]] = await pool.query(
-      "SELECT cpf FROM professores WHERE id = ? AND escola_id = ?",
+      "SELECT cpf, nome FROM professores WHERE id = ? AND escola_id = ?",
       [id, escola_id]
     );
     if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
 
-    await pool.query("DELETE FROM professores WHERE id = ? AND escola_id = ?", [
-      id,
-      escola_id,
-    ]);
+    // 1) Limpa registros dependentes que impedem exclusão (FK sem CASCADE)
+    await pool.query("DELETE FROM modulacao WHERE professor_id = ? AND escola_id = ?", [id, escola_id]);
+    await pool.query("DELETE FROM prof_preferencias WHERE professor_id = ? AND escola_id = ?", [id, escola_id]);
+    await pool.query("DELETE FROM grade_preferencias_professor WHERE professor_id = ?", [id]);
+    await pool.query("DELETE FROM grade_alocacoes WHERE professor_id = ?", [id]);
+    await pool.query("DELETE FROM grade_atribuicoes WHERE professor_id = ?", [id]);
+    await pool.query("DELETE FROM grade_disponibilidades WHERE professor_id = ?", [id]);
+    await pool.query("UPDATE grade_locks SET professor_id = NULL WHERE professor_id = ?", [id]);
+
+    // 2) Exclui o professor
+    await pool.query("DELETE FROM professores WHERE id = ? AND escola_id = ?", [id, escola_id]);
+
+    // 3) Remove usuário vinculado (perfil professor)
     await pool.query(
       "DELETE FROM usuarios WHERE cpf = ? AND perfil = 'professor' AND escola_id = ?",
       [prof.cpf, escola_id]
     );
 
-    res.json({ message: "Professor excluído com sucesso." });
+    res.json({ message: `Professor ${prof.nome} excluído com sucesso.` });
   } catch (err) {
     console.error("Erro ao excluir professor:", err);
     res.status(500).json({ message: "Erro ao excluir professor." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// POST: Exclusão em lote de professores
+// Body: { ids: [1, 2, 3, ...] }
+// ────────────────────────────────────────────────
+router.post("/excluir-lote", verificarEscola, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    const { escola_id } = req.user;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: "Nenhum professor selecionado." });
+    }
+
+    let excluidos = 0;
+    const erros = [];
+
+    for (const id of ids) {
+      try {
+        const [[prof]] = await pool.query(
+          "SELECT cpf, nome FROM professores WHERE id = ? AND escola_id = ?",
+          [id, escola_id]
+        );
+        if (!prof) continue;
+
+        // Limpa dependências
+        await pool.query("DELETE FROM modulacao WHERE professor_id = ? AND escola_id = ?", [id, escola_id]);
+        await pool.query("DELETE FROM prof_preferencias WHERE professor_id = ? AND escola_id = ?", [id, escola_id]);
+        await pool.query("DELETE FROM grade_preferencias_professor WHERE professor_id = ?", [id]);
+        await pool.query("DELETE FROM grade_alocacoes WHERE professor_id = ?", [id]);
+        await pool.query("DELETE FROM grade_atribuicoes WHERE professor_id = ?", [id]);
+        await pool.query("DELETE FROM grade_disponibilidades WHERE professor_id = ?", [id]);
+        await pool.query("UPDATE grade_locks SET professor_id = NULL WHERE professor_id = ?", [id]);
+
+        // Exclui professor e usuário vinculado
+        await pool.query("DELETE FROM professores WHERE id = ? AND escola_id = ?", [id, escola_id]);
+        await pool.query(
+          "DELETE FROM usuarios WHERE cpf = ? AND perfil = 'professor' AND escola_id = ?",
+          [prof.cpf, escola_id]
+        );
+        excluidos++;
+      } catch (innerErr) {
+        erros.push({ id, erro: innerErr.message });
+      }
+    }
+
+    res.json({
+      message: `${excluidos} professor(es) excluído(s) com sucesso.`,
+      excluidos,
+      erros: erros.length > 0 ? erros : undefined,
+    });
+  } catch (err) {
+    console.error("Erro na exclusão em lote:", err);
+    res.status(500).json({ message: "Erro na exclusão em lote." });
   }
 });
 

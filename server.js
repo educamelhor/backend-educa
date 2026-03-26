@@ -60,6 +60,7 @@ import plataformaRouter from "./routes/plataforma.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
 import gabaritoAvaliacoesRouter from "./routes/gabaritoAvaliacoes.js";
+import gabaritoLotesRouter from "./routes/gabaritoLotes.js";
 import turnosRouter from "./routes/turnos.js";
 import notasRouter from "./routes/notas.js";
 import avaliacoesRouter from "./routes/avaliacoes.js";
@@ -574,6 +575,7 @@ async function bootstrap() {
   app.use("/api/turnos", autenticarToken, verificarEscola, turnosRouter);
   app.use("/api/gabarito-pdf", autenticarToken, verificarEscola, gabaritoPdfRouter);
   app.use("/api/gabarito-avaliacoes", autenticarToken, verificarEscola, gabaritoAvaliacoesRouter);
+  app.use("/api/gabarito-lotes", autenticarToken, verificarEscola, gabaritoLotesRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
   app.use("/api/avaliacoes", autenticarToken, verificarEscola, avaliacoesRouter);
 
