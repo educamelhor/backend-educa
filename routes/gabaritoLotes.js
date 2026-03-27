@@ -3,8 +3,8 @@
 // ============================================================================
 // Fluxo:
 //   1) Coordenador seleciona avaliação + faz upload de pasta (N arquivos JPG)
-//   2) Backend salva arquivos no disco + registra lote no BD
-//   3) Rota /processar-qr lê QR Code de cada arquivo → identifica alunos
+//   2) Backend envia arquivos ao DigitalOcean Spaces + registra lote no BD
+//   3) Rota /processar-qr baixa arquivo do Spaces, lê QR Code → identifica alunos
 //   4) Professor vê lista de alunos, clica CORRIGIR → OMR + salva resultado
 // ============================================================================
 
@@ -14,6 +14,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import pool from "../db.js";
+import { uploadFileBufferToSpaces, downloadBufferFromSpaces } from "../storage/spacesUpload.js";
 
 const router = Router();
 
@@ -23,34 +24,34 @@ const __dirname_route = path.dirname(__filename_route);
 const BACKEND_ROOT = path.resolve(__dirname_route, ".."); // apps/educa-backend
 
 console.log("[gabaritoLotes] BACKEND_ROOT =", BACKEND_ROOT);
-console.log("[gabaritoLotes] uploads dir  =", path.join(BACKEND_ROOT, "uploads", "gabaritos"));
+console.log("[gabaritoLotes] Armazenamento: DigitalOcean Spaces");
 
-// ─── Configuração do Multer ──────────────────────────────────────────────────
-const UPLOAD_DIR = path.join(BACKEND_ROOT, "uploads", "gabaritos");
+// ─── Helper: resolve objectKey (Spaces) ou arquivo_path (legado disco) ───
+// Registros antigos (BD): "uploads/gabaritos/1/xxxx.JPG" → path no disco (legado)
+// Registros novos (BD):   "uploads/CEF04_PLAN/gabaritos/1/xxxx.JPG" → objectKey no Spaces
+function isSpacesKey(arquivoPath) {
+  // Se começa com http, é URL completa do Spaces
+  if (arquivoPath && arquivoPath.startsWith("http")) return true;
+  return false;
+}
 
-// ─── Helper: resolve arquivo_path (salvo no BD como relativo) de volta ao caminho absoluto ───
-// O BD armazena "uploads/gabaritos/1/xxxx.JPG" — resolve com base no BACKEND_ROOT
 function resolveArquivoPath(arquivoPath) {
-  // Já absoluto? Usa direto
   if (path.isAbsolute(arquivoPath)) return arquivoPath;
   return path.join(BACKEND_ROOT, arquivoPath);
 }
 
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const dir = path.join(UPLOAD_DIR, String(req.user.escola_id));
-    fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
-    cb(null, `${Date.now()}_${base}${ext}`);
-  },
-});
+// ─── Helper: obter apelido da escola no BD ─────────────────────────────────
+async function getEscolaApelido(escolaId) {
+  const [[row]] = await pool.query(
+    "SELECT apelido FROM escolas WHERE id = ? LIMIT 1",
+    [escolaId]
+  );
+  return row?.apelido || `escola_${escolaId}`;
+}
 
+// ─── Configuração do Multer (memoryStorage → envia para Spaces) ─────────────
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter: (_req, file, cb) => {
     const allowed = [".jpg", ".jpeg", ".png", ".pdf"];
     const ext = path.extname(file.originalname).toLowerCase();
@@ -114,19 +115,36 @@ router.post("/upload", verificarEscola, upload.array("files", 100), async (req, 
       finalLoteId = existing[0]?.id;
     }
 
-    // Registrar cada arquivo
+    // Registrar cada arquivo — upload para DigitalOcean Spaces
+    const escolaApelido = await getEscolaApelido(escola_id);
     const arquivos = [];
     for (const file of req.files) {
-      const relativePath = path.relative(BACKEND_ROOT, file.path).replace(/\\/g, "/");
+      const ext = path.extname(file.originalname);
+      const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filename = `${Date.now()}_${base}${ext}`;
+      const objectKey = `uploads/${escolaApelido}/gabaritos/${finalLoteId}/${filename}`;
+
+      // Detectar MIME type
+      const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".pdf": "application/pdf" };
+      const contentType = mimeMap[ext.toLowerCase()] || "application/octet-stream";
+
+      // Upload para Spaces
+      const uploaded = await uploadFileBufferToSpaces({
+        buffer: file.buffer,
+        contentType,
+        objectKey,
+      });
+
       const [arqResult] = await pool.query(
         `INSERT INTO gabarito_arquivos (lote_id, escola_id, arquivo_nome, arquivo_path)
          VALUES (?, ?, ?, ?)`,
-        [finalLoteId, escola_id, file.originalname, relativePath]
+        [finalLoteId, escola_id, file.originalname, objectKey]
       );
       arquivos.push({
         id: arqResult.insertId,
         arquivo_nome: file.originalname,
-        arquivo_path: relativePath,
+        arquivo_path: objectKey,
+        spaces_url: uploaded.publicUrl,
         status: "pendente",
       });
     }
@@ -182,18 +200,34 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
 
     for (const arq of arquivos) {
       try {
-        const filePath = resolveArquivoPath(arq.arquivo_path);
-        console.log(`[processar-qr] arq ${arq.id}: arquivo_path="${arq.arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
-        if (!fs.existsSync(filePath)) {
+        // Baixar arquivo do Spaces (ou disco legado)
+        let fileBuffer;
+        try {
+          if (isSpacesKey(arq.arquivo_path) || arq.arquivo_path.match(/^uploads\/[A-Z]/)) {
+            console.log(`[processar-qr] arq ${arq.id}: baixando do Spaces key="${arq.arquivo_path}"`);
+            const downloaded = await downloadBufferFromSpaces(arq.arquivo_path);
+            fileBuffer = downloaded.buffer;
+          } else {
+            const filePath = resolveArquivoPath(arq.arquivo_path);
+            console.log(`[processar-qr] arq ${arq.id}: lendo do disco path="${filePath}" exists=${fs.existsSync(filePath)}`);
+            if (!fs.existsSync(filePath)) {
+              await pool.query(
+                `UPDATE gabarito_arquivos SET status = 'erro' WHERE id = ?`,
+                [arq.id]
+              );
+              resultados.push({ id: arq.id, status: "erro", error: `Arquivo não encontrado (legado disco): ${arq.arquivo_path}` });
+              continue;
+            }
+            fileBuffer = fs.readFileSync(filePath);
+          }
+        } catch (dlErr) {
           await pool.query(
             `UPDATE gabarito_arquivos SET status = 'erro' WHERE id = ?`,
             [arq.id]
           );
-          resultados.push({ id: arq.id, status: "erro", error: `Arquivo não encontrado no disco: ${filePath}` });
+          resultados.push({ id: arq.id, status: "erro", error: `Erro ao obter arquivo: ${dlErr.message}` });
           continue;
         }
-
-        const fileBuffer = fs.readFileSync(filePath);
 
         // 1. Crop (alinhamento)
         const FormData = (await import("form-data")).default;
@@ -427,35 +461,35 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
 
     // Se respostas_aluno está vazio, rodar OMR agora (crop + bolhas)
     if (respostasAluno.length === 0) {
-      const filePath = resolveArquivoPath(arq.arquivo_path);
-      console.log(`[corrigir] arq ${arquivoId}: arquivo_path="${arq.arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
-      console.log(`[corrigir] BACKEND_ROOT="${BACKEND_ROOT}"`);
-      if (!fs.existsSync(filePath)) {
-        // Diagnóstico: listar o que existe no dir de uploads
-        const uploadsDir = path.join(BACKEND_ROOT, "uploads", "gabaritos");
-        let dirContents = "dir não existe";
-        try {
-          if (fs.existsSync(uploadsDir)) {
-            const subdirs = fs.readdirSync(uploadsDir);
-            dirContents = subdirs.join(", ");
-            for (const sd of subdirs) {
-              const sdPath = path.join(uploadsDir, sd);
-              if (fs.statSync(sdPath).isDirectory()) {
-                const files = fs.readdirSync(sdPath);
-                console.log(`[corrigir] uploads/gabaritos/${sd}/ contém ${files.length} arquivos: ${files.slice(0, 5).join(", ")}${files.length > 5 ? "..." : ""}`);
-              }
-            }
+      // Baixar arquivo do Spaces (ou disco legado)
+      let fileBuffer;
+      try {
+        if (isSpacesKey(arq.arquivo_path) || arq.arquivo_path.match(/^uploads\/[A-Z]/)) {
+          // Novo formato: objectKey no Spaces
+          console.log(`[corrigir] arq ${arquivoId}: baixando do Spaces key="${arq.arquivo_path}"`);
+          const downloaded = await downloadBufferFromSpaces(arq.arquivo_path);
+          fileBuffer = downloaded.buffer;
+        } else {
+          // Legado: path no disco
+          const filePath = resolveArquivoPath(arq.arquivo_path);
+          console.log(`[corrigir] arq ${arquivoId}: lendo do disco path="${filePath}" exists=${fs.existsSync(filePath)}`);
+          if (!fs.existsSync(filePath)) {
+            return res.status(404).json({
+              error: "Arquivo não encontrado. Este gabarito foi salvo antes da migração para armazenamento em nuvem e foi perdido no re-deploy. O coordenador precisa re-enviar os gabaritos.",
+              detail: `arquivo_path=${arq.arquivo_path}`,
+            });
           }
-        } catch (e) { dirContents = `erro: ${e.message}`; }
-        console.log(`[corrigir] uploads/gabaritos/ contém: ${dirContents}`);
+          fileBuffer = fs.readFileSync(filePath);
+        }
+      } catch (dlErr) {
+        console.error(`[corrigir] Erro ao obter arquivo arq ${arquivoId}:`, dlErr.message);
         return res.status(404).json({
-          error: "Arquivo não encontrado no disco. Os uploads podem ter sido perdidos após re-deploy do container. O coordenador precisa re-enviar os gabaritos.",
-          detail: `arquivo_path=${arq.arquivo_path}`,
+          error: "Erro ao obter arquivo do armazenamento. O coordenador precisa re-enviar os gabaritos.",
+          detail: dlErr.message,
         });
       }
 
       const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
-      const fileBuffer = fs.readFileSync(filePath);
 
       const FormData = (await import("form-data")).default;
       const fetchModule = await import("node-fetch");
