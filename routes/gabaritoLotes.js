@@ -166,6 +166,20 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
     const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
     const resultados = [];
 
+    // Verificar se o OMR está disponível antes de processar
+    const fetchModule = await import("node-fetch");
+    const fetch = fetchModule.default;
+    try {
+      const healthResp = await fetch(`${OMR_URL}/health`, { timeout: 3000 });
+      if (!healthResp.ok) throw new Error("OMR health check falhou");
+    } catch (omrErr) {
+      console.error(`[processar-qr] OMR indisponível em ${OMR_URL}:`, omrErr.code || omrErr.message);
+      return res.status(503).json({
+        error: "Serviço de correção OMR indisponível. O serviço Python (educa-omr) não está rodando.",
+        detail: `OMR_URL=${OMR_URL}, erro=${omrErr.code || omrErr.message}`,
+      });
+    }
+
     for (const arq of arquivos) {
       try {
         const filePath = resolveArquivoPath(arq.arquivo_path);
@@ -447,6 +461,18 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
       const fetchModule = await import("node-fetch");
       const fetch = fetchModule.default;
 
+      // Verificar se o OMR está disponível antes de prosseguir
+      try {
+        const healthResp = await fetch(`${OMR_URL}/health`, { timeout: 3000 });
+        if (!healthResp.ok) throw new Error("OMR health check falhou");
+      } catch (omrErr) {
+        console.error(`[corrigir] OMR indisponível em ${OMR_URL}:`, omrErr.code || omrErr.message);
+        return res.status(503).json({
+          error: "Serviço de correção OMR indisponível. O serviço Python (educa-omr) não está rodando.",
+          detail: `OMR_URL=${OMR_URL}, erro=${omrErr.code || omrErr.message}`,
+        });
+      }
+
       // 1. Crop (alinhamento)
       const formCrop = new FormData();
       formCrop.append("file", fileBuffer, { filename: arq.arquivo_nome });
@@ -456,7 +482,9 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
         headers: formCrop.getHeaders(),
       });
       if (!respCrop.ok) {
-        return res.status(500).json({ error: "Falha no crop da imagem." });
+        const errBody = await respCrop.text().catch(() => "");
+        console.error(`[corrigir] crop falhou: ${respCrop.status} ${errBody}`);
+        return res.status(500).json({ error: `Falha no crop da imagem. Status: ${respCrop.status}` });
       }
       const cropBuffer = Buffer.from(await respCrop.arrayBuffer());
 
