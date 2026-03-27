@@ -12,12 +12,26 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 import pool from "../db.js";
 
 const router = Router();
 
+// ─── Diretório base do backend (relativo a este arquivo) ────────────────────
+const __filename_route = fileURLToPath(import.meta.url);
+const __dirname_route = path.dirname(__filename_route);
+const BACKEND_ROOT = path.resolve(__dirname_route, ".."); // apps/educa-backend
+
 // ─── Configuração do Multer ──────────────────────────────────────────────────
-const UPLOAD_DIR = path.resolve("uploads/gabaritos");
+const UPLOAD_DIR = path.join(BACKEND_ROOT, "uploads", "gabaritos");
+
+// ─── Helper: resolve arquivo_path (salvo no BD como relativo) de volta ao caminho absoluto ───
+// O BD armazena "uploads/gabaritos/1/xxxx.JPG" — resolve com base no BACKEND_ROOT
+function resolveArquivoPath(arquivoPath) {
+  // Já absoluto? Usa direto
+  if (path.isAbsolute(arquivoPath)) return arquivoPath;
+  return path.join(BACKEND_ROOT, arquivoPath);
+}
 
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
@@ -100,7 +114,7 @@ router.post("/upload", verificarEscola, upload.array("files", 100), async (req, 
     // Registrar cada arquivo
     const arquivos = [];
     for (const file of req.files) {
-      const relativePath = path.relative(process.cwd(), file.path).replace(/\\/g, "/");
+      const relativePath = path.relative(BACKEND_ROOT, file.path).replace(/\\/g, "/");
       const [arqResult] = await pool.query(
         `INSERT INTO gabarito_arquivos (lote_id, escola_id, arquivo_nome, arquivo_path)
          VALUES (?, ?, ?, ?)`,
@@ -151,7 +165,7 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
 
     for (const arq of arquivos) {
       try {
-        const filePath = path.resolve(arq.arquivo_path);
+        const filePath = resolveArquivoPath(arq.arquivo_path);
         if (!fs.existsSync(filePath)) {
           await pool.query(
             `UPDATE gabarito_arquivos SET status = 'erro' WHERE id = ?`,
@@ -395,7 +409,7 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
 
     // Se respostas_aluno está vazio, rodar OMR agora (crop + bolhas)
     if (respostasAluno.length === 0) {
-      const filePath = path.resolve(arq.arquivo_path);
+      const filePath = resolveArquivoPath(arq.arquivo_path);
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: "Arquivo não encontrado no disco." });
       }
@@ -611,7 +625,7 @@ router.get("/arquivos/:id/imagem", verificarEscola, async (req, res) => {
       return res.status(404).json({ error: "Arquivo não encontrado." });
     }
 
-    const filePath = path.resolve(rows[0].arquivo_path);
+    const filePath = resolveArquivoPath(rows[0].arquivo_path);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Arquivo não encontrado no disco." });
     }
@@ -648,7 +662,7 @@ router.delete("/:id", verificarEscola, async (req, res) => {
     // Deletar arquivos do disco
     for (const arq of arquivos) {
       try {
-        const filePath = path.resolve(arq.arquivo_path);
+        const filePath = resolveArquivoPath(arq.arquivo_path);
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } catch { /* ignore */ }
     }
