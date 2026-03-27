@@ -449,8 +449,8 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
         } catch (e) { dirContents = `erro: ${e.message}`; }
         console.log(`[corrigir] uploads/gabaritos/ contém: ${dirContents}`);
         return res.status(404).json({
-          error: "Arquivo não encontrado no disco.",
-          debug: { arquivo_path: arq.arquivo_path, resolved: filePath, backend_root: BACKEND_ROOT, uploads_dir: dirContents },
+          error: "Arquivo não encontrado no disco. Os uploads podem ter sido perdidos após re-deploy do container. O coordenador precisa re-enviar os gabaritos.",
+          detail: `arquivo_path=${arq.arquivo_path}`,
         });
       }
 
@@ -461,79 +461,95 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
       const fetchModule = await import("node-fetch");
       const fetch = fetchModule.default;
 
+      // Helper: fetch com timeout usando AbortController
+      function fetchWithTimeout(url, opts = {}, timeoutMs = 10000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+      }
+
       // Verificar se o OMR está disponível antes de prosseguir
       try {
-        const healthResp = await fetch(`${OMR_URL}/health`, { timeout: 3000 });
+        const healthResp = await fetchWithTimeout(`${OMR_URL}/health`, {}, 5000);
         if (!healthResp.ok) throw new Error("OMR health check falhou");
       } catch (omrErr) {
         console.error(`[corrigir] OMR indisponível em ${OMR_URL}:`, omrErr.code || omrErr.message);
         return res.status(503).json({
-          error: "Serviço de correção OMR indisponível. O serviço Python (educa-omr) não está rodando.",
+          error: "Serviço de leitura OMR indisponível. O gabarito não pode ser processado automaticamente no momento. Tente novamente em alguns minutos ou contate o administrador.",
           detail: `OMR_URL=${OMR_URL}, erro=${omrErr.code || omrErr.message}`,
         });
       }
 
       // 1. Crop (alinhamento)
-      const formCrop = new FormData();
-      formCrop.append("file", fileBuffer, { filename: arq.arquivo_nome });
-      const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
-        method: "POST",
-        body: formCrop,
-        headers: formCrop.getHeaders(),
-      });
-      if (!respCrop.ok) {
-        const errBody = await respCrop.text().catch(() => "");
-        console.error(`[corrigir] crop falhou: ${respCrop.status} ${errBody}`);
-        return res.status(500).json({ error: `Falha no crop da imagem. Status: ${respCrop.status}` });
-      }
-      const cropBuffer = Buffer.from(await respCrop.arrayBuffer());
+      try {
+        const formCrop = new FormData();
+        formCrop.append("file", fileBuffer, { filename: arq.arquivo_nome });
+        const respCrop = await fetchWithTimeout(`${OMR_URL}/crop-gabarito`, {
+          method: "POST",
+          body: formCrop,
+          headers: formCrop.getHeaders(),
+        }, 30000);
+        if (!respCrop.ok) {
+          const errBody = await respCrop.text().catch(() => "");
+          console.error(`[corrigir] crop falhou: ${respCrop.status} ${errBody}`);
+          return res.status(502).json({ error: `Falha no processamento da imagem pelo OMR (crop). Status: ${respCrop.status}` });
+        }
+        const cropBuffer = Buffer.from(await respCrop.arrayBuffer());
 
-      // 2. Ler bolhas
-      const formBolhas = new FormData();
-      formBolhas.append("file", cropBuffer, { filename: "crop.png" });
-      const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
-        method: "POST",
-        body: formBolhas,
-        headers: formBolhas.getHeaders(),
-      });
-      if (!respBolhas.ok) {
-        return res.status(500).json({ error: "Falha na leitura de bolhas." });
-      }
-      const bolhasData = await respBolhas.json();
-      respostasAluno = bolhasData.respostas || [];
+        // 2. Ler bolhas
+        const formBolhas = new FormData();
+        formBolhas.append("file", cropBuffer, { filename: "crop.png" });
+        const respBolhas = await fetchWithTimeout(`${OMR_URL}/corrigir-bolhas`, {
+          method: "POST",
+          body: formBolhas,
+          headers: formBolhas.getHeaders(),
+        }, 30000);
+        if (!respBolhas.ok) {
+          return res.status(502).json({ error: "Falha na leitura de bolhas pelo OMR." });
+        }
+        const bolhasData = await respBolhas.json();
+        respostasAluno = bolhasData.respostas || [];
 
-      // 3. Extrair QR Code (identificação do aluno)
-      const qrData = bolhasData.qrData || null;
-      const codigoAlunoQR = qrData?.c || null;
-      let nomeAlunoQR = null;
-      if (codigoAlunoQR) {
-        const [alunoRows] = await pool.query(
-          "SELECT estudante FROM alunos WHERE codigo = ? AND escola_id = ?",
-          [codigoAlunoQR, escola_id]
+        // 3. Extrair QR Code (identificação do aluno)
+        const qrData = bolhasData.qrData || null;
+        const codigoAlunoQR = qrData?.c || null;
+        let nomeAlunoQR = null;
+        if (codigoAlunoQR) {
+          const [alunoRows] = await pool.query(
+            "SELECT estudante FROM alunos WHERE codigo = ? AND escola_id = ?",
+            [codigoAlunoQR, escola_id]
+          );
+          if (alunoRows.length > 0) nomeAlunoQR = alunoRows[0].estudante;
+        }
+
+        // Salvar respostas + identificação no arquivo para não precisar OMR de novo
+        await pool.query(
+          `UPDATE gabarito_arquivos SET
+            respostas_aluno = ?, status = 'identificado',
+            codigo_aluno = COALESCE(?, codigo_aluno),
+            nome_aluno = COALESCE(?, nome_aluno),
+            qr_data = COALESCE(?, qr_data)
+          WHERE id = ?`,
+          [
+            JSON.stringify(respostasAluno),
+            codigoAlunoQR,
+            nomeAlunoQR,
+            qrData ? JSON.stringify(qrData) : null,
+            arquivoId,
+          ]
         );
-        if (alunoRows.length > 0) nomeAlunoQR = alunoRows[0].estudante;
+
+        // Atualizar o arq local para o restante da função usar
+        if (codigoAlunoQR) arq.codigo_aluno = codigoAlunoQR;
+        if (nomeAlunoQR) arq.nome_aluno = nomeAlunoQR;
+      } catch (omrFetchErr) {
+        // Erro de rede/conexão no OMR (DNS, timeout, connection refused, etc.)
+        console.error(`[corrigir] Erro de rede ao comunicar com OMR (${OMR_URL}):`, omrFetchErr.code || omrFetchErr.message);
+        return res.status(503).json({
+          error: "Erro de comunicação com o serviço OMR. O serviço pode estar offline ou sobrecarregado.",
+          detail: omrFetchErr.code || omrFetchErr.message,
+        });
       }
-
-      // Salvar respostas + identificação no arquivo para não precisar OMR de novo
-      await pool.query(
-        `UPDATE gabarito_arquivos SET
-          respostas_aluno = ?, status = 'identificado',
-          codigo_aluno = COALESCE(?, codigo_aluno),
-          nome_aluno = COALESCE(?, nome_aluno),
-          qr_data = COALESCE(?, qr_data)
-        WHERE id = ?`,
-        [
-          JSON.stringify(respostasAluno),
-          codigoAlunoQR,
-          nomeAlunoQR,
-          qrData ? JSON.stringify(qrData) : null,
-          arquivoId,
-        ]
-      );
-
-      // Atualizar o arq local para o restante da função usar
-      if (codigoAlunoQR) arq.codigo_aluno = codigoAlunoQR;
-      if (nomeAlunoQR) arq.nome_aluno = nomeAlunoQR;
     }
 
     // Buscar gabarito oficial da avaliação
@@ -660,7 +676,9 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
     });
   } catch (err) {
     console.error("Erro ao corrigir arquivo:", err);
-    res.status(500).json({ error: "Erro ao corrigir." });
+    // Retornar detalhes do erro para facilitar diagnóstico no frontend
+    const detail = err?.code || err?.message || "Erro desconhecido";
+    res.status(500).json({ error: `Erro ao corrigir: ${detail}` });
   }
 });
 
