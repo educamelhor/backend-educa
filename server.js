@@ -119,6 +119,8 @@ let monitoramentoIngestRouter = null;
 let monitoramentoStream = null;
 let monitoramentoUltimosRouter = null;
 
+let agenteEducadfRouter = null;
+
 // Carregamento seguro (NÃO quebra o boot se faltar arquivo)
 // Padrão profissional: DEV liga por padrão, PROD desliga por padrão.
 // Em produção, só liga se a ENV vier explicitamente.
@@ -133,6 +135,9 @@ const FF_EDUCA_CAPTURE = ff("FF_EDUCA_CAPTURE", DEFAULT_ON_DEV);
 // Monitoramento é pesado/sensível: manter OFF por padrão mesmo em DEV (liga quando for trabalhar nele)
 const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
 
+// Agente EducaDF: pesado (Playwright) — OFF por padrão, ligar explicitamente
+const FF_AGENTE_EDUCADF = ff("FF_AGENTE_EDUCADF", false);
+
 // ✅ DEBUG (DEV): confirma flags efetivas para eliminar dúvida de "rota não montou porque flag estava OFF"
 if (process.env.NODE_ENV !== "production") {
   console.log("[FF] FLAGS efetivas:", {
@@ -140,7 +145,15 @@ if (process.env.NODE_ENV !== "production") {
     FF_CONFIG_PEDAGOGICA,
     FF_CONTEUDOS_ADMIN,
     FF_MONITORAMENTO,
+    FF_AGENTE_EDUCADF,
   });
+}
+
+if (FF_AGENTE_EDUCADF) {
+  agenteEducadfRouter = await safeImportDefault(
+    "FF_AGENTE_EDUCADF",
+    "./modules/agente/agente.routes.js"
+  );
 }
 
 // ✅ NOVAS FLAGS (conforme mapa PROD aprovado)
@@ -594,6 +607,14 @@ async function bootstrap() {
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
+
+  // ✅ Agente Autônomo EducaDF (Playwright — login + lançamento)
+  if (agenteEducadfRouter) {
+    console.log("[FF] Agente EducaDF ativado");
+    app.use("/api/agente", autenticarToken, verificarEscola, agenteEducadfRouter);
+  } else if (FF_AGENTE_EDUCADF) {
+    console.warn("[FF] Agente EducaDF: router NÃO carregado.");
+  }
 
   // ✅ Direção — Gestão de Equipe (Diretor Disciplinar)
   app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);

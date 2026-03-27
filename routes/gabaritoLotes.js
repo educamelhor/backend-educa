@@ -22,6 +22,9 @@ const __filename_route = fileURLToPath(import.meta.url);
 const __dirname_route = path.dirname(__filename_route);
 const BACKEND_ROOT = path.resolve(__dirname_route, ".."); // apps/educa-backend
 
+console.log("[gabaritoLotes] BACKEND_ROOT =", BACKEND_ROOT);
+console.log("[gabaritoLotes] uploads dir  =", path.join(BACKEND_ROOT, "uploads", "gabaritos"));
+
 // ─── Configuração do Multer ──────────────────────────────────────────────────
 const UPLOAD_DIR = path.join(BACKEND_ROOT, "uploads", "gabaritos");
 
@@ -166,12 +169,13 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
     for (const arq of arquivos) {
       try {
         const filePath = resolveArquivoPath(arq.arquivo_path);
+        console.log(`[processar-qr] arq ${arq.id}: arquivo_path="${arq.arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
         if (!fs.existsSync(filePath)) {
           await pool.query(
             `UPDATE gabarito_arquivos SET status = 'erro' WHERE id = ?`,
             [arq.id]
           );
-          resultados.push({ id: arq.id, status: "erro", error: "Arquivo não encontrado no disco" });
+          resultados.push({ id: arq.id, status: "erro", error: `Arquivo não encontrado no disco: ${filePath}` });
           continue;
         }
 
@@ -410,8 +414,30 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
     // Se respostas_aluno está vazio, rodar OMR agora (crop + bolhas)
     if (respostasAluno.length === 0) {
       const filePath = resolveArquivoPath(arq.arquivo_path);
+      console.log(`[corrigir] arq ${arquivoId}: arquivo_path="${arq.arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
+      console.log(`[corrigir] BACKEND_ROOT="${BACKEND_ROOT}"`);
       if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: "Arquivo não encontrado no disco." });
+        // Diagnóstico: listar o que existe no dir de uploads
+        const uploadsDir = path.join(BACKEND_ROOT, "uploads", "gabaritos");
+        let dirContents = "dir não existe";
+        try {
+          if (fs.existsSync(uploadsDir)) {
+            const subdirs = fs.readdirSync(uploadsDir);
+            dirContents = subdirs.join(", ");
+            for (const sd of subdirs) {
+              const sdPath = path.join(uploadsDir, sd);
+              if (fs.statSync(sdPath).isDirectory()) {
+                const files = fs.readdirSync(sdPath);
+                console.log(`[corrigir] uploads/gabaritos/${sd}/ contém ${files.length} arquivos: ${files.slice(0, 5).join(", ")}${files.length > 5 ? "..." : ""}`);
+              }
+            }
+          }
+        } catch (e) { dirContents = `erro: ${e.message}`; }
+        console.log(`[corrigir] uploads/gabaritos/ contém: ${dirContents}`);
+        return res.status(404).json({
+          error: "Arquivo não encontrado no disco.",
+          debug: { arquivo_path: arq.arquivo_path, resolved: filePath, backend_root: BACKEND_ROOT, uploads_dir: dirContents },
+        });
       }
 
       const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
@@ -626,8 +652,9 @@ router.get("/arquivos/:id/imagem", verificarEscola, async (req, res) => {
     }
 
     const filePath = resolveArquivoPath(rows[0].arquivo_path);
+    console.log(`[imagem] arq ${arquivoId}: arquivo_path="${rows[0].arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: "Arquivo não encontrado no disco." });
+      return res.status(404).json({ error: `Arquivo não encontrado no disco. Path: ${filePath}` });
     }
 
     res.sendFile(filePath);
