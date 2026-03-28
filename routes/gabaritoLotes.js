@@ -13,6 +13,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import FormData from "form-data";
 import pool from "../db.js";
 import { uploadFileBufferToSpaces, downloadBufferFromSpaces } from "../storage/spacesUpload.js";
 
@@ -185,8 +186,6 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
     const resultados = [];
 
     // Verificar se o OMR está disponível antes de processar
-    const fetchModule = await import("node-fetch");
-    const fetch = fetchModule.default;
     try {
       const healthResp = await fetch(`${OMR_URL}/health`, { timeout: 3000 });
       if (!healthResp.ok) throw new Error("OMR health check falhou");
@@ -230,12 +229,8 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
         }
 
         // 1. Crop (alinhamento)
-        const FormData = (await import("form-data")).default;
         const formCrop = new FormData();
         formCrop.append("file", fileBuffer, { filename: arq.arquivo_nome });
-
-        const fetchModule = await import("node-fetch");
-        const fetch = fetchModule.default;
 
         const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
           method: "POST",
@@ -491,9 +486,7 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
 
       const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
 
-      const FormData = (await import("form-data")).default;
-      const fetchModule = await import("node-fetch");
-      const fetch = fetchModule.default;
+      // FormData já foi importado estaticamente no topo
 
       // Helper: fetch com timeout usando AbortController
       function fetchWithTimeout(url, opts = {}, timeoutMs = 10000) {
