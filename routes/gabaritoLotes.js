@@ -711,7 +711,7 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
 });
 
 // ─── GET /api/gabarito-lotes/arquivos/:id/imagem ─────────────────────────────
-// Serve a imagem escaneada do gabarito
+// Serve a imagem escaneada do gabarito (Spaces ou disco legado)
 router.get("/arquivos/:id/imagem", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
   const arquivoId = req.params.id;
@@ -725,8 +725,32 @@ router.get("/arquivos/:id/imagem", verificarEscola, async (req, res) => {
       return res.status(404).json({ error: "Arquivo não encontrado." });
     }
 
-    const filePath = resolveArquivoPath(rows[0].arquivo_path);
-    console.log(`[imagem] arq ${arquivoId}: arquivo_path="${rows[0].arquivo_path}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
+    const arquivoPath = rows[0].arquivo_path;
+
+    // ── Novo formato: objectKey no DigitalOcean Spaces ──
+    if (isSpacesKey(arquivoPath) || arquivoPath.match(/^uploads\/[A-Z]/)) {
+      try {
+        console.log(`[imagem] arq ${arquivoId}: baixando do Spaces key="${arquivoPath}"`);
+        const downloaded = await downloadBufferFromSpaces(arquivoPath);
+
+        // Detectar content-type
+        const ext = (rows[0].arquivo_nome || arquivoPath).split(".").pop().toLowerCase();
+        const mimeMap = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", pdf: "application/pdf" };
+        const contentType = downloaded.contentType || mimeMap[ext] || "application/octet-stream";
+
+        res.set("Content-Type", contentType);
+        res.set("Content-Disposition", `inline; filename="${rows[0].arquivo_nome || "gabarito"}"`);
+        res.set("Cache-Control", "public, max-age=3600");
+        return res.send(downloaded.buffer);
+      } catch (dlErr) {
+        console.error(`[imagem] Erro ao baixar do Spaces arq ${arquivoId}:`, dlErr.message);
+        return res.status(404).json({ error: "Arquivo não encontrado no armazenamento em nuvem.", detail: dlErr.message });
+      }
+    }
+
+    // ── Legado: arquivo no disco local ──
+    const filePath = resolveArquivoPath(arquivoPath);
+    console.log(`[imagem] arq ${arquivoId}: arquivo_path="${arquivoPath}" → resolved="${filePath}" exists=${fs.existsSync(filePath)}`);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: `Arquivo não encontrado no disco. Path: ${filePath}` });
     }
