@@ -14,6 +14,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import FormData from "form-data";
+import fetch from "node-fetch";
 import pool from "../db.js";
 import { uploadFileBufferToSpaces, downloadBufferFromSpaces } from "../storage/spacesUpload.js";
 
