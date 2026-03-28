@@ -762,6 +762,115 @@ router.get("/arquivos/:id/imagem", verificarEscola, async (req, res) => {
   }
 });
 
+// ─── GET /api/gabarito-lotes/:id/alunos-turma ────────────────────────────────
+// Lista alunos da turma para vinculação manual (quando QR falha)
+router.get("/:id/alunos-turma", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const loteId = req.params.id;
+
+  try {
+    // Buscar turma_nome do lote
+    const [loteRows] = await pool.query(
+      "SELECT turma_nome FROM gabarito_lotes WHERE id = ? AND escola_id = ?",
+      [loteId, escola_id]
+    );
+    if (loteRows.length === 0) {
+      return res.status(404).json({ error: "Lote não encontrado." });
+    }
+
+    const turmaNome = loteRows[0].turma_nome;
+
+    // Buscar turma_id pelo nome (pode ser parcial, ex: "6º ANO B")
+    const [turmaRows] = await pool.query(
+      "SELECT id, nome FROM turmas WHERE escola_id = ? AND nome = ?",
+      [escola_id, turmaNome]
+    );
+
+    if (turmaRows.length === 0) {
+      // Tentar busca parcial (LIKE)
+      const [turmaRowsLike] = await pool.query(
+        "SELECT id, nome FROM turmas WHERE escola_id = ? AND nome LIKE ?",
+        [escola_id, `%${turmaNome}%`]
+      );
+      if (turmaRowsLike.length === 0) {
+        return res.json({ alunos: [], turma_nome: turmaNome, message: "Turma não encontrada no cadastro." });
+      }
+      // Usar primeiro match
+      const turmaId = turmaRowsLike[0].id;
+      const [alunos] = await pool.query(
+        "SELECT id, estudante, codigo FROM alunos WHERE turma_id = ? AND escola_id = ? AND status = 'ativo' ORDER BY estudante ASC",
+        [turmaId, escola_id]
+      );
+      return res.json({ alunos, turma_nome: turmaRowsLike[0].nome, turma_id: turmaId });
+    }
+
+    const turmaId = turmaRows[0].id;
+    const [alunos] = await pool.query(
+      "SELECT id, estudante, codigo FROM alunos WHERE turma_id = ? AND escola_id = ? AND status = 'ativo' ORDER BY estudante ASC",
+      [turmaId, escola_id]
+    );
+
+    res.json({ alunos, turma_nome: turmaRows[0].nome, turma_id: turmaId });
+  } catch (err) {
+    console.error("Erro ao listar alunos da turma:", err);
+    res.status(500).json({ error: "Erro ao buscar alunos." });
+  }
+});
+
+// ─── PUT /api/gabarito-lotes/arquivos/:id/vincular-aluno ─────────────────────
+// Vincula manualmente um aluno a um gabarito (quando QR Code falha)
+router.put("/arquivos/:id/vincular-aluno", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const arquivoId = req.params.id;
+  const { codigo_aluno, nome_aluno } = req.body;
+
+  if (!codigo_aluno || !nome_aluno) {
+    return res.status(400).json({ error: "codigo_aluno e nome_aluno são obrigatórios." });
+  }
+
+  try {
+    // Buscar o arquivo
+    const [arqRows] = await pool.query(
+      `SELECT a.id, a.codigo_aluno AS old_codigo, a.nome_aluno AS old_nome, a.lote_id, a.status,
+              l.avaliacao_id
+       FROM gabarito_arquivos a
+       JOIN gabarito_lotes l ON l.id = a.lote_id
+       WHERE a.id = ? AND a.escola_id = ?`,
+      [arquivoId, escola_id]
+    );
+    if (arqRows.length === 0) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    const arq = arqRows[0];
+
+    // Atualizar gabarito_arquivos
+    await pool.query(
+      `UPDATE gabarito_arquivos SET codigo_aluno = ?, nome_aluno = ? WHERE id = ?`,
+      [codigo_aluno, nome_aluno, arquivoId]
+    );
+
+    // Se já foi corrigido, atualizar gabarito_respostas também
+    if (arq.status === "corrigido") {
+      // O registro antigo pode estar com codigo_aluno = "ARQ_<id>" ou o nome arquivo
+      const oldCodigo = arq.old_codigo || `ARQ_${arquivoId}`;
+      await pool.query(
+        `UPDATE gabarito_respostas
+         SET codigo_aluno = ?, nome_aluno = ?
+         WHERE avaliacao_id = ? AND escola_id = ? AND codigo_aluno = ?`,
+        [codigo_aluno, nome_aluno, arq.avaliacao_id, escola_id, oldCodigo]
+      );
+    }
+
+    console.log(`[vincular-aluno] arq ${arquivoId}: ${arq.old_nome || "(sem nome)"} → ${nome_aluno} (RE: ${codigo_aluno})`);
+
+    res.json({ ok: true, codigo_aluno, nome_aluno });
+  } catch (err) {
+    console.error("Erro ao vincular aluno:", err);
+    res.status(500).json({ error: "Erro ao vincular aluno." });
+  }
+});
+
 // ─── DELETE /api/gabarito-lotes/:id ──────────────────────────────────────────
 router.delete("/:id", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
