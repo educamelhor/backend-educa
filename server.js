@@ -63,6 +63,7 @@ import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
 import gabaritoAvaliacoesRouter from "./routes/gabaritoAvaliacoes.js";
 import gabaritoLotesRouter from "./routes/gabaritoLotes.js";
 import turnosRouter from "./routes/turnos.js";
+import suporteRouter from "./routes/suporte.js";
 import notasRouter from "./routes/notas.js";
 import avaliacoesRouter from "./routes/avaliacoes.js";
 import ferramentasIndexRouter from "./routes/ferramentas/index.js";
@@ -609,6 +610,7 @@ async function bootstrap() {
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
+  app.use("/api/suporte", autenticarToken, verificarEscola, suporteRouter);
 
   // ✅ Agente Autônomo EducaDF (Playwright — login + lançamento)
   if (agenteEducadfRouter) {
