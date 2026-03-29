@@ -1,0 +1,747 @@
+
+\documentclass[a4paper,12pt]{article}
+\usepackage[top=1cm,left=1cm,right=1cm,bottom=1.5cm]{geometry}
+\usepackage{tikz}
+\usepackage{qrcode}
+\usepackage{multicol}
+\usepackage{array}
+\usepackage{adjustbox}
+\usepackage[absolute,overlay]{textpos}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0.4pt}
+\fancyfoot[C]{\tiny \textbf{CEF04 - CCMDF - AVALIAÇÃO 2º BIMESTRE - 2025}}
+
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+\begin{document}
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 724526-ALICE_NEVES_DE_OLIVEIRA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ALICE NEVES DE OLIVEIRA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 724526
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 720752-AMANDA_VITÓRIA_SOARES_LUCENA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} AMANDA VITÓRIA SOARES LUCENA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 720752
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 867908-ANA_JÚLIA_ALVES_MAXIMINO_FERRAZ-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ANA JÚLIA ALVES MAXIMINO FERRAZ \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 867908
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 733642-ANDREY_SILVA_PEDROSO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ANDREY SILVA PEDROSO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 733642
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 675442-ANE_VITORIA_MARTINS_ARAÚJO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ANE VITORIA MARTINS ARAÚJO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 675442
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 531292-AQUILES_SILVA_DE_ANDRADE-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} AQUILES SILVA DE ANDRADE \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 531292
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 614741-ARTHUR_FERNANDES_DA_SILVA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ARTHUR FERNANDES DA SILVA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 614741
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 661548-EMANUELLY_VITORIA_DOS_SANTOS_DA_SILVA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} EMANUELLY VITORIA DOS SANTOS DA SILVA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 661548
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 962438-EMILLY_CRISTINA_DOS_SANTOS_RODRIGUES-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} EMILLY CRISTINA DOS SANTOS RODRIGUES \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 962438
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 781911-ENZO_GABRIEL_CARVALHO_PEIXOTO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ENZO GABRIEL CARVALHO PEIXOTO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 781911
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 724515-ERYCA_KAMYLE_ALVES_DA_LUZ-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ERYCA KAMYLE ALVES DA LUZ \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 724515
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 843242-ESTHER_PEREIRA_DOS_SANTOS-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ESTHER PEREIRA DOS SANTOS \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 843242
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 960456-FERNANDO_DA_SILVA_FILHO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} FERNANDO DA SILVA FILHO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 960456
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 716118-GUSTAVO_SILVA_RIBEIRO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} GUSTAVO SILVA RIBEIRO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 716118
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 839461-HELENA_MOREIRA_DE_SOUZA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} HELENA MOREIRA DE SOUZA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 839461
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 628156-HEVELLIN_SHEYLLA_SOARES_DA_SILVA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} HEVELLIN SHEYLLA SOARES DA SILVA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 628156
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 594584-ISABELA_FERREIRA_RIOS-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ISABELA FERREIRA RIOS \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 594584
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 869629-ÍTALO_VIANA_MEDEIROS-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} ÍTALO VIANA MEDEIROS \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 869629
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 723540-IURY_EZEQUIEL_MESQUITA_DE_OLIVEIRA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} IURY EZEQUIEL MESQUITA DE OLIVEIRA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 723540
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 718674-JOÃO_FELIPE_ALVES_GOMES-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} JOÃO FELIPE ALVES GOMES \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 718674
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 606143-JOÃO_PEDRO_EVANGELISTA_DE_SÁ-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} JOÃO PEDRO EVANGELISTA DE SÁ \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 606143
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 653281-JOSÉ_HENRIQUE_SALES_FEITOSA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} JOSÉ HENRIQUE SALES FEITOSA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 653281
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 729483-KAUÃ_HENRIQUE_BELO_CRESCENCIO_COELHO-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} KAUÃ HENRIQUE BELO CRESCENCIO COELHO \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 729483
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 808903-KAUÃ_HENRIQUE_ROCHA_TAVEIRA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} KAUÃ HENRIQUE ROCHA TAVEIRA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 808903
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 736375-KENNEDY_DE_SOUSA_LEITE-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} KENNEDY DE SOUSA LEITE \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 736375
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 739740-LUIZ_PEDRO_DO_CARMO_ALVES_RODRIGUES-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} LUIZ PEDRO DO CARMO ALVES RODRIGUES \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 739740
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 836607-LUIZA_DOS_SANTOS_AMORIM-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} LUIZA DOS SANTOS AMORIM \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 836607
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 940853-MARIA_EDUARDA_LOPES_NEVES-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} MARIA EDUARDA LOPES NEVES \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 940853
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 741882-NÍCOLAS_KAUÃ_ROCHA_DE_OLIVEIRA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} NÍCOLAS KAUÃ ROCHA DE OLIVEIRA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 741882
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 726886-RENAN_MIGUEL_NUNES_BRAGA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} RENAN MIGUEL NUNES BRAGA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 726886
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 981756-RUTE_ESTEVES_DA_SILVA-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} RUTE ESTEVES DA SILVA \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 981756
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+% QR-code fixo no topo direito
+\begin{textblock*}{3cm}(16cm,0.7cm)
+  \qrcode[height=2cm]{ 729510-SARA_VIEIRA_SANTOS-1F }
+\end{textblock*}
+
+% Cabeçalho
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Aluno:} SARA VIEIRA SANTOS \\
+    \textbf{Turma:} 1F - 6º ANO - Vespertino \\
+    \textbf{Código:} 729510
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% Chamada da tabela de gabarito (definida no JS)
+\Gabarito
+
+\newpage
+\end{document}

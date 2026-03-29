@@ -1,0 +1,2071 @@
+
+\documentclass[a4paper,12pt]{article}
+\usepackage[margin=1cm]{geometry}
+\usepackage{tikz}
+\usepackage{qrcode}
+\usepackage{multicol}
+\usepackage{array}
+\usepackage{adjustbox}
+\pagestyle{empty}
+
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2}
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+\begin{document}
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ÁGATA BEATRIZ DE SOUSA VIANA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 462541-ÁGATA_BEATRIZ_DE_SOUSA_VIANA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ANDRE PEREIRA DOS SANTOS
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 326187-ANDRE_PEREIRA_DOS_SANTOS-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ANDRESON MENDONÇA DE ANDRADE
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 477427-ANDRESON_MENDONÇA_DE_ANDRADE-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ARTHUR MIGUEL DIAS SILVA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 425199-ARTHUR_MIGUEL_DIAS_SILVA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} BRUNA PIRES MAIA ALVES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 99570-BRUNA_PIRES_MAIA_ALVES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} DANIEL GOMES FERNANDES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 492984-DANIEL_GOMES_FERNANDES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} EDUARDO PHILIPE LIMA RIBEIRO
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 1211137-EDUARDO_PHILIPE_LIMA_RIBEIRO-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} EMILLY VICTORIA LIMA DE SOUZA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 518606-EMILLY_VICTORIA_LIMA_DE_SOUZA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} GUILHERME FERREIRA PONTE
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 493228-GUILHERME_FERREIRA_PONTE-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} HUGO HENRIQUE DA SILVA SOUSA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 189979-HUGO_HENRIQUE_DA_SILVA_SOUSA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ISADORA DA CRUZ COSTA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 536414-ISADORA_DA_CRUZ_COSTA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} JOÃO AURÉLIO XAVIER DOS SANTOS
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 620634-JOÃO_AURÉLIO_XAVIER_DOS_SANTOS-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} JOÃO LEONARDO ROCHA GUEDES BONIFÁCIO
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 531404-JOÃO_LEONARDO_ROCHA_GUEDES_BONIFÁCIO-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} JOÃO VICTOR LIMA DE PAULA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 594339-JOÃO_VICTOR_LIMA_DE_PAULA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} JULLYE FIGUEIREDO GOLBERTO
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 20398-JULLYE_FIGUEIREDO_GOLBERTO-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} LUÍS HENRIQUE DA SILVA MOTA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 95946-LUÍS_HENRIQUE_DA_SILVA_MOTA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} MARIA CLARA ALVES FERNANDES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 592648-MARIA_CLARA_ALVES_FERNANDES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} MARIA GABRIELLY GOMES MARQUES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 344988-MARIA_GABRIELLY_GOMES_MARQUES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} MARIANA MARTINS DOS SANTOS
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 532827-MARIANA_MARTINS_DOS_SANTOS-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} NICOLI OLIVEIRA DE JESUS GUEDES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 12629-NICOLI_OLIVEIRA_DE_JESUS_GUEDES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} PEDRO HENRIQUE FERREIRA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 1166304-PEDRO_HENRIQUE_FERREIRA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ROGER BATISTA RODRIGUES
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 520767-ROGER_BATISTA_RODRIGUES-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} ULISSES EMANUEL DA SILVA SOUZA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 615114-ULISSES_EMANUEL_DA_SILVA_SOUZA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} VINÍCIUS YURI SOARES LUCENA
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 539317-VINÍCIUS_YURI_SOARES_LUCENA-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} WAGNER DA SILVA SANTOS
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 496651-WAGNER_DA_SILVA_SANTOS-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+% --- Bolinha centralizada ---
+\newcommand{\marcacao}{%
+    \vfill
+    \tikz[baseline=(c.base)] \node (c) [circle, draw, minimum width=0.45cm, minimum height=0.45cm] {};
+    \vfill
+}
+
+% --- Nova coluna centralizada ---
+\newcolumntype{C}[1]{>{\centering\arraybackslash}m{#1}}
+
+% --- Cabeçalho ---
+\begin{minipage}[t]{0.7\textwidth}
+    \textbf{Escola:} CEF04\_PLAN \\
+    \textbf{Turma:} 2S - 9º ANO - Matutino \\
+    \textbf{Aluno:} YASMIN GABRIELE LILI FÉLIX
+\end{minipage}
+\begin{minipage}[t]{0.29\textwidth}
+    \raggedleft
+    \qrcode[height=2.2cm]{ 692331-YASMIN_GABRIELE_LILI_FÉLIX-2S }
+\end{minipage}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% --- Gabarito com 25 questões compactado ---
+\newcommand{\Gabarito}{
+    \renewcommand{\arraystretch}{1.2} % altura das linhas compacta
+    \begin{center}
+        \begin{tikzpicture}
+            \node (table) [inner sep=0pt, anchor=north west] {
+                \begin{tabular}{|C{0.6cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|C{0.8cm}|}
+                    \hline
+                    \adjustbox{max width=0.5cm}{\textbf{Nº}} & \textbf{A} & \textbf{B} & \textbf{C} & \textbf{D} \\
+                    \hline
+                    01 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    02 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    03 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    04 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    05 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    06 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    07 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    08 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    09 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    10 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    11 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    12 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    13 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    14 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    15 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    16 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    17 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    18 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    19 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    20 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    21 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    22 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    23 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    24 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                    25 & \marcacao & \marcacao & \marcacao & \marcacao \\ \hline
+                \end{tabular}
+            };
+            
+            % --- Marcadores OMR ---
+            \fill[black] ([shift={(-7mm,7mm)}]table.north west) rectangle ++(5mm,-5mm);
+            \fill[black] ([shift={(7mm,7mm)}]table.north east) rectangle ++(-5mm,-5mm);
+            \fill[black] ([shift={(-7mm,-7mm)}]table.south west) rectangle ++(5mm,5mm);
+            \fill[black] ([shift={(7mm,-7mm)}]table.south east) rectangle ++(-5mm,5mm);
+        \end{tikzpicture}
+    \end{center}
+    \renewcommand{\arraystretch}{1.0}
+}
+
+% Chamada do gabarito
+\Gabarito
+
+\newpage
+\end{document}
