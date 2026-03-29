@@ -58,7 +58,7 @@ router.use(async (req, res, next) => {
 router.get("/chamados", async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
-    const userId = req.user?.id;
+    const userId = req.user?.usuario_id || req.user?.id;
     const perfil = req.user?.perfil;
     if (!escolaId) return res.status(400).json({ message: "escola_id ausente" });
 
@@ -97,13 +97,13 @@ router.get("/chamados", async (req, res) => {
 router.post("/chamados", async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
-    const userId = req.user?.id;
-    const userName = req.user?.nome || "Usuário";
+    const userId = req.user?.usuario_id || req.user?.id;
     const userPerfil = req.user?.perfil;
 
-    console.log("[Suporte] POST /chamados user:", { escolaId, userId, userName, userPerfil });
+    console.log("[Suporte] POST /chamados user:", { escolaId, userId, userPerfil });
 
     if (!escolaId) return res.status(400).json({ message: "escola_id ausente" });
+    if (!userId) return res.status(400).json({ message: "usuario_id ausente" });
 
     const { categoria, prioridade, assunto, descricao } = req.body;
     console.log("[Suporte] POST /chamados body:", { categoria, prioridade, assunto: assunto?.substring(0, 50), descLen: descricao?.length });
@@ -112,8 +112,15 @@ router.post("/chamados", async (req, res) => {
       return res.status(400).json({ message: "Assunto e descrição são obrigatórios" });
     }
 
-    // Buscar nome da escola
+    // Buscar nome do usuário e da escola
+    let userName = "Usuário";
     let escolaNome = null;
+    try {
+      const [users] = await pool.query(`SELECT nome FROM usuarios WHERE id = ?`, [userId]);
+      userName = users[0]?.nome || "Usuário";
+    } catch (e) {
+      console.error("[Suporte] erro ao buscar usuario:", e.message);
+    }
     try {
       const [esc] = await pool.query(`SELECT nome FROM escolas WHERE id = ?`, [escolaId]);
       escolaNome = esc[0]?.nome || null;
