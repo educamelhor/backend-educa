@@ -1,7 +1,10 @@
 // routes/suporte.js
 // ============================================================================
-// API de Chamados (SAC) — abertura, listagem, atualização e resposta
-// Multi-escola (cada chamado pertence a uma escola)
+// SAC Técnico — Chamados de suporte técnico (ESCOLA → CEO/Equipe Técnica)
+// Qualquer usuário autenticado pode abrir chamado.
+// Diretores da escola veem todos os chamados da escola.
+// Usuários comuns veem apenas os seus.
+// NINGUÉM no escopo escola responde — quem responde é o CEO (plataforma).
 // ============================================================================
 const express = require("express");
 const router = express.Router();
@@ -14,26 +17,32 @@ async function ensureTable() {
   try {
     await db.query(`
       CREATE TABLE IF NOT EXISTS chamados (
-        id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        escola_id     INT UNSIGNED NOT NULL,
-        usuario_id    INT UNSIGNED NOT NULL,
-        usuario_nome  VARCHAR(200) NOT NULL,
+        id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        escola_id      INT UNSIGNED NOT NULL,
+        escola_nome    VARCHAR(200) DEFAULT NULL,
+        usuario_id     INT UNSIGNED NOT NULL,
+        usuario_nome   VARCHAR(200) NOT NULL,
         usuario_perfil VARCHAR(50) DEFAULT NULL,
-        categoria     ENUM('orientacao','problema','sugestao','duvida','outro') NOT NULL DEFAULT 'outro',
-        prioridade    ENUM('baixa','media','alta','urgente') NOT NULL DEFAULT 'media',
-        assunto       VARCHAR(300) NOT NULL,
-        descricao     TEXT NOT NULL,
-        status        ENUM('aberto','em_andamento','respondido','fechado') NOT NULL DEFAULT 'aberto',
-        resposta_admin TEXT DEFAULT NULL,
+        categoria      ENUM('bug','acesso','performance','duvida','sugestao','outro') NOT NULL DEFAULT 'outro',
+        prioridade     ENUM('baixa','media','alta','urgente') NOT NULL DEFAULT 'media',
+        assunto        VARCHAR(300) NOT NULL,
+        descricao      TEXT NOT NULL,
+        status         ENUM('aberto','em_andamento','respondido','fechado') NOT NULL DEFAULT 'aberto',
+        resposta_ceo   TEXT DEFAULT NULL,
         respondido_em  DATETIME DEFAULT NULL,
         respondido_por VARCHAR(200) DEFAULT NULL,
-        created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_chamado_escola (escola_id, status),
         INDEX idx_chamado_usuario (usuario_id),
+        INDEX idx_chamado_status (status, created_at),
         INDEX idx_chamado_created (created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // Garantir coluna escola_nome (caso a tabela já exista sem ela)
+    try { await db.query(`ALTER TABLE chamados ADD COLUMN escola_nome VARCHAR(200) DEFAULT NULL AFTER escola_id`); } catch {}
+    // Renomear resposta_admin → resposta_ceo se necessário
+    try { await db.query(`ALTER TABLE chamados CHANGE COLUMN resposta_admin resposta_ceo TEXT DEFAULT NULL`); } catch {}
     migrated = true;
     console.log("[Suporte] tabela chamados OK");
   } catch (err) {
@@ -49,7 +58,7 @@ router.use(async (req, res, next) => {
 
 // ──────────────────────────────────────────────
 // GET /api/suporte/chamados
-// Lista chamados da escola do usuário autenticado
+// Lista chamados visíveis para o usuário autenticado da escola
 // ──────────────────────────────────────────────
 router.get("/chamados", async (req, res) => {
   try {
@@ -64,9 +73,9 @@ router.get("/chamados", async (req, res) => {
     let where = "WHERE c.escola_id = ?";
     const params = [escolaId];
 
-    // Usuários comuns veem apenas seus próprios chamados; diretores/militares veem todos
-    const isAdmin = ["diretor", "militar", "coordenador"].includes(perfil);
-    if (!isAdmin) {
+    // Diretores/militares veem todos os chamados da escola; demais veem só os seus
+    const isEscolaAdmin = ["diretor", "militar"].includes(perfil);
+    if (!isEscolaAdmin) {
       where += " AND c.usuario_id = ?";
       params.push(userId);
     }
@@ -94,7 +103,7 @@ router.get("/chamados", async (req, res) => {
 
 // ──────────────────────────────────────────────
 // POST /api/suporte/chamados
-// Abrir novo chamado
+// Abrir novo chamado (qualquer usuário autenticado)
 // ──────────────────────────────────────────────
 router.post("/chamados", async (req, res) => {
   try {
@@ -109,12 +118,19 @@ router.post("/chamados", async (req, res) => {
       return res.status(400).json({ message: "Assunto e descrição são obrigatórios" });
     }
 
-    const [result] = await db.query(`
-      INSERT INTO chamados (escola_id, usuario_id, usuario_nome, usuario_perfil, categoria, prioridade, assunto, descricao)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [escolaId, userId, userName, userPerfil, categoria || "outro", prioridade || "media", assunto.trim(), descricao.trim()]);
+    // Buscar nome da escola
+    let escolaNome = null;
+    try {
+      const [esc] = await db.query(`SELECT nome FROM escolas WHERE id = ?`, [escolaId]);
+      escolaNome = esc[0]?.nome || null;
+    } catch {}
 
-    res.status(201).json({ id: result.insertId, message: "Chamado aberto com sucesso" });
+    const [result] = await db.query(`
+      INSERT INTO chamados (escola_id, escola_nome, usuario_id, usuario_nome, usuario_perfil, categoria, prioridade, assunto, descricao)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [escolaId, escolaNome, userId, userName, userPerfil, categoria || "outro", prioridade || "media", assunto.trim(), descricao.trim()]);
+
+    res.status(201).json({ id: result.insertId, message: "Chamado enviado para a equipe técnica" });
   } catch (err) {
     console.error("[Suporte] erro POST /chamados:", err.message);
     res.status(500).json({ message: "Erro ao abrir chamado" });
@@ -122,40 +138,8 @@ router.post("/chamados", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// PATCH /api/suporte/chamados/:id/status
-// Atualizar status (admin)
-// ──────────────────────────────────────────────
-router.patch("/chamados/:id/status", async (req, res) => {
-  try {
-    const escolaId = req.user?.escola_id;
-    const perfil = req.user?.perfil;
-    const isAdmin = ["diretor", "militar", "coordenador"].includes(perfil);
-    if (!isAdmin) return res.status(403).json({ message: "Sem permissão" });
-
-    const { status, resposta } = req.body;
-    if (!status) return res.status(400).json({ message: "Status obrigatório" });
-
-    const updates = ["status = ?"];
-    const params = [status];
-
-    if (resposta) {
-      updates.push("resposta_admin = ?", "respondido_em = NOW()", "respondido_por = ?");
-      params.push(resposta, req.user?.nome || "Admin");
-    }
-
-    params.push(req.params.id, escolaId);
-    await db.query(`UPDATE chamados SET ${updates.join(", ")} WHERE id = ? AND escola_id = ?`, params);
-
-    res.json({ message: "Chamado atualizado" });
-  } catch (err) {
-    console.error("[Suporte] erro PATCH /chamados/:id/status:", err.message);
-    res.status(500).json({ message: "Erro ao atualizar chamado" });
-  }
-});
-
-// ──────────────────────────────────────────────
 // GET /api/suporte/chamados/:id
-// Detalhe de um chamado
+// Detalhe de um chamado (apenas da escola do usuário)
 // ──────────────────────────────────────────────
 router.get("/chamados/:id", async (req, res) => {
   try {
