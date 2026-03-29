@@ -3,14 +3,12 @@
 // Painel de Suporte Técnico — CEO/Plataforma
 // O CEO vê TODOS os chamados de TODAS as escolas, responde e gerencia.
 // ============================================================================
-const express = require("express");
-const router = express.Router();
-const db = require("../db");
+import express from "express";
+import pool from "../db.js";
 
-// ──────────────────────────────────────────────
-// GET /api/plataforma/suporte/chamados
-// Lista todos os chamados (cross-escola) com filtros
-// ──────────────────────────────────────────────
+const router = express.Router();
+
+// ── GET /api/plataforma/suporte/chamados ──
 router.get("/chamados", async (req, res) => {
   try {
     const { status, categoria, escola_id, prioridade, page = 1, limit = 50 } = req.query;
@@ -24,9 +22,9 @@ router.get("/chamados", async (req, res) => {
     if (escola_id) { where += " AND c.escola_id = ?"; params.push(escola_id); }
     if (prioridade) { where += " AND c.prioridade = ?"; params.push(prioridade); }
 
-    const [[{ total }]] = await db.query(`SELECT COUNT(*) AS total FROM chamados c ${where}`, params);
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM chamados c ${where}`, params);
 
-    const [rows] = await db.query(`
+    const [rows] = await pool.query(`
       SELECT c.*,
         e.nome AS _escola_nome,
         e.apelido AS _escola_apelido
@@ -41,7 +39,7 @@ router.get("/chamados", async (req, res) => {
     `, [...params, Number(limit), offset]);
 
     // KPI summary
-    const [kpis] = await db.query(`
+    const [kpis] = await pool.query(`
       SELECT
         COUNT(*) AS total_geral,
         SUM(status = 'aberto') AS abertos,
@@ -66,13 +64,10 @@ router.get("/chamados", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────
-// GET /api/plataforma/suporte/chamados/:id
-// Detalhe de um chamado (acesso global CEO)
-// ──────────────────────────────────────────────
+// ── GET /api/plataforma/suporte/chamados/:id ──
 router.get("/chamados/:id", async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await pool.query(`
       SELECT c.*, e.nome AS _escola_nome, e.apelido AS _escola_apelido
       FROM chamados c
       LEFT JOIN escolas e ON e.id = c.escola_id
@@ -86,10 +81,7 @@ router.get("/chamados/:id", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────
-// PATCH /api/plataforma/suporte/chamados/:id
-// CEO responde / atualiza status
-// ──────────────────────────────────────────────
+// ── PATCH /api/plataforma/suporte/chamados/:id ──
 router.patch("/chamados/:id", async (req, res) => {
   try {
     const { status, resposta } = req.body;
@@ -102,12 +94,11 @@ router.patch("/chamados/:id", async (req, res) => {
     if (resposta) {
       updates.push("resposta_ceo = ?", "respondido_em = NOW()", "respondido_por = ?");
       params.push(resposta, req.user?.nome || "CEO");
-      // Se não informou status mas enviou resposta, marca como respondido
       if (!status) { updates.push("status = 'respondido'"); }
     }
 
     params.push(req.params.id);
-    const [result] = await db.query(`UPDATE chamados SET ${updates.join(", ")} WHERE id = ?`, params);
+    const [result] = await pool.query(`UPDATE chamados SET ${updates.join(", ")} WHERE id = ?`, params);
 
     if (result.affectedRows === 0) return res.status(404).json({ message: "Chamado não encontrado" });
     res.json({ message: "Chamado atualizado com sucesso" });
@@ -117,4 +108,4 @@ router.patch("/chamados/:id", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

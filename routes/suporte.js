@@ -1,21 +1,18 @@
 // routes/suporte.js
 // ============================================================================
 // SAC Técnico — Chamados de suporte técnico (ESCOLA → CEO/Equipe Técnica)
-// Qualquer usuário autenticado pode abrir chamado.
-// Diretores da escola veem todos os chamados da escola.
-// Usuários comuns veem apenas os seus.
-// NINGUÉM no escopo escola responde — quem responde é o CEO (plataforma).
 // ============================================================================
-const express = require("express");
+import express from "express";
+import pool from "../db.js";
+
 const router = express.Router();
-const db = require("../db");
 
 // ── Auto-migrate: cria tabela se não existir ──
 let migrated = false;
 async function ensureTable() {
   if (migrated) return;
   try {
-    await db.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS chamados (
         id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         escola_id      INT UNSIGNED NOT NULL,
@@ -39,10 +36,10 @@ async function ensureTable() {
         INDEX idx_chamado_created (created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
-    // Garantir coluna escola_nome (caso a tabela já exista sem ela)
-    try { await db.query(`ALTER TABLE chamados ADD COLUMN escola_nome VARCHAR(200) DEFAULT NULL AFTER escola_id`); } catch {}
+    // Garantir coluna escola_nome (caso tabela já exista sem ela)
+    try { await pool.query(`ALTER TABLE chamados ADD COLUMN escola_nome VARCHAR(200) DEFAULT NULL AFTER escola_id`); } catch {}
     // Renomear resposta_admin → resposta_ceo se necessário
-    try { await db.query(`ALTER TABLE chamados CHANGE COLUMN resposta_admin resposta_ceo TEXT DEFAULT NULL`); } catch {}
+    try { await pool.query(`ALTER TABLE chamados CHANGE COLUMN resposta_admin resposta_ceo TEXT DEFAULT NULL`); } catch {}
     migrated = true;
     console.log("[Suporte] tabela chamados OK");
   } catch (err) {
@@ -56,10 +53,7 @@ router.use(async (req, res, next) => {
   next();
 });
 
-// ──────────────────────────────────────────────
-// GET /api/suporte/chamados
-// Lista chamados visíveis para o usuário autenticado da escola
-// ──────────────────────────────────────────────
+// ── GET /api/suporte/chamados ──
 router.get("/chamados", async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
@@ -73,7 +67,6 @@ router.get("/chamados", async (req, res) => {
     let where = "WHERE c.escola_id = ?";
     const params = [escolaId];
 
-    // Diretores/militares veem todos os chamados da escola; demais veem só os seus
     const isEscolaAdmin = ["diretor", "militar"].includes(perfil);
     if (!isEscolaAdmin) {
       where += " AND c.usuario_id = ?";
@@ -83,9 +76,9 @@ router.get("/chamados", async (req, res) => {
     if (status) { where += " AND c.status = ?"; params.push(status); }
     if (categoria) { where += " AND c.categoria = ?"; params.push(categoria); }
 
-    const [[{ total }]] = await db.query(`SELECT COUNT(*) AS total FROM chamados c ${where}`, params);
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM chamados c ${where}`, params);
 
-    const [rows] = await db.query(`
+    const [rows] = await pool.query(`
       SELECT c.* FROM chamados c
       ${where}
       ORDER BY
@@ -101,10 +94,7 @@ router.get("/chamados", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────
-// POST /api/suporte/chamados
-// Abrir novo chamado (qualquer usuário autenticado)
-// ──────────────────────────────────────────────
+// ── POST /api/suporte/chamados ──
 router.post("/chamados", async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
@@ -118,14 +108,13 @@ router.post("/chamados", async (req, res) => {
       return res.status(400).json({ message: "Assunto e descrição são obrigatórios" });
     }
 
-    // Buscar nome da escola
     let escolaNome = null;
     try {
-      const [esc] = await db.query(`SELECT nome FROM escolas WHERE id = ?`, [escolaId]);
+      const [esc] = await pool.query(`SELECT nome FROM escolas WHERE id = ?`, [escolaId]);
       escolaNome = esc[0]?.nome || null;
     } catch {}
 
-    const [result] = await db.query(`
+    const [result] = await pool.query(`
       INSERT INTO chamados (escola_id, escola_nome, usuario_id, usuario_nome, usuario_perfil, categoria, prioridade, assunto, descricao)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [escolaId, escolaNome, userId, userName, userPerfil, categoria || "outro", prioridade || "media", assunto.trim(), descricao.trim()]);
@@ -137,14 +126,11 @@ router.post("/chamados", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────
-// GET /api/suporte/chamados/:id
-// Detalhe de um chamado (apenas da escola do usuário)
-// ──────────────────────────────────────────────
+// ── GET /api/suporte/chamados/:id ──
 router.get("/chamados/:id", async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
-    const [rows] = await db.query(`SELECT * FROM chamados WHERE id = ? AND escola_id = ?`, [req.params.id, escolaId]);
+    const [rows] = await pool.query(`SELECT * FROM chamados WHERE id = ? AND escola_id = ?`, [req.params.id, escolaId]);
     if (!rows.length) return res.status(404).json({ message: "Chamado não encontrado" });
     res.json(rows[0]);
   } catch (err) {
@@ -153,4 +139,4 @@ router.get("/chamados/:id", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
