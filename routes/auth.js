@@ -8,6 +8,7 @@ import { randomInt, createHash } from "crypto";
 
 import multer from "multer";
 import fs from "fs";
+import { registrarAcesso } from "../middleware/logAccess.js";
 import path from "path";
 
 
@@ -411,6 +412,16 @@ router.post("/login", async (req, res) => {
         perfil: "diretor",
       });
 
+      // ✅ Registra acesso para Usage Insights (CEO)
+      registrarAcesso(pool, {
+        usuario_id: usuario.id,
+        escola_id: usuario.escola_id,
+        perfil: "diretor",
+        ip: req.ip || req.headers["x-forwarded-for"],
+        user_agent: req.headers["user-agent"],
+        action: "login",
+      });
+
       return res.json({
         ok: true,
         nome: usuario.nome || "Diretor",
@@ -584,6 +595,16 @@ router.post("/confirmar", async (req, res) => {
         getJwtSecret(),
         { expiresIn: "8h" }
       );
+
+      // ✅ Registra acesso para Usage Insights (CEO)
+      registrarAcesso(pool, {
+        usuario_id: usuarioIdFinal,
+        escola_id: escolaIdFinal,
+        perfil: perfilFinal,
+        ip: req.ip || req.headers["x-forwarded-for"],
+        user_agent: req.headers["user-agent"],
+        action: "login",
+      });
 
       return res.json({
         token,

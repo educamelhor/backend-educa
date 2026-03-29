@@ -354,7 +354,245 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// ─── GET /api/gabarito-avaliacoes/:id/status-importacao ──────────────────────
+// Verifica se todos os lotes estão finalizados e se já houve importação
+router.get("/:id/status-importacao", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { id } = req.params;
+
+    // Buscar avaliação
+    const [avRows] = await pool.query(
+      "SELECT id, tipo, bimestre, status, disciplinas_config, nota_total FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (avRows.length === 0) {
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+    const av = avRows[0];
+    const discConfig = safeJson(av.disciplinas_config);
+
+    // Verificar se é prova padronizada
+    const isPadronizada = av.tipo === "prova_padronizada";
+
+    // Buscar lotes vinculados a esta avaliação
+    const [lotes] = await pool.query(
+      "SELECT id, turma_nome, status, total_arquivos, total_corrigidos FROM gabarito_lotes WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    const totalLotes = lotes.length;
+    const lotesFinalizados = lotes.filter(l => l.status === "finalizado").length;
+    const todosFinalizados = totalLotes > 0 && lotesFinalizados === totalLotes;
+
+    // Contar respostas disponíveis
+    const [[{ total_respostas }]] = await pool.query(
+      "SELECT COUNT(*) AS total_respostas FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    // Verificar se já importou (status da avaliação)
+    const jaImportou = av.status === "notas_importadas";
+
+    res.json({
+      pronta: isPadronizada && todosFinalizados && !jaImportou && totalLotes > 0,
+      isPadronizada,
+      totalLotes,
+      lotesFinalizados,
+      todosFinalizados,
+      totalRespostas: total_respostas,
+      jaImportou,
+      temDisciplinas: Array.isArray(discConfig) && discConfig.length > 0,
+      disciplinas: discConfig || [],
+      bimestre: av.bimestre,
+      notaTotal: av.nota_total,
+    });
+  } catch (err) {
+    console.error("Erro ao verificar status de importação:", err);
+    res.status(500).json({ error: "Erro ao verificar status de importação." });
+  }
+});
+
+// ─── POST /api/gabarito-avaliacoes/:id/importar-notas ────────────────────────
+// Importa notas dos gabaritos corrigidos para a tabela `notas` (diário do professor)
+// A nota TOTAL da prova é replicada igualmente para CADA disciplina no disciplinas_config
+router.post("/:id/importar-notas", async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const { escola_id } = req.user;
+    const { id } = req.params;
+
+    // 1. Buscar avaliação
+    const [avRows] = await conn.query(
+      "SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (avRows.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+    const av = avRows[0];
+
+    // 2. Validar tipo = prova_padronizada
+    if (av.tipo !== "prova_padronizada") {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: "Apenas avaliações do tipo 'Prova Padronizada' podem ter notas importadas para o diário." });
+    }
+
+    // 3. Validar disciplinas_config
+    const discConfig = safeJson(av.disciplinas_config);
+    if (!Array.isArray(discConfig) || discConfig.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: "Esta avaliação não possui disciplinas configuradas. Configure as disciplinas por faixa de questões na Etapa 1." });
+    }
+
+    // 4. Converter bimestre (texto → número)
+    const bimestreNum = parseBimestre(av.bimestre);
+    if (!bimestreNum) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: `Bimestre inválido ou não definido: "${av.bimestre}". Defina o bimestre na avaliação.` });
+    }
+
+    // 5. Verificar se todos os lotes estão finalizados
+    const [lotes] = await conn.query(
+      "SELECT id, status, turma_nome FROM gabarito_lotes WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (lotes.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: "Nenhum lote encontrado para esta avaliação." });
+    }
+    const lotesNaoFinalizados = lotes.filter(l => l.status !== "finalizado");
+    if (lotesNaoFinalizados.length > 0) {
+      const turmas = lotesNaoFinalizados.map(l => l.turma_nome).join(", ");
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: `Os seguintes lotes ainda não foram finalizados: ${turmas}. Finalize a correção antes de importar.` });
+    }
+
+    // 6. Buscar todas as respostas corrigidas
+    const [respostas] = await conn.query(
+      "SELECT codigo_aluno, nome_aluno, nota, turma_id, turma_nome FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    if (respostas.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: "Nenhuma resposta de aluno encontrada para esta avaliação." });
+    }
+
+    // 7. Extrair IDs de disciplina
+    const disciplinaIds = discConfig.map(dc => dc.disciplina_id);
+
+    // 8. Para cada aluno, resolver aluno_id e inserir notas
+    const anoLetivo = anoLetivoAtual();
+    let totalInseridos = 0;
+    let totalAtualizados = 0;
+    const erros = [];
+    const alunosProcessados = [];
+
+    for (const resp of respostas) {
+      // Pular códigos artificiais (ARQ_xxx — gabaritos sem QR identificado)
+      if (!resp.codigo_aluno || resp.codigo_aluno.startsWith("ARQ_")) {
+        erros.push({ codigo: resp.codigo_aluno, motivo: "Aluno não identificado (sem QR Code)" });
+        continue;
+      }
+
+      // Resolver aluno_id a partir do codigo_aluno
+      const [alunoRows] = await conn.query(
+        "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ?",
+        [resp.codigo_aluno, escola_id]
+      );
+
+      if (alunoRows.length === 0) {
+        erros.push({ codigo: resp.codigo_aluno, nome: resp.nome_aluno, motivo: "Aluno não encontrado na base de dados" });
+        continue;
+      }
+
+      const alunoId = alunoRows[0].id;
+      const notaAluno = Number(resp.nota) || 0;
+
+      // Inserir/atualizar nota para CADA disciplina
+      for (const discId of disciplinaIds) {
+        const [result] = await conn.query(
+          `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
+           VALUES (?, ?, ?, ?, ?, ?, NOW())
+           ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
+          [escola_id, alunoId, anoLetivo, bimestreNum, discId, notaAluno]
+        );
+
+        if (result.affectedRows === 1) {
+          totalInseridos++;
+        } else if (result.affectedRows === 2) {
+          // affectedRows=2 means ON DUPLICATE KEY UPDATE was triggered
+          totalAtualizados++;
+        }
+      }
+
+      alunosProcessados.push({
+        codigo: resp.codigo_aluno,
+        nome: resp.nome_aluno || alunoRows[0].estudante,
+        nota: notaAluno,
+      });
+    }
+
+    // 9. Atualizar status da avaliação
+    await conn.query(
+      "UPDATE gabarito_avaliacoes SET status = 'notas_importadas' WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    await conn.commit();
+    conn.release();
+
+    const discNomes = discConfig.map(dc => dc.nome).join(", ");
+
+    res.json({
+      success: true,
+      message: `Importação concluída! ${alunosProcessados.length} alunos processados para ${disciplinaIds.length} disciplina(s).`,
+      resumo: {
+        totalAlunos: respostas.length,
+        alunosImportados: alunosProcessados.length,
+        totalNotas: totalInseridos + totalAtualizados,
+        notasInseridas: totalInseridos,
+        notasAtualizadas: totalAtualizados,
+        disciplinas: discNomes,
+        bimestre: av.bimestre,
+        erros: erros.length,
+        detalheErros: erros,
+      },
+    });
+  } catch (err) {
+    await conn.rollback();
+    conn.release();
+    console.error("Erro ao importar notas:", err);
+    res.status(500).json({ error: "Erro ao importar notas para o diário. A operação foi revertida." });
+  }
+});
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Converte texto de bimestre para número
+ * "1º Bimestre" → 1, "2º Bimestre" → 2, etc.
+ */
+function parseBimestre(bimestreStr) {
+  if (!bimestreStr) return null;
+  const match = bimestreStr.match(/(\d)/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (num >= 1 && num <= 4) return num;
+  }
+  return null;
+}
 
 function safeJson(val) {
   if (!val) return null;

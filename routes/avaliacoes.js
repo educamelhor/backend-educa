@@ -265,4 +265,276 @@ router.patch("/:id/status", async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /api/avaliacoes/:id/salvar-notas
+// Salva as notas granulares do diário (por item do PAP) na tabela notas_diario
+// ═══════════════════════════════════════════════════════════════════════════
+router.post("/:id/salvar-notas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const planoId = req.params.id;
+    const { turma_id, notas, cores } = req.body;
+    // notas = { "alunoId_itemIdx_opIdx": valor, ... }
+    // cores = { "alunoId_itemIdx_opIdx": "red"|"yellow"|"green"|null, ... }
+
+    if (!turma_id || !notas || typeof notas !== "object") {
+      return res.status(400).json({ error: "turma_id e notas são obrigatórios." });
+    }
+
+    // Verificar se o plano pertence a essa escola
+    const [[plano]] = await pool.query(
+      "SELECT id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
+      [planoId, escola_id]
+    );
+    if (!plano) {
+      return res.status(404).json({ error: "Plano não encontrado." });
+    }
+
+    // Verificar se o diário não está fechado para essa turma
+    const [[fechamento]] = await pool.query(
+      "SELECT id FROM diario_fechamento WHERE plano_id = ? AND turma_id = ?",
+      [planoId, turma_id]
+    );
+    if (fechamento) {
+      return res.status(403).json({ error: "Diário já fechado para esta turma. Não é possível editar." });
+    }
+
+    // Preparar batch UPSERT
+    const entries = Object.entries(notas);
+    if (entries.length === 0) {
+      return res.json({ ok: true, message: "Nenhuma nota para salvar.", total: 0 });
+    }
+
+    const values = [];
+    for (const [key, valor] of entries) {
+      const parts = key.split("_");
+      if (parts.length < 3) continue;
+      const alunoId = parseInt(parts[0], 10);
+      const itemIdx = parseInt(parts[1], 10);
+      const opIdx = parseInt(parts[2], 10);
+      if (isNaN(alunoId) || isNaN(itemIdx) || isNaN(opIdx)) continue;
+      const cor = cores?.[key] || null;
+      values.push([escola_id, planoId, turma_id, alunoId, itemIdx, opIdx, valor, cor]);
+    }
+
+    if (values.length === 0) {
+      return res.json({ ok: true, message: "Nenhuma nota válida.", total: 0 });
+    }
+
+    // Batch UPSERT
+    await pool.query(
+      `INSERT INTO notas_diario (escola_id, plano_id, turma_id, aluno_id, item_idx, oportunidade_idx, nota, cor)
+       VALUES ?
+       ON DUPLICATE KEY UPDATE nota = VALUES(nota), cor = VALUES(cor), updated_at = NOW()`,
+      [values]
+    );
+
+    return res.json({ ok: true, message: `${values.length} nota(s) salva(s) com sucesso.`, total: values.length });
+  } catch (err) {
+    console.error("Erro ao salvar notas do diário:", err);
+    return res.status(500).json({ error: "Erro ao salvar notas." });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/avaliacoes/:id/notas-diario
+// Carrega as notas granulares do diário para uma turma específica
+// ═══════════════════════════════════════════════════════════════════════════
+router.get("/:id/notas-diario", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const planoId = req.params.id;
+    const turmaId = req.query.turma_id;
+
+    if (!turmaId) {
+      return res.status(400).json({ error: "turma_id é obrigatório." });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT aluno_id, item_idx, oportunidade_idx, nota, cor
+       FROM notas_diario
+       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?`,
+      [planoId, turmaId, escola_id]
+    );
+
+    // Converter para formato { "alunoId_itemIdx_opIdx": { nota, cor } }
+    const notas = {};
+    const cores = {};
+    for (const row of rows) {
+      const key = `${row.aluno_id}_${row.item_idx}_${row.oportunidade_idx}`;
+      notas[key] = Number(row.nota);
+      if (row.cor) cores[key] = row.cor;
+    }
+
+    return res.json({ ok: true, notas, cores });
+  } catch (err) {
+    console.error("Erro ao carregar notas do diário:", err);
+    return res.status(500).json({ error: "Erro ao carregar notas." });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/avaliacoes/:id/status-diario
+// Verifica se o diário está fechado para uma turma
+// ═══════════════════════════════════════════════════════════════════════════
+router.get("/:id/status-diario", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const planoId = req.params.id;
+    const turmaId = req.query.turma_id;
+
+    if (!turmaId) {
+      return res.status(400).json({ error: "turma_id é obrigatório." });
+    }
+
+    const [[fechamento]] = await pool.query(
+      `SELECT id, fechado_em, total_alunos, total_notas_exportadas
+       FROM diario_fechamento
+       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?`,
+      [planoId, turmaId, escola_id]
+    );
+
+    return res.json({
+      ok: true,
+      fechado: !!fechamento,
+      fechamento: fechamento || null,
+    });
+  } catch (err) {
+    console.error("Erro ao verificar status do diário:", err);
+    return res.status(500).json({ error: "Erro ao verificar status." });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /api/avaliacoes/:id/exportar-boletim
+// Exporta os TOTAIs do diário para a tabela notas (boletim) e fecha o diário
+// ═══════════════════════════════════════════════════════════════════════════
+router.post("/:id/exportar-boletim", async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { escola_id } = req.user;
+    const userId = req.user?.id || req.user?.usuario_id;
+    const planoId = req.params.id;
+    const { turma_id } = req.body;
+
+    if (!turma_id) {
+      conn.release();
+      return res.status(400).json({ error: "turma_id é obrigatório." });
+    }
+
+    // 1) Buscar o plano
+    const [[plano]] = await conn.query(
+      "SELECT id, disciplina, bimestre, ano, escola_id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
+      [planoId, escola_id]
+    );
+    if (!plano) {
+      conn.release();
+      return res.status(404).json({ error: "Plano não encontrado." });
+    }
+
+    // 2) Verificar se já está fechado
+    const [[jaFechado]] = await conn.query(
+      "SELECT id FROM diario_fechamento WHERE plano_id = ? AND turma_id = ?",
+      [planoId, turma_id]
+    );
+    if (jaFechado) {
+      conn.release();
+      return res.status(400).json({ error: "Diário já foi exportado para o boletim anteriormente." });
+    }
+
+    // 3) Resolver disciplina_id a partir do nome
+    const [[disc]] = await conn.query(
+      "SELECT id FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1",
+      [plano.disciplina, escola_id]
+    );
+    if (!disc) {
+      conn.release();
+      return res.status(400).json({ error: `Disciplina '${plano.disciplina}' não encontrada.` });
+    }
+    const disciplinaId = disc.id;
+
+    // 4) Resolver bimestre numérico
+    const bimestreNum = parseBimestre(plano.bimestre);
+    if (!bimestreNum) {
+      conn.release();
+      return res.status(400).json({ error: `Bimestre '${plano.bimestre}' inválido.` });
+    }
+
+    const ano = plano.ano || new Date().getFullYear();
+
+    // 5) Buscar totais por aluno a partir de notas_diario
+    const [totais] = await conn.query(
+      `SELECT aluno_id, SUM(nota) AS total
+       FROM notas_diario
+       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?
+       GROUP BY aluno_id
+       HAVING total IS NOT NULL`,
+      [planoId, turma_id, escola_id]
+    );
+
+    if (totais.length === 0) {
+      conn.release();
+      return res.status(400).json({ error: "Nenhuma nota encontrada no diário para exportar." });
+    }
+
+    // 6) Transação: UPSERT nas notas + registrar fechamento
+    await conn.beginTransaction();
+
+    let inseridas = 0;
+    let atualizadas = 0;
+
+    for (const row of totais) {
+      const nota = Number(row.total).toFixed(2);
+      const [result] = await conn.query(
+        `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
+         VALUES (?, ?, ?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
+        [escola_id, row.aluno_id, ano, bimestreNum, disciplinaId, nota]
+      );
+      if (result.insertId > 0) inseridas++;
+      else atualizadas++;
+    }
+
+    // Registrar o fechamento
+    await conn.query(
+      `INSERT INTO diario_fechamento (escola_id, plano_id, turma_id, fechado_por, total_alunos, total_notas_exportadas)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [escola_id, planoId, turma_id, userId, totais.length, inseridas + atualizadas]
+    );
+
+    await conn.commit();
+    conn.release();
+
+    return res.json({
+      ok: true,
+      message: `Notas exportadas com sucesso! ${totais.length} aluno(s) processado(s).`,
+      resumo: {
+        totalAlunos: totais.length,
+        notasInseridas: inseridas,
+        notasAtualizadas: atualizadas,
+        disciplina: plano.disciplina,
+        bimestre: plano.bimestre,
+        ano,
+      },
+    });
+  } catch (err) {
+    await conn.rollback();
+    conn.release();
+    console.error("Erro ao exportar notas para boletim:", err);
+    return res.status(500).json({ error: "Erro ao exportar notas para o boletim." });
+  }
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseBimestre(bimestreStr) {
+  if (!bimestreStr) return null;
+  const match = String(bimestreStr).match(/(\d)/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (num >= 1 && num <= 4) return num;
+  }
+  return null;
+}
+
 export default router;
