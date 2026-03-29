@@ -1,7 +1,7 @@
 // routes/plataforma_suporte.js
 // ============================================================================
 // Painel de Suporte Técnico — CEO/Plataforma
-// O CEO vê TODOS os chamados de TODAS as escolas, responde e gerencia.
+// Vê todos chamados, responde via thread de mensagens, gerencia status
 // ============================================================================
 import express from "express";
 import pool from "../db.js";
@@ -25,86 +25,122 @@ router.get("/chamados", async (req, res) => {
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM chamados c ${where}`, params);
 
     const [rows] = await pool.query(`
-      SELECT c.*,
-        e.nome AS _escola_nome,
-        e.apelido AS _escola_apelido
+      SELECT c.*, e.nome AS _escola_nome, e.apelido AS _escola_apelido,
+        (SELECT COUNT(*) FROM chamados_mensagens WHERE chamado_id = c.id) AS total_mensagens
       FROM chamados c
       LEFT JOIN escolas e ON e.id = c.escola_id
       ${where}
       ORDER BY
-        FIELD(c.status, 'aberto','em_andamento','respondido','fechado'),
+        FIELD(c.status, 'aberto','reaberto','em_andamento','respondido','fechado'),
         FIELD(c.prioridade, 'urgente','alta','media','baixa'),
-        c.created_at DESC
+        c.updated_at DESC
       LIMIT ? OFFSET ?
     `, [...params, Number(limit), offset]);
 
-    // KPI summary
     const [kpis] = await pool.query(`
       SELECT
         COUNT(*) AS total_geral,
         SUM(status = 'aberto') AS abertos,
+        SUM(status = 'reaberto') AS reabertos,
         SUM(status = 'em_andamento') AS em_andamento,
         SUM(status = 'respondido') AS respondidos,
         SUM(status = 'fechado') AS fechados,
-        SUM(prioridade = 'urgente' AND status IN ('aberto','em_andamento')) AS urgentes_pendentes,
+        SUM(prioridade = 'urgente' AND status IN ('aberto','reaberto','em_andamento')) AS urgentes_pendentes,
+        ROUND(AVG(CASE WHEN avaliacao IS NOT NULL THEN avaliacao END), 1) AS media_avaliacao,
         COUNT(DISTINCT escola_id) AS escolas_com_chamados
       FROM chamados
     `);
 
-    res.json({
-      chamados: rows,
-      total,
-      kpis: kpis[0] || {},
-      page: Number(page),
-      limit: Number(limit),
-    });
+    res.json({ chamados: rows, total, kpis: kpis[0] || {}, page: Number(page), limit: Number(limit) });
   } catch (err) {
-    console.error("[PlataformaSuporte] erro GET /chamados:", err.message);
+    console.error("[PlataformaSuporte] GET /chamados:", err.message);
     res.status(500).json({ message: "Erro ao listar chamados" });
   }
 });
 
-// ── GET /api/plataforma/suporte/chamados/:id ──
+// ── GET /api/plataforma/suporte/chamados/:id — Detalhe + thread ──
 router.get("/chamados/:id", async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT c.*, e.nome AS _escola_nome, e.apelido AS _escola_apelido
-      FROM chamados c
-      LEFT JOIN escolas e ON e.id = c.escola_id
-      WHERE c.id = ?
+      FROM chamados c LEFT JOIN escolas e ON e.id = c.escola_id WHERE c.id = ?
     `, [req.params.id]);
     if (!rows.length) return res.status(404).json({ message: "Chamado não encontrado" });
-    res.json(rows[0]);
+
+    const [mensagens] = await pool.query(
+      `SELECT * FROM chamados_mensagens WHERE chamado_id = ? ORDER BY created_at ASC`,
+      [req.params.id]
+    );
+
+    res.json({ ...rows[0], mensagens });
   } catch (err) {
-    console.error("[PlataformaSuporte] erro GET /chamados/:id:", err.message);
+    console.error("[PlataformaSuporte] GET /chamados/:id:", err.message);
     res.status(500).json({ message: "Erro ao buscar chamado" });
   }
 });
 
-// ── PATCH /api/plataforma/suporte/chamados/:id ──
+// ── POST /api/plataforma/suporte/chamados/:id/mensagem — CEO responde ──
+router.post("/chamados/:id/mensagem", async (req, res) => {
+  try {
+    const { mensagem, status } = req.body;
+    if (!mensagem?.trim() && !status) return res.status(400).json({ message: "Mensagem ou status obrigatório" });
+
+    const ceoNome = req.user?.nome || "Equipe Técnica";
+
+    if (mensagem?.trim()) {
+      await pool.query(`
+        INSERT INTO chamados_mensagens (chamado_id, autor_id, autor_nome, autor_tipo, mensagem)
+        VALUES (?, ?, ?, 'ceo', ?)
+      `, [req.params.id, req.user?.usuario_id || 0, ceoNome, mensagem.trim()]);
+
+      // Também salvar a última resposta no campo legado
+      await pool.query(`
+        UPDATE chamados SET resposta_ceo = ?, respondido_em = NOW(), respondido_por = ? WHERE id = ?
+      `, [mensagem.trim(), ceoNome, req.params.id]);
+    }
+
+    // Atualizar status
+    const newStatus = status || (mensagem?.trim() ? "respondido" : null);
+    if (newStatus) {
+      await pool.query(`UPDATE chamados SET status = ? WHERE id = ?`, [newStatus, req.params.id]);
+    }
+
+    res.json({ message: "Resposta enviada" });
+  } catch (err) {
+    console.error("[PlataformaSuporte] POST mensagem:", err.message);
+    res.status(500).json({ message: "Erro ao enviar resposta" });
+  }
+});
+
+// ── PATCH /api/plataforma/suporte/chamados/:id — Update status (legacy) ──
 router.patch("/chamados/:id", async (req, res) => {
   try {
     const { status, resposta } = req.body;
     if (!status && !resposta) return res.status(400).json({ message: "Informe status ou resposta" });
 
+    const ceoNome = req.user?.nome || "CEO";
     const updates = [];
     const params = [];
 
     if (status) { updates.push("status = ?"); params.push(status); }
     if (resposta) {
       updates.push("resposta_ceo = ?", "respondido_em = NOW()", "respondido_por = ?");
-      params.push(resposta, req.user?.nome || "CEO");
-      if (!status) { updates.push("status = 'respondido'"); }
+      params.push(resposta, ceoNome);
+      if (!status) updates.push("status = 'respondido'");
+
+      // Também inserir na thread
+      await pool.query(`
+        INSERT INTO chamados_mensagens (chamado_id, autor_id, autor_nome, autor_tipo, mensagem)
+        VALUES (?, ?, ?, 'ceo', ?)
+      `, [req.params.id, req.user?.usuario_id || 0, ceoNome, resposta]);
     }
 
     params.push(req.params.id);
-    const [result] = await pool.query(`UPDATE chamados SET ${updates.join(", ")} WHERE id = ?`, params);
-
-    if (result.affectedRows === 0) return res.status(404).json({ message: "Chamado não encontrado" });
-    res.json({ message: "Chamado atualizado com sucesso" });
+    await pool.query(`UPDATE chamados SET ${updates.join(", ")} WHERE id = ?`, params);
+    res.json({ message: "Chamado atualizado" });
   } catch (err) {
-    console.error("[PlataformaSuporte] erro PATCH /chamados/:id:", err.message);
-    res.status(500).json({ message: "Erro ao atualizar chamado" });
+    console.error("[PlataformaSuporte] PATCH:", err.message);
+    res.status(500).json({ message: "Erro ao atualizar" });
   }
 });
 
