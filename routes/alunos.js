@@ -527,14 +527,14 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     // Definimos colunas por faixas de X
     // (tolerância generosa para diferentes formatações)
-    // Posições reais observadas: RE≈45, NOME≈94, DT NASC≈352, FILIAÇÃO≈457, RESP≈755, CPF≈1035
+    // Posições reais observadas: RE≈45, NOME≈94-96, DT NASC≈352-380, FILIAÇÃO≈457-491, RESP≈755-789, CPF≈1028
     const COL_RANGES = {
       re:          { min: 20, max: 90 },
       nome:        { min: 90, max: 345 },
       dataNasc:    { min: 345, max: 455 },
       filiacao:    { min: 455, max: 750 },
-      responsavel: { min: 750, max: 1030 },
-      cpf:         { min: 1030, max: 1300 },
+      responsavel: { min: 750, max: 1025 },
+      cpf:         { min: 1025, max: 1300 },
     };
 
     function getCol(x) {
@@ -593,8 +593,23 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
       let estudante = (rowData.nome || "").trim();
       let dataBr = (rowData.dataNasc || "").trim();
-      const responsavel = (rowData.responsavel || "").trim();
-      const cpfResp = (rowData.cpf || "").replace(/\D/g, "");
+      let responsavel = (rowData.responsavel || "").trim();
+      let cpfResp = (rowData.cpf || "").replace(/\D/g, "");
+
+      // ── Safety net: se o CPF vazou para dentro do nome do responsável ──
+      // Nomes brasileiros NUNCA contêm dígitos (são apenas letras, acentos e espaços).
+      // Logo, a primeira sequência numérica encontrada no campo responsável é o CPF.
+      // Isso cobre: "MARIA DA SILVA 12345678901" (com espaço)
+      //          e: "MARIA DA SILVA12345678901" (sem espaço / colunas coladas)
+      if (!cpfResp && responsavel) {
+        const splitMatch = responsavel.match(
+          /^([A-Za-zÀ-ÖØ-öø-ÿÇçÃãÕõÉéÍíÓóÚúÂâÊêÎîÔôÛû\s.'-]+?)\s*(\d{11})$/
+        );
+        if (splitMatch) {
+          responsavel = splitMatch[1].trim();
+          cpfResp = splitMatch[2];
+        }
+      }
 
       // Se a data vazou para o campo nome (drift de colunas), extrair e limpar
       const dateInName = estudante.match(/\s+(\d{2}\/\d{2}\/\d{4})\s*$/);
