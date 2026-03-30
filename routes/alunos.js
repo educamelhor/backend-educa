@@ -530,11 +530,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     // Posições reais observadas (multi-escola):
     //   7ºANO D: RE≈45, NOME≈96, DT≈380, FIL≈491, RESP≈789, CPF≈1028
     //   7ºANO F: RE≈45, NOME≈95, DT≈348, FIL≈456, RESP≈744, CPF≈1032
+    //   7ºANO H: RE≈45, NOME≈94, DT≈348, FIL≈454, RESP≈744, CPF≈1034
     const COL_RANGES = {
       re:          { min: 20, max: 90 },
       nome:        { min: 90, max: 345 },
-      dataNasc:    { min: 345, max: 455 },
-      filiacao:    { min: 455, max: 730 },
+      dataNasc:    { min: 345, max: 430 },
+      filiacao:    { min: 430, max: 730 },
       responsavel: { min: 730, max: 1025 },
       cpf:         { min: 1025, max: 1300 },
     };
@@ -623,6 +624,19 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         responsavel = filiacao;
       }
 
+      // ── Safety net 3: data de nascimento com filiação colada ──
+      // Se a filiação vazou para o campo dataNasc (drift de colunas),
+      // o campo fica com "01/12/2008 MARIA FRANCINETE DA COSTA..."
+      // Extraímos apenas o padrão dd/mm/yyyy do início e descartamos o resto.
+      if (dataBr && !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
+        const dateAtStart = dataBr.match(/^(\d{2}\/\d{2}\/\d{4})/);
+        if (dateAtStart) {
+          dataBr = dateAtStart[1];
+        } else {
+          dataBr = ""; // não é data
+        }
+      }
+
       // Se a data vazou para o campo nome (drift de colunas), extrair e limpar
       const dateInName = estudante.match(/\s+(\d{2}\/\d{2}\/\d{4})\s*$/);
       if (dateInName) {
@@ -630,11 +644,6 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
           dataBr = dateInName[1]; // usa a data encontrada no nome
         }
         estudante = estudante.replace(/\s+\d{2}\/\d{2}\/\d{4}\s*$/, "").trim();
-      }
-
-      // Valida formato de data (dd/mm/yyyy) — evita erro de STR_TO_DATE no MySQL strict mode
-      if (dataBr && !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
-        dataBr = ""; // descarta valor que não é data
       }
 
       if (!estudante) continue;
