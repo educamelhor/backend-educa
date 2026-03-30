@@ -527,13 +527,15 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     // Definimos colunas por faixas de X
     // (tolerância generosa para diferentes formatações)
-    // Posições reais observadas: RE≈45, NOME≈94-96, DT NASC≈352-380, FILIAÇÃO≈457-491, RESP≈755-789, CPF≈1028
+    // Posições reais observadas (multi-escola):
+    //   7ºANO D: RE≈45, NOME≈96, DT≈380, FIL≈491, RESP≈789, CPF≈1028
+    //   7ºANO F: RE≈45, NOME≈95, DT≈348, FIL≈456, RESP≈744, CPF≈1032
     const COL_RANGES = {
       re:          { min: 20, max: 90 },
       nome:        { min: 90, max: 345 },
       dataNasc:    { min: 345, max: 455 },
-      filiacao:    { min: 455, max: 750 },
-      responsavel: { min: 750, max: 1025 },
+      filiacao:    { min: 455, max: 730 },
+      responsavel: { min: 730, max: 1025 },
       cpf:         { min: 1025, max: 1300 },
     };
 
@@ -595,8 +597,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       let dataBr = (rowData.dataNasc || "").trim();
       let responsavel = (rowData.responsavel || "").trim();
       let cpfResp = (rowData.cpf || "").replace(/\D/g, "");
+      const filiacao = (rowData.filiacao || "").trim();
 
-      // ── Safety net: se o CPF vazou para dentro do nome do responsável ──
+      // ── Safety net 1: se o CPF vazou para dentro do nome do responsável ──
       // Nomes brasileiros NUNCA contêm dígitos (são apenas letras, acentos e espaços).
       // Logo, a primeira sequência numérica encontrada no campo responsável é o CPF.
       // Isso cobre: "MARIA DA SILVA 12345678901" (com espaço)
@@ -609,6 +612,15 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
           responsavel = splitMatch[1].trim();
           cpfResp = splitMatch[2];
         }
+      }
+
+      // ── Safety net 2: responsável vazou para filiação (drift de colunas) ──
+      // Se o responsável ficou vazio mas temos CPF, o nome provavelmente
+      // foi classificado como filiação por causa de posição X levemente menor.
+      // Nos PDFs da Secretaria de Educação, filiação e responsável frequentemente
+      // são a mesma pessoa (mãe), então usamos a filiação como fallback.
+      if (!responsavel && cpfResp && filiacao) {
+        responsavel = filiacao;
       }
 
       // Se a data vazou para o campo nome (drift de colunas), extrair e limpar
