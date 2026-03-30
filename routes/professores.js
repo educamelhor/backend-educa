@@ -969,33 +969,114 @@ router.post("/:id/foto", profUpload.single("foto"), async (req, res) => {
 
 // ────────────────────────────────────────────────
 // POST: Importar professores via PDF (com sincronização)
-// (mantido — não altera TURNO)
+// ────────────────────────────────────────────────
+// PDF padrão do SIGeP (Secretaria de Educação) — layout ROTACIONADO 90°:
+//   Eixo X = linha (cada pessoa tem X distinto)
+//   Eixo Y = coluna:
+//     y≈85 Nome do Servidor | y≈335 Cargo | y≈505 CPF
+// Somente linhas com Cargo iniciando em "Professor" são importadas.
+// CPFs com menos de 11 dígitos recebem zeros à esquerda.
 // ────────────────────────────────────────────────
 const uploadPdf = multer();
 router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "PDF não enviado." });
 
   try {
-    const { text } = await pdfParse(req.file.buffer);
-    const linhas = text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
+    // ── PARSER POSICIONAL (layout rotacionado do SIGeP) ──
+    const allItems = [];
+    const parseOptions = {
+      pagerender: async (pageData) => {
+        const tc = await pageData.getTextContent();
+        for (const item of tc.items) {
+          const txt = (item.str || "").trim();
+          if (!txt) continue;
+          allItems.push({
+            text: txt,
+            x: Math.round(item.transform[4]),
+            y: Math.round(item.transform[5]),
+            page: pageData.pageNumber,
+          });
+        }
+        return "";
+      },
+    };
+    await pdfParse(req.file.buffer, parseOptions);
+
+    // Colunas por faixa de Y (layout rotacionado)
+    // Posições reais: Nome≈85, Cargo≈335, CPF≈505
+    const COL_Y = {
+      nome:  { min: 50,  max: 300 },
+      cargo: { min: 300, max: 480 },
+      cpf:   { min: 480, max: 560 },
+    };
+
+    function getCol(y) {
+      for (const [col, range] of Object.entries(COL_Y)) {
+        if (y >= range.min && y < range.max) return col;
+      }
+      return null;
+    }
+
+    // Agrupa items por linha (X + página) — cada pessoa tem X±1
+    const rowsMap = {};
+    for (const it of allItems) {
+      if (it.x < 110) continue; // ignora headers (x≈99) e títulos
+      const xKey = it.page * 10000 + Math.round(it.x / 3) * 3;
+      if (!rowsMap[xKey]) rowsMap[xKey] = [];
+      rowsMap[xKey].push(it);
+    }
 
     const profs = [];
-    for (let i = 0; i < linhas.length; i++) {
-      const m = linhas[i].match(
-        /^(\d{4,}\.\d{3,}-[\dxX])\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s.]+)\s+([A-Z\s.]+)$/i
-      );
-      if (m) {
-        profs.push({
-          cpf: m[1].replace(/[^\dX]/gi, ""),
-          nome: m[2].trim(),
-          cargo: m[3].trim(),
-        });
+    const xKeys = Object.keys(rowsMap).map(Number).sort((a, b) => a - b);
+
+    for (const xKey of xKeys) {
+      const items = rowsMap[xKey];
+      const rowData = {};
+      for (const it of items) {
+        const col = getCol(it.y);
+        if (col) {
+          rowData[col] = rowData[col] ? rowData[col] + " " + it.text : it.text;
+        }
+      }
+
+      const nome  = (rowData.nome  || "").trim();
+      const cargo = (rowData.cargo || "").trim();
+      let cpf     = (rowData.cpf   || "").replace(/\D/g, "");
+
+      if (!nome || !cargo) continue;
+
+      // Filtra: somente cargos que iniciam com "Professor"
+      if (!/^professor/i.test(cargo)) continue;
+
+      // CPF com menos de 11 dígitos → zeros à esquerda
+      if (cpf.length > 0 && cpf.length < 11) {
+        cpf = cpf.padStart(11, "0");
+      }
+
+      if (cpf.length !== 11) continue; // sem CPF válido, pula
+
+      profs.push({ cpf, nome, cargo });
+    }
+
+    // ── Fallback: se parser posicional não encontrou nada, tenta layout padrão ──
+    if (profs.length === 0) {
+      const { text } = await pdfParse(req.file.buffer);
+      const linhas = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      for (const ln of linhas) {
+        const m = ln.match(
+          /^(\d[\d.]+[-\dxX])\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s.'-]+?)\s+(PROFESSOR[A-Z\s.]+?)\s+(\d{3,11})\s+/i
+        );
+        if (!m) continue;
+        let cpf = m[4].replace(/\D/g, "");
+        if (cpf.length < 11) cpf = cpf.padStart(11, "0");
+        if (cpf.length !== 11) continue;
+        profs.push({ cpf, nome: m[2].trim(), cargo: m[3].trim() });
       }
     }
 
+    console.log(`[importar-pdf professores] Parser extraiu ${profs.length} professores`);
+
+    // ── Sincronização com banco ──
     const setCpfs = new Set(profs.map((p) => p.cpf));
     const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores");
 
@@ -1047,6 +1128,10 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       await pool.query("UPDATE professores SET status='inativo' WHERE id=?", [r.id]);
       inativados++;
     }
+
+    console.log(
+      `[importar-pdf professores] → localizados: ${profs.length}, inseridos: ${inseridos}, reativados: ${reativados}, jáExistiam: ${jaExistiam}, inativados: ${inativados}`
+    );
 
     res.json({
       localizados: profs.length,
