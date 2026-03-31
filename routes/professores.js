@@ -854,6 +854,25 @@ router.put("/inativar/:id", async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
+// PUT: Ativar professor (manual)
+// ────────────────────────────────────────────────
+router.put("/ativar/:id", async (req, res) => {
+  try {
+    const [result] = await pool.query(
+      "UPDATE professores SET status = 'ativo' WHERE id = ?",
+      [req.params.id]
+    );
+    if (!result.affectedRows) {
+      return res.status(404).json({ message: "Professor não encontrado." });
+    }
+    res.json({ message: "Professor ativado com sucesso." });
+  } catch (err) {
+    console.error("Erro ao ativar professor:", err);
+    res.status(500).json({ message: "Erro ao ativar professor." });
+  }
+});
+
+// ────────────────────────────────────────────────
 // DELETE: Excluir professor
 // Limpa registros dependentes (modulação, preferências) antes de excluir
 // ────────────────────────────────────────────────
@@ -1083,30 +1102,32 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     console.log(`[importar-pdf professores] Parser extraiu ${profs.length} professores`);
 
     // ── Sincronização com banco ──
-    const setCpfs = new Set(profs.map((p) => p.cpf));
+    // Normaliza CPFs para comparação (banco pode ter pontos/traços)
+    const normCpf = (c) => String(c || '').replace(/\D/g, '');
+    const setCpfs = new Set(profs.map((p) => normCpf(p.cpf)));
     const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores WHERE escola_id = ?", [escolaId]);
 
     const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
     const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
-    const setAllCpfs = new Set(dbRowsAll.map((r) => String(r.cpf)));
-    const setActiveCpfs = new Set(dbActive.map((r) => String(r.cpf)));
+    const setAllCpfs = new Set(dbRowsAll.map((r) => normCpf(r.cpf)));
+    const setActiveCpfs = new Set(dbActive.map((r) => normCpf(r.cpf)));
 
-    const jaExistiam = profs.filter((e) => setActiveCpfs.has(e.cpf)).length;
-    const toInsert = profs.filter((e) => !setAllCpfs.has(e.cpf));
+    const jaExistiam = profs.filter((e) => setActiveCpfs.has(normCpf(e.cpf))).length;
+    const toInsert = profs.filter((e) => !setAllCpfs.has(normCpf(e.cpf)));
     const toReactivate = profs.filter((e) =>
-      dbInactive.some((r) => String(r.cpf) === e.cpf)
+      dbInactive.some((r) => normCpf(r.cpf) === normCpf(e.cpf))
     );
-    const toInactivate = dbActive.filter((r) => !setCpfs.has(String(r.cpf)));
+    const toInactivate = dbActive.filter((r) => !setCpfs.has(normCpf(r.cpf)));
 
     // Insere novos
     let inseridos = 0;
     for (const e of toInsert) {
       await pool.query(
-        "INSERT INTO professores (escola_id, cpf, nome, status) VALUES (?, ?, UPPER(?), 'ativo')",
+        "INSERT INTO professores (escola_id, cpf, nome, aulas, status) VALUES (?, ?, UPPER(?), 0, 'ativo')",
         [escolaId, e.cpf, e.nome]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
         [e.cpf, e.nome, escolaId]
       );
@@ -1121,7 +1142,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         [e.nome, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
         [e.cpf, e.nome, escolaId]
       );
@@ -1185,30 +1206,32 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       profs.push({ cpf, nome });
     }
 
-    const setCpfs = new Set(profs.map((p) => p.cpf));
+    // Normaliza CPFs para comparação (banco pode ter pontos/traços)
+    const normCpf = (c) => String(c || '').replace(/\D/g, '');
+    const setCpfs = new Set(profs.map((p) => normCpf(p.cpf)));
     const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores WHERE escola_id = ?", [escolaId]);
 
     const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
     const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
-    const setAllCpfs = new Set(dbRowsAll.map((r) => String(r.cpf)));
-    const setActiveCpfs = new Set(dbActive.map((r) => String(r.cpf)));
+    const setAllCpfs = new Set(dbRowsAll.map((r) => normCpf(r.cpf)));
+    const setActiveCpfs = new Set(dbActive.map((r) => normCpf(r.cpf)));
 
-    const jaExistiam = profs.filter((e) => setActiveCpfs.has(e.cpf)).length;
-    const toInsert = profs.filter((e) => !setAllCpfs.has(e.cpf));
+    const jaExistiam = profs.filter((e) => setActiveCpfs.has(normCpf(e.cpf))).length;
+    const toInsert = profs.filter((e) => !setAllCpfs.has(normCpf(e.cpf)));
     const toReactivate = profs.filter((e) =>
-      dbInactive.some((r) => String(r.cpf) === e.cpf)
+      dbInactive.some((r) => normCpf(r.cpf) === normCpf(e.cpf))
     );
-    const toInactivate = dbActive.filter((r) => !setCpfs.has(String(r.cpf)));
+    const toInactivate = dbActive.filter((r) => !setCpfs.has(normCpf(r.cpf)));
 
     // Inserir novos
     let inseridos = 0;
     for (const e of toInsert) {
       await pool.query(
-        "INSERT INTO professores (escola_id, cpf, nome, disciplina_id, status) VALUES (?, ?, UPPER(?), ?, 'ativo')",
-        [escolaId, e.cpf, e.nome, null]
+        "INSERT INTO professores (escola_id, cpf, nome, aulas, status) VALUES (?, ?, UPPER(?), 0, 'ativo')",
+        [escolaId, e.cpf, e.nome]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
         [e.cpf, e.nome, escolaId]
       );
@@ -1223,7 +1246,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
         [e.nome, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
         [e.cpf, e.nome, escolaId]
       );
