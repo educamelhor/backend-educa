@@ -99,6 +99,8 @@ import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
+import governancaRouter from "./routes/governanca.js";
+import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 let appPaisRouter = null;
@@ -480,6 +482,7 @@ async function bootstrap() {
   app.use("/api/plataforma", autenticarToken, exigirEscopo("plataforma"), plataformaRouter);
   app.use("/api/plataforma/usage", autenticarToken, exigirEscopo("plataforma"), plataformaUsageRouter);
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
+  app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
 
   if (appPaisRouter) app.use("/api/app-pais", appPaisRouter);
   if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
@@ -624,6 +627,9 @@ async function bootstrap() {
 
   // ✅ Direção — Gestão de Equipe (Diretor Disciplinar)
   app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);
+
+  // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
+  app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
