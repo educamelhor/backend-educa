@@ -1102,8 +1102,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let inseridos = 0;
     for (const e of toInsert) {
       await pool.query(
-        "INSERT INTO professores (escola_id, cpf, nome, cargo, status) VALUES (?, ?, UPPER(?), ?, 'ativo')",
-        [escolaId, e.cpf, e.nome, e.cargo]
+        "INSERT INTO professores (escola_id, cpf, nome, status) VALUES (?, ?, UPPER(?), 'ativo')",
+        [escolaId, e.cpf, e.nome]
       );
       await pool.query(
         `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
@@ -1117,8 +1117,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let reativados = 0;
     for (const e of toReactivate) {
       await pool.query(
-        "UPDATE professores SET status='ativo', nome=UPPER(?), cargo=? WHERE cpf=? AND escola_id=?",
-        [e.nome, e.cargo, e.cpf, escolaId]
+        "UPDATE professores SET status='ativo', nome=UPPER(?) WHERE cpf=? AND escola_id=?",
+        [e.nome, e.cpf, escolaId]
       );
       await pool.query(
         `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
