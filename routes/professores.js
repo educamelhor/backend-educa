@@ -981,6 +981,12 @@ const uploadPdf = multer();
 router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "PDF não enviado." });
 
+  // ── Multi-escola: escola_id obrigatório ──
+  const escolaId = req.escola_id || req.user?.escola_id || (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
+  if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0) {
+    return res.status(400).json({ message: "Escola não identificada. Faça login novamente." });
+  }
+
   try {
     // ── PARSER POSICIONAL (layout rotacionado do SIGeP) ──
     const allItems = [];
@@ -1078,7 +1084,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     // ── Sincronização com banco ──
     const setCpfs = new Set(profs.map((p) => p.cpf));
-    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores");
+    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores WHERE escola_id = ?", [escolaId]);
 
     const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
     const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
@@ -1096,13 +1102,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let inseridos = 0;
     for (const e of toInsert) {
       await pool.query(
-        "INSERT INTO professores (cpf, nome, cargo, status) VALUES (?, UPPER(?), ?, 'ativo')",
-        [e.cpf, e.nome, e.cargo]
+        "INSERT INTO professores (escola_id, cpf, nome, cargo, status) VALUES (?, ?, UPPER(?), ?, 'ativo')",
+        [escolaId, e.cpf, e.nome, e.cargo]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-        [e.cpf, e.nome]
+        [e.cpf, e.nome, escolaId]
       );
       inseridos++;
     }
@@ -1111,13 +1117,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let reativados = 0;
     for (const e of toReactivate) {
       await pool.query(
-        "UPDATE professores SET status='ativo', nome=UPPER(?), cargo=? WHERE cpf=?",
-        [e.nome, e.cargo, e.cpf]
+        "UPDATE professores SET status='ativo', nome=UPPER(?), cargo=? WHERE cpf=? AND escola_id=?",
+        [e.nome, e.cargo, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-        [e.cpf, e.nome]
+        [e.cpf, e.nome, escolaId]
       );
       reativados++;
     }
@@ -1155,6 +1161,12 @@ const uploadXlsx = multer();
 router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "XLSX não enviado." });
 
+  // ── Multi-escola: escola_id obrigatório ──
+  const escolaId = req.escola_id || req.user?.escola_id || (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
+  if (!escolaId || Number.isNaN(Number(escolaId)) || Number(escolaId) <= 0) {
+    return res.status(400).json({ message: "Escola não identificada. Faça login novamente." });
+  }
+
   try {
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const primeiraAbaNome = workbook.SheetNames[0];
@@ -1174,7 +1186,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     }
 
     const setCpfs = new Set(profs.map((p) => p.cpf));
-    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores");
+    const [dbRowsAll] = await pool.query("SELECT id, cpf, status FROM professores WHERE escola_id = ?", [escolaId]);
 
     const dbActive = dbRowsAll.filter((r) => r.status === "ativo");
     const dbInactive = dbRowsAll.filter((r) => r.status !== "ativo");
@@ -1192,13 +1204,13 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     let inseridos = 0;
     for (const e of toInsert) {
       await pool.query(
-        "INSERT INTO professores (cpf, nome, disciplina_id, status) VALUES (?, UPPER(?), ?, 'ativo')",
-        [e.cpf, e.nome, null]
+        "INSERT INTO professores (escola_id, cpf, nome, disciplina_id, status) VALUES (?, ?, UPPER(?), ?, 'ativo')",
+        [escolaId, e.cpf, e.nome, null]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-        [e.cpf, e.nome]
+        [e.cpf, e.nome, escolaId]
       );
       inseridos++;
     }
@@ -1207,13 +1219,13 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     let reativados = 0;
     for (const e of toReactivate) {
       await pool.query(
-        "UPDATE professores SET status='ativo', nome=UPPER(?) WHERE cpf=?",
-        [e.nome, e.cpf]
+        "UPDATE professores SET status='ativo', nome=UPPER(?) WHERE cpf=? AND escola_id=?",
+        [e.nome, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil) VALUES (?, UPPER(?), 'professor')
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id) VALUES (?, UPPER(?), 'professor', ?)
            ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-        [e.cpf, e.nome]
+        [e.cpf, e.nome, escolaId]
       );
       reativados++;
     }
