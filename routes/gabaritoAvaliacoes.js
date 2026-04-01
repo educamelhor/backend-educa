@@ -479,7 +479,7 @@ router.post("/:id/importar-notas", async (req, res) => {
 
     // 6. Buscar todas as respostas corrigidas
     const [respostas] = await conn.query(
-      "SELECT codigo_aluno, nome_aluno, nota, turma_id, turma_nome FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
+      "SELECT codigo_aluno, nome_aluno, nota, turma_id, turma_nome, acertos_por_disciplina FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
       [id, escola_id]
     );
 
@@ -489,7 +489,22 @@ router.post("/:id/importar-notas", async (req, res) => {
       return res.status(400).json({ error: "Nenhuma resposta de aluno encontrada para esta avaliação." });
     }
 
-    // 7. Extrair IDs de disciplina
+    // 7. Fetch governance config for nota-por-área
+    let notaPorArea = true; // default: all disciplines get total grade
+    try {
+      const [cfgRows] = await conn.query(
+        `SELECT chave, valor FROM configuracoes_escola
+         WHERE escola_id = ? AND chave = 'nota.avaliacao_padrao.bimestral'`,
+        [escola_id]
+      );
+      if (cfgRows.length > 0) {
+        notaPorArea = cfgRows[0].valor === "1";
+      }
+    } catch {
+      // Fallback: use default (por área)
+    }
+
+    // Extract disciplina IDs for the por-área branch
     const disciplinaIds = discConfig.map(dc => dc.disciplina_id);
 
     // 8. Para cada aluno, resolver aluno_id e inserir notas
@@ -518,29 +533,59 @@ router.post("/:id/importar-notas", async (req, res) => {
       }
 
       const alunoId = alunoRows[0].id;
-      const notaAluno = Number(resp.nota) || 0;
+      const notaTotal = Number(resp.nota) || 0;
 
-      // Inserir/atualizar nota para CADA disciplina
-      for (const discId of disciplinaIds) {
-        const [result] = await conn.query(
-          `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
-           VALUES (?, ?, ?, ?, ?, ?, NOW())
-           ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
-          [escola_id, alunoId, anoLetivo, bimestreNum, discId, notaAluno]
-        );
+      if (notaPorArea) {
+        // ── MODO POR ÁREA: todas as disciplinas recebem a nota TOTAL da prova ──
+        for (const discId of disciplinaIds) {
+          const [result] = await conn.query(
+            `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
+             VALUES (?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
+            [escola_id, alunoId, anoLetivo, bimestreNum, discId, notaTotal]
+          );
+          if (result.affectedRows === 1) totalInseridos++;
+          else if (result.affectedRows === 2) totalAtualizados++;
+        }
+      } else {
+        // ── MODO POR DISCIPLINA: cada disciplina recebe sua nota proporcional ──
+        const acertosPorDisc = safeJson(resp.acertos_por_disciplina) || [];
+        const notaTotalProva = Number(av.nota_total) || 10;
+        const numQuestoes = Number(av.num_questoes) || 1;
 
-        if (result.affectedRows === 1) {
-          totalInseridos++;
-        } else if (result.affectedRows === 2) {
-          // affectedRows=2 means ON DUPLICATE KEY UPDATE was triggered
-          totalAtualizados++;
+        for (const dc of discConfig) {
+          // Buscar acertos desta disciplina nos acertos_por_disciplina
+          const discAcertos = acertosPorDisc.find(
+            a => a.disciplina_id === dc.disciplina_id || a.nome === dc.nome
+          );
+
+          let notaDisciplina;
+          if (discAcertos) {
+            // Nota proporcional: (acertos / totalQuestoesDisciplina) * (questoesDisciplina / totalQuestoesProva) * notaTotalProva
+            const totalQuestoesDisc = discAcertos.total || (dc.ate - dc.de + 1);
+            const acertosDisc = discAcertos.acertos || 0;
+            const pesoDisc = totalQuestoesDisc / numQuestoes;
+            notaDisciplina = parseFloat(((acertosDisc / totalQuestoesDisc) * pesoDisc * notaTotalProva).toFixed(2));
+          } else {
+            // Fallback: proporção igual da nota total
+            notaDisciplina = parseFloat((notaTotal / discConfig.length).toFixed(2));
+          }
+
+          const [result] = await conn.query(
+            `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
+             VALUES (?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
+            [escola_id, alunoId, anoLetivo, bimestreNum, dc.disciplina_id, notaDisciplina]
+          );
+          if (result.affectedRows === 1) totalInseridos++;
+          else if (result.affectedRows === 2) totalAtualizados++;
         }
       }
 
       alunosProcessados.push({
         codigo: resp.codigo_aluno,
         nome: resp.nome_aluno || alunoRows[0].estudante,
-        nota: notaAluno,
+        nota: notaTotal,
       });
     }
 

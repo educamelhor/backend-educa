@@ -131,6 +131,92 @@ function guardDiretor(req, res, next) {
 // ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
+// ── GET /api/governanca/boletim-config?escola_id=X ──────────────
+// Leitura RÁPIDA das flags de boletim (sem sync, sem ensure).
+// O sync completo roda só quando o diretor acessa Governança.
+// Se a escola não tiver configs ainda, retorna defaults seguros.
+// ─────────────────────────────────────────────────────────────────
+const BOLETIM_DEFAULTS = {
+  "boletim.exibir_ano_anterior": "0",
+  "boletim.exibir_media_rodape": "1",
+  "boletim.exibir_faltas": "1",
+  "boletim.exibir_ranking": "1",
+  "boletim.exibir_media_turma": "0",
+};
+
+router.get("/boletim-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave LIKE 'boletim.%'`,
+      [escolaId]
+    );
+
+    // Começa com defaults, sobrescreve com valores do DB
+    const config = { ...BOLETIM_DEFAULTS };
+    for (const row of rows) {
+      config[row.chave] = row.valor;
+    }
+
+    return res.json({ ok: true, config });
+  } catch (err) {
+    // Se tabela não existir, retorna defaults sem erro
+    if (err?.code === "ER_NO_SUCH_TABLE") {
+      return res.json({ ok: true, config: { ...BOLETIM_DEFAULTS } });
+    }
+    console.error("[GOVERNANCA][BOLETIM-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar config do boletim." });
+  }
+});
+
+// ── GET /api/governanca/avaliacao-config?escola_id=X ─────────────
+// Leitura rápida das flags de avaliação (sem sync).
+// ─────────────────────────────────────────────────────────────────
+const AVALIACAO_DEFAULTS = {
+  "escola.avaliacao_padrao_bimestral": "0",
+  "nota.avaliacao_padrao.bimestral": "0",
+  "coordenador.acessa_gabarito": "0",
+  "supervisor.acessa_gabarito": "0",
+};
+
+router.get("/avaliacao-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND (
+         chave LIKE 'escola.avaliacao%'
+         OR chave LIKE 'nota.avaliacao%'
+         OR chave LIKE 'coordenador.acessa%'
+         OR chave LIKE 'supervisor.acessa%'
+       )`,
+      [escolaId]
+    );
+
+    const config = { ...AVALIACAO_DEFAULTS };
+    for (const row of rows) {
+      config[row.chave] = row.valor;
+    }
+
+    return res.json({ ok: true, config });
+  } catch (err) {
+    if (err?.code === "ER_NO_SUCH_TABLE") {
+      return res.json({ ok: true, config: { ...AVALIACAO_DEFAULTS } });
+    }
+    console.error("[GOVERNANCA][AVALIACAO-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar config de avaliação." });
+  }
+});
+
 // ── GET /api/governanca?escola_id=X — Listar configurações (sincronizadas com CEO) ──
 router.get("/", guardDiretor, async (req, res) => {
   const db = req.db;

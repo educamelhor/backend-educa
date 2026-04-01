@@ -57,14 +57,17 @@ const SEED_CATEGORIAS = [
   { nome: "Coordenação", cor: "#f59e0b", ordem: 3 },
   { nome: "Supervisão",  cor: "#ec4899", ordem: 4 },
   { nome: "Secretaria",  cor: "#06b6d4", ordem: 5 },
-  { nome: "Geral",       cor: "#64748b", ordem: 6 },
+  { nome: "Avaliações",  cor: "#8b5cf6", ordem: 6 },
+  { nome: "Geral",       cor: "#64748b", ordem: 7 },
 ];
 
 const SEED_ITENS = [
   // Boletim
-  { cat: "Boletim", chave: "boletim.tipo", descricao: "Tipo de boletim utilizado", tipo: "select", opcoes: ["padrao", "personalizado"], valor_padrao: "padrao", ordem: 1 },
-  { cat: "Boletim", chave: "boletim.exibir_faltas", descricao: "Exibir faltas no boletim", tipo: "boolean", opcoes: null, valor_padrao: "1", ordem: 2 },
-  { cat: "Boletim", chave: "boletim.exibir_media_turma", descricao: "Exibir média da turma no boletim", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 3 },
+  { cat: "Boletim", chave: "boletim.exibir_ano_anterior", descricao: "Boletim mostra nota ano anterior (escolaridade 2 anos)", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 1 },
+  { cat: "Boletim", chave: "boletim.exibir_media_rodape", descricao: "Exibir média por bimestre no rodapé", tipo: "boolean", opcoes: null, valor_padrao: "1", ordem: 2 },
+  { cat: "Boletim", chave: "boletim.exibir_faltas", descricao: "Exibir faltas no boletim", tipo: "boolean", opcoes: null, valor_padrao: "1", ordem: 3 },
+  { cat: "Boletim", chave: "boletim.exibir_ranking", descricao: "Exibir ranking no boletim", tipo: "boolean", opcoes: null, valor_padrao: "1", ordem: 4 },
+  { cat: "Boletim", chave: "boletim.exibir_media_turma", descricao: "Exibir média da turma no boletim", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 5 },
   // Professores
   { cat: "Professores", chave: "professor.visualiza_relatorio_disciplinar", descricao: "Professor pode visualizar o relatório disciplinar", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 1 },
   { cat: "Professores", chave: "professor.acessa_conselho_classe", descricao: "Professor pode acessar o submenu Conselho de Classe", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 2 },
@@ -79,6 +82,11 @@ const SEED_ITENS = [
   // Secretaria
   { cat: "Secretaria", chave: "secretaria.importa_alunos", descricao: "Secretaria pode importar alunos via planilha", tipo: "boolean", opcoes: null, valor_padrao: "1", ordem: 1 },
   { cat: "Secretaria", chave: "secretaria.edita_notas", descricao: "Secretaria pode editar notas diretamente", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 2 },
+  // Avaliações
+  { cat: "Avaliações", chave: "escola.avaliacao_padrao_bimestral", descricao: "Escola adota avaliação padrão bimestral (semana de prova)", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 1 },
+  { cat: "Avaliações", chave: "nota.avaliacao_padrao.bimestral", descricao: "A nota da avaliação padrão bimestral é por área.", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 2 },
+  { cat: "Avaliações", chave: "coordenador.acessa_gabarito", descricao: "Coordenador pode acessar gabarito.", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 3 },
+  { cat: "Avaliações", chave: "supervisor.acessa_gabarito", descricao: "Supervisor pode acessar gabarito.", tipo: "boolean", opcoes: null, valor_padrao: "0", ordem: 4 },
   // Geral
   { cat: "Geral", chave: "geral.ano_letivo_ativo", descricao: "Ano letivo ativo no sistema", tipo: "select", opcoes: ["2024", "2025", "2026"], valor_padrao: "2025", ordem: 1 },
   { cat: "Geral", chave: "geral.bimestre_ativo", descricao: "Bimestre ativo atual", tipo: "select", opcoes: ["1", "2", "3", "4"], valor_padrao: "1", ordem: 2 },

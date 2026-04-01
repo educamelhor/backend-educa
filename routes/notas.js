@@ -265,4 +265,102 @@ router.get("/alunos/:alunoId/ranking-completo", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /alunos/:alunoId/ranking-anual
+// Ranking expandido para o Boletim Anual (ano letivo único):
+//   → Escola, Turma, Série e Turno (APENAS ano corrente)
+// Formato:
+//   { escola: {...}, turma: {...}, serie: {...}, turno: {...} }
+// ---------------------------------------------------------------------------
+router.get("/alunos/:alunoId/ranking-anual", async (req, res) => {
+  const alunoId = req.params.alunoId;
+  const anoRef = Number(req.query.ano) || ANO_RANKING;
+
+  const semNotasObj = { ranking: 0, total_alunos: 0, semNotas: true };
+  const emptyRes = { escola: semNotasObj, turma: semNotasObj, serie: semNotasObj, turno: semNotasObj };
+
+  try {
+    // 1) Dados do aluno: escola_id, turma_id + serie e turno via turmas
+    const [alRes] = await db.query(
+      `SELECT a.escola_id, a.turma_id, t.serie, t.turno
+       FROM alunos a
+       LEFT JOIN turmas t ON t.id = a.turma_id
+       WHERE a.id = ?`,
+      [alunoId]
+    );
+    if (!alRes.length) return res.json(emptyRes);
+
+    const { escola_id, turma_id, serie, turno } = alRes[0];
+
+    // 2) Soma do aluno no ano
+    const [somaRes] = await db.query(
+      "SELECT SUM(n.nota) AS soma FROM notas n WHERE n.aluno_id = ? AND n.ano = ?",
+      [alunoId, anoRef]
+    );
+    const somaAluno = somaRes[0]?.soma;
+
+    // Helper: calcula ranking em um escopo (WHERE clause fragment)
+    async function calcRanking(whereClause, params) {
+      // Total de participantes
+      const [[{ total }]] = await db.query(
+        `SELECT COUNT(*) AS total FROM (
+          SELECT a2.id, SUM(n2.nota) AS soma_notas
+          FROM alunos a2
+          JOIN notas n2 ON n2.aluno_id = a2.id
+          LEFT JOIN turmas t2 ON t2.id = a2.turma_id
+          WHERE n2.ano = ? ${whereClause}
+          GROUP BY a2.id
+          HAVING soma_notas IS NOT NULL
+        ) x`,
+        [anoRef, ...params]
+      );
+
+      if (!somaAluno) {
+        return { ranking: total || 0, total_alunos: total || 0, semNotas: true };
+      }
+
+      // Posição
+      const [[{ posicao }]] = await db.query(
+        `SELECT COUNT(*) + 1 AS posicao FROM (
+          SELECT a2.id, SUM(n2.nota) AS soma_notas
+          FROM alunos a2
+          JOIN notas n2 ON n2.aluno_id = a2.id
+          LEFT JOIN turmas t2 ON t2.id = a2.turma_id
+          WHERE n2.ano = ? ${whereClause}
+          GROUP BY a2.id
+          HAVING soma_notas IS NOT NULL
+        ) r
+        WHERE r.soma_notas > (
+          SELECT SUM(n3.nota) FROM notas n3 WHERE n3.aluno_id = ? AND n3.ano = ?
+        )`,
+        [anoRef, ...params, alunoId, anoRef]
+      );
+
+      return { ranking: posicao || 1, total_alunos: total || 0, semNotas: false };
+    }
+
+    // 3) Calcular os 4 rankings
+    const [rkEscola, rkTurma, rkSerie, rkTurno] = await Promise.all([
+      calcRanking("AND a2.escola_id = ?", [escola_id]),
+      calcRanking("AND a2.turma_id = ?", [turma_id]),
+      serie
+        ? calcRanking("AND a2.escola_id = ? AND t2.serie = ?", [escola_id, serie])
+        : Promise.resolve(semNotasObj),
+      turno
+        ? calcRanking("AND a2.escola_id = ? AND t2.turno = ?", [escola_id, turno])
+        : Promise.resolve(semNotasObj),
+    ]);
+
+    return res.json({
+      escola: rkEscola,
+      turma: rkTurma,
+      serie: rkSerie,
+      turno: rkTurno,
+    });
+  } catch (err) {
+    console.error("Erro ao calcular ranking-anual:", err);
+    return res.status(500).json(emptyRes);
+  }
+});
+
 export default router;
