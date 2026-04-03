@@ -360,4 +360,224 @@ router.get('/execucoes', async (req, res) => {
   }
 });
 
+
+// ============================================================================
+// POST /api/agente/sincronizar
+// Disparar sincronização SEEDF → EDUCA.MELHOR (scraping + importação)
+// ============================================================================
+router.post('/sincronizar', async (req, res) => {
+  try {
+    if (!assertDiretor(req, res)) return;
+
+    const escolaId = getEscolaId(req);
+    const usuarioId = getUserId(req);
+    const db = req.db;
+
+    // Verifica se já existe uma sincronização em andamento
+    const [[emAndamento]] = await db.query(
+      `SELECT id FROM sincronizacao_logs 
+       WHERE escola_id = ? AND status = 'em_andamento' 
+       ORDER BY criado_em DESC LIMIT 1`,
+      [escolaId]
+    );
+
+    if (emAndamento) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Já existe uma sincronização em andamento.',
+        log_id: emAndamento.id,
+      });
+    }
+
+    // Cria registro no log
+    const [insertResult] = await db.query(
+      `INSERT INTO sincronizacao_logs (escola_id, usuario_id, status, turmas_solicitadas)
+       VALUES (?, ?, 'em_andamento', ?)`,
+      [escolaId, usuarioId, JSON.stringify(req.body?.turmas || null)]
+    );
+    const logId = insertResult.insertId;
+
+    // Monta comando do agente Python
+    const { exec } = await import('child_process');
+    const path = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __fn = fileURLToPath(import.meta.url);
+    const __dn = path.dirname(__fn);
+
+    const agentScript = path.resolve(__dn, '../../educa-agent/agent.py');
+    const args = ['python', `"${agentScript}"`];
+
+    // Se turmas específicas
+    if (req.body?.turmas && Array.isArray(req.body.turmas)) {
+      for (const t of req.body.turmas) {
+        args.push('--turma', `"${t}"`);
+      }
+    }
+
+    // Token e escola para importação
+    const token = req.headers.authorization?.replace('Bearer ', '') || '';
+    args.push('--token', token);
+    args.push('--escola', String(escolaId));
+
+    if (req.body?.apenasDownload) {
+      args.push('--apenas-scraping');
+    }
+
+    const cmd = args.join(' ');
+    console.log(`[AGENTE-SYNC] Disparando: ${cmd.substring(0, 120)}...`);
+
+    // Executa em background
+    const child = exec(cmd, {
+      cwd: path.resolve(__dn, '../../educa-agent'),
+      timeout: 600000,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => { stdout += data; });
+    child.stderr?.on('data', (data) => { stderr += data; });
+
+    child.on('close', async (code) => {
+      console.log(`[AGENTE-SYNC] Processo encerrado (code=${code})`);
+      try {
+        const fs = await import('fs');
+        const downloadsDir = path.resolve(__dn, '../../educa-agent/downloads');
+        let relatorio = null;
+
+        // Busca o relatório JSON mais recente
+        if (fs.existsSync(downloadsDir)) {
+          const files = fs.readdirSync(downloadsDir)
+            .filter(f => f.startsWith('relatorio_') && f.endsWith('.json'))
+            .sort()
+            .reverse();
+
+          if (files.length > 0) {
+            const content = fs.readFileSync(path.join(downloadsDir, files[0]), 'utf-8');
+            relatorio = JSON.parse(content);
+          }
+        }
+
+        await db.query(
+          `UPDATE sincronizacao_logs 
+           SET status = ?, relatorio = ?, finalizado_em = NOW()
+           WHERE id = ?`,
+          [
+            relatorio?.status || (code === 0 ? 'sucesso' : 'falha'),
+            JSON.stringify(relatorio || { stdout: stdout.substring(0, 8000), stderr: stderr.substring(0, 2000) }),
+            logId,
+          ]
+        );
+      } catch (err) {
+        console.error('[AGENTE-SYNC] Erro ao salvar resultado:', err.message);
+        await db.query(
+          `UPDATE sincronizacao_logs SET status = 'erro', relatorio = ?, finalizado_em = NOW() WHERE id = ?`,
+          [JSON.stringify({ error: err.message }), logId]
+        ).catch(() => {});
+      }
+    });
+
+    // Responde imediatamente
+    return res.json({
+      ok: true,
+      message: 'Sincronização SEEDF iniciada em segundo plano.',
+      log_id: logId,
+    });
+  } catch (err) {
+    console.error('[AGENTE-SYNC] Erro:', err);
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
+
+// ============================================================================
+// GET /api/agente/sincronizacao/status
+// Status da sincronização mais recente (ou por log_id)
+// ============================================================================
+router.get('/sincronizacao/status', async (req, res) => {
+  try {
+    const escolaId = getEscolaId(req);
+    const db = req.db;
+
+    let query, params;
+    if (req.query.log_id) {
+      query = 'SELECT * FROM sincronizacao_logs WHERE id = ? AND escola_id = ?';
+      params = [req.query.log_id, escolaId];
+    } else {
+      query = 'SELECT * FROM sincronizacao_logs WHERE escola_id = ? ORDER BY criado_em DESC LIMIT 1';
+      params = [escolaId];
+    }
+
+    const [[log]] = await db.query(query, params);
+
+    if (!log) {
+      return res.json({ ok: true, data: null, message: 'Nenhuma sincronização encontrada.' });
+    }
+
+    let relatorio = null;
+    if (log.relatorio) {
+      try { relatorio = typeof log.relatorio === 'string' ? JSON.parse(log.relatorio) : log.relatorio; } catch {}
+    }
+
+    return res.json({
+      ok: true,
+      data: {
+        id: log.id,
+        status: log.status,
+        turmas_solicitadas: log.turmas_solicitadas,
+        relatorio,
+        criado_em: log.criado_em,
+        finalizado_em: log.finalizado_em,
+      },
+    });
+  } catch (err) {
+    console.error('[AGENTE-SYNC] Erro status:', err);
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
+
+// ============================================================================
+// GET /api/agente/sincronizacao/historico
+// Histórico de sincronizações
+// ============================================================================
+router.get('/sincronizacao/historico', async (req, res) => {
+  try {
+    const escolaId = getEscolaId(req);
+    const db = req.db;
+    const limit = Math.min(Number(req.query.limit) || 10, 50);
+    const offset = Number(req.query.offset) || 0;
+
+    const [rows] = await db.query(
+      `SELECT id, status, turmas_solicitadas, criado_em, finalizado_em,
+              JSON_EXTRACT(relatorio, '$.resumo') AS resumo
+       FROM sincronizacao_logs 
+       WHERE escola_id = ? 
+       ORDER BY criado_em DESC 
+       LIMIT ? OFFSET ?`,
+      [escolaId, limit, offset]
+    );
+
+    const [[{ total }]] = await db.query(
+      'SELECT COUNT(*) as total FROM sincronizacao_logs WHERE escola_id = ?',
+      [escolaId]
+    );
+
+    const data = (rows || []).map((r) => ({
+      ...r,
+      resumo: typeof r.resumo === 'string' ? JSON.parse(r.resumo) : r.resumo,
+      turmas_solicitadas: typeof r.turmas_solicitadas === 'string'
+        ? JSON.parse(r.turmas_solicitadas)
+        : r.turmas_solicitadas,
+    }));
+
+    return res.json({ ok: true, data, total, limit, offset });
+  } catch (err) {
+    console.error('[AGENTE-SYNC] Erro historico:', err);
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
+
 export default router;

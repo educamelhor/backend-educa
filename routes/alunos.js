@@ -527,17 +527,16 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     // Definimos colunas por faixas de X
     // (tolerância generosa para diferentes formatações)
-    // Posições reais observadas (multi-escola):
-    //   7ºANO D: RE≈45, NOME≈96, DT≈380, FIL≈491, RESP≈789, CPF≈1028
-    //   7ºANO F: RE≈45, NOME≈95, DT≈348, FIL≈456, RESP≈744, CPF≈1032
-    //   7ºANO H: RE≈45, NOME≈94, DT≈348, FIL≈454, RESP≈744, CPF≈1034
+    // Posições reais observadas (multi-escola e multi-formato):
+    //   educadf padrão: RE≈45, NOME≈88, DT≈313-320, FIL≈403-405, RESP≈636-640, CPF≈869-875
+    //   ATENÇÃO: x>=960 são colunas PENDÊNCIAS/SITUAÇÃO/AÇÕES (ignoradas no agrupamento)
     const COL_RANGES = {
-      re:          { min: 20, max: 90 },
-      nome:        { min: 90, max: 345 },
-      dataNasc:    { min: 345, max: 430 },
-      filiacao:    { min: 430, max: 730 },
-      responsavel: { min: 730, max: 1025 },
-      cpf:         { min: 1025, max: 1300 },
+      re:          { min: 20, max: 85 },
+      nome:        { min: 85, max: 310 },
+      dataNasc:    { min: 310, max: 400 },
+      filiacao:    { min: 400, max: 630 },
+      responsavel: { min: 630, max: 865 },
+      cpf:         { min: 865, max: 960 },
     };
 
     function getCol(x) {
@@ -569,30 +568,73 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     // Agrupa items por linha (Y) → ordena por X dentro de cada linha
     const rowsMap = {};
     for (const it of allItems) {
+      // Ignora colunas extras (PENDÊNCIAS x≈973, SITUAÇÃO x≈1048, AÇÕES x≈1110)
+      if (it.x >= 960) continue;
+
       // Agrupa Y com tolerância de 3px (variações de renderização)
       const yKey = Math.round(it.y / 3) * 3;
       if (!rowsMap[yKey]) rowsMap[yKey] = [];
       rowsMap[yKey].push(it);
     }
 
-    // Para cada linha, monta o registro se tiver um RE válido
-    const yKeys = Object.keys(rowsMap).map(Number).sort((a, b) => b - a); // top→bottom
-    for (const yKey of yKeys) {
-      const items = rowsMap[yKey].sort((a, b) => a.x - b.x);
+    // ──────────────────────────────────────────────────────────────────
+    // DUAS PASSADAS — resolve nomes longos que ocupam 2+ linhas no PDF
+    //
+    // Passada 1: Identifica cada linha como "data row" (tem RE) ou
+    //            "continuation row" (sem RE — é continuação do nome).
+    //
+    // Passada 2: Mescla continuation rows no data row anterior,
+    //            concatenando o texto de cada coluna.
+    //
+    // Exemplo real:
+    //   y=682 RE=226604 NOME="MARIA FERNANDA RIBEIRO DE SILOS"  ← data row
+    //   y=671 RE=—      NOME="PEREIRA"                          ← continuation
+    //   Resultado: NOME = "MARIA FERNANDA RIBEIRO DE SILOS PEREIRA"
+    // ──────────────────────────────────────────────────────────────────
+    const yKeys = Object.keys(rowsMap).map(Number).sort((a, b) => b - a); // top→bottom (Y decresce)
 
-      // Classifica cada item na sua coluna
+    // Passada 1 — classifica linhas e extrai colunas
+    const classifiedRows = [];
+    for (const yKey of yKeys) {
+      const lineItems = rowsMap[yKey].sort((a, b) => a.x - b.x);
       const rowData = {};
-      for (const it of items) {
+      for (const it of lineItems) {
         const col = getCol(it.x);
         if (col) {
-          // Se já existe texto na coluna, concatena (caso raro de wrap)
           rowData[col] = rowData[col] ? rowData[col] + " " + it.text : it.text;
         }
       }
-
-      // Valida: precisa ter RE numérico e nome
       const re = (rowData.re || "").trim();
-      if (!/^\d{4,7}$/.test(re)) continue; // ignora headers, rodapés, etc.
+      const isDataRow = /^\d{4,7}$/.test(re);
+      classifiedRows.push({ yKey, rowData, isDataRow });
+    }
+
+    // Passada 2 — mescla continuation rows no data row anterior
+    const mergedRows = [];
+    for (let i = 0; i < classifiedRows.length; i++) {
+      const row = classifiedRows[i];
+      if (row.isDataRow) {
+        // Inicia um novo registro a partir desta data row
+        const merged = { ...row.rowData };
+        // Olha as linhas seguintes (y menor = mais abaixo) e mescla
+        let j = i + 1;
+        while (j < classifiedRows.length && !classifiedRows[j].isDataRow) {
+          const contRow = classifiedRows[j].rowData;
+          for (const [col, text] of Object.entries(contRow)) {
+            if (col === "re") { j++; continue; } // nunca mescla RE
+            merged[col] = merged[col] ? merged[col] + " " + text : text;
+          }
+          j++;
+        }
+        mergedRows.push(merged);
+      }
+      // continuation rows são consumidas pelo loop acima, então ignoramos
+    }
+
+    // Passada 3 — extrai dados de cada merged row
+    for (const rowData of mergedRows) {
+      const re = (rowData.re || "").trim();
+      if (!/^\d{4,7}$/.test(re)) continue;
 
       let estudante = (rowData.nome || "").trim();
       let dataBr = (rowData.dataNasc || "").trim();
