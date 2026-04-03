@@ -380,7 +380,10 @@ router.get("/", verificarEscola, async (req, res) => {
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id) as total_arquivos_real,
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'corrigido') as total_corrigidos_real,
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'identificado') as total_identificados,
-        (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'erro') as total_erros
+        (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'erro') as total_erros,
+        (SELECT COUNT(*) FROM gabarito_ajustes_manuais m
+         JOIN gabarito_arquivos a2 ON a2.id = m.arquivo_id
+         WHERE a2.lote_id = l.id AND m.status = 'pendente') as ajustes_pendentes
       FROM gabarito_lotes l
       LEFT JOIN professores p ON p.id = l.professor_id
       WHERE l.escola_id = ?
@@ -409,12 +412,13 @@ router.get("/:id/arquivos", verificarEscola, async (req, res) => {
 
   try {
     const [arquivos] = await pool.query(
-      `SELECT id, arquivo_nome, arquivo_path, codigo_aluno, nome_aluno,
-              turma_id, status, qr_data, respostas_aluno, acertos, nota,
-              corrigido_em, corrigido_por
-       FROM gabarito_arquivos
-       WHERE lote_id = ? AND escola_id = ?
-       ORDER BY nome_aluno ASC, arquivo_nome ASC`,
+      `SELECT a.id, a.arquivo_nome, a.arquivo_path, a.codigo_aluno, a.nome_aluno,
+              a.turma_id, a.status, a.qr_data, a.respostas_aluno, a.acertos, a.nota,
+              a.corrigido_em, a.corrigido_por,
+              (SELECT COUNT(*) FROM gabarito_ajustes_manuais m WHERE m.arquivo_id = a.id AND m.status = 'pendente') as ajustes_pendentes
+       FROM gabarito_arquivos a
+       WHERE a.lote_id = ? AND a.escola_id = ?
+       ORDER BY a.nome_aluno ASC, a.arquivo_nome ASC`,
       [loteId, escola_id]
     );
 
@@ -601,11 +605,13 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
     for (let i = 0; i < numQuestoes; i++) {
       const resp = respostasAluno[i] || null;
       const correto = gabOficial[i] || "";
+      // "N" = nulo (múltiplas marcações) → sempre errado
+      const isNulo = resp === "N";
       detalhes.push({
         numero: i + 1,
         resposta: resp,
         correto,
-        acertou: resp !== null && resp === correto,
+        acertou: !isNulo && resp !== null && resp === correto,
       });
     }
 
@@ -905,6 +911,221 @@ router.delete("/:id", verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("Erro ao excluir lote:", err);
     res.status(500).json({ error: "Erro ao excluir lote." });
+  }
+});
+
+// ─── POST /api/gabarito-lotes/arquivos/:id/ajuste-manual ─────────────────────
+// Professor solicita ajuste manual em uma questão
+router.post("/arquivos/:id/ajuste-manual", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const userId = req.user.usuario_id || req.user.usuarioId;
+  const arquivoId = req.params.id;
+  const { questao_numero, tipo_ajuste, justificativa } = req.body;
+
+  if (!questao_numero || !tipo_ajuste) {
+    return res.status(400).json({ error: "questao_numero e tipo_ajuste são obrigatórios." });
+  }
+  if (!["acerto", "erro"].includes(tipo_ajuste)) {
+    return res.status(400).json({ error: "tipo_ajuste deve ser 'acerto' ou 'erro'." });
+  }
+
+  try {
+    // Verificar se o arquivo existe e pertence à escola
+    const [arqRows] = await pool.query(
+      "SELECT id FROM gabarito_arquivos WHERE id = ? AND escola_id = ?",
+      [arquivoId, escola_id]
+    );
+    if (arqRows.length === 0) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    // Upsert: se já existe ajuste para esta questão, atualiza (reseta status p/ pendente)
+    await pool.query(
+      `INSERT INTO gabarito_ajustes_manuais
+        (arquivo_id, escola_id, questao_numero, tipo_ajuste, justificativa, professor_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pendente')
+       ON DUPLICATE KEY UPDATE
+        tipo_ajuste = VALUES(tipo_ajuste),
+        justificativa = VALUES(justificativa),
+        professor_id = VALUES(professor_id),
+        status = 'pendente',
+        coordenador_id = NULL,
+        coordenador_obs = NULL,
+        decidido_em = NULL,
+        created_at = CURRENT_TIMESTAMP`,
+      [arquivoId, escola_id, questao_numero, tipo_ajuste, justificativa || null, userId]
+    );
+
+    // Buscar o ajuste inserido/atualizado
+    const [ajuste] = await pool.query(
+      "SELECT * FROM gabarito_ajustes_manuais WHERE arquivo_id = ? AND questao_numero = ?",
+      [arquivoId, questao_numero]
+    );
+
+    res.json({ ok: true, ajuste: ajuste[0] });
+  } catch (err) {
+    console.error("Erro ao criar ajuste manual:", err);
+    res.status(500).json({ error: "Erro ao salvar ajuste manual." });
+  }
+});
+
+// ─── GET /api/gabarito-lotes/arquivos/:id/ajustes-manuais ────────────────────
+// Lista todos os ajustes manuais de um arquivo
+router.get("/arquivos/:id/ajustes-manuais", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const arquivoId = req.params.id;
+
+  try {
+    const [ajustes] = await pool.query(
+      `SELECT a.*, u.nome AS professor_nome
+       FROM gabarito_ajustes_manuais a
+       LEFT JOIN usuarios u ON u.id = a.professor_id
+       WHERE a.arquivo_id = ? AND a.escola_id = ?
+       ORDER BY a.questao_numero`,
+      [arquivoId, escola_id]
+    );
+
+    res.json(ajustes);
+  } catch (err) {
+    console.error("Erro ao listar ajustes:", err);
+    res.status(500).json({ error: "Erro ao listar ajustes manuais." });
+  }
+});
+
+// ─── PUT /api/gabarito-lotes/ajustes/:id/decidir ─────────────────────────────
+// Coordenador aprova ou rejeita um ajuste manual e recalcula a nota
+router.put("/ajustes/:id/decidir", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const userId = req.user.usuario_id || req.user.usuarioId;
+  const ajusteId = req.params.id;
+  const { decisao, observacao } = req.body;
+
+  if (!["aprovado", "rejeitado"].includes(decisao)) {
+    return res.status(400).json({ error: "decisao deve ser 'aprovado' ou 'rejeitado'." });
+  }
+
+  try {
+    // Buscar ajuste
+    const [ajRows] = await pool.query(
+      "SELECT * FROM gabarito_ajustes_manuais WHERE id = ? AND escola_id = ?",
+      [ajusteId, escola_id]
+    );
+    if (ajRows.length === 0) {
+      return res.status(404).json({ error: "Ajuste não encontrado." });
+    }
+
+    const ajuste = ajRows[0];
+
+    // Atualizar status
+    await pool.query(
+      `UPDATE gabarito_ajustes_manuais SET
+        status = ?, coordenador_id = ?, coordenador_obs = ?, decidido_em = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [decisao, userId, observacao || null, ajusteId]
+    );
+
+    // Se aprovado, recalcular a nota do arquivo
+    if (decisao === "aprovado") {
+      // Buscar arquivo + avaliação
+      const [arqRows] = await pool.query(
+        `SELECT a.*, l.avaliacao_id
+         FROM gabarito_arquivos a
+         JOIN gabarito_lotes l ON l.id = a.lote_id
+         WHERE a.id = ? AND a.escola_id = ?`,
+        [ajuste.arquivo_id, escola_id]
+      );
+      if (arqRows.length > 0) {
+        const arq = arqRows[0];
+        const respostasAluno = safeJson(arq.respostas_aluno) || [];
+
+        // Buscar gabarito oficial
+        const [avRows] = await pool.query(
+          `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
+           FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+          [arq.avaliacao_id, escola_id]
+        );
+        if (avRows.length > 0) {
+          const avaliacao = avRows[0];
+          const gabOficial = safeJson(avaliacao.gabarito_oficial) || [];
+          const numQuestoes = avaliacao.num_questoes || gabOficial.length;
+          const notaTotal = avaliacao.nota_total || 10;
+
+          // Buscar TODOS os ajustes aprovados para este arquivo
+          const [todosAjustes] = await pool.query(
+            `SELECT questao_numero, tipo_ajuste FROM gabarito_ajustes_manuais
+             WHERE arquivo_id = ? AND status = 'aprovado'`,
+            [ajuste.arquivo_id]
+          );
+
+          const ajustesMap = {};
+          for (const a of todosAjustes) {
+            ajustesMap[a.questao_numero] = a.tipo_ajuste;
+          }
+
+          // Recalcular detalhes com ajustes aplicados
+          const detalhes = [];
+          for (let i = 0; i < numQuestoes; i++) {
+            const resp = respostasAluno[i] || null;
+            const correto = gabOficial[i] || "";
+            const isNulo = resp === "N";
+            let acertou = !isNulo && resp !== null && resp === correto;
+
+            // Aplicar ajuste manual aprovado
+            const questaoNum = i + 1;
+            if (ajustesMap[questaoNum]) {
+              acertou = ajustesMap[questaoNum] === "acerto";
+            }
+
+            detalhes.push({ numero: questaoNum, resposta: resp, correto, acertou });
+          }
+
+          const acertos = detalhes.filter(d => d.acertou).length;
+          const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
+          const nota = parseFloat((acertos * valorQuestao).toFixed(2));
+
+          // Recalcular por disciplina
+          const disciplinasConfig = safeJson(avaliacao.disciplinas_config) || [];
+          let acertosPorDisciplina = null;
+          if (disciplinasConfig.length > 0) {
+            acertosPorDisciplina = disciplinasConfig.map(dc => {
+              const questoesDisciplina = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
+              const acertosDisciplina = questoesDisciplina.filter(d => d.acertou).length;
+              return { nome: dc.nome, disciplina_id: dc.disciplina_id, de: dc.de, ate: dc.ate, total: questoesDisciplina.length, acertos: acertosDisciplina };
+            });
+          }
+
+          // Atualizar arquivo
+          await pool.query(
+            `UPDATE gabarito_arquivos SET acertos = ?, nota = ? WHERE id = ?`,
+            [acertos, nota, ajuste.arquivo_id]
+          );
+
+          // Atualizar gabarito_respostas
+          const codigoAluno = arq.codigo_aluno || `ARQ_${ajuste.arquivo_id}`;
+          await pool.query(
+            `UPDATE gabarito_respostas SET
+              acertos = ?, nota = ?, detalhes = ?,
+              acertos_por_disciplina = ?
+             WHERE avaliacao_id = ? AND escola_id = ? AND codigo_aluno = ?`,
+            [
+              acertos, nota, JSON.stringify(detalhes),
+              acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
+              arq.avaliacao_id, escola_id, codigoAluno,
+            ]
+          );
+
+          return res.json({
+            ok: true, decisao, ajuste_id: ajusteId,
+            recalculado: true, acertos, nota, notaTotal,
+          });
+        }
+      }
+    }
+
+    res.json({ ok: true, decisao, ajuste_id: ajusteId, recalculado: false });
+  } catch (err) {
+    console.error("Erro ao decidir ajuste:", err);
+    res.status(500).json({ error: "Erro ao processar decisão." });
   }
 });
 
