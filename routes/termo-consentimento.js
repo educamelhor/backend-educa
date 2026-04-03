@@ -59,19 +59,19 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const CW = (PW - GAP) / 2;
     const RX = L + CW + GAP;
 
-    const S = { t: 13, st: 10, v: 7, h: 9.5, sh: 9, b: 8.8, sm: 6 };
+    const S = { t: 12, st: 9.5, v: 6.5, h: 8.5, sh: 8, b: 7.8, sm: 5.5 };
 
     function heading(n, t, x, w) {
       doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#111")
-        .text(`${n} — ${t}`, x, doc.y, { width: w, lineGap: 0.5 });
+        .text(`${n} — ${t}`, x, doc.y, { width: w, lineGap: 0.2 });
     }
     function subH(n, t, x, w) {
       doc.font("Helvetica-Bold").fontSize(S.sh).fillColor("#222")
-        .text(`${n} ${t}`, x, doc.y, { width: w, lineGap: 0.5 });
+        .text(`${n} ${t}`, x, doc.y, { width: w, lineGap: 0.2 });
     }
     function body(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#222")
-        .text(t, x, doc.y, { width: w, lineGap: 0.6 });
+        .text(t, x, doc.y, { width: w, lineGap: 0.3 });
     }
     function fld(l, v, x, w) {
       doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#333")
@@ -80,7 +80,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     }
     function blt(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#222")
-        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.4 });
+        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.2 });
     }
     function gap(p) { doc.y += p; }
 
@@ -96,7 +96,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     doc.text("ALUNO(A)", { align: "center" });
     doc.font("Helvetica").fontSize(S.v).fillColor("#999")
       .text(`Versão: 2.0                                  Última atualização: ${new Date().toLocaleDateString("pt-BR")}`, { align: "center" });
-    gap(5);
+    gap(3);
 
     // 1 — IDENTIFICAÇÃO
     heading("1", "IDENTIFICAÇÃO DAS PARTES", L, PW); gap(1);
@@ -105,24 +105,24 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     if (escola?.cnpj) fld("CNPJ", escola.cnpj, L, PW);
     const enderecoEscola = [escola?.endereco, escola?.cidade, escola?.estado].filter(Boolean).join(", ") || "—";
     fld("Endereço", enderecoEscola, L, PW);
-    body("Doravante denominada ESCOLA.", L, PW); gap(4);
+    body("Doravante denominada ESCOLA.", L, PW); gap(2);
 
     subH("1.2", "RESPONSÁVEL LEGAL", L, PW);
     fld("Nome", resp.nome, L, PW);
     fld("CPF", fmtCpf(resp.cpf), L, PW);
     if (resp.telefone_celular) fld("Telefone", resp.telefone_celular, L, PW);
     if (resp.email) fld("E-mail", resp.email, L, PW);
-    body("Doravante denominado RESPONSÁVEL LEGAL.", L, PW); gap(4);
+    body("Doravante denominado RESPONSÁVEL LEGAL.", L, PW); gap(2);
 
     subH("1.3", "ALUNO(A)", L, PW);
     fld("Nome", aluno.estudante, L, PW);
     fld("Data de nascimento", fmtDate(aluno.data_nascimento), L, PW);
     fld("RE", aluno.codigo || "—", L, PW);
     fld("Turma", aluno.turma || "—", L, PW);
-    body("Doravante denominado ALUNO(A).", L, PW); gap(5);
+    body("Doravante denominado ALUNO(A).", L, PW); gap(3);
 
     doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ddd").lineWidth(0.5).stroke();
-    gap(4);
+    gap(3);
 
     // ━━━ COLUNAS P1 ━━━
     const c1 = doc.y;
@@ -138,7 +138,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "Código Civil",
       "Princípios constitucionais de proteção da dignidade, privacidade e imagem."
     ]) blt(b, L, CW);
-    body("Tratamento envolve dados pessoais sensíveis, exigindo salvaguardas reforçadas. O tratamento de dados objeto deste termo observará, em todas as hipóteses, o princípio do MELHOR INTERESSE DA CRIANÇA E DO ADOLESCENTE, conforme previsto no Estatuto da Criança e do Adolescente, devendo qualquer operação de tratamento ser realizada de forma a preservar sua dignidade, segurança e desenvolvimento.", L, CW); gap(3);
+    body("Tratamento envolve dados pessoais sensíveis, exigindo salvaguardas reforçadas. O tratamento de dados objeto deste termo observará, em todas as hipóteses, o princípio do MELHOR INTERESSE DA CRIANÇA E DO ADOLESCENTE, conforme previsto no Estatuto da Criança e do Adolescente, devendo qualquer operação de tratamento ser realizada de forma a preservar sua dignidade, segurança e desenvolvimento.", L, CW); gap(2);
 
     heading("3", "OBJETO DO CONSENTIMENTO", L, CW); gap(1);
     body("Este termo autoriza, de forma específica, informada e destacada, o tratamento de:", L, CW);
@@ -152,12 +152,12 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "embeddings faciais",
       "identificadores técnicos para comparação biométrica."
     ]) blt(b, L, CW);
-    gap(3);
+    gap(2);
 
     heading("4", "PRINCÍPIOS DE TRATAMENTO", L, CW); gap(1);
     body("O tratamento observará obrigatoriamente os seguintes princípios:", L, CW);
     for (const p of ["finalidade","adequação","necessidade","transparência","segurança","prevenção","não discriminação","responsabilização e prestação de contas"]) blt(p, L, CW);
-    body("conforme estabelecido pela LGPD.", L, CW); gap(3);
+    body("conforme estabelecido pela LGPD.", L, CW); gap(2);
 
     heading("5", "FINALIDADES AUTORIZADAS", L, CW); gap(1);
     body("O uso de imagem e dados biométricos se justifica pela necessidade de garantir maior segurança institucional, prevenir fraudes de identidade, evitar registros indevidos de presença e aumentar a confiabilidade dos processos escolares, sendo adotado de forma proporcional, limitada e adequada às finalidades descritas. Uso exclusivo para:", L, CW);
@@ -178,15 +178,15 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "análise psicológica automatizada",
       "ranking de alunos por biometria."
     ]) blt(p, RX, CW);
-    gap(3);
+    gap(2);
 
     heading("7", "ALTERNATIVA SEM USO DE BIOMETRIA", RX, CW); gap(1);
     body("Existe alternativa operacional sem reconhecimento facial. Poderá incluir: identificação manual, cartão escolar, registro manual de presença, validação visual por funcionário. O RESPONSÁVEL LEGAL poderá solicitar a utilização dessa alternativa a qualquer momento. A eventual recusa do consentimento para uso de dados biométricos NÃO implicará qualquer prejuízo acadêmico, disciplinar ou administrativo ao ALUNO(A), sendo garantido tratamento isonômico e não discriminatório.", RX, CW);
-    gap(3);
+    gap(2);
 
     heading("8", "LIMITAÇÃO DE DECISÕES AUTOMATIZADAS", RX, CW); gap(1);
     body("Nenhuma decisão relevante de natureza pedagógica, disciplinar ou administrativa será tomada exclusivamente com base em processamento automatizado de dados biométricos. Sempre será garantida revisão humana qualificada, especialmente em casos de inconsistência, dúvida, falso positivo ou falso negativo, sendo vedada a tomada de decisão automatizada isolada.", RX, CW);
-    gap(3);
+    gap(2);
 
     heading("9", "RISCO DE FALSO POSITIVO E FALSO NEGATIVO", RX, CW); gap(1);
     body("O RESPONSÁVEL LEGAL declara ciência de que sistemas de reconhecimento facial podem apresentar:", RX, CW);
@@ -200,7 +200,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "validação humana poderá ocorrer",
       "registros poderão ser corrigidos."
     ]) blt(p, RX, CW);
-    gap(3);
+    gap(2);
 
     heading("10", "SISTEMAS ENVOLVIDOS", RX, CW); gap(1);
     body("Os dados poderão ser tratados nos seguintes ambientes tecnológicos:", RX, CW);
@@ -211,7 +211,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     body("Aplicativo para responsáveis.", RX, CW);
     subH("10.4", "Módulos de monitoramento institucional", RX, CW);
     subH("10.5", "Infraestrutura de processamento e armazenamento seguro.", RX, CW);
-    gap(3);
+    gap(2);
 
     heading("11", "PAPÉIS NO TRATAMENTO", RX, CW); gap(1);
     subH("11.1", "ESCOLA", RX, CW);
@@ -230,7 +230,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     // ESQUERDA P2 (11.2, 12-16)
     doc.y = c2;
     subH("11.2", "EDUCA.MELHOR", L, CW);
-    body("Atua como OPERADORA, tratando dados em nome da escola para viabilizar funcionamento do sistema.", L, CW); gap(3);
+    body("Atua como OPERADORA, tratando dados em nome da escola para viabilizar funcionamento do sistema.", L, CW); gap(2);
 
     heading("12", "MINIMIZAÇÃO DE DADOS", L, CW); gap(1);
     body("Sempre que possível:", L, CW);
@@ -239,7 +239,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "dados brutos poderão ser reduzidos",
       "retenção será limitada ao necessário."
     ]) blt(p, L, CW);
-    gap(3);
+    gap(2);
 
     heading("13", "PRAZOS DE RETENÇÃO", L, CW); gap(1);
     subH("13.1", "Durante vínculo escolar", L, CW);
@@ -248,7 +248,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     body("Dados poderão ser:", L, CW);
     for (const p of ["excluídos","anonimizados","bloqueados"]) blt(p, L, CW);
     body("salvo obrigações legais de retenção.", L, CW);
-    gap(3);
+    gap(2);
 
     heading("14", "SEGURANÇA DA INFORMAÇÃO", L, CW); gap(1);
     body("Serão adotadas medidas como:", L, CW);
@@ -261,7 +261,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "revisão periódica de permissões",
       "monitoramento de segurança."
     ]) blt(p, L, CW);
-    gap(3);
+    gap(2);
 
     heading("15", "INCIDENTES DE SEGURANÇA", L, CW); gap(1);
     body("Em caso de incidente relevante envolvendo dados biométricos ou imagem:", L, CW);
@@ -269,7 +269,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     body("2. medidas de contenção serão aplicadas", L, CW);
     body("3. a ESCOLA será informada", L, CW);
     body("4. quando aplicável, titulares ou responsáveis poderão ser comunicados.", L, CW);
-    gap(3);
+    gap(2);
 
     heading("16", "COMPARTILHAMENTO DE DADOS", L, CW); gap(1);
     body("Os dados poderão ser compartilhados apenas:", L, CW);
@@ -294,7 +294,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "exclusão quando cabível",
       "informações sobre compartilhamento."
     ]) blt(p, RX, CW);
-    gap(3);
+    gap(2);
 
     heading("18", "REVOGAÇÃO DO CONSENTIMENTO", RX, CW); gap(1);
     body("O consentimento pode ser revogado a qualquer momento. A revogação:", RX, CW);
@@ -303,11 +303,11 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "pode limitar certas funcionalidades",
       "poderá exigir adoção de método alternativo de identificação."
     ]) blt(p, RX, CW);
-    gap(3);
+    gap(2);
 
     heading("19", "TREINAMENTO DE INTELIGÊNCIA ARTIFICIAL", RX, CW); gap(1);
     body("Os dados biométricos ou imagens não serão utilizados para treinamento aberto de modelos de inteligência artificial fora do contexto operacional da plataforma.", RX, CW);
-    gap(3);
+    gap(2);
 
     heading("20", "AUDITORIA E GOVERNANÇA", RX, CW); gap(1);
     body("A ESCOLA e a plataforma poderão manter:", RX, CW);
@@ -317,10 +317,10 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "monitoramento de uso",
       "rastreabilidade de operações."
     ]) blt(p, RX, CW);
-    gap(3);
+    gap(2);
 
     heading("21", "CONSENTIMENTO GRANULAR", RX, CW); gap(1);
-    body("A ESCOLA e a plataforma EDUCA.MELHOR manterão registro eletrônico auditável do consentimento, incluindo data, hora, identificação do responsável legal, endereço IP e versão do termo aceito, para fins de comprovação legal e regulatória. O RESPONSÁVEL LEGAL manifesta sua concordância separadamente:", RX, CW); gap(2);
+    body("A ESCOLA e a plataforma EDUCA.MELHOR manterão registro eletrônico auditável do consentimento, incluindo data, hora, identificação do responsável legal, endereço IP e versão do termo aceito, para fins de comprovação legal e regulatória. O RESPONSÁVEL LEGAL manifesta sua concordância separadamente:", RX, CW); gap(1);
     for (const c of [
       "Autorizo uso de imagem para cadastro escolar.",
       "Autorizo uso de imagem para identificação institucional.",
@@ -328,9 +328,9 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "Autorizo uso em sistemas de segurança institucional."
     ]) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#222")
-        .text(`[   ] ${c}`, RX, doc.y, { width: CW, lineGap: 0.8 });
+        .text(`[   ] ${c}`, RX, doc.y, { width: CW, lineGap: 0.3 });
     }
-    gap(3);
+    gap(2);
 
     heading("22", "DECLARAÇÕES DO RESPONSÁVEL LEGAL", RX, CW); gap(1);
     body("O RESPONSÁVEL LEGAL declara que:", RX, CW);
@@ -345,25 +345,25 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const rightP2 = doc.y;
 
     // ━━━ ASSINATURA (full width) ━━━
-    doc.y = Math.max(leftP2, rightP2) + 10;
+    doc.y = Math.max(leftP2, rightP2) + 8;
     doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ddd").lineWidth(0.5).stroke();
-    gap(5);
+    gap(4);
 
     heading("23", "ASSINATURA", L, PW); gap(1);
     doc.font("Helvetica").fontSize(S.b).fillColor("#333")
-      .text(hoje(), L, doc.y, { width: PW, align: "right" }); gap(10);
+      .text(hoje(), L, doc.y, { width: PW, align: "right" }); gap(8);
 
     doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#111")
-      .text("RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); gap(5);
+      .text("RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); gap(4);
     doc.font("Helvetica").fontSize(S.b).fillColor("#222")
-      .text(`                                                        Nome: ${resp.nome}`, L, doc.y, { width: PW }); gap(12);
-    doc.text("                                              Assinatura: _______________________________________________", L, doc.y, { width: PW }); gap(18);
+      .text(`                                                        Nome: ${resp.nome}`, L, doc.y, { width: PW }); gap(10);
+    doc.text("                                              Assinatura: _______________________________________________", L, doc.y, { width: PW }); gap(14);
 
     doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#111")
       .text("ESCOLA", L, doc.y, { width: PW }); gap(3);
     doc.font("Helvetica").fontSize(S.b).fillColor("#222")
       .text(`Representante: ${diretor?.nome || "—"}`, L, doc.y, { width: PW });
-    doc.text("Cargo: Diretor Pedagógico", L, doc.y, { width: PW }); gap(12);
+    doc.text("Cargo: Diretor Pedagógico", L, doc.y, { width: PW }); gap(10);
     doc.text("Assinatura: _______________________________________________", L, doc.y, { width: PW });
 
     // Rodapé P2
