@@ -35,13 +35,13 @@ function getPerfil(req) {
   return String(req?.user?.perfil ?? '').toLowerCase();
 }
 
-/** Somente diretor/admin pode gerenciar credenciais */
+/** Somente diretor/admin/secretario pode gerenciar credenciais */
 function assertDiretor(req, res) {
   const perfil = getPerfil(req);
-  if (!['diretor', 'admin', 'administrador', 'plataforma'].includes(perfil)) {
+  if (!['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil)) {
     res.status(403).json({
       ok: false,
-      message: 'Acesso negado. Somente diretor/admin pode gerenciar credenciais do agente.',
+      message: 'Acesso negado. Somente diretor/admin/secretário pode gerenciar credenciais do agente.',
     });
     return false;
   }
