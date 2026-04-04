@@ -92,10 +92,10 @@ router.get("/chamados", async (req, res) => {
     let where = "WHERE escola_id = ?";
     const params = [escolaId];
 
-    if (!["diretor", "militar"].includes(perfil)) {
-      where += " AND usuario_id = ?";
-      params.push(userId);
-    }
+    // Cada usuário vê APENAS seus próprios chamados
+    // (o CEO gerencia todos via /api/plataforma/suporte)
+    where += " AND usuario_id = ?";
+    params.push(userId);
     if (status) { where += " AND status = ?"; params.push(status); }
     if (categoria) { where += " AND categoria = ?"; params.push(categoria); }
 

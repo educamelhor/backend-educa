@@ -1376,19 +1376,20 @@ router.post("/confirmar-escola", async (req, res) => {
       return res.status(400).json({ message: "usuario_ctx_id é obrigatório para confirmar a escola." });
     }
 
+    const cpfBaseNorm = String(usuarioBase.cpf || "").replace(/\D/g, "");
     const [[usuarioEscola]] = await pool.query(
       `
       SELECT u.id, u.escola_id, u.perfil, e.apelido AS nome_escola
       FROM usuarios u
       LEFT JOIN escolas e ON e.id = u.escola_id
       WHERE u.id = ?
-        AND u.cpf = ?
+        AND REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), '/', '') = ?
         AND u.ativo = 1
         AND u.escola_id = ?
         AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
       LIMIT 1
       `,
-      [ctxId, usuarioBase.cpf, escolaId]
+      [ctxId, cpfBaseNorm, escolaId]
     );
 
     if (!usuarioEscola) {

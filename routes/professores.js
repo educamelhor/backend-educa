@@ -722,16 +722,18 @@ router.post("/", verificarEscola, async (req, res) => {
     } = req.body;
     const { escola_id } = req.user;
 
-    if (!cpf || !nome || !disciplina_id || !turno) {
-      return res.status(400).json({ message: "CPF, nome, disciplina e turno são obrigatórios." });
+    const cpfLimpo = String(cpf || "").replace(/\D/g, "");
+
+    if (!cpfLimpo || cpfLimpo.length !== 11 || !nome || !disciplina_id || !turno) {
+      return res.status(400).json({ message: "CPF (11 dígitos), nome, disciplina e turno são obrigatórios." });
     }
     if (aulas < 0 || aulas > 40) {
       return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
     }
 
     const [[existente]] = await pool.query(
-      "SELECT id FROM professores WHERE cpf = ? AND escola_id = ? AND disciplina_id = ? AND turno = ? LIMIT 1",
-      [cpf, escola_id, disciplina_id, turno]
+      "SELECT id FROM professores WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? AND disciplina_id = ? AND turno = ? LIMIT 1",
+      [cpfLimpo, escola_id, disciplina_id, turno]
     );
 
     if (existente) {
@@ -745,14 +747,14 @@ router.post("/", verificarEscola, async (req, res) => {
       VALUES
         (?,   UPPER(?), ?,               ?,   ?,             ?,        ?,     ?,     ?,         'ativo')
       `,
-      [cpf, nome, data_nascimento || null, sexo || null, disciplina_id, turma_id, aulas, turno, escola_id]
+      [cpfLimpo, nome, data_nascimento || null, sexo || null, disciplina_id, turma_id, aulas, turno, escola_id]
     );
 
     await pool.query(
       `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash)
          VALUES (?, UPPER(?), 'professor', ?, ?)
          ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-      [cpf, nome, escola_id, ""]
+      [cpfLimpo, nome, escola_id, ""]
     );
 
     res.status(201).json({ message: "Professor cadastrado com sucesso." });

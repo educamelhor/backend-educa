@@ -1405,4 +1405,186 @@ router.delete("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res
   }
 });
 
+/* ============================================================================
+ * 16) OCORRÊNCIAS PEDAGÓGICAS
+ * CRUD completo — mesma lógica de status das disciplinares (sem pontuação)
+ * ========================================================================== */
+
+// GET — listar ocorrências pedagógicas de um aluno
+router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+
+    const [rows] = await pool.query(
+      `SELECT o.id,
+              LPAD(o.id, 4, '0') AS registro,
+              DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
+              o.categoria,
+              o.motivo,
+              o.descricao,
+              o.registro_interno,
+              o.convocar_responsavel,
+              DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
+              o.status,
+              ur.nome AS nome_usuario_registro,
+              uf.nome AS nome_usuario_finalizacao
+       FROM ocorrencias_pedagogicas o
+       LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
+       LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
+       WHERE o.aluno_id = ? AND o.escola_id = ?
+       ORDER BY o.data_ocorrencia DESC, o.id DESC`,
+      [id, escola_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("Erro ao buscar ocorrências pedagógicas:", err);
+    res.status(500).json({ message: "Erro ao buscar ocorrências pedagógicas." });
+  }
+});
+
+// GET — próximo registro (auto-increment)
+router.get("/:id/proxima-ocorrencia-pedagogica", verificarEscola, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT AUTO_INCREMENT
+       FROM information_schema.tables
+       WHERE table_name = 'ocorrencias_pedagogicas'
+       AND table_schema = DATABASE()`
+    );
+    const proximoId = rows[0]?.AUTO_INCREMENT || 1;
+    res.json({ proximoRegistro: String(proximoId).padStart(4, '0') });
+  } catch (err) {
+    console.error("Erro ao buscar próximo registro pedagógico:", err);
+    res.status(500).json({ message: "Erro ao buscar próximo registro." });
+  }
+});
+
+// POST — criar nova ocorrência pedagógica
+router.post("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { escola_id } = req.user;
+    const usuarioId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+    const { data, categoria, motivo, descricao, registroInterno, convocarResponsavel } = req.body;
+
+    if (!data || !motivo || !categoria) {
+      return res.status(400).json({ message: "Preencha os campos obrigatórios (data, categoria, motivo)." });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO ocorrencias_pedagogicas
+         (aluno_id, escola_id, data_ocorrencia, categoria, motivo, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, escola_id, data, categoria, motivo, descricao || null, registroInterno || null, convocarResponsavel ? 1 : 0, usuarioId]
+    );
+
+    res.status(201).json({
+      message: "Registro pedagógico criado com sucesso.",
+      id: result.insertId,
+    });
+  } catch (err) {
+    console.error("Erro ao registrar ocorrência pedagógica:", err);
+    res.status(500).json({ message: "Erro ao registrar ocorrência pedagógica." });
+  }
+});
+
+// PUT — editar ocorrência pedagógica (apenas descricao e registro interno)
+router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const { descricao, registroInterno, convocarResponsavel } = req.body;
+
+    await pool.query(
+      `UPDATE ocorrencias_pedagogicas
+       SET descricao = ?, registro_interno = ?, convocar_responsavel = ?
+       WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
+    );
+
+    res.json({ message: "Registro pedagógico atualizado." });
+  } catch (err) {
+    console.error("Erro ao atualizar ocorrência pedagógica:", err);
+    res.status(500).json({ message: "Erro ao atualizar registro pedagógico." });
+  }
+});
+
+// PUT — finalizar ocorrência pedagógica
+router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/finalizar", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const usuarioFinalizacaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+
+    const [result] = await pool.query(
+      `UPDATE ocorrencias_pedagogicas
+       SET data_comparecimento_responsavel = CASE WHEN convocar_responsavel = 1 THEN DATE_SUB(NOW(), INTERVAL 3 HOUR) ELSE data_comparecimento_responsavel END,
+           status = 'FINALIZADA',
+           usuario_finalizacao_id = ?
+       WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+      [usuarioFinalizacaoId, ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Registro pedagógico não encontrado." });
+    }
+
+    res.json({ message: "Registro pedagógico finalizado." });
+  } catch (err) {
+    console.error("Erro ao finalizar registro pedagógico:", err);
+    res.status(500).json({ message: "Erro ao finalizar registro pedagógico." });
+  }
+});
+
+// PUT — cancelar ocorrência pedagógica
+router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/cancelamento", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+    const usuarioCancelamentoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+
+    const [result] = await pool.query(
+      `UPDATE ocorrencias_pedagogicas
+       SET status = 'CANCELADA',
+           usuario_finalizacao_id = ?
+       WHERE id = ? AND aluno_id = ? AND escola_id = ? AND status IN ('FINALIZADA', 'REGISTRADA')`,
+      [usuarioCancelamentoId, ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Registro não encontrado ou já cancelado." });
+    }
+
+    res.json({ message: "Registro pedagógico cancelado." });
+  } catch (err) {
+    console.error("Erro ao cancelar registro pedagógico:", err);
+    res.status(500).json({ message: "Erro ao cancelar registro pedagógico." });
+  }
+});
+
+// DELETE — excluir ocorrência pedagógica (apenas REGISTRADA)
+router.delete("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, async (req, res) => {
+  try {
+    const { id, ocorrenciaId } = req.params;
+    const { escola_id } = req.user;
+
+    const [result] = await pool.query(
+      `DELETE FROM ocorrencias_pedagogicas
+       WHERE id = ? AND aluno_id = ? AND escola_id = ? AND status = 'REGISTRADA'`,
+      [ocorrenciaId, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Registro não encontrado ou não pode ser excluído." });
+    }
+
+    res.json({ message: "Registro pedagógico excluído." });
+  } catch (err) {
+    console.error("Erro ao excluir registro pedagógico:", err);
+    res.status(500).json({ message: "Erro ao excluir registro pedagógico." });
+  }
+});
+
 export default router;
