@@ -31,6 +31,22 @@ function getUserId(req) {
   return Number(req?.user?.usuarioId ?? req?.user?.id ?? 0);
 }
 
+/** 
+ * Converte Date/string do MySQL para ISO UTC string (com 'Z').
+ * mysql2 retorna Date objects nativos — estes já sabem sua timezone
+ * e .toISOString() converte corretamente para UTC.
+ */
+function toUTC(val) {
+  if (!val) return val;
+  // mysql2 retorna Date objects — garantidamente correto
+  if (val instanceof Date) return val.toISOString();
+  // String: parse para Date e depois serialize (lida com qualquer timezone)
+  const s = String(val);
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString();
+  return s;
+}
+
 function getPerfil(req) {
   return String(req?.user?.perfil ?? '').toLowerCase();
 }
@@ -108,7 +124,9 @@ router.get('/status', async (req, res) => {
 
 // ============================================================================
 // POST /api/agente/credenciais
-// Cadastrar credencial de professor no EducaDF
+// Cadastrar credencial de acesso ao EducaDF
+// Suporta tanto credenciais de professor (professor_id > 0) quanto
+// credenciais de escola/secretaria (professor_id = 0 ou ausente).
 // ============================================================================
 router.post('/credenciais', async (req, res) => {
   try {
@@ -117,12 +135,15 @@ router.post('/credenciais', async (req, res) => {
     const escolaId = getEscolaId(req);
     const { professor_id, educadf_login, educadf_senha } = req.body || {};
 
-    if (!professor_id || !educadf_login || !educadf_senha) {
+    // professor_id é OPCIONAL — 0 significa credencial da escola/secretaria
+    if (!educadf_login || !educadf_senha) {
       return res.status(400).json({
         ok: false,
-        message: 'Campos obrigatórios: professor_id, educadf_login, educadf_senha.',
+        message: 'Campos obrigatórios: educadf_login, educadf_senha.',
       });
     }
+
+    const profId = Number(professor_id) || 0;
 
     // Criptografar a senha
     const { encrypted, iv, tag } = encrypt(educadf_senha);
@@ -141,10 +162,10 @@ router.post('/credenciais', async (req, res) => {
         educadf_senha_tag = VALUES(educadf_senha_tag),
         ativo = 1,
         updated_at = CURRENT_TIMESTAMP`,
-      [escolaId, Number(professor_id), String(educadf_login).trim(), encrypted, iv, tag]
+      [escolaId, profId, String(educadf_login).trim(), encrypted, iv, tag]
     );
 
-    console.log(`[agente.routes] Credencial salva: escola=${escolaId}, professor=${professor_id}`);
+    console.log(`[agente.routes] Credencial salva: escola=${escolaId}, professor=${profId}`);
 
     return res.status(201).json({
       ok: true,
@@ -190,7 +211,9 @@ router.get('/credenciais', async (req, res) => {
     const credenciais = (rows || []).map((r) => ({
       id: r.id,
       professor_id: r.professor_id,
-      professor_nome: r.professor_nome || `Professor #${r.professor_id}`,
+      professor_nome: r.professor_id === 0
+        ? 'Escola / Secretaria'
+        : (r.professor_nome || `Professor #${r.professor_id}`),
       educadf_login: r.educadf_login,
       educadf_senha: '********',  // NUNCA expor
       perfil_id: r.perfil_id,
@@ -397,6 +420,18 @@ router.post('/sincronizar', async (req, res) => {
     );
     const logId = insertResult.insertId;
 
+    // ── Busca turmas cadastradas na escola para filtrar o scraping ──
+    // Filtra pelo ano letivo atual (mesmo critério do resto do sistema)
+    const mesAtual = new Date().getMonth() + 1;
+    const anoLetivo = mesAtual <= 1 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+
+    const [turmasRows] = await db.query(
+      'SELECT nome FROM turmas WHERE escola_id = ? AND ano = ? ORDER BY nome',
+      [escolaId, String(anoLetivo)]
+    );
+    const turmasEscola = (turmasRows || []).map(r => r.nome).filter(Boolean);
+    console.log(`[AGENTE-SYNC] ${turmasEscola.length} turmas do ano letivo ${anoLetivo} na escola ${escolaId}`);
+
     // Monta comando do agente Python
     const { exec } = await import('child_process');
     const path = await import('path');
@@ -404,20 +439,47 @@ router.post('/sincronizar', async (req, res) => {
     const __fn = fileURLToPath(import.meta.url);
     const __dn = path.dirname(__fn);
 
-    const agentScript = path.resolve(__dn, '../../educa-agent/agent.py');
+    const agentScript = path.resolve(__dn, '../../../educa-agent/agent.py');
     const args = ['python', `"${agentScript}"`];
 
-    // Se turmas específicas
+    // Se turmas específicas foram solicitadas, usa essas; senão usa as da escola
     if (req.body?.turmas && Array.isArray(req.body.turmas)) {
       for (const t of req.body.turmas) {
         args.push('--turma', `"${t}"`);
       }
+    } else if (turmasEscola.length > 0) {
+      // Salva turmas num arquivo temp (evita problemas de escape no Windows)
+      const fs = await import('fs');
+      const agentDir = path.resolve(__dn, '../../../educa-agent');
+      const turmasFile = path.join(agentDir, `turmas_sync_${logId}.json`);
+      fs.writeFileSync(turmasFile, JSON.stringify(turmasEscola, null, 2), 'utf-8');
+      args.push('--turmas-file', `"${turmasFile}"`);
+      console.log(`[AGENTE-SYNC] Turmas salvas em: ${turmasFile}`);
     }
 
     // Token e escola para importação
+    // IMPORTANTE: Salvar token em arquivo temp para evitar problemas de escape
+    // no Windows (tokens JWT longos eram truncados/corrompidos pelo shell,
+    // fazendo o agente rodar em modo apenas-scraping silenciosamente)
     const token = req.headers.authorization?.replace('Bearer ', '') || '';
-    args.push('--token', token);
+    if (token) {
+      const fs = await import('fs');
+      const agentDir = path.resolve(__dn, '../../../educa-agent');
+      const tokenFile = path.join(agentDir, `token_sync_${logId}.txt`);
+      fs.writeFileSync(tokenFile, token, 'utf-8');
+      args.push('--token-file', `"${tokenFile}"`);
+      console.log(`[AGENTE-SYNC] Token salvo em arquivo temp (${token.length} chars)`);
+    } else {
+      console.warn('[AGENTE-SYNC] AVISO: Token JWT não encontrado no header Authorization!');
+    }
     args.push('--escola', String(escolaId));
+
+    // Passa a URL da API para o agente importar no backend correto
+    // (localhost em dev, produção em prod)
+    const protocol = req.protocol;
+    const host = req.get('host');
+    const apiUrl = `${protocol}://${host}/api`;
+    args.push('--api-url', apiUrl);
 
     if (req.body?.apenasDownload) {
       args.push('--apenas-scraping');
@@ -428,22 +490,40 @@ router.post('/sincronizar', async (req, res) => {
 
     // Executa em background
     const child = exec(cmd, {
-      cwd: path.resolve(__dn, '../../educa-agent'),
+      cwd: path.resolve(__dn, '../../../educa-agent'),
       timeout: 600000,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
     });
 
     let stdout = '';
     let stderr = '';
 
-    child.stdout?.on('data', (data) => { stdout += data; });
+    // Parseia stdout em tempo real para atualizar progresso
+    // O agente imprime: "--- Turma 5/40: 7º Ano - A ---"
+    const progressRegex = /---\s*Turma\s+(\d+)\/(\d+):\s*(.+?)\s*---/;
+
+    child.stdout?.on('data', (data) => {
+      stdout += data;
+      // Tenta extrair progresso da última linha
+      const lines = String(data).split('\n');
+      for (const line of lines) {
+        const m = line.match(progressRegex);
+        if (m) {
+          const [, atual, total, turma] = m;
+          db.query(
+            `UPDATE sincronizacao_logs SET progresso_atual = ?, progresso_total = ?, progresso_turma = ? WHERE id = ?`,
+            [Number(atual), Number(total), turma.trim(), logId]
+          ).catch(() => {});
+        }
+      }
+    });
     child.stderr?.on('data', (data) => { stderr += data; });
 
     child.on('close', async (code) => {
       console.log(`[AGENTE-SYNC] Processo encerrado (code=${code})`);
       try {
         const fs = await import('fs');
-        const downloadsDir = path.resolve(__dn, '../../educa-agent/downloads');
+        const downloadsDir = path.resolve(__dn, '../../../educa-agent/downloads');
         let relatorio = null;
 
         // Busca o relatório JSON mais recente
@@ -527,8 +607,11 @@ router.get('/sincronizacao/status', async (req, res) => {
         status: log.status,
         turmas_solicitadas: log.turmas_solicitadas,
         relatorio,
-        criado_em: log.criado_em,
-        finalizado_em: log.finalizado_em,
+        progresso_atual: log.progresso_atual || 0,
+        progresso_total: log.progresso_total || 0,
+        progresso_turma: log.progresso_turma || null,
+        criado_em: toUTC(log.criado_em),
+        finalizado_em: toUTC(log.finalizado_em),
       },
     });
   } catch (err) {
@@ -566,6 +649,8 @@ router.get('/sincronizacao/historico', async (req, res) => {
 
     const data = (rows || []).map((r) => ({
       ...r,
+      criado_em: toUTC(r.criado_em),
+      finalizado_em: toUTC(r.finalizado_em),
       resumo: typeof r.resumo === 'string' ? JSON.parse(r.resumo) : r.resumo,
       turmas_solicitadas: typeof r.turmas_solicitadas === 'string'
         ? JSON.parse(r.turmas_solicitadas)

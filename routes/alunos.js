@@ -519,32 +519,11 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   
     // ──────────────────────────────────────────────────────────────────
     // PARSER POSICIONAL — extrai dados diretamente pelas colunas do PDF
-    // O PDF padrão da Secretaria de Educação tem colunas fixas:
-    //   x≈45 RE | x≈94 NOME | x≈376 DT NASC | x≈482 FILIAÇÃO | x≈758 RESPONSÁVEL | x≈1034 CPF
-    // Usamos getTextContent() do pdfjs para obter cada item com posição (x, y)
+    // Auto-detecta as posições X das colunas pelo cabeçalho (RE, NOME, DT NASCIMENTO, etc.)
+    // Funciona com qualquer layout: colunas extras visíveis ou ocultas.
+    // Fallback para ranges hardcoded se a auto-detecção falhar.
     // ──────────────────────────────────────────────────────────────────
     const pdfEntries = [];
-
-    // Definimos colunas por faixas de X
-    // (tolerância generosa para diferentes formatações)
-    // Posições reais observadas (multi-escola e multi-formato):
-    //   educadf padrão: RE≈45, NOME≈88, DT≈313-320, FIL≈403-405, RESP≈636-640, CPF≈869-875
-    //   ATENÇÃO: x>=960 são colunas PENDÊNCIAS/SITUAÇÃO/AÇÕES (ignoradas no agrupamento)
-    const COL_RANGES = {
-      re:          { min: 20, max: 85 },
-      nome:        { min: 85, max: 310 },
-      dataNasc:    { min: 310, max: 400 },
-      filiacao:    { min: 400, max: 630 },
-      responsavel: { min: 630, max: 865 },
-      cpf:         { min: 865, max: 960 },
-    };
-
-    function getCol(x) {
-      for (const [col, range] of Object.entries(COL_RANGES)) {
-        if (x >= range.min && x < range.max) return col;
-      }
-      return null;
-    }
 
     // Extrai text items com posição usando pagerender customizado
     const allItems = [];
@@ -565,12 +544,65 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     };
     await pdfParse(req.file.buffer, parseOptions);
 
+    // ── Auto-detecção de colunas pelo cabeçalho ──
+    // Procura a linha Y onde aparece exatamente "RE" (cabeçalho da tabela)
+    // e lê as posições X de cada coluna a partir dos labels.
+    const _normH = (s) => (s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    let _headerY = null;
+    for (const item of allItems) {
+      if (_normH(item.text) === "RE") {
+        if (_headerY === null || item.y > _headerY) _headerY = item.y;
+      }
+    }
+
+    let COL_RANGES;
+    if (_headerY !== null) {
+      const headerItems = allItems.filter(it => Math.abs(it.y - _headerY) <= 3).sort((a, b) => a.x - b.x);
+      const colPositions = {};
+      for (const item of headerItems) {
+        const t = _normH(item.text);
+        if (t === "RE") colPositions.re = item.x;
+        else if (t === "NOME" || t === "ESTUDANTE") colPositions.nome = item.x;
+        else if (t.includes("NASCIMENTO")) colPositions.dataNasc = item.x;
+        else if (t.includes("FILIACAO")) colPositions.filiacao = item.x;
+        else if (t.includes("RESPONSAVEL") && !t.includes("CPF")) colPositions.responsavel = item.x;
+        else if (t.includes("CPF")) colPositions.cpf = item.x;
+      }
+      if (colPositions.re != null && colPositions.nome != null) {
+        const cols = Object.entries(colPositions).sort((a, b) => a[1] - b[1]);
+        COL_RANGES = {};
+        for (let i = 0; i < cols.length; i++) {
+          const [name, startX] = cols[i];
+          const nextX = i + 1 < cols.length ? cols[i + 1][1] : startX + 200;
+          COL_RANGES[name] = { min: Math.max(0, startX - 10), max: nextX - 5 };
+        }
+        console.log(`[importar-pdf] Auto-detect colunas OK:`, JSON.stringify(COL_RANGES));
+      }
+    }
+
+    // Fallback: ranges hardcoded (layout padrão com colunas extras visíveis)
+    if (!COL_RANGES) {
+      COL_RANGES = {
+        re:          { min: 20, max: 85 },
+        nome:        { min: 85, max: 310 },
+        dataNasc:    { min: 310, max: 400 },
+        filiacao:    { min: 400, max: 630 },
+        responsavel: { min: 630, max: 865 },
+        cpf:         { min: 865, max: 960 },
+      };
+      console.log(`[importar-pdf] Auto-detect falhou, usando ranges padrão`);
+    }
+
+    function getCol(x) {
+      for (const [col, range] of Object.entries(COL_RANGES)) {
+        if (x >= range.min && x < range.max) return col;
+      }
+      return null;
+    }
+
     // Agrupa items por linha (Y) → ordena por X dentro de cada linha
     const rowsMap = {};
     for (const it of allItems) {
-      // Ignora colunas extras (PENDÊNCIAS x≈973, SITUAÇÃO x≈1048, AÇÕES x≈1110)
-      if (it.x >= 960) continue;
-
       // Agrupa Y com tolerância de 3px (variações de renderização)
       const yKey = Math.round(it.y / 3) * 3;
       if (!rowsMap[yKey]) rowsMap[yKey] = [];
@@ -734,29 +766,56 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     console.log(`[importar-pdf] Parser posicional extraiu ${pdfEntries.length} alunos`);
 
-    // Situação atual no DB (por turma)
+    // Situação atual no DB (por turma) — inclui estudante (nome) para match por nome
     const [atuais] = await pool.query(
-      "SELECT id, codigo, status FROM alunos WHERE turma_id = ?",
+      "SELECT id, codigo, estudante, status FROM alunos WHERE turma_id = ?",
       [turma_id]
     );
 
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
+    // ── Match por nome normalizado (fallback para migração ieducar→educadf) ──
+    const normName = (s) => (s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+    const atuaisNomeMap = new Map();
+    for (const a of atuais) {
+      const key = normName(a.estudante);
+      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+    }
+
     const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
 
     const toInsert = [];
     const toReactivate = [];
     let jaExistiam = 0;
+    let atualizadosCodigo = 0;
 
     for (const e of pdfEntries) {
       const cod = String(e.codigo);
-      const atual = atuaisMap.get(cod);
+      let atual = atuaisMap.get(cod);
+
+      // Fallback: match por nome normalizado (cobre migração ieducar→educadf)
+      if (!atual) {
+        const nomeKey = normName(e.estudante);
+        const porNome = atuaisNomeMap.get(nomeKey);
+        if (porNome) {
+          console.log(`[importar-pdf] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`);
+          await pool.query(
+            'UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?',
+            [e.codigo, porNome.id, escola_id]
+          );
+          atualizadosCodigo++;
+          atual = porNome;
+          atuaisMap.set(cod, porNome);
+          atuaisNomeMap.delete(nomeKey);
+          entradaSet.add(String(porNome.codigo));
+        }
+      }
+
       if (!atual) {
         toInsert.push(e);
       } else if (atual.status === "inativo") {
         toReactivate.push(e);
       } else {
         jaExistiam++;
-        // Se a data de nascimento estiver vazia no BD, preenche com a do arquivo
         const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
         if (dataValida) {
           await pool.query(
@@ -765,8 +824,6 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             [e.dataBr, atual.id, escola_id]
           );
         }
-        // Mesmo que o aluno já exista, precisamos vincular o responsável
-        // (caso ainda não tenha sido vinculado — ex: primeira importação não extraía resp.)
         if (e.cpfResponsavel && e.responsavel) {
           try {
             const [respResult] = await pool.query(
@@ -798,7 +855,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       }
     }
 
-    const toInactivate = atuais.filter((a) => !entradaSet.has(String(a.codigo)));
+    if (atualizadosCodigo > 0) {
+      console.log(`[importar-pdf] ${atualizadosCodigo} códigos atualizados (ieducar → educadf)`);
+    }
 
     // Inserir novos (e lidar com possíveis alunos existentes em outras turmas via DUPLICATE KEY)
     let inseridos = 0;
@@ -958,30 +1017,36 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       reativados++;
     }
 
-    // Inativar quem saiu do arquivo
-    let inativados = 0;
-    for (const r of toInactivate) {
-      const correspondente = pdfEntries.find((e) => e.codigo === String(r.codigo));
-      if (correspondente && correspondente.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(correspondente.dataBr)) {
-        await pool.query(
-          `UPDATE alunos
-           SET status='inativo', data_nascimento = STR_TO_DATE(?, '%d/%m/%Y'), turma_id = ?
-           WHERE id = ?`,
-          [correspondente.dataBr, turma_id, r.id]
-        );
-      } else {
-        await pool.query("UPDATE alunos SET status='inativo' WHERE id = ?", [r.id]);
+    // ──────────────────────────────────────────────────────────────────
+    // DETECÇÃO DE AUSENTES (alunos no banco que NÃO estão no PDF)
+    // Não inativa automaticamente — retorna a lista para confirmação
+    // pelo secretário no frontend via modal de confirmação.
+    // ──────────────────────────────────────────────────────────────────
+    const pendentesInativacao = [];
+    for (const atual of atuais) {
+      if (atual.status !== "ativo") continue;
+      const cod = String(atual.codigo);
+      const nomeKey = normName(atual.estudante);
+      // Se não está no PDF (nem por código, nem por nome) → ausente
+      const noCodigoPdf = entradaSet.has(cod);
+      const noNomePdf = pdfEntries.some(e => normName(e.estudante) === nomeKey);
+      if (!noCodigoPdf && !noNomePdf) {
+        pendentesInativacao.push({
+          id: atual.id,
+          codigo: atual.codigo,
+          estudante: atual.estudante,
+        });
       }
-      
-      await pool.query(
-        "UPDATE matriculas SET status='inativo' WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
-        [r.id, anoLetivoAtual, escola_id]
+    }
+
+    if (pendentesInativacao.length > 0) {
+      console.log(
+        `[importar-pdf] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) no PDF — pendentes de confirmação para inativação`
       );
-      inativados++;
     }
 
     console.log(
-      `[importar-pdf] → localizados: ${pdfEntries.length}, inseridos: ${inseridos}, reativados: ${reativados}, jáExistiam: ${jaExistiam}, inativados: ${inativados}`
+      `[importar-pdf] → localizados: ${pdfEntries.length}, inseridos: ${inseridos}, reativados: ${reativados}, jáExistiam: ${jaExistiam}, códigosAtualizados: ${atualizadosCodigo}, pendentesInativacao: ${pendentesInativacao.length}`
     );
 
     return res.json({
@@ -989,12 +1054,62 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       inseridos,
       reativados,
       jaExistiam,
-      inativados,
+      codigosAtualizados: atualizadosCodigo,
+      inativados: 0,
+      pendentesInativacao,
       listaAlunos: pdfEntries,
     });
   } catch (err) {
     console.error("Erro ao processar /importar-pdf:", err);
     return res.status(500).json({ message: "Erro ao processar PDF.", error: err.message });
+  }
+});
+
+/* ============================================================================
+ * 11b) INATIVAR EM LOTE (confirmação manual pelo secretário)
+ * POST /api/alunos/inativar-lote
+ * Body: { alunoIds: [1, 2, 3] }
+ *
+ * Inativa alunos selecionados pelo secretário após importação de PDF.
+ * Usado quando o PDF não contém alunos que estão no banco (transferidos).
+ * ========================================================================== */
+router.post("/inativar-lote", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { alunoIds } = req.body || {};
+
+    if (!Array.isArray(alunoIds) || alunoIds.length === 0) {
+      return res.status(400).json({ message: "Lista de alunos vazia." });
+    }
+
+    // Segurança: só inativa alunos que pertencem à escola do usuário
+    const ids = alunoIds.map(Number).filter(n => n > 0);
+    if (ids.length === 0) {
+      return res.status(400).json({ message: "IDs inválidos." });
+    }
+
+    const [result] = await pool.query(
+      `UPDATE alunos SET status = 'inativo' WHERE id IN (?) AND escola_id = ? AND status = 'ativo'`,
+      [ids, escola_id]
+    );
+
+    // Inativa matrículas correspondentes
+    const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
+    await pool.query(
+      `UPDATE matriculas SET status = 'inativo' WHERE aluno_id IN (?) AND escola_id = ? AND ano_letivo = ?`,
+      [ids, escola_id, anoLetivoAtual]
+    ).catch(() => {});
+
+    console.log(`[inativar-lote] ${result.affectedRows} aluno(s) inativado(s) (escola_id=${escola_id})`);
+
+    return res.json({
+      ok: true,
+      inativados: result.affectedRows,
+      message: `${result.affectedRows} aluno(s) inativado(s) com sucesso.`,
+    });
+  } catch (err) {
+    console.error("Erro ao inativar em lote:", err);
+    return res.status(500).json({ message: "Erro ao inativar alunos.", error: err.message });
   }
 });
 

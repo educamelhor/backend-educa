@@ -66,6 +66,10 @@ const pool = mysql.createPool({
   password: MYSQL_PASSWORD,
   database: MYSQL_DATABASE,
 
+  // O MySQL (DigitalOcean) roda em UTC. Sem isso, mysql2 interpreta
+  // as datas como se fossem no timezone local (BRT), causando +3h.
+  timezone: '+00:00',
+
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
