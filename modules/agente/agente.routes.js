@@ -439,8 +439,19 @@ router.post('/sincronizar', async (req, res) => {
     const __fn = fileURLToPath(import.meta.url);
     const __dn = path.dirname(__fn);
 
-    const agentScript = path.resolve(__dn, '../../../educa-agent/agent.py');
-    const args = ['python', `"${agentScript}"`];
+    // Detecta caminho do agente: Docker (/app/educa-agent) ou dev local (monorepo)
+    const fs = await import('fs');
+    const agentDirDocker = path.resolve(__dn, '../../educa-agent');
+    const agentDirLocal  = path.resolve(__dn, '../../../educa-agent');
+    const agentDir = fs.existsSync(path.join(agentDirDocker, 'agent.py'))
+      ? agentDirDocker
+      : agentDirLocal;
+    const agentScript = path.join(agentDir, 'agent.py');
+    console.log(`[AGENTE-SYNC] Agent dir: ${agentDir}`);
+
+    // python3 no Linux/Docker, python no Windows
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const args = [pythonCmd, `"${agentScript}"`];
 
     // Se turmas específicas foram solicitadas, usa essas; senão usa as da escola
     if (req.body?.turmas && Array.isArray(req.body.turmas)) {
@@ -449,8 +460,6 @@ router.post('/sincronizar', async (req, res) => {
       }
     } else if (turmasEscola.length > 0) {
       // Salva turmas num arquivo temp (evita problemas de escape no Windows)
-      const fs = await import('fs');
-      const agentDir = path.resolve(__dn, '../../../educa-agent');
       const turmasFile = path.join(agentDir, `turmas_sync_${logId}.json`);
       fs.writeFileSync(turmasFile, JSON.stringify(turmasEscola, null, 2), 'utf-8');
       args.push('--turmas-file', `"${turmasFile}"`);
@@ -463,8 +472,6 @@ router.post('/sincronizar', async (req, res) => {
     // fazendo o agente rodar em modo apenas-scraping silenciosamente)
     const token = req.headers.authorization?.replace('Bearer ', '') || '';
     if (token) {
-      const fs = await import('fs');
-      const agentDir = path.resolve(__dn, '../../../educa-agent');
       const tokenFile = path.join(agentDir, `token_sync_${logId}.txt`);
       fs.writeFileSync(tokenFile, token, 'utf-8');
       args.push('--token-file', `"${tokenFile}"`);
@@ -490,7 +497,7 @@ router.post('/sincronizar', async (req, res) => {
 
     // Executa em background
     const child = exec(cmd, {
-      cwd: path.resolve(__dn, '../../../educa-agent'),
+      cwd: agentDir,
       timeout: 600000,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
     });
@@ -522,8 +529,7 @@ router.post('/sincronizar', async (req, res) => {
     child.on('close', async (code) => {
       console.log(`[AGENTE-SYNC] Processo encerrado (code=${code})`);
       try {
-        const fs = await import('fs');
-        const downloadsDir = path.resolve(__dn, '../../../educa-agent/downloads');
+        const downloadsDir = path.join(agentDir, 'downloads');
         let relatorio = null;
 
         // Busca o relatório JSON mais recente
