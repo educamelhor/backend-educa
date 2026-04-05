@@ -511,9 +511,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
     const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
 
-    const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ? AND escola_id = ?", [turmaNome, escola_id]);
+    // ⚠️ Filtra por ano letivo para evitar confundir turmas de anos diferentes com mesmo nome
+    const [[turma]] = await pool.query(
+      "SELECT id FROM turmas WHERE nome = ? AND escola_id = ? AND ano = ? ORDER BY id DESC LIMIT 1",
+      [turmaNome, escola_id, anoLetivoAtual]
+    );
     if (!turma) {
-      return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada.` });
+      return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada para o ano letivo ${anoLetivoAtual}.` });
     }
     const turma_id = turma.id;
   
