@@ -481,11 +481,19 @@ router.post('/sincronizar', async (req, res) => {
     }
     args.push('--escola', String(escolaId));
 
-    // Passa a URL da API para o agente importar no backend correto
-    // (localhost em dev, produção em prod)
-    const protocol = req.protocol;
-    const host = req.get('host');
-    const apiUrl = `${protocol}://${host}/api`;
+    // URL da API para o agente importar
+    // Em Docker: o agente roda no MESMO container → usa localhost:3000 (direto)
+    // Em dev local: usa a URL derivada do request (localhost:3001, etc.)
+    const isDocker = agentDir === agentDirDocker;
+    let apiUrl;
+    if (isDocker) {
+      apiUrl = 'http://localhost:3000/api';
+      console.log('[AGENTE-SYNC] Docker detectado → API interna: http://localhost:3000/api');
+    } else {
+      const protocol = req.protocol;
+      const host = req.get('host');
+      apiUrl = `${protocol}://${host}/api`;
+    }
     args.push('--api-url', apiUrl);
 
     if (req.body?.apenasDownload) {
