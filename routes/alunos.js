@@ -770,10 +770,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     console.log(`[importar-pdf] Parser posicional extraiu ${pdfEntries.length} alunos`);
 
-    // Situação atual no DB (por turma) — inclui estudante (nome) para match por nome
+    // Situação atual no DB (por turma+ano via matrícula — fonte canônica)
     const [atuais] = await pool.query(
-      "SELECT id, codigo, estudante, status FROM alunos WHERE turma_id = ?",
-      [turma_id]
+      `SELECT a.id, a.codigo, a.estudante, m.status
+       FROM matriculas m
+       INNER JOIN alunos a ON a.id = m.aluno_id
+       WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
+      [turma_id, anoLetivoAtual, escola_id]
     );
 
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
