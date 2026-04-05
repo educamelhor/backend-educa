@@ -101,6 +101,7 @@ import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
 import governancaRouter from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
+import frequenciaRouter from "./routes/frequencia.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 let appPaisRouter = null;
@@ -630,6 +631,9 @@ async function bootstrap() {
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
   app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
+
+  // ✅ MÓDULO FREQUÊNCIA — Atestados, Busca Ativa, Relatórios, Conselho Tutelar
+  app.use("/api/frequencia", autenticarToken, verificarEscola, frequenciaRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
