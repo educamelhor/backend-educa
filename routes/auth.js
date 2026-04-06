@@ -852,7 +852,7 @@ router.post("/validar-professor", async (req, res) => {
       return res.status(400).json({ ok: false, message: "CPF inválido." });
     }
 
-    // ── Busca pré-cadastros pendentes: professores + disciplinar ──
+    // ── Busca pré-cadastros pendentes (todos os perfis de membros da escola) ──
     const [rows] = await pool.query(
       `
       SELECT DISTINCT
@@ -867,7 +867,7 @@ router.post("/validar-professor", async (req, res) => {
         ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
       WHERE REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = ?
-        AND u.perfil IN ('professor', 'disciplinar')
+        AND u.perfil NOT IN ('diretor', 'militar', 'aluno', 'responsavel')
         AND u.escola_id IS NOT NULL
         AND (u.senha_hash IS NULL OR u.senha_hash = '')
       ORDER BY e.nome ASC
@@ -892,7 +892,7 @@ router.post("/validar-professor", async (req, res) => {
       SELECT id, perfil
       FROM usuarios
       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-        AND perfil IN ('professor', 'disciplinar')
+        AND perfil NOT IN ('diretor', 'militar', 'aluno', 'responsavel')
         AND (senha_hash IS NOT NULL AND senha_hash <> '')
       LIMIT 1
       `,
@@ -1023,17 +1023,23 @@ router.post("/complementar-professor", async (req, res) => {
 
     const cpfLimpoFinal = String(cpf || "").replace(/\D/g, "");
 
-    if (perfilFinal === "disciplinar") {
+    if (perfilFinal === "professor") {
+      // Atualiza professores
+      await pool.query(
+        "UPDATE professores SET nome = ?, data_nascimento = ?, sexo = ? WHERE cpf = ? AND escola_id = ?",
+        [nome, data_nascimento, sexo, cpfLimpoFinal, escolaIdFinal]
+      );
+    } else if (perfilFinal === "disciplinar") {
       // Atualiza equipe_escola
       await pool.query(
         "UPDATE equipe_escola SET nome = ?, email = ? WHERE cpf = ? AND escola_id = ?",
         [nome, email || null, cpfLimpoFinal, escolaIdFinal]
       );
     } else {
-      // Atualiza professores
+      // Demais perfis (coordenador, vice_diretor, supervisor, etc.) → cadastro_membros_escola
       await pool.query(
-        "UPDATE professores SET nome = ?, data_nascimento = ?, sexo = ? WHERE cpf = ? AND escola_id = ?",
-        [nome, data_nascimento, sexo, cpfLimpoFinal, escolaIdFinal]
+        "UPDATE cadastro_membros_escola SET nome = ? WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?",
+        [nome, cpfLimpoFinal, escolaIdFinal]
       );
     }
 
