@@ -28,6 +28,7 @@ SELECT
   t_correta.nome AS turma_2026_nome,
   t_correta.ano AS ano_turma_correta
 FROM matriculas m
+INNER JOIN alunos a ON a.id = m.aluno_id
 INNER JOIN turmas t_atual ON t_atual.id = m.turma_id
 INNER JOIN turmas t_correta ON t_correta.nome = t_atual.nome 
   AND t_correta.escola_id = t_atual.escola_id 

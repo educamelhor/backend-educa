@@ -92,6 +92,7 @@ import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
 import relatorioDisciplinarRouter from "./routes/relatorio-disciplinar.js";
+import listasImpressaoRouter from "./routes/listas-impressao.js";
 import gradeBaseRoutes from "./routes/gradeBase.js";
 import gradeSolveRoutes from "./routes/gradeSolve.js";
 import disponibilidadesRouter from "./routes/disponibilidades.js";
@@ -616,6 +617,7 @@ async function bootstrap() {
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
+  app.use("/api/listas-impressao", autenticarToken, verificarEscola, listasImpressaoRouter);
   app.use("/api/suporte", autenticarToken, verificarEscola, suporteRouter);
 
   // ✅ Agente Autônomo EducaDF (Playwright — login + lançamento)
