@@ -751,10 +751,10 @@ router.post("/", verificarEscola, async (req, res) => {
     );
 
     await pool.query(
-      `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash)
-         VALUES (?, UPPER(?), 'professor', ?, ?)
-         ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
-      [cpfLimpo, nome, escola_id, ""]
+      `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo)
+         VALUES (?, UPPER(?), 'professor', ?, '', 1)
+         ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
+      [cpfLimpo, nome, escola_id]
     );
 
     res.status(201).json({ message: "Professor cadastrado com sucesso." });
@@ -1129,8 +1129,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         [escolaId, e.cpf, e.nome]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
-           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo) VALUES (?, UPPER(?), 'professor', ?, '', 1)
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
         [e.cpf, e.nome, escolaId]
       );
       inseridos++;
@@ -1144,8 +1144,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         [e.nome, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
-           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo) VALUES (?, UPPER(?), 'professor', ?, '', 1)
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
         [e.cpf, e.nome, escolaId]
       );
       reativados++;
@@ -1233,8 +1233,8 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
         [escolaId, e.cpf, e.nome]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
-           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo) VALUES (?, UPPER(?), 'professor', ?, '', 1)
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
         [e.cpf, e.nome, escolaId]
       );
       inseridos++;
@@ -1248,8 +1248,8 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
         [e.nome, e.cpf, escolaId]
       );
       await pool.query(
-        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash) VALUES (?, UPPER(?), 'professor', ?, '')
-           ON DUPLICATE KEY UPDATE nome=VALUES(nome)`,
+        `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo) VALUES (?, UPPER(?), 'professor', ?, '', 1)
+           ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
         [e.cpf, e.nome, escolaId]
       );
       reativados++;

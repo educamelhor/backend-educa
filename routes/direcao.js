@@ -245,6 +245,14 @@ router.post("/cadastro", async (req, res) => {
          VALUES (?, UPPER(?), ?, ?, 1, '')`,
         [cpfLimpo, nome.trim(), Number(escola_id), perfilUsuario]
       );
+    } else {
+      // Re-cadastro: atualiza perfil, reativa e reseta credenciais para forçar novo auto-cadastro
+      await db.query(
+        `UPDATE usuarios
+         SET nome = UPPER(?), perfil = ?, ativo = 1, senha_hash = '', email = NULL, celular = NULL
+         WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?`,
+        [nome.trim(), perfilUsuario, cpfLimpo, Number(escola_id)]
+      );
     }
 
     return res.status(201).json({ ok: true, message: "Membro pré-cadastrado com sucesso." });
@@ -348,16 +356,26 @@ router.delete("/cadastro/:id", async (req, res) => {
 
     await db.query("DELETE FROM cadastro_membros_escola WHERE id = ?", [id]);
 
-    // Opcional: remove da tabela usuarios se não tiver senha (não completou cadastro)
+    // Remove ou inativa o registro em `usuarios`
     if (membro) {
       const cpfLimpo = String(membro.cpf).replace(/\D/g, "");
-      await db.query(
+      // Se nunca completou cadastro (sem senha) → remove
+      const [delResult] = await db.query(
         `DELETE FROM usuarios 
          WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? 
            AND escola_id = ? 
            AND (senha_hash IS NULL OR senha_hash = '')`,
         [cpfLimpo, membro.escola_id]
       );
+      // Se já completou cadastro (tem senha) → inativa para bloquear login
+      if (!delResult.affectedRows) {
+        await db.query(
+          `UPDATE usuarios SET ativo = 0 
+           WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? 
+             AND escola_id = ?`,
+          [cpfLimpo, membro.escola_id]
+        );
+      }
     }
 
     return res.json({ ok: true, message: "Membro removido." });
