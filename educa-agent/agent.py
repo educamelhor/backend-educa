@@ -108,7 +108,11 @@ async def verificar_turmas(
         nomes_esperados = set()
         for t in turmas_esperadas:
             nomes_esperados.add(educadf_to_educa(t))
-        turmas_verificar = [t for t in turmas_api if t.get("nome", "") in nomes_esperados]
+        turmas_verificar = [t for t in turmas_api if (t.get("turma") or t.get("nome") or "") in nomes_esperados]
+        if not turmas_verificar and turmas_api:
+            print(f"[VERIFICAÇÃO] AVISO: nenhuma turma da API correspondeu aos filtros.")
+            print(f"  Esperados: {nomes_esperados}")
+            print(f"  API retornou: {[t.get('turma') or t.get('nome') for t in turmas_api[:5]]}...")
     else:
         turmas_verificar = turmas_api
 
@@ -120,7 +124,7 @@ async def verificar_turmas(
     print(f"\n[VERIFICAÇÃO] Verificando {len(turmas_verificar)} turmas...\n")
     
     for i, turma in enumerate(turmas_verificar, 1):
-        nome = turma.get("nome", turma.get("turma", "?"))
+        nome = turma.get("turma", turma.get("nome", "?"))
         turma_id = turma.get("id")
         
         try:
@@ -170,8 +174,11 @@ async def verificar_turmas(
                 "error": str(e),
             })
 
+    total_alunos_verificados = sum(d.get("total_alunos", 0) for d in detalhes)
+
     print(f"\n{'─' * 60}")
     print(f"  CHECKLIST: {len(turmas_ok)}/{len(turmas_verificar)} turmas OK")
+    print(f"  TOTAL DE ALUNOS: {total_alunos_verificados}")
     if turmas_vazias:
         print(f"  ❌ {len(turmas_vazias)} turma(s) SEM alunos: {', '.join(turmas_vazias)}")
     if turmas_erro:
@@ -184,6 +191,7 @@ async def verificar_turmas(
         "turmas_ok": len(turmas_ok),
         "turmas_vazias": turmas_vazias,
         "turmas_erro": turmas_erro,
+        "total_alunos_verificados": total_alunos_verificados,
         "detalhes": detalhes,
     }
 
@@ -305,6 +313,7 @@ async def sincronizar(
         total_inseridos = sum(r.get("inseridos", 0) for r in resultados_import)
         total_reativados = sum(r.get("reativados", 0) for r in resultados_import)
         total_inativados = sum(r.get("inativados", 0) for r in resultados_import)
+        total_localizados = sum(r.get("localizados", 0) for r in resultados_import)
 
         relatorio["etapa_importacao"] = {
             "total_turmas": len(resultados_import),
@@ -314,6 +323,7 @@ async def sincronizar(
             "total_inseridos": total_inseridos,
             "total_reativados": total_reativados,
             "total_inativados": total_inativados,
+            "total_localizados": total_localizados,
             "detalhes": resultados_import,
         }
 
@@ -335,6 +345,7 @@ async def sincronizar(
         "pdfs_falha": pdfs_falha,
         "importados": relatorio.get("etapa_importacao", {}).get("sucesso", 0),
         "erros_importacao": relatorio.get("etapa_importacao", {}).get("erro", 0),
+        "alunos_localizados": relatorio.get("etapa_importacao", {}).get("total_localizados", 0),
         "alunos_inseridos": relatorio.get("etapa_importacao", {}).get("total_inseridos", 0),
         "alunos_reativados": relatorio.get("etapa_importacao", {}).get("total_reativados", 0),
         "alunos_inativados": relatorio.get("etapa_importacao", {}).get("total_inativados", 0),
@@ -372,6 +383,9 @@ async def sincronizar(
             relatorio["resumo"]["turmas_vazias"] = 0
             relatorio["resumo"]["turmas_ok"] = verificacao.get("turmas_ok", 0)
             relatorio["resumo"]["turmas_total"] = verificacao.get("turmas_total", 0)
+        
+        # Usa total_alunos_verificados da verificação como contagem oficial
+        relatorio["resumo"]["total_alunos_verificados"] = verificacao.get("total_alunos_verificados", 0)
 
     # ═══════════════════════════════════════════════════
     # RELATORIO FINAL
@@ -390,18 +404,22 @@ async def sincronizar(
     if relatorio.get("etapa_importacao", {}).get("total_turmas"):
         imp = relatorio["etapa_importacao"]
         print(f"  Importados: {imp['sucesso']}/{imp['total_turmas']}")
+        print(f"  Alunos localizados nos PDFs: {imp.get('total_localizados',0)}")
         print(f"  Alunos: +{imp.get('total_inseridos',0)} inseridos, "
               f"+{imp.get('total_reativados',0)} reativados, "
               f"-{imp.get('total_inativados',0)} inativados")
     if relatorio.get("etapa_verificacao"):
         verif = relatorio["etapa_verificacao"]
         turmas_vazias = verif.get("turmas_vazias", [])
-        if turmas_vazias:
+        total_verificados = verif.get("turmas_total", 0)
+        if total_verificados == 0:
+            print(f"  ℹ VERIFICAÇÃO: Nenhuma turma localizada para verificação")
+        elif turmas_vazias:
             print(f"  ⚠ VERIFICAÇÃO: {len(turmas_vazias)} turma(s) SEM ALUNOS:")
             for tv in turmas_vazias:
                 print(f"    → {tv}")
         else:
-            print(f"  ✅ VERIFICAÇÃO: Todas as {verif.get('turmas_ok', 0)} turmas têm alunos")
+            print(f"  ✅ VERIFICAÇÃO: Todas as {verif.get('turmas_ok', 0)} turmas confirmadas com alunos ({verif.get('total_alunos_verificados', 0)} alunos no total)")
     print("=" * 70 + "\n")
 
     # Salva relatório em JSON
