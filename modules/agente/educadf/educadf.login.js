@@ -120,7 +120,7 @@ async function dismissCookieBanner(session, page) {
     console.log(`[educadf.login] Banner de cookies ignorado: ${err.message}`);
   }
 }
-export async function loginEducaDF(session, { login, senha }) {
+export async function loginEducaDF(session, { login, senha, perfil = 'professor' }) {
   const startedAt = Date.now();
   const page = session.page;
 
@@ -142,22 +142,26 @@ export async function loginEducaDF(session, { login, senha }) {
     await session.navigateTo(LOGIN.url);
 
     // ====================================================================
-    // PASSO 2: Selecionar perfil "Professor"
+    // PASSO 2: Selecionar perfil (Professor, Servidor, Gestão, etc.)
     // (ANTES do banner de cookies — o banner aparece na tela do formulário)
     // ====================================================================
-    console.log('[educadf.login] 2/5 Selecionando perfil Professor...');
+    let selector = LOGIN.profileSelector[perfil] || LOGIN.profileSelector.professor;
+    
+    // Fallback amigável se o perfil não bater exatamente (ex: 'secretario' -> 'servidor' ou 'gestao')
+    if (perfil === 'secretario' || perfil === 'diretor' || perfil === 'vice_diretor') {
+        selector = LOGIN.profileSelector.gestao;
+    }
+
+    console.log(`[educadf.login] 2/5 Selecionando perfil: ${perfil} (seletor: ${selector})...`);
 
     // Verificar se estamos na tela de seleção de perfil ou já no formulário
-    const hasProfileSelector = await session.exists(
-      LOGIN.profileSelector.professor,
-      5000
-    );
+    const hasProfileSelector = await session.exists(selector, 5000);
 
     if (hasProfileSelector) {
-      await session.safeClick(LOGIN.profileSelector.professor, { delay: 2000 });
-      console.log('[educadf.login] Perfil Professor selecionado.');
+      await session.safeClick(selector, { delay: 2000 });
+      console.log(`[educadf.login] Perfil selecionado via seletor: ${selector}`);
     } else {
-      console.log('[educadf.login] Tela de perfil não encontrada (pode já estar no formulário).');
+      console.log('[educadf.login] Tela de seleção de perfil não encontrada ou seletor não bate.');
     }
 
     // ====================================================================
@@ -204,41 +208,49 @@ export async function loginEducaDF(session, { login, senha }) {
 
     // ====================================================================
     // VERIFICAÇÃO: Login foi bem-sucedido?
+    // Estratégia multicamadas — cobre Professor, Gestão e Servidor:
+    //   1. URL saiu de /auth → sucesso universal (qualquer portal)
+    //   2. Seletor CSS do dashboard → confirmação extra
+    //   3. Mensagem de erro visível → falha definitiva
+    //   4. Timeout de 45s (portais de Gestão carregam mais devagar)
     // ====================================================================
     console.log('[educadf.login] Verificando resultado do login...');
 
-    // Aguardar resposta: ou o dashboard aparece (sucesso) ou erro aparece (falha)
+    const MAX_WAIT_MS = 45000;
+
     const result = await Promise.race([
-      // Sucesso: dashboard carrega
+      // ── Sucesso: URL saiu de /auth (universal) ──────────────────────────
       page
-        .waitForSelector(LOGIN.state.dashboardLoaded, {
-          timeout: TIMING.loginTimeout,
-        })
-        .then(() => 'SUCCESS'),
+        .waitForFunction(
+          () => !window.location.href.includes('/auth'),
+          { timeout: MAX_WAIT_MS }
+        )
+        .then(() => 'SUCCESS_URL'),
 
-      // Falha: mensagem de erro aparece
+      // ── Sucesso: seletor CSS do dashboard (específico do portal) ───────
       page
-        .waitForSelector(LOGIN.state.errorMessage, {
-          timeout: TIMING.loginTimeout,
-        })
-        .then(() => 'ERROR'),
+        .waitForSelector(LOGIN.state.dashboardLoaded, { timeout: MAX_WAIT_MS })
+        .then(() => 'SUCCESS_CSS'),
 
-      // Timeout: nenhum dos dois apareceu
-      new Promise((resolve) =>
-        setTimeout(() => resolve('TIMEOUT'), TIMING.loginTimeout)
-      ),
+      // ── Falha: mensagem de erro aparece ────────────────────────────────
+      page
+        .waitForSelector(LOGIN.state.errorMessage, { timeout: MAX_WAIT_MS })
+        .then(async () => {
+          const txt = await page.textContent(LOGIN.state.errorMessage).catch(() => '');
+          return txt?.trim() ? 'ERROR' : 'SUCCESS_URL';
+        }),
+
+      // ── Timeout absoluto ───────────────────────────────────────────────
+      new Promise(resolve => setTimeout(() => resolve('TIMEOUT'), MAX_WAIT_MS)),
     ]);
 
-    // Aguardar um pouco após o resultado
-    await session.delay(TIMING.postLoginDelay);
+    await session.delay(1500);
+    const isSuccess = result === 'SUCCESS_URL' || result === 'SUCCESS_CSS';
+    const screenshotAfter = await session.screenshot(isSuccess ? 'login_sucesso' : 'login_falha');
 
-    // Screenshot do resultado
-    const screenshotAfter = await session.screenshot(
-      result === 'SUCCESS' ? 'login_sucesso' : 'login_falha'
-    );
-
-    if (result === 'SUCCESS') {
-      console.log('[educadf.login] ✅ Login bem-sucedido!');
+    if (isSuccess) {
+      const urlAtual = page.url().substring(0, 100);
+      console.log(`[educadf.login] ✅ Login bem-sucedido! (${result} | url: ${urlAtual})`);
       return {
         ok: true,
         message: 'Login realizado com sucesso no EducaDF.',
@@ -249,23 +261,23 @@ export async function loginEducaDF(session, { login, senha }) {
     }
 
     if (result === 'ERROR') {
-      // Tentar capturar a mensagem de erro
-      const errorText = await session.getText(LOGIN.state.errorMessage);
+      const errorText = await session.getText(LOGIN.state.errorMessage).catch(() => null);
       console.warn(`[educadf.login] ❌ Login falhou: ${errorText}`);
       return {
         ok: false,
-        message: `Login falhou: ${errorText || 'Credenciais inválidas.'}`,
+        message: `Login falhou: ${errorText || 'Verifique seu usuário e senha no portal EDUCADF.'}`,
         screenshotPath: screenshotAfter,
         durationMs: Date.now() - startedAt,
         errorCode: 'INVALID_CREDENTIALS',
       };
     }
 
-    // TIMEOUT
-    console.warn('[educadf.login] ⏱️ Timeout ao aguardar resposta do login.');
+    // TIMEOUT — informa URL atual para diagnóstico
+    const urlTimeout = page.url().substring(0, 100);
+    console.warn(`[educadf.login] ⏱️ Timeout. URL atual: ${urlTimeout}`);
     return {
       ok: false,
-      message: 'Timeout ao aguardar resposta do login. O portal pode estar lento ou fora do ar.',
+      message: `Timeout de ${MAX_WAIT_MS / 1000}s. O portal pode estar lento. URL: ${urlTimeout}`,
       screenshotPath: screenshotAfter,
       durationMs: Date.now() - startedAt,
       errorCode: 'LOGIN_TIMEOUT',

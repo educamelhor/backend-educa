@@ -52,11 +52,23 @@ export const LOGIN = {
   // Indicadores de estado
   state: {
     // Mensagem de erro de login (se senha errada)
-    errorMessage:    '.alert-danger, .text-danger',
+    errorMessage:    '.alert-danger, .text-danger, .error-message, [class*="error"]',
     // Indicador de loading
     spinner:         '.spinner-border, .loading',
-    // Sucesso: quando o menu lateral aparece (significa que logou)
-    dashboardLoaded: '.page-content, .vertical-menu, app-sidebar',
+    // Sucesso: qualquer elemento significativo que apareça após login bem-sucedido.
+    // Cobre o portal do Professor (Angular/app-sidebar) E o portal de Gestão/Servidor (Bootstrap/page-content).
+    dashboardLoaded: [
+      '.page-content',
+      '.vertical-menu',
+      'app-sidebar',
+      '.main-panel',
+      '#main-content',
+      '.sidebar-menu',
+      'app-root .container-fluid',
+      '.card-body h4',
+      '[class*="dashboard"]',
+      'nav.navbar + *',
+    ].join(', '),
   },
 };
 

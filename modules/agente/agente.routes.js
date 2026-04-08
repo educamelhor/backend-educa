@@ -133,7 +133,7 @@ router.post('/credenciais', async (req, res) => {
     if (!assertDiretor(req, res)) return;
 
     const escolaId = getEscolaId(req);
-    const { professor_id, educadf_login, educadf_senha } = req.body || {};
+    const { professor_id, educadf_login, educadf_senha, perfil_educadf } = req.body || {};
 
     // professor_id é OPCIONAL — 0 significa credencial da escola/secretaria
     if (!educadf_login || !educadf_senha) {
@@ -144,25 +144,34 @@ router.post('/credenciais', async (req, res) => {
     }
 
     const profId = Number(professor_id) || 0;
+    // perfil_educadf: 'professor' | 'secretario' | 'diretor' | 'gestor'
+    // Se não informado, o frontend/backend detecta automaticamente.
+    const perfilEducadf = String(perfil_educadf || '').toLowerCase() || null;
 
     // Criptografar a senha
     const { encrypted, iv, tag } = encrypt(educadf_senha);
 
     const db = req.db;
 
+    const perfilId = perfilEducadf === 'professor' ? 1
+      : perfilEducadf === 'secretario' ? 2
+      : perfilEducadf === 'diretor' ? 3
+      : (profId > 0 ? 1 : 2); // fallback: professor se tiver professor_id, senão secretaria
+
     // Upsert (inserir ou atualizar se já existir)
     const [result] = await db.query(
       `INSERT INTO agente_credenciais 
-        (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag)
-       VALUES (?, ?, ?, ?, ?, ?)
+        (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
         educadf_login = VALUES(educadf_login),
         educadf_senha_enc = VALUES(educadf_senha_enc),
         educadf_senha_iv = VALUES(educadf_senha_iv),
         educadf_senha_tag = VALUES(educadf_senha_tag),
+        perfil_id = VALUES(perfil_id),
         ativo = 1,
         updated_at = CURRENT_TIMESTAMP`,
-      [escolaId, profId, String(educadf_login).trim(), encrypted, iv, tag]
+      [escolaId, profId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
     );
 
     console.log(`[agente.routes] Credencial salva: escola=${escolaId}, professor=${profId}`);
@@ -261,8 +270,12 @@ router.delete('/credenciais/:id', async (req, res) => {
 
 // ============================================================================
 // POST /api/agente/credenciais/:id/testar
-// Testar login no EducaDF (abre browser, tenta logar, fecha)
+// Inicia o teste de login de forma ASSÍNCRONA (fire-and-forget).
+// Retorna imediatamente com status 'executando'. Use GET /testar/status para polling.
 // ============================================================================
+
+// Cache em memória: `${escolaId}:${credId}` → { status, result, startedAt }
+const _testesEmAndamento = new Map();
 router.post('/credenciais/:id/testar', async (req, res) => {
   try {
     if (!assertDiretor(req, res)) return;
@@ -270,10 +283,10 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     const escolaId = getEscolaId(req);
     const credId = Number(req.params.id);
     const db = req.db;
+    const perfilReq = getPerfil(req);
 
-    // Buscar credencial
     const [rows] = await db.query(
-      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag
+      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
        FROM agente_credenciais
        WHERE id = ? AND escola_id = ? AND ativo = 1
        LIMIT 1`,
@@ -285,51 +298,112 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     }
 
     const cred = rows[0];
+    const testeKey = `${escolaId}:${credId}`;
 
-    // Descriptografar senha
-    const senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+    // Perfil: usa o salvo no banco (definido pelo usuário) como prioridade
+    // Fallback: detecta pelo perfil JWT do usuário logado
+    const PERFIL_ID_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
+    const perfilFinal = PERFIL_ID_MAP[cred.perfil_id] || perfilReq || 'professor';
 
-    // Testar login
-    console.log(`[agente.routes] Testando credencial #${credId} no EducaDF...`);
+    console.log(`[agente.routes] perfil_id no banco: ${cred.perfil_id} → perfil EDUCADF: ${perfilFinal}`);
 
-    const result = await EducaDFBrowser.withSession(
-      async (session) => {
-        return await testCredentials(session, {
-          login: cred.educadf_login,
-          senha: senhaPlain,
-        });
-      },
-      { escolaId, professorId: cred.id, headless: true }
-    );
-
-    // Atualizar timestamp do último teste
-    if (result.ok) {
-      await db.query(
-        'UPDATE agente_credenciais SET ultimo_teste_em = NOW() WHERE id = ?',
-        [credId]
-      );
+    // Se já há um teste em andamento, retorna o status atual sem iniciar novo
+    const emAndamento = _testesEmAndamento.get(testeKey);
+    if (emAndamento && (emAndamento.status === 'executando')) {
+      return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando' });
     }
 
-    // Logar resultado na tabela de auditoria
-    await db.query(
-      `INSERT INTO agente_audit_log (execucao_id, acao, detalhe, screenshot_path, duracao_ms)
-       VALUES (0, 'TESTE_CREDENCIAL', ?, ?, ?)`,
-      [
-        JSON.stringify({ credencial_id: credId, ok: result.ok, errorCode: result.errorCode }),
-        result.screenshotPath,
-        result.durationMs,
-      ]
-    ).catch((e) => console.warn('[agente.routes] Erro ao salvar audit log:', e.message));
+    const senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
 
-    return res.json({
-      ok: result.ok,
-      message: result.message,
-      durationMs: result.durationMs,
-      errorCode: result.errorCode,
-    });
+    const entry = { status: 'executando', result: null, startedAt: Date.now() };
+    _testesEmAndamento.set(testeKey, entry);
+
+    console.log(`[agente.routes] Teste assíncrono iniciado: credencial #${credId} (perfil EDUCADF: ${perfilFinal})`);
+
+    // Dispara o Playwright em background SEM bloquear a resposta HTTP
+    (async () => {
+      try {
+        const result = await EducaDFBrowser.withSession(
+          async (session) => testCredentials(session, {
+            login: cred.educadf_login,
+            senha: senhaPlain,
+            perfil: perfilFinal,
+          }),
+          { escolaId, professorId: cred.id, headless: true }
+        );
+
+        entry.status = result.ok ? 'sucesso' : 'falha';
+        entry.result = result;
+
+        if (result.ok) {
+          await db.query(
+            'UPDATE agente_credenciais SET ultimo_teste_em = NOW() WHERE id = ?',
+            [credId]
+          ).catch(() => {});
+        }
+
+        await db.query(
+          `INSERT INTO agente_audit_log (execucao_id, acao, detalhe, screenshot_path, duracao_ms)
+           VALUES (0, 'TESTE_CREDENCIAL', ?, ?, ?)`,
+          [
+            JSON.stringify({ credencial_id: credId, ok: result.ok, errorCode: result.errorCode }),
+            result.screenshotPath,
+            result.durationMs,
+          ]
+        ).catch(() => {});
+
+        console.log(`[agente.routes] Teste #${credId} finalizado: ${entry.status} (${result.durationMs}ms)`);
+      } catch (err) {
+        entry.status = 'falha';
+        entry.result = { ok: false, message: `Erro interno: ${err.message}`, errorCode: 'UNEXPECTED_ERROR' };
+        console.error(`[agente.routes] Erro no teste assíncrono #${credId}:`, err.message);
+      }
+      // Limpa cache após 5 min
+      setTimeout(() => _testesEmAndamento.delete(testeKey), 5 * 60_000);
+    })();
+
+    // Responde IMEDIATAMENTE ao frontend
+    return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando' });
   } catch (err) {
     console.error('[agente.routes] Erro POST /credenciais/:id/testar:', err);
-    return res.status(500).json({ ok: false, message: `Erro ao testar credencial: ${err.message}` });
+    return res.status(500).json({ ok: false, message: `Erro ao iniciar teste: ${err.message}` });
+  }
+});
+
+// ============================================================================
+// GET /api/agente/credenciais/:id/testar/status
+// Polling: retorna o status atual do teste assíncrono.
+// ============================================================================
+router.get('/credenciais/:id/testar/status', async (req, res) => {
+  try {
+    if (!assertDiretor(req, res)) return;
+
+    const escolaId = getEscolaId(req);
+    const credId = Number(req.params.id);
+    const testeKey = `${escolaId}:${credId}`;
+    const entry = _testesEmAndamento.get(testeKey);
+
+    if (!entry) {
+      // Nenhum teste ativo — verifica banco
+      const db = req.db;
+      const [[cred]] = await db.query(
+        'SELECT ultimo_teste_em FROM agente_credenciais WHERE id = ? AND escola_id = ? LIMIT 1',
+        [credId, escolaId]
+      );
+      return res.json({ ok: null, status: 'sem_teste', ultimo_teste_em: cred?.ultimo_teste_em || null });
+    }
+
+    return res.json({
+      ok: entry.result?.ok ?? null,
+      status: entry.status,
+      message: entry.result?.message || null,
+      errorCode: entry.result?.errorCode || null,
+      durationMs: entry.result?.durationMs || null,
+      elapsedSec: Math.round((Date.now() - entry.startedAt) / 1000),
+    });
+  } catch (err) {
+    console.error('[agente.routes] Erro GET /credenciais/:id/testar/status:', err);
+    return res.status(500).json({ ok: false, message: 'Erro ao consultar status.' });
   }
 });
 
