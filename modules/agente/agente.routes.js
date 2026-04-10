@@ -540,6 +540,37 @@ router.post('/sincronizar', async (req, res) => {
       console.log(`[AGENTE-SYNC] Turmas salvas em: ${turmasFile}`);
     }
 
+    // ── Credenciais EducaDF (fonte unificada: Agente EDUCA) ──
+    // Busca credenciais ativas do banco (mesmas do módulo Agente EDUCA)
+    // e passa para o Python via arquivo temp (evita .env)
+    const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
+    try {
+      const [credRows] = await db.query(
+        `SELECT educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+         FROM agente_credenciais
+         WHERE escola_id = ? AND ativo = 1
+         ORDER BY updated_at DESC LIMIT 1`,
+        [escolaId]
+      );
+      if (credRows.length > 0) {
+        const cred = credRows[0];
+        const senhaDecrypted = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+        const perfilName = PERFIL_MAP[cred.perfil_id] || 'professor';
+        const credFile = path.join(agentDir, `cred_sync_${logId}.json`);
+        fs.writeFileSync(credFile, JSON.stringify({
+          login: cred.educadf_login,
+          senha: senhaDecrypted,
+          perfil: perfilName,
+        }), 'utf-8');
+        args.push('--cred-file', `"${credFile}"`);
+        console.log(`[AGENTE-SYNC] Credenciais EducaDF: login=${cred.educadf_login}, perfil=${perfilName}`);
+      } else {
+        console.warn('[AGENTE-SYNC] AVISO: Nenhuma credencial ativa encontrada! O agente usará fallback do .env');
+      }
+    } catch (credErr) {
+      console.error('[AGENTE-SYNC] Erro ao ler credenciais do banco:', credErr.message);
+    }
+
     // Token e escola para importação
     // IMPORTANTE: Salvar token em arquivo temp para evitar problemas de escape
     // no Windows (tokens JWT longos eram truncados/corrompidos pelo shell,
@@ -577,10 +608,15 @@ router.post('/sincronizar', async (req, res) => {
     const cmd = args.join(' ');
     console.log(`[AGENTE-SYNC] Disparando: ${cmd.substring(0, 120)}...`);
 
+    // Marca o início para filtrar relatórios (evitar pegar de sync anterior)
+    const syncStartTime = Date.now();
+
     // Executa em background
+    // 30 min (1800s) — 40 turmas × ~20s/turma + overhead de login/filtros
+    const SYNC_TIMEOUT_MS = 1_800_000;
     const child = exec(cmd, {
       cwd: agentDir,
-      timeout: 600000,
+      timeout: SYNC_TIMEOUT_MS,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
     });
 
@@ -614,17 +650,125 @@ router.post('/sincronizar', async (req, res) => {
         const downloadsDir = path.join(agentDir, 'downloads');
         let relatorio = null;
 
-        // Busca o relatório JSON mais recente
+        // Busca o relatório JSON criado APÓS o início desta sync
+        // (evita pegar relatório de uma sync anterior)
         if (fs.existsSync(downloadsDir)) {
           const files = fs.readdirSync(downloadsDir)
             .filter(f => f.startsWith('relatorio_') && f.endsWith('.json'))
+            .filter(f => {
+              try {
+                const stat = fs.statSync(path.join(downloadsDir, f));
+                return stat.mtimeMs >= syncStartTime - 5000; // margem de 5s
+              } catch { return false; }
+            })
             .sort()
             .reverse();
 
           if (files.length > 0) {
             const content = fs.readFileSync(path.join(downloadsDir, files[0]), 'utf-8');
             relatorio = JSON.parse(content);
+            console.log(`[AGENTE-SYNC] Relatório JSON encontrado: ${files[0]}`);
           }
+        }
+
+        // ── FALLBACK: se não encontrou relatório JSON, gera a partir do stdout ──
+        // Isso acontece quando o agente é encerrado (code=null/timeout) antes de
+        // salvar o JSON, mas o stdout capturou toda a saída com os resultados.
+        if (!relatorio && stdout.length > 100) {
+          console.log(`[AGENTE-SYNC] Sem relatório JSON — gerando a partir do stdout (${stdout.length} chars)`);
+
+          // ── Parseia o stdout do PYTHON (não do Node.js!) ──
+          // Python importador.py imprime: "[IMPORT] OK: loc=36 ins=0 reat=0 exist=36 pend=0"
+          const importOkRegex = /\[IMPORT\]\s*OK:\s*loc=(\d+)\s*ins=(\d+)\s*reat=(\d+)\s*exist=(\d+)(?:\s*pend=(\d+))?/g;
+          const turmaLines = stdout.match(/---\s*Turma\s+\d+\/\d+:\s*.+?\s*---/g) || [];
+          const pdfOkLines = stdout.match(/\[IMPORT\]\s*OK:/g) || [];
+
+          let totalLoc = 0, totalIns = 0, totalReat = 0, totalInativ = 0, totalJaExistiam = 0, totalPendentes = 0;
+          const detalhes = [];
+          let m;
+          while ((m = importOkRegex.exec(stdout)) !== null) {
+            const loc = Number(m[1]), ins = Number(m[2]), reat = Number(m[3]), exist = Number(m[4]), pend = Number(m[5] || 0);
+            totalLoc += loc;
+            totalIns += ins;
+            totalReat += reat;
+            totalJaExistiam += exist;
+            totalPendentes += pend;
+            detalhes.push({ localizados: loc, inseridos: ins, reativados: reat, jaExistiam: exist, pendentesInativacao: pend, status: 'sucesso' });
+          }
+
+          const pdfsOk = pdfOkLines.length || detalhes.length;
+
+          // Conta turmas que o scraper iniciou no stdout ("--- Turma N/M: ... ---")
+          // Mas o TOTAL REAL de turmas é o M do "Turma N/M" (não o número de linhas)
+          let turmasTotal = turmaLines.length || pdfsOk;
+          if (turmaLines.length > 0) {
+            // Extrai o "M" de "Turma 11/40"
+            const totalMatch = turmaLines[turmaLines.length - 1].match(/\d+\/(\d+)/);
+            if (totalMatch) turmasTotal = Number(totalMatch[1]);
+          } else if (turmasEscola.length > 0) {
+            turmasTotal = turmasEscola.length;
+          }
+
+          // Distingue entre falha real de download e turma não processada (timeout)
+          // pdfFalhaLine: linhas com "[PDF] FALHA:" no stdout
+          const pdfFalhaLines = stdout.match(/\[PDF\]\s*FALHA:/g) || [];
+          const turmaNotFoundLines = stdout.match(/\[SKIP\].*não encontrada/g) || [];
+          const pdsFalhaReal = pdfFalhaLines.length + turmaNotFoundLines.length;
+          const pdfsProcessados = pdfsOk + pdsFalhaReal;
+          const pdfsNaoProcessados = Math.max(0, turmasTotal - pdfsProcessados);
+
+          // Status: se houve timeout (code=null) → parcial com motivo
+          const duracaoS = Math.round((Date.now() - syncStartTime) / 1000);
+          const isTimeout = code === null || duracaoS >= (SYNC_TIMEOUT_MS / 1000 - 10);
+          let syncStatus, motivoParcial;
+          if (code === 0 && pdfsOk >= turmasTotal) {
+            syncStatus = 'sucesso';
+          } else if (pdfsOk > 0) {
+            syncStatus = 'parcial';
+            if (isTimeout) {
+              motivoParcial = `Tempo máximo excedido (${duracaoS}s). Processadas ${pdfsOk} de ${turmasTotal} turmas. Aumente o timeout ou execute em horário de menor carga.`;
+            } else if (pdsFalhaReal > 0) {
+              motivoParcial = `${pdsFalhaReal} turma(s) falharam no download. ${pdfsNaoProcessados > 0 ? `${pdfsNaoProcessados} não processada(s).` : ''}`;
+            }
+          } else {
+            syncStatus = 'falha';
+          }
+
+          relatorio = {
+            status: syncStatus,
+            motivo_parcial: motivoParcial || null,
+            data_execucao: new Date(syncStartTime).toISOString(),
+            _gerado_de: 'stdout_fallback',
+            etapa_importacao: {
+              total_turmas: turmasTotal,
+              sucesso: pdfsOk,
+              erro: pdsFalhaReal,
+              nao_processadas: pdfsNaoProcessados,
+              total_localizados: totalLoc,
+              total_inseridos: totalIns,
+              total_reativados: totalReat,
+              total_inativados: totalInativ,
+              total_jaExistiam: totalJaExistiam,
+              detalhes,
+            },
+            resumo: {
+              pdfs_baixados: pdfsOk,
+              pdfs_falha: pdsFalhaReal,
+              pdfs_nao_processados: pdfsNaoProcessados,
+              alunos_localizados: totalLoc,
+              alunos_inseridos: totalIns,
+              alunos_jaExistiam: totalJaExistiam,
+              alunos_reativados: totalReat,
+              alunos_inativados: totalInativ,
+              turmas_ok: pdfsOk,
+              turmas_total: turmasTotal,
+              turmas_vazias: pdfsOk > 0 ? 0 : undefined,
+              total_alunos_verificados: totalLoc,
+              duracao_s: duracaoS,
+              motivo_parcial: motivoParcial || null,
+            },
+          };
+          console.log(`[AGENTE-SYNC] Resumo do stdout: ${pdfsOk}/${turmasTotal} PDFs (${pdsFalhaReal} falhas, ${pdfsNaoProcessados} não processadas), ${totalLoc} loc, ${totalJaExistiam} exist, ${totalIns} ins`);
         }
 
         await db.query(

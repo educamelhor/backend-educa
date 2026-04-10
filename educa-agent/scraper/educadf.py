@@ -222,10 +222,38 @@ async def selecionar_ng_select(page: Page, placeholder: str, valor: str, timeout
 # FLUXO PRINCIPAL
 # ═══════════════════════════════════════════════════
 
-async def login(page: Page) -> bool:
-    """Login: acessa página do Professor, preenche matrícula+senha, clica Acessar."""
-    print("[LOGIN] Acessando página de login Professor...")
-    await page.goto(f"{EDUCADF_URL}/auth/login?id=1", wait_until="networkidle", timeout=30000)
+# Mapeamento de perfil → ID de login no EducaDF
+# Professor=1, Estudante=2, Gestão=3, Servidor=4
+PERFIL_LOGIN_ID = {
+    "professor": 1,
+    "secretario": 3,   # secretário loga como Gestão
+    "diretor": 3,      # diretor/gestor loga como Gestão
+    "vice_diretor": 3,
+    "gestao": 3,
+    "servidor": 4,
+}
+
+
+async def login(page: Page, matricula: str = None, senha: str = None, perfil: str = None) -> bool:
+    """
+    Login: acessa página do perfil correto, preenche matrícula+senha, clica Acessar.
+    
+    Args:
+        page: Página Playwright ativa.
+        matricula: Matrícula/CPF. Se None, usa EDUCADF_MATRICULA do .env.
+        senha: Senha. Se None, usa EDUCADF_SENHA do .env.
+        perfil: 'professor' | 'secretario' | 'diretor' | etc. Se None, padrão 'professor'.
+    """
+    # Fallback para config.py (.env)
+    mat = matricula or EDUCADF_MATRICULA
+    pwd = senha or EDUCADF_SENHA
+    prf = (perfil or "professor").lower().strip()
+    
+    login_id = PERFIL_LOGIN_ID.get(prf, 1)
+    perfil_label = prf.upper()
+    
+    print(f"[LOGIN] Acessando página de login {perfil_label} (id={login_id})...")
+    await page.goto(f"{EDUCADF_URL}/auth/login?id={login_id}", wait_until="networkidle", timeout=30000)
     await page.wait_for_timeout(3000)
     
     # Remove backdrops/cookies que bloqueiam
@@ -243,9 +271,9 @@ async def login(page: Page) -> bool:
     await remover_backdrops(page)
     
     # Preenche credenciais
-    await page.locator("#username").fill(EDUCADF_MATRICULA)
-    await page.locator("#password-input").fill(EDUCADF_SENHA)
-    print(f"[LOGIN] Credenciais preenchidas (mat: {EDUCADF_MATRICULA})")
+    await page.locator("#username").fill(mat)
+    await page.locator("#password-input").fill(pwd)
+    print(f"[LOGIN] Credenciais preenchidas (mat: {mat}, perfil: {perfil_label})")
     
     # Clica Acessar
     try:
@@ -395,9 +423,8 @@ async def clicar_filtrar(page: Page):
     """Clica em 'Filtrar' e aguarda resultados."""
     print("  [FILTRAR] Clicando...")
     await page.locator("button:has-text('Filtrar')").first.click()
-    await page.wait_for_timeout(2000)
     await page.wait_for_load_state("networkidle", timeout=30000)
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(800)
     print("  [FILTRAR] OK — resultados carregados")
 
 
@@ -577,11 +604,12 @@ async def configurar_colunas(page: Page):
         await page.screenshot(path=str(DOWNLOAD_DIR / "debug_colunas.png"))
 
 
-async def baixar_pdf(page: Page, turma_educa: str) -> Path | None:
+async def baixar_pdf(page: Page, turma_educa: str, max_retries: int = 2) -> Path | None:
     """
     Clica no botão PDF (btn-soft-danger, vermelho) para baixar.
     Salva com o nome no padrão EDUCA.MELHOR (ex: "7º ANO A.pdf").
     Se o arquivo existente estiver bloqueado, usa nome temporário.
+    Inclui retry automático em caso de falha.
     """
     dest = DOWNLOAD_DIR / f"{turma_educa}.pdf"
     print(f"  [PDF] Baixando -> {dest.name}...")
@@ -597,37 +625,67 @@ async def baixar_pdf(page: Page, turma_educa: str) -> Path | None:
             dest = DOWNLOAD_DIR / f"{turma_educa}_{ts}.pdf"
             print(f"  [PDF] Arquivo anterior bloqueado, salvando como {dest.name}")
     
-    try:
-        # Botão PDF = btn-soft-danger (vermelho)
-        pdf_btn = page.locator("button.btn-soft-danger.border-danger").first
-        
-        async with page.expect_download(timeout=30000) as dl_info:
-            await pdf_btn.click()
-        
-        download: Download = await dl_info.value
-        await download.save_as(str(dest))
-        
-        size = dest.stat().st_size
-        print(f"  [PDF] OK: {dest.name} ({size:,} bytes)")
-        return dest
-        
-    except Exception as e:
-        print(f"  [PDF] FALHA: {e}")
-        await page.screenshot(path=str(DOWNLOAD_DIR / f"debug_pdf_{turma_educa}.png"))
-        return None
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            # Botão PDF = btn-soft-danger (vermelho)
+            pdf_btn = page.locator("button.btn-soft-danger.border-danger").first
+            
+            # Timeout crescente: 30s, 45s, 60s
+            dl_timeout = 30000 + (attempt * 15000)
+            
+            async with page.expect_download(timeout=dl_timeout) as dl_info:
+                await pdf_btn.click()
+            
+            download: Download = await dl_info.value
+            await download.save_as(str(dest))
+            
+            size = dest.stat().st_size
+            if size < 500:
+                print(f"  [PDF] AVISO: arquivo muito pequeno ({size} bytes) — possível erro")
+                last_error = f"Arquivo muito pequeno ({size} bytes)"
+                if attempt < max_retries:
+                    print(f"  [PDF] Tentativa {attempt+1}/{max_retries+1} falhou — retry...")
+                    await page.wait_for_timeout(2000)
+                    continue
+                return None
+            
+            suffix = f" (tentativa {attempt+1})" if attempt > 0 else ""
+            print(f"  [PDF] OK: {dest.name} ({size:,} bytes){suffix}")
+            return dest
+            
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                print(f"  [PDF] Tentativa {attempt+1}/{max_retries+1} falhou: {e} — retry em 3s...")
+                await page.wait_for_timeout(3000)
+            else:
+                print(f"  [PDF] FALHA após {max_retries+1} tentativas: {last_error}")
+                await page.screenshot(path=str(DOWNLOAD_DIR / f"debug_pdf_{turma_educa}.png"))
+    
+    return None
 
 
 # ═══════════════════════════════════════════════════
 # ORQUESTRADOR
 # ═══════════════════════════════════════════════════
 
-async def executar_scraping(turmas_filtro: list[str] | None = None, headless: bool = True) -> list[dict]:
+async def executar_scraping(
+    turmas_filtro: list[str] | None = None,
+    headless: bool = True,
+    matricula: str = None,
+    senha: str = None,
+    perfil: str = None,
+) -> list[dict]:
     """
     Executa o fluxo completo de scraping.
     
     Args:
         turmas_filtro: Lista de nomes (formato educadf) para processar. None = todas.
         headless: True=sem interface, False=visível (debug).
+        matricula: Matrícula/CPF para login. None = usa .env.
+        senha: Senha para login. None = usa .env.
+        perfil: Perfil no EducaDF ('professor'|'secretario'|'diretor'). None = 'professor'.
     
     Returns:
         Lista de resultados por turma.
@@ -651,8 +709,8 @@ async def executar_scraping(turmas_filtro: list[str] | None = None, headless: bo
         page = await context.new_page()
         
         try:
-            # 1. Login
-            if not await login(page):
+            # 1. Login (usa credenciais passadas ou fallback para .env)
+            if not await login(page, matricula=matricula, senha=senha, perfil=perfil):
                 return [{"status": "erro", "error": "Falha no login"}]
             
             # 2. Navegar até Ficha do Estudante
@@ -686,8 +744,18 @@ async def executar_scraping(turmas_filtro: list[str] | None = None, headless: bo
             
             # 5. Loop: para cada turma → selecionar → filtrar → configurar colunas (1x) → PDF
             for i, turma_educadf in enumerate(turmas, start=1):
+                # ── Verifica se foi solicitado shutdown (SIGTERM do timeout) ──
+                try:
+                    from agent import _shutdown_requested
+                    if _shutdown_requested:
+                        print(f"\n[SCRAPING] ⚠ Shutdown solicitado — interrompendo no turma {i}/{len(turmas)}")
+                        break
+                except ImportError:
+                    pass
+
                 turma_educa = educadf_to_educa(turma_educadf)
                 print(f"\n--- Turma {i}/{len(turmas)}: {turma_educadf} ---")
+                sys.stdout.flush()  # Garante que o backend captura esta linha
                 
                 try:
                     # Limpa dropdown antes de selecionar (exceto na primeira)
@@ -715,15 +783,9 @@ async def executar_scraping(turmas_filtro: list[str] | None = None, headless: bo
                     await clicar_filtrar(page)
                     
                     # ── Configurar colunas APÓS o primeiro Filtrar ──
-                    # O botão "Escolher Colunas" (btn-soft-dark) só aparece na barra
-                    # de ferramentas ACIMA da tabela de resultados, então só fica
-                    # disponível depois que os dados foram carregados.
-                    # Desmarca PENDÊNCIAS, SITUAÇÃO, AÇÕES uma vez — persiste na sessão.
                     if not colunas_configuradas:
                         await configurar_colunas(page)
                         colunas_configuradas = True
-                        # Re-filtrar para que o PDF da primeira turma também
-                        # já venha sem as colunas extras
                         await clicar_filtrar(page)
                     
                     pdf = await baixar_pdf(page, turma_educa)
@@ -745,8 +807,9 @@ async def executar_scraping(turmas_filtro: list[str] | None = None, headless: bo
                     })
                     print(f"  ERRO: {e}")
                 
-                # Pausa entre turmas
-                await page.wait_for_timeout(1000)
+                # Pausa entre turmas (breve — já temos waits na seleção/filtro)
+                await page.wait_for_timeout(300)
+                sys.stdout.flush()  # Garante que o backend captura saída
         
         except Exception as e:
             print(f"ERRO GERAL: {e}")

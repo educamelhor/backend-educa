@@ -18,6 +18,7 @@ import sys
 import io
 import json
 import time
+import signal
 from pathlib import Path
 from datetime import datetime
 
@@ -27,6 +28,23 @@ if hasattr(sys.stdout, 'buffer') and getattr(sys.stdout, 'encoding', '').lower()
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
     except:
         pass
+
+# Flag global para interrupção graciosa (SIGTERM do timeout do backend)
+_shutdown_requested = False
+
+def _handle_shutdown(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+    print(f"\n[AGENTE] ⚠ Sinal {signum} recebido — finalizando graciosamente...")
+    sys.stdout.flush()
+
+# Registra handlers (SIGTERM no Linux, SIGBREAK no Windows)
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
+try:
+    signal.signal(signal.SIGBREAK, _handle_shutdown)  # Windows
+except AttributeError:
+    pass
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scraper.educadf import executar_scraping
@@ -203,6 +221,9 @@ async def sincronizar(
     escola_id: int | None = None,
     apenas_scraping: bool = False,
     api_url: str | None = None,
+    matricula: str | None = None,
+    senha: str | None = None,
+    perfil: str | None = None,
 ) -> dict:
     """
     Executa o fluxo completo de sincronização:
@@ -217,6 +238,10 @@ async def sincronizar(
         token: JWT do EDUCA.MELHOR. Se None, só faz scraping.
         escola_id: ID da escola. Obrigatório se token fornecido.
         apenas_scraping: Se True, só baixa os PDFs sem importar.
+        api_url: URL base da API.
+        matricula: Matrícula/CPF para login no EducaDF.
+        senha: Senha para login no EducaDF.
+        perfil: Perfil no EducaDF ('professor'|'secretario'|'diretor').
     
     Returns:
         Relatório consolidado com resultados.
@@ -262,6 +287,9 @@ async def sincronizar(
     resultados_scraping = await executar_scraping(
         turmas_filtro=turmas_filtro,
         headless=headless,
+        matricula=matricula,
+        senha=senha,
+        perfil=perfil,
     )
 
     pdfs_ok = sum(1 for r in resultados_scraping if r.get("status") == "pdf_baixado")
@@ -314,6 +342,7 @@ async def sincronizar(
         total_reativados = sum(r.get("reativados", 0) for r in resultados_import)
         total_inativados = sum(r.get("inativados", 0) for r in resultados_import)
         total_localizados = sum(r.get("localizados", 0) for r in resultados_import)
+        total_jaExistiam = sum(r.get("jaExistiam", 0) for r in resultados_import)
 
         relatorio["etapa_importacao"] = {
             "total_turmas": len(resultados_import),
@@ -324,6 +353,7 @@ async def sincronizar(
             "total_reativados": total_reativados,
             "total_inativados": total_inativados,
             "total_localizados": total_localizados,
+            "total_jaExistiam": total_jaExistiam,
             "detalhes": resultados_import,
         }
 
@@ -347,6 +377,7 @@ async def sincronizar(
         "erros_importacao": relatorio.get("etapa_importacao", {}).get("erro", 0),
         "alunos_localizados": relatorio.get("etapa_importacao", {}).get("total_localizados", 0),
         "alunos_inseridos": relatorio.get("etapa_importacao", {}).get("total_inseridos", 0),
+        "alunos_jaExistiam": relatorio.get("etapa_importacao", {}).get("total_jaExistiam", 0),
         "alunos_reativados": relatorio.get("etapa_importacao", {}).get("total_reativados", 0),
         "alunos_inativados": relatorio.get("etapa_importacao", {}).get("total_inativados", 0),
         "duracao_s": duracao,
@@ -406,6 +437,7 @@ async def sincronizar(
         print(f"  Importados: {imp['sucesso']}/{imp['total_turmas']}")
         print(f"  Alunos localizados nos PDFs: {imp.get('total_localizados',0)}")
         print(f"  Alunos: +{imp.get('total_inseridos',0)} inseridos, "
+              f"={imp.get('total_jaExistiam',0)} já existiam, "
               f"+{imp.get('total_reativados',0)} reativados, "
               f"-{imp.get('total_inativados',0)} inativados")
     if relatorio.get("etapa_verificacao"):
@@ -427,6 +459,7 @@ async def sincronizar(
     with open(relatorio_path, "w", encoding="utf-8") as f:
         json.dump(relatorio, f, ensure_ascii=False, indent=2)
     print(f"[AGENTE] Relatorio salvo: {relatorio_path}")
+    sys.stdout.flush()
 
     return relatorio
 
@@ -445,6 +478,7 @@ if __name__ == "__main__":
     parser.add_argument("--visible", action="store_true", help="Mostra navegador")
     parser.add_argument("--token", type=str, help="JWT token do EDUCA.MELHOR")
     parser.add_argument("--token-file", type=str, help="Arquivo com JWT token (evita problemas de shell escaping)")
+    parser.add_argument("--cred-file", type=str, help="Arquivo JSON com {login, senha, perfil} do EducaDF")
     parser.add_argument("--escola", type=int, help="ID da escola no EDUCA.MELHOR")
     parser.add_argument("--apenas-scraping", action="store_true", help="So baixa PDFs, sem importar")
     parser.add_argument("--api-url", type=str, help="URL base da API EDUCA.MELHOR (override do .env)")
@@ -453,7 +487,9 @@ if __name__ == "__main__":
     # Monta lista de turmas (formato educadf)
     turmas = None
     if args.turma:
-        turmas = [args.turma]
+        turma_convertida = educa_to_educadf(args.turma)
+        print(f"[CLI] Turma: {args.turma} → {turma_convertida} (formato educadf)")
+        turmas = [turma_convertida]
     elif args.turmas_file:
         try:
             turmas_file = Path(args.turmas_file)
@@ -490,14 +526,52 @@ if __name__ == "__main__":
     if not token:
         print("[CLI] ⚠ AVISO: Nenhum token fornecido — importação será PULADA.")
 
-    relatorio = asyncio.run(sincronizar(
-        turmas_filtro=turmas,
-        headless=not args.visible,
-        token=token,
-        escola_id=args.escola,
-        apenas_scraping=args.apenas_scraping,
-        api_url=args.api_url,
-    ))
+    # Credenciais do EducaDF: prioriza --cred-file sobre .env
+    cred_login = None
+    cred_senha = None
+    cred_perfil = None
+    if args.cred_file:
+        try:
+            cred_path = Path(args.cred_file)
+            cred_data = json.loads(cred_path.read_text(encoding='utf-8'))
+            cred_login = cred_data.get('login')
+            cred_senha = cred_data.get('senha')
+            cred_perfil = cred_data.get('perfil')
+            print(f"[CLI] Credenciais EducaDF carregadas (login: {cred_login}, perfil: {cred_perfil})")
+            # Limpa arquivo temporário (contém senha)
+            try:
+                cred_path.unlink()
+            except:
+                pass
+        except Exception as e:
+            print(f"[CLI] ERRO ao ler --cred-file: {e}")
+
+    try:
+        relatorio = asyncio.run(sincronizar(
+            turmas_filtro=turmas,
+            headless=not args.visible,
+            token=token,
+            escola_id=args.escola,
+            apenas_scraping=args.apenas_scraping,
+            api_url=args.api_url,
+            matricula=cred_login,
+            senha=cred_senha,
+            perfil=cred_perfil,
+        ))
+    except Exception as e:
+        # Garante que SEMPRE salva um relatório JSON, mesmo em caso de crash
+        import traceback
+        traceback.print_exc()
+        relatorio = {
+            "status": "erro",
+            "error": str(e),
+            "data_execucao": datetime.now().isoformat(),
+            "resumo": {"erro": str(e)},
+        }
+        relatorio_path = DOWNLOAD_DIR / f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(relatorio_path, "w", encoding="utf-8") as f:
+            json.dump(relatorio, f, ensure_ascii=False, indent=2)
+        print(f"[AGENTE] Relatório de erro salvo: {relatorio_path}")
 
     # Exit code baseado no status
     if relatorio["status"] in ("sucesso", "scraping_concluido"):
