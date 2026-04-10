@@ -22,6 +22,46 @@ function anoLetivoPadrao() {
 }
 
 /**
+ * RECALL — Verifica se há itens de avaliação sem tipo_avaliacao preenchido
+ * Retorna a lista de planos afetados para que o professor atualize.
+ * Rota DEVE vir antes de /:id para não ser capturada como parâmetro.
+ */
+router.get("/recall/check", async (req, res) => {
+  try {
+    const { escola_id, usuario_id } = req.user;
+
+    const [pendentes] = await pool.query(
+      `SELECT DISTINCT
+         pa.id AS plano_id,
+         pa.turmas,
+         pa.disciplina,
+         pa.bimestre,
+         pa.status,
+         COUNT(ia.id) AS itens_sem_tipo
+       FROM itens_avaliacao ia
+       JOIN planos_avaliacao pa ON pa.id = ia.plano_id
+       WHERE pa.escola_id = ?
+         AND pa.usuario_id = ?
+         AND (ia.tipo_avaliacao IS NULL OR ia.tipo_avaliacao = '')
+       GROUP BY pa.id
+       ORDER BY pa.disciplina, pa.turmas`,
+      [escola_id, usuario_id]
+    );
+
+    return res.json({
+      ok: true,
+      pendente: pendentes.length > 0,
+      total_planos: pendentes.length,
+      total_itens: pendentes.reduce((acc, p) => acc + p.itens_sem_tipo, 0),
+      planos: pendentes,
+    });
+  } catch (error) {
+    console.error("Erro ao verificar recall:", error);
+    return res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
+
+/**
  * 1) GET /api/avaliacoes
  * Busca todos os planos de avaliação de uma escola, opcionalmente filtrando por ano, disciplina, bimestre.
  */
@@ -84,7 +124,7 @@ router.get("/solicitacoes/pendentes", async (req, res) => {
        LEFT JOIN usuarios u ON u.id = pa.usuario_id
        WHERE pa.escola_id = ?
          AND pa.ano = ?
-         AND pa.status = 'ENVIADO'
+         AND pa.status IN ('ENVIADO', 'LIBERACAO_SOLICITADA')
        ORDER BY pa.updated_at DESC`,
       [escola_id, ano]
     );
@@ -92,6 +132,41 @@ router.get("/solicitacoes/pendentes", async (req, res) => {
     return res.json({ ok: true, solicitacoes: planos });
   } catch (error) {
     console.error("Erro ao listar solicitações pendentes:", error);
+    return res.status(500).json({ ok: false, error: "Erro interno do servidor." });
+  }
+});
+
+/**
+ * SOLICITAR LIBERAÇÃO — Professor solicita desbloqueio de um PAP aprovado
+ * Muda status de APROVADO -> LIBERACAO_SOLICITADA para a Direção ver
+ */
+router.post("/solicitar-liberacao/:id", async (req, res) => {
+  try {
+    const { escola_id, usuario_id } = req.user;
+    const { id } = req.params;
+    const { motivo } = req.body;
+
+    const [[plano]] = await pool.query(
+      `SELECT id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ? AND usuario_id = ?`,
+      [id, escola_id, usuario_id]
+    );
+
+    if (!plano) {
+      return res.status(404).json({ ok: false, error: "Plano não encontrado." });
+    }
+
+    if (plano.status !== "APROVADO") {
+      return res.status(400).json({ ok: false, error: `Apenas planos APROVADOS podem solicitar liberação. Status atual: ${plano.status}` });
+    }
+
+    await pool.query(
+      `UPDATE planos_avaliacao SET status = 'LIBERACAO_SOLICITADA', motivo_devolucao = ?, updated_at = NOW() WHERE id = ?`,
+      [motivo || "Professor solicitou liberação para edição.", id]
+    );
+
+    return res.json({ ok: true, message: "Solicitação de liberação registrada com sucesso." });
+  } catch (error) {
+    console.error("Erro ao solicitar liberação:", error);
     return res.status(500).json({ ok: false, error: "Erro interno do servidor." });
   }
 });
@@ -188,8 +263,9 @@ router.post("/", async (req, res) => {
         const insertData = itens.map(i => [
           planoId,
           i.atividade,
-          toDateOnly(i.data_inicio),
-          toDateOnly(i.data_final),
+          i.tipo_avaliacao || null,
+          toDateOnly(i.data || i.data_inicio),
+          toDateOnly(i.data_final || i.data || i.data_inicio),
           i.nota_total || 0,
           i.oportunidades || 1,
           i.nota_invertida || 0,
@@ -199,7 +275,7 @@ router.post("/", async (req, res) => {
 
         await conn.query(
           `INSERT INTO itens_avaliacao 
-           (plano_id, atividade, data_inicio, data_final, nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
+           (plano_id, atividade, tipo_avaliacao, data_inicio, data_final, nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
            VALUES ?`,
           [insertData]
         );
@@ -230,7 +306,7 @@ router.patch("/:id/status", async (req, res) => {
     const { id } = req.params;
     const { status, motivo } = req.body;
 
-    const statusPermitidos = ["APROVADO", "DEVOLVIDO", "RASCUNHO"];
+    const statusPermitidos = ["APROVADO", "DEVOLVIDO", "RASCUNHO", "LIBERACAO_SOLICITADA"];
     if (!status || !statusPermitidos.includes(status)) {
       return res.status(400).json({ error: `Status inválido. Permitidos: ${statusPermitidos.join(", ")}` });
     }
