@@ -51,7 +51,8 @@ function getPerfil(req) {
   return String(req?.user?.perfil ?? '').toLowerCase();
 }
 
-/** Somente diretor/admin/secretario pode gerenciar credenciais */
+/** Verifica permissão: qualquer usuário logado pode gerenciar suas PRÓPRIAS credenciais.
+ *  Somente gestores/admin podem ver credenciais de OUTROS usuários. */
 function assertDiretor(req, res) {
   const perfil = getPerfil(req);
   if (!['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil)) {
@@ -59,6 +60,16 @@ function assertDiretor(req, res) {
       ok: false,
       message: 'Acesso negado. Somente diretor/admin/secretário pode gerenciar credenciais do agente.',
     });
+    return false;
+  }
+  return true;
+}
+
+/** Qualquer usuário logado pode acessar (sem restrição de perfil) */
+function assertLogado(req, res) {
+  const uid = getUserId(req);
+  if (!uid) {
+    res.status(401).json({ ok: false, message: 'Usuário não autenticado.' });
     return false;
   }
   return true;
@@ -124,61 +135,70 @@ router.get('/status', async (req, res) => {
 
 // ============================================================================
 // POST /api/agente/credenciais
-// Cadastrar credencial de acesso ao EducaDF
-// Suporta tanto credenciais de professor (professor_id > 0) quanto
-// credenciais de escola/secretaria (professor_id = 0 ou ausente).
+// Cadastrar/atualizar credencial PESSOAL do usuário logado.
+// Qualquer perfil pode cadastrar a própria credencial (professor, diretor, etc.)
+// A chave de upsert é (escola_id, usuario_id) — cada usuário tem 1 credencial.
 // ============================================================================
 router.post('/credenciais', async (req, res) => {
   try {
-    if (!assertDiretor(req, res)) return;
+    if (!assertLogado(req, res)) return;
 
     const escolaId = getEscolaId(req);
-    const { professor_id, educadf_login, educadf_senha, perfil_educadf } = req.body || {};
+    const usuarioId = getUserId(req);
+    const { educadf_login, educadf_senha, perfil_educadf } = req.body || {};
 
-    // professor_id é OPCIONAL — 0 significa credencial da escola/secretaria
     if (!educadf_login || !educadf_senha) {
       return res.status(400).json({
         ok: false,
-        message: 'Campos obrigatórios: educadf_login, educadf_senha.',
+        message: 'Preencha o usuário e a senha do portal EDUCADF.',
       });
     }
 
-    const profId = Number(professor_id) || 0;
-    // perfil_educadf: 'professor' | 'secretario' | 'diretor' | 'gestor'
-    // Se não informado, o frontend/backend detecta automaticamente.
-    const perfilEducadf = String(perfil_educadf || '').toLowerCase() || null;
+    const perfilStr = String(perfil_educadf || '').toLowerCase() || 'professor';
+    const perfilId = perfilStr === 'professor' ? 1
+      : perfilStr === 'secretario' ? 2
+      : perfilStr === 'diretor'    ? 3
+      : 1; // fallback professor
 
-    // Criptografar a senha
+    // Também detecta professor_id para manter compatibilidade com sincronização
+    const professorId = Number(req.body?.professor_id) || 0;
+
     const { encrypted, iv, tag } = encrypt(educadf_senha);
-
     const db = req.db;
 
-    const perfilId = perfilEducadf === 'professor' ? 1
-      : perfilEducadf === 'secretario' ? 2
-      : perfilEducadf === 'diretor' ? 3
-      : (profId > 0 ? 1 : 2); // fallback: professor se tiver professor_id, senão secretaria
-
-    // Upsert (inserir ou atualizar se já existir)
+    // Upsert por (escola_id, usuario_id) — cada usuário tem 1 credencial
     const [result] = await db.query(
-      `INSERT INTO agente_credenciais 
-        (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agente_credenciais
+        (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-        educadf_login = VALUES(educadf_login),
-        educadf_senha_enc = VALUES(educadf_senha_enc),
-        educadf_senha_iv = VALUES(educadf_senha_iv),
-        educadf_senha_tag = VALUES(educadf_senha_tag),
-        perfil_id = VALUES(perfil_id),
-        ativo = 1,
-        updated_at = CURRENT_TIMESTAMP`,
-      [escolaId, profId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+        professor_id        = VALUES(professor_id),
+        educadf_login       = VALUES(educadf_login),
+        educadf_senha_enc   = VALUES(educadf_senha_enc),
+        educadf_senha_iv    = VALUES(educadf_senha_iv),
+        educadf_senha_tag   = VALUES(educadf_senha_tag),
+        perfil_id           = VALUES(perfil_id),
+        ativo               = 1,
+        updated_at          = CURRENT_TIMESTAMP`,
+      [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
     );
 
-    console.log(`[agente.routes] Credencial salva: escola=${escolaId}, professor=${profId}`);
+    const savedId = result.insertId || null;
+    // Se insertId=0 (update), busca o id real
+    let credId = savedId;
+    if (!credId) {
+      const [[row]] = await db.query(
+        'SELECT id FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ? LIMIT 1',
+        [escolaId, usuarioId]
+      );
+      credId = row?.id || null;
+    }
+
+    console.log(`[agente.routes] Credencial salva: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
 
     return res.status(201).json({
       ok: true,
-      id: result.insertId || null,
+      id: credId,
       message: 'Credencial cadastrada com sucesso.',
     });
   } catch (err) {
@@ -189,18 +209,29 @@ router.post('/credenciais', async (req, res) => {
 
 // ============================================================================
 // GET /api/agente/credenciais
-// Listar credenciais (SEM EXIBIR SENHA)
+// Retorna a credencial DO USUÁRIO LOGADO (sem expor senha).
+// Qualquer perfil pode buscar a própria. Gestores recebem todas da escola.
 // ============================================================================
 router.get('/credenciais', async (req, res) => {
   try {
-    if (!assertDiretor(req, res)) return;
+    if (!assertLogado(req, res)) return;
 
     const escolaId = getEscolaId(req);
+    const usuarioId = getUserId(req);
+    const perfil = getPerfil(req);
     const db = req.db;
 
+    // Gestores veem todas as credenciais da escola; demais veem só a própria
+    const isGestor = ['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil);
+    const where = isGestor
+      ? 'c.escola_id = ?'
+      : 'c.escola_id = ? AND c.usuario_id = ?';
+    const params = isGestor ? [escolaId] : [escolaId, usuarioId];
+
     const [rows] = await db.query(
-      `SELECT 
+      `SELECT
         c.id,
+        c.usuario_id,
         c.professor_id,
         c.educadf_login,
         c.perfil_id,
@@ -208,28 +239,26 @@ router.get('/credenciais', async (req, res) => {
         c.ultimo_teste_em,
         c.created_at,
         c.updated_at,
-        p.nome AS professor_nome
+        u.nome AS usuario_nome
        FROM agente_credenciais c
-       LEFT JOIN professores p ON p.id = c.professor_id AND p.escola_id = c.escola_id
-       WHERE c.escola_id = ?
-       ORDER BY p.nome ASC, c.created_at DESC`,
-      [escolaId]
+       LEFT JOIN usuarios u ON u.id = c.usuario_id
+       WHERE ${where} AND c.ativo = 1
+       ORDER BY u.nome ASC, c.created_at DESC`,
+      params
     );
 
-    // NUNCA retornar a senha
     const credenciais = (rows || []).map((r) => ({
       id: r.id,
+      usuario_id: r.usuario_id,
       professor_id: r.professor_id,
-      professor_nome: r.professor_id === 0
-        ? 'Escola / Secretaria'
-        : (r.professor_nome || `Professor #${r.professor_id}`),
+      usuario_nome: r.usuario_nome || `Usuário #${r.usuario_id}`,
       educadf_login: r.educadf_login,
       educadf_senha: '********',  // NUNCA expor
       perfil_id: r.perfil_id,
       ativo: !!r.ativo,
-      ultimo_teste_em: r.ultimo_teste_em,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
+      ultimo_teste_em: toUTC(r.ultimo_teste_em),
+      created_at: toUTC(r.created_at),
+      updated_at: toUTC(r.updated_at),
     }));
 
     return res.json({ ok: true, credenciais });
@@ -278,19 +307,29 @@ router.delete('/credenciais/:id', async (req, res) => {
 const _testesEmAndamento = new Map();
 router.post('/credenciais/:id/testar', async (req, res) => {
   try {
-    if (!assertDiretor(req, res)) return;
+    if (!assertLogado(req, res)) return;
 
     const escolaId = getEscolaId(req);
     const credId = Number(req.params.id);
     const db = req.db;
     const perfilReq = getPerfil(req);
 
+    const usuarioId = getUserId(req);
+    const perfil = getPerfil(req);
+    const isGestor = ['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil);
+
+    // Gestor pode testar qualquer credencial da escola; usuário comum só a própria
+    const testarWhere = isGestor
+      ? 'id = ? AND escola_id = ? AND ativo = 1'
+      : 'id = ? AND escola_id = ? AND usuario_id = ? AND ativo = 1';
+    const testarParams = isGestor ? [credId, escolaId] : [credId, escolaId, usuarioId];
+
     const [rows] = await db.query(
       `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
        FROM agente_credenciais
-       WHERE id = ? AND escola_id = ? AND ativo = 1
+       WHERE ${testarWhere}
        LIMIT 1`,
-      [credId, escolaId]
+      testarParams
     );
 
     if (!rows?.length) {
@@ -376,7 +415,7 @@ router.post('/credenciais/:id/testar', async (req, res) => {
 // ============================================================================
 router.get('/credenciais/:id/testar/status', async (req, res) => {
   try {
-    if (!assertDiretor(req, res)) return;
+    if (!assertLogado(req, res)) return;
 
     const escolaId = getEscolaId(req);
     const credId = Number(req.params.id);
