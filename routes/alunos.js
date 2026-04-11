@@ -1447,6 +1447,64 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
   }
 });
 
+// ─── F.O. COLETIVO: Registro em Lote ────────────────────────────────────────
+// POST /api/alunos/ocorrencias/lote
+// Body: { data, motivo, tipoOcorrencia, descricao, registroInterno, diasSuspensao, alunos:[{alunoId, convocarResponsavel}] }
+router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { data, motivo, tipoOcorrencia, descricao, registroInterno, diasSuspensao, alunos } = req.body;
+
+    if (!data || !motivo) {
+      return res.status(400).json({ message: "Campos obrigatórios: data e motivo." });
+    }
+    if (!Array.isArray(alunos) || alunos.length === 0) {
+      return res.status(400).json({ message: "Informe ao menos um aluno no lote." });
+    }
+
+    let sucesso = 0;
+    let falhas  = 0;
+    const erros = [];
+
+    for (const item of alunos) {
+      const { alunoId, convocarResponsavel } = item;
+      if (!alunoId) { falhas++; continue; }
+      try {
+        await pool.query(
+          `INSERT INTO ocorrencias_disciplinares
+             (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, dias_suspensao)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            alunoId, escola_id, data, motivo,
+            tipoOcorrencia || null,
+            descricao      || null,
+            registroInterno || null,
+            convocarResponsavel ? 1 : 0,
+            diasSuspensao  || null,
+          ]
+        );
+        sucesso++;
+      } catch (innerErr) {
+        console.error(`[Lote] Erro aluno ${alunoId}:`, innerErr);
+        falhas++;
+        erros.push({ alunoId, err: innerErr.message });
+      }
+    }
+
+    return res.status(201).json({
+      message: `${sucesso} registros criados com sucesso.${falhas > 0 ? ` ${falhas} falharam.` : ''}`,
+      total: alunos.length,
+      sucesso,
+      falhas,
+      erros: erros.length > 0 ? erros : undefined,
+    });
+  } catch (err) {
+    console.error("[Lote] Erro geral:", err);
+    return res.status(500).json({ message: "Erro ao registrar lote." });
+  }
+});
+// ─── FIM F.O. COLETIVO ──────────────────────────────────────────────────────
+
 router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) => {
   try {
     const { id, ocorrenciaId } = req.params;
