@@ -1472,21 +1472,55 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
     const usuarioFinalizacaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+    const modo = req.body?.modo || 'presenca'; // 'presenca' | 'telefone' | 'nao_compareceu'
+
+    // Texto de rastreabilidade para registro interno
+    const agora = new Date(Date.now() - 3 * 60 * 60 * 1000); // UTC-3
+    const dataStr = agora.toLocaleDateString('pt-BR') + ' ' + agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+    let registroFinal = '';
+    if (modo === 'telefone') {
+      registroFinal = `[FINALIZAÇÃO] Contato realizado via telefone em ${dataStr}.`;
+    } else if (modo === 'nao_compareceu') {
+      registroFinal = `[FINALIZAÇÃO] Responsável não compareceu. Registro finalizado em ${dataStr}.`;
+    }
+    // modo = 'presenca' → data_comparecimento_responsavel já registra
+
+    // Se modo = 'presenca' → grava data de comparecimento (quando há convocação)
+    // Se modo = 'telefone' ou 'nao_compareceu' → NÃO grava data de comparecimento
+    const setComparecimento = modo === 'presenca'
+      ? `data_comparecimento_responsavel = CASE WHEN convocar_responsavel = 1 THEN DATE_SUB(NOW(), INTERVAL 3 HOUR) ELSE data_comparecimento_responsavel END,`
+      : '';
+
+    // Append ao registro_interno existente (não sobrescreve)
+    const setRegistroInterno = registroFinal
+      ? `registro_interno = CASE 
+           WHEN registro_interno IS NULL OR registro_interno = '' THEN ?
+           ELSE CONCAT(registro_interno, '\\n', ?)
+         END,`
+      : '';
+
+    const params = [];
+    if (registroFinal) {
+      params.push(registroFinal, registroFinal);
+    }
+    params.push(usuarioFinalizacaoId, ocorrenciaId, id, escola_id);
 
     const [result] = await pool.query(
       `UPDATE ocorrencias_disciplinares 
-       SET data_comparecimento_responsavel = CASE WHEN convocar_responsavel = 1 THEN DATE_SUB(NOW(), INTERVAL 3 HOUR) ELSE data_comparecimento_responsavel END,
+       SET ${setComparecimento}
+           ${setRegistroInterno}
            status = 'FINALIZADA',
            usuario_finalizacao_id = ?
        WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
-      [usuarioFinalizacaoId, ocorrenciaId, id, escola_id]
+      params
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Ocorrência não encontrada." });
     }
 
-    res.json({ message: "Ocorrência finalizada com sucesso." });
+    res.json({ message: "Ocorrência finalizada com sucesso.", modo });
   } catch (err) {
     console.error("Erro ao finalizar ocorrência:", err);
     res.status(500).json({ message: "Erro ao finalizar ocorrência." });
