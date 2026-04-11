@@ -376,8 +376,8 @@ app.get("/__build-info", (_req, res) =>
   })
 );
 
-// Health check público (root)
-app.get(["/health", "/healthz"], (_req, res) =>
+// Health check público (root) — inclui /ping para DigitalOcean App Platform
+app.get(["/ping", "/health", "/healthz"], (_req, res) =>
   res.json({
     ok: true,
     status: "UP",

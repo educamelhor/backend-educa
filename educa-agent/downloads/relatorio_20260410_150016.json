@@ -1,0 +1,76 @@
+{
+  "data_execucao": "2026-04-10T14:58:43.499140",
+  "status": "sucesso",
+  "etapa_scraping": {
+    "total_turmas": 1,
+    "pdfs_baixados": 1,
+    "pdfs_falha": 0,
+    "detalhes": [
+      {
+        "turma_educadf": "8º Ano - B",
+        "turma_educa": "8º ANO B",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO B.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      }
+    ]
+  },
+  "etapa_importacao": {
+    "total_turmas": 1,
+    "sucesso": 1,
+    "erro": 0,
+    "skip": 0,
+    "total_inseridos": 0,
+    "total_reativados": 0,
+    "total_inativados": 0,
+    "total_localizados": 36,
+    "total_jaExistiam": 36,
+    "detalhes": [
+      {
+        "turma": "8º ANO B",
+        "status": "sucesso",
+        "localizados": 36,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      }
+    ]
+  },
+  "resumo": {
+    "pdfs_baixados": 1,
+    "pdfs_falha": 0,
+    "importados": 1,
+    "erros_importacao": 0,
+    "alunos_localizados": 36,
+    "alunos_inseridos": 0,
+    "alunos_jaExistiam": 36,
+    "alunos_reativados": 0,
+    "alunos_inativados": 0,
+    "duracao_s": 93.4,
+    "turmas_vazias": 0,
+    "turmas_ok": 1,
+    "turmas_total": 1,
+    "total_alunos_verificados": 1090
+  },
+  "duracao_total_s": 93.4,
+  "etapa_verificacao": {
+    "status": "ok",
+    "turmas_total": 1,
+    "turmas_ok": 1,
+    "turmas_vazias": [],
+    "turmas_erro": [],
+    "total_alunos_verificados": 1090,
+    "detalhes": [
+      {
+        "turma": "8º ANO B",
+        "turma_id": 221,
+        "total_alunos": 1090,
+        "status": "ok"
+      }
+    ]
+  }
+}

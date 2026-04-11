@@ -1,0 +1,1080 @@
+{
+  "data_execucao": "2026-04-10T17:36:21.559889",
+  "status": "sucesso",
+  "etapa_scraping": {
+    "total_turmas": 40,
+    "pdfs_baixados": 40,
+    "pdfs_falha": 0,
+    "detalhes": [
+      {
+        "turma_educadf": "6º Ano - A",
+        "turma_educa": "6º ANO A",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO A.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - B",
+        "turma_educa": "6º ANO B",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO B.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - C",
+        "turma_educa": "6º ANO C",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO C.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - D",
+        "turma_educa": "6º ANO D",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO D.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - E",
+        "turma_educa": "6º ANO E",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO E.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - F",
+        "turma_educa": "6º ANO F",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO F.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - G",
+        "turma_educa": "6º ANO G",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO G.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "6º Ano - H",
+        "turma_educa": "6º ANO H",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO H.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - A",
+        "turma_educa": "7º ANO A",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO A.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - B",
+        "turma_educa": "7º ANO B",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO B.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - C",
+        "turma_educa": "7º ANO C",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO C.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - D",
+        "turma_educa": "7º ANO D",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO D.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - E",
+        "turma_educa": "7º ANO E",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO E.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - F",
+        "turma_educa": "7º ANO F",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO F.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - G",
+        "turma_educa": "7º ANO G",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO G.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - H",
+        "turma_educa": "7º ANO H",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO H.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - I",
+        "turma_educa": "7º ANO I",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO I.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - J",
+        "turma_educa": "7º ANO J",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO J.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - K",
+        "turma_educa": "7º ANO K",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO K.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "7º Ano - L",
+        "turma_educa": "7º ANO L",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\7º ANO L.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - A",
+        "turma_educa": "8º ANO A",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO A.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - B",
+        "turma_educa": "8º ANO B",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO B.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - C",
+        "turma_educa": "8º ANO C",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO C.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - D",
+        "turma_educa": "8º ANO D",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO D.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - E",
+        "turma_educa": "8º ANO E",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO E.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - F",
+        "turma_educa": "8º ANO F",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO F.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - G",
+        "turma_educa": "8º ANO G",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO G.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - H",
+        "turma_educa": "8º ANO H",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO H.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "8º Ano - I",
+        "turma_educa": "8º ANO I",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\8º ANO I.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - A",
+        "turma_educa": "9º ANO A",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO A.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - B",
+        "turma_educa": "9º ANO B",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO B.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - C",
+        "turma_educa": "9º ANO C",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO C.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - D",
+        "turma_educa": "9º ANO D",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO D.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - E",
+        "turma_educa": "9º ANO E",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO E.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - F",
+        "turma_educa": "9º ANO F",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO F.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - G",
+        "turma_educa": "9º ANO G",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO G.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - H",
+        "turma_educa": "9º ANO H",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO H.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - I",
+        "turma_educa": "9º ANO I",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO I.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - J",
+        "turma_educa": "9º ANO J",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO J.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      },
+      {
+        "turma_educadf": "9º Ano - K",
+        "turma_educa": "9º ANO K",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\9º ANO K.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      }
+    ]
+  },
+  "etapa_importacao": {
+    "total_turmas": 40,
+    "sucesso": 40,
+    "erro": 0,
+    "skip": 0,
+    "total_inseridos": 4,
+    "total_reativados": 0,
+    "total_inativados": 0,
+    "total_localizados": 1087,
+    "total_jaExistiam": 1083,
+    "detalhes": [
+      {
+        "turma": "6º ANO A",
+        "status": "sucesso",
+        "localizados": 25,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 25,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO B",
+        "status": "sucesso",
+        "localizados": 15,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 15,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO C",
+        "status": "sucesso",
+        "localizados": 31,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO D",
+        "status": "sucesso",
+        "localizados": 33,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 33,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO E",
+        "status": "sucesso",
+        "localizados": 32,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 32,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO F",
+        "status": "sucesso",
+        "localizados": 31,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO G",
+        "status": "sucesso",
+        "localizados": 32,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 32,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "6º ANO H",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO A",
+        "status": "sucesso",
+        "localizados": 12,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 12,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO B",
+        "status": "sucesso",
+        "localizados": 35,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 35,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO C",
+        "status": "sucesso",
+        "localizados": 36,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO D",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO E",
+        "status": "sucesso",
+        "localizados": 36,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO F",
+        "status": "sucesso",
+        "localizados": 34,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 34,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 1,
+        "pendentesInativacaoLista": [
+          {
+            "id": 3985,
+            "codigo": 318474,
+            "estudante": "DHAVID LUIZ FERREIRA CANDIDO"
+          }
+        ]
+      },
+      {
+        "turma": "7º ANO G",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO H",
+        "status": "sucesso",
+        "localizados": 37,
+        "inseridos": 1,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 2,
+        "pendentesInativacaoLista": [
+          {
+            "id": 4012,
+            "codigo": 377085,
+            "estudante": "ANTONIO GONÇALVES FREITAS"
+          },
+          {
+            "id": 4016,
+            "codigo": 227326,
+            "estudante": "VICTOR VINICIUS RODRIGUES XAVIER"
+          }
+        ]
+      },
+      {
+        "turma": "7º ANO I",
+        "status": "sucesso",
+        "localizados": 35,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 35,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO J",
+        "status": "sucesso",
+        "localizados": 35,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 35,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO K",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "7º ANO L",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO A",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO B",
+        "status": "sucesso",
+        "localizados": 36,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO C",
+        "status": "sucesso",
+        "localizados": 19,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 19,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO D",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO E",
+        "status": "sucesso",
+        "localizados": 36,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 36,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO F",
+        "status": "sucesso",
+        "localizados": 34,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 34,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO G",
+        "status": "sucesso",
+        "localizados": 34,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 34,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 1,
+        "pendentesInativacaoLista": [
+          {
+            "id": 4234,
+            "codigo": 246305,
+            "estudante": "MARCOS PAULO DANTAS SAMPAIO"
+          }
+        ]
+      },
+      {
+        "turma": "8º ANO H",
+        "status": "sucesso",
+        "localizados": 19,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 19,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "8º ANO I",
+        "status": "sucesso",
+        "localizados": 18,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 18,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO A",
+        "status": "sucesso",
+        "localizados": 17,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 17,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO B",
+        "status": "sucesso",
+        "localizados": 31,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO C",
+        "status": "sucesso",
+        "localizados": 32,
+        "inseridos": 1,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO D",
+        "status": "sucesso",
+        "localizados": 31,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO E",
+        "status": "sucesso",
+        "localizados": 32,
+        "inseridos": 1,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO F",
+        "status": "sucesso",
+        "localizados": 31,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 31,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO G",
+        "status": "sucesso",
+        "localizados": 33,
+        "inseridos": 1,
+        "reativados": 0,
+        "jaExistiam": 32,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO H",
+        "status": "sucesso",
+        "localizados": 16,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 16,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 1,
+        "pendentesInativacaoLista": [
+          {
+            "id": 4497,
+            "codigo": 197795,
+            "estudante": "WESLEY HENRIQUE ROMANO DE SOUZA"
+          }
+        ]
+      },
+      {
+        "turma": "9º ANO I",
+        "status": "sucesso",
+        "localizados": 17,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 17,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO J",
+        "status": "sucesso",
+        "localizados": 32,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 32,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      },
+      {
+        "turma": "9º ANO K",
+        "status": "sucesso",
+        "localizados": 34,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 34,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      }
+    ]
+  },
+  "resumo": {
+    "pdfs_baixados": 40,
+    "pdfs_falha": 0,
+    "importados": 40,
+    "erros_importacao": 0,
+    "alunos_localizados": 1087,
+    "alunos_inseridos": 4,
+    "alunos_jaExistiam": 1083,
+    "alunos_reativados": 0,
+    "alunos_inativados": 0,
+    "duracao_s": 1040.0,
+    "turmas_vazias": 0,
+    "turmas_ok": 40,
+    "turmas_total": 40,
+    "total_alunos_verificados": 43760
+  },
+  "duracao_total_s": 1040.0,
+  "etapa_verificacao": {
+    "status": "ok",
+    "turmas_total": 40,
+    "turmas_ok": 40,
+    "turmas_vazias": [],
+    "turmas_erro": [],
+    "total_alunos_verificados": 43760,
+    "detalhes": [
+      {
+        "turma": "6º ANO A",
+        "turma_id": 202,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO B",
+        "turma_id": 203,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO C",
+        "turma_id": 204,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO D",
+        "turma_id": 205,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO E",
+        "turma_id": 206,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO F",
+        "turma_id": 207,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO G",
+        "turma_id": 208,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "6º ANO H",
+        "turma_id": 209,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO A",
+        "turma_id": 210,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO B",
+        "turma_id": 211,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO C",
+        "turma_id": 212,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO D",
+        "turma_id": 213,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO E",
+        "turma_id": 214,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO F",
+        "turma_id": 215,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO G",
+        "turma_id": 216,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO H",
+        "turma_id": 217,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO I",
+        "turma_id": 218,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO J",
+        "turma_id": 219,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO K",
+        "turma_id": 237,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "7º ANO L",
+        "turma_id": 238,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO A",
+        "turma_id": 220,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO B",
+        "turma_id": 221,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO C",
+        "turma_id": 222,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO D",
+        "turma_id": 223,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO E",
+        "turma_id": 224,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO F",
+        "turma_id": 225,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO G",
+        "turma_id": 226,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO H",
+        "turma_id": 227,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "8º ANO I",
+        "turma_id": 228,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO A",
+        "turma_id": 239,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO B",
+        "turma_id": 240,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO C",
+        "turma_id": 236,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO D",
+        "turma_id": 241,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO E",
+        "turma_id": 229,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO F",
+        "turma_id": 230,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO G",
+        "turma_id": 231,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO H",
+        "turma_id": 232,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO I",
+        "turma_id": 233,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO J",
+        "turma_id": 234,
+        "total_alunos": 1094,
+        "status": "ok"
+      },
+      {
+        "turma": "9º ANO K",
+        "turma_id": 235,
+        "total_alunos": 1094,
+        "status": "ok"
+      }
+    ]
+  }
+}

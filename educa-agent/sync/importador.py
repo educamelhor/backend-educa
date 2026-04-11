@@ -18,9 +18,44 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import EDUCA_API_URL
 
 
+def inativar_alunos(aluno_ids: list[int], token: str, escola_id: int, api_url: str | None = None) -> dict:
+    """
+    Chama POST /api/alunos/inativar-lote para inativar alunos ausentes no PDF.
+    
+    Args:
+        aluno_ids: Lista de IDs dos alunos a inativar
+        token: JWT token de autenticação
+        escola_id: ID da escola
+        api_url: URL base da API (override)
+    
+    Returns:
+        dict com resultado da inativação
+    """
+    base_url = api_url or EDUCA_API_URL
+    url = f"{base_url}/alunos/inativar-lote"
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-escola-id": str(escola_id),
+        "Content-Type": "application/json",
+    }
+    
+    try:
+        resp = requests.post(url, headers=headers, json={"alunoIds": aluno_ids}, timeout=30)
+        if resp.status_code == 200:
+            body = resp.json()
+            return {"ok": True, "inativados": body.get("inativados", 0)}
+        else:
+            return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def importar_pdf(pdf_path: str, turma_nome: str, token: str, escola_id: int, api_url: str | None = None) -> dict:
     """
     Envia um PDF para POST /api/alunos/importar-pdf.
+    Se detectar alunos ausentes no PDF (possíveis transferências),
+    chama automaticamente POST /api/alunos/inativar-lote.
     
     Args:
         pdf_path: Caminho absoluto do PDF baixado
@@ -82,13 +117,23 @@ def importar_pdf(pdf_path: str, turma_nome: str, token: str, escola_id: int, api
             result["inativados"] = body.get("inativados", 0)
             
             # Alunos ausentes no PDF (possíveis transferências)
+            # O backend retorna a lista completa com {id, codigo, estudante}
             pendentes = body.get("pendentesInativacao", [])
             result["pendentesInativacao"] = len(pendentes)
+            result["pendentesInativacaoLista"] = pendentes
             
             print(f"  [IMPORT] OK: loc={result['localizados']} ins={result['inseridos']} "
-                  f"reat={result['reativados']} exist={result['jaExistiam']}")
+                  f"reat={result['reativados']} exist={result['jaExistiam']} pend={result.get('pendentesInativacao', 0)}")
+            
+            # ── DETECÇÃO DE AUSENTES (sem auto-inativação) ──
+            # O agente apenas detecta e reporta. A confirmação de inativação
+            # é feita pelo usuário no frontend via modal, igual ao fluxo da
+            # SECRETARIA + ALUNOS. Isso garante o mesmo padrão UX.
             if pendentes:
-                print(f"  [IMPORT] ⚠ {len(pendentes)} aluno(s) ausente(s) no PDF (pendentes inativação manual)")
+                nomes = [p.get("estudante", "?") for p in pendentes]
+                print(f"  [IMPORT] ⚠ {len(pendentes)} aluno(s) ausente(s) no PDF do EDUCADF (pendentes confirmação):")
+                for nome in nomes:
+                    print(f"    → {nome}")
         elif resp.status_code == 404:
             body = resp.json()
             result["status"] = "erro"

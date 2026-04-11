@@ -770,14 +770,32 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     console.log(`[importar-pdf] Parser posicional extraiu ${pdfEntries.length} alunos`);
 
-    // Situação atual no DB (por turma+ano via matrícula — fonte canônica)
-    const [atuais] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, m.status
+    // Situação atual no DB — DUAS fontes para garantir cobertura total:
+    // 1) Alunos com matrícula ativa na turma+ano (fonte canônica)
+    // 2) Alunos ativos na tabela alunos (turma_id) que podem não ter matrícula ativa
+    //    (ex: aluno inserido manualmente ou com matrícula dessincronizada)
+    const [atuaisMatricula] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
        FROM matriculas m
        INNER JOIN alunos a ON a.id = m.aluno_id
        WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
       [turma_id, anoLetivoAtual, escola_id]
     );
+    const [atuaisAlunos] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante, a.status
+       FROM alunos a
+       WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
+      [turma_id, escola_id]
+    );
+    // Merge sem duplicatas (por aluno.id)
+    const atuaisIdSet = new Set();
+    const atuais = [];
+    for (const a of atuaisMatricula) {
+      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+    }
+    for (const a of atuaisAlunos) {
+      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+    }
 
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
     // ── Match por nome normalizado (fallback para migração ieducar→educadf) ──
