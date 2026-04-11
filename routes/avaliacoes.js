@@ -205,6 +205,15 @@ router.get("/:id", async (req, res) => {
 /**
  * 3) POST /api/avaliacoes
  * Cria ou atualiza (Upsert) um Plano e seus respectivos Itens
+ *
+ * ── PROTEÇÃO DE DADOS ───────────────────────────────────────────────────────
+ * Se o plano já possui notas lançadas no diário (notas_diario), usamos modo
+ * PROTEGIDO: UPSERT por nome de atividade preservando os IDs dos itens.
+ * Isso garante que os item_idx referenciados em notas_diario permaneçam
+ * válidos e que nenhuma nota seja corrompida ou perdida.
+ *
+ * Se não há notas, usa o comportamento clássico (DELETE + INSERT).
+ * ────────────────────────────────────────────────────────────────────────────
  */
 router.post("/", async (req, res) => {
   const conn = await pool.getConnection();
@@ -256,29 +265,137 @@ router.post("/", async (req, res) => {
 
       planoIds.push(planoId);
 
-      // Deleta os itens daquele plano específico e recria
-      await conn.query(`DELETE FROM itens_avaliacao WHERE plano_id = ?`, [planoId]);
+      // ═══════════════════════════════════════════════════════════════
+      // PROTEÇÃO DE DADOS: verificar se há notas já lançadas no diário
+      // Se houver, usamos UPSERT por atividade (preserva IDs e notas).
+      // Se não houver, o comportamento clássico DELETE+INSERT é seguro.
+      // ═══════════════════════════════════════════════════════════════
+      const [[{ total_notas }]] = await conn.query(
+        `SELECT COUNT(*) AS total_notas FROM notas_diario WHERE plano_id = ?`,
+        [planoId]
+      );
 
-      if (itens && itens.length > 0) {
-        const insertData = itens.map(i => [
-          planoId,
-          i.atividade,
-          i.tipo_avaliacao || null,
-          toDateOnly(i.data || i.data_inicio),
-          toDateOnly(i.data_final || i.data || i.data_inicio),
-          i.nota_total || 0,
-          i.oportunidades || 1,
-          i.nota_invertida || 0,
-          i.descricao || null,
-          i.fixo_direcao ? 1 : 0
-        ]);
-
-        await conn.query(
-          `INSERT INTO itens_avaliacao 
-           (plano_id, atividade, tipo_avaliacao, data_inicio, data_final, nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
-           VALUES ?`,
-          [insertData]
+      if (total_notas > 0) {
+        // ── Modo PROTEGIDO: há notas lançadas ──────────────────────
+        // Busca os itens atuais do plano com seus IDs (ordenados por id = ordem original)
+        const [itensAtuais] = await conn.query(
+          `SELECT id, atividade FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC`,
+          [planoId]
         );
+
+        // Mapa: atividade (normalizada) → id atual
+        const mapaAtual = {};
+        for (const ia of itensAtuais) {
+          mapaAtual[ia.atividade.trim().toLowerCase()] = ia.id;
+        }
+
+        // Nomes dos itens que vêm do frontend
+        const nomesFrontend = itens.map(i => (i.atividade || "").trim().toLowerCase());
+
+        // Itens do banco que o professor quer remover
+        const itensParaRemover = itensAtuais.filter(
+          ia => !nomesFrontend.includes(ia.atividade.trim().toLowerCase())
+        );
+
+        // Bloqueia remoção de itens que já têm notas lançadas
+        for (const itemRemover of itensParaRemover) {
+          const idx = itensAtuais.indexOf(itemRemover);
+          const [[{ count_notas }]] = await conn.query(
+            `SELECT COUNT(*) AS count_notas FROM notas_diario WHERE plano_id = ? AND item_idx = ?`,
+            [planoId, idx]
+          );
+          if (count_notas > 0) {
+            await conn.rollback();
+            conn.release();
+            return res.status(409).json({
+              ok: false,
+              error: `Não é possível remover a atividade "${itemRemover.atividade}" pois ela já possui ${count_notas} nota(s) lançada(s). Apenas o tipo de avaliação e outros campos podem ser atualizados sem remover a atividade.`,
+              item_bloqueado: itemRemover.atividade,
+            });
+          }
+        }
+
+        // Remove apenas os itens SEM notas
+        for (const itemRemover of itensParaRemover) {
+          await conn.query(`DELETE FROM itens_avaliacao WHERE id = ?`, [itemRemover.id]);
+        }
+
+        // UPSERT: atualiza existentes, insere novos
+        for (const item of itens) {
+          const nomeNorm = (item.atividade || "").trim().toLowerCase();
+          const itemId = mapaAtual[nomeNorm];
+
+          if (itemId) {
+            // Atualiza o item existente (preserva ID => preserva integridade das notas)
+            await conn.query(
+              `UPDATE itens_avaliacao
+               SET tipo_avaliacao = ?,
+                   data_inicio    = ?,
+                   data_final     = ?,
+                   nota_total     = ?,
+                   oportunidades  = ?,
+                   nota_invertida = ?,
+                   descricao      = ?,
+                   fixo_direcao   = ?
+               WHERE id = ?`,
+              [
+                item.tipo_avaliacao || null,
+                toDateOnly(item.data || item.data_inicio),
+                toDateOnly(item.data_final || item.data || item.data_inicio),
+                item.nota_total || 0,
+                item.oportunidades || 1,
+                item.nota_invertida || 0,
+                item.descricao || null,
+                item.fixo_direcao ? 1 : 0,
+                itemId,
+              ]
+            );
+          } else {
+            // Insere novo item (não havia antes, sem notas associadas)
+            await conn.query(
+              `INSERT INTO itens_avaliacao
+               (plano_id, atividade, tipo_avaliacao, data_inicio, data_final, nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                planoId,
+                item.atividade,
+                item.tipo_avaliacao || null,
+                toDateOnly(item.data || item.data_inicio),
+                toDateOnly(item.data_final || item.data || item.data_inicio),
+                item.nota_total || 0,
+                item.oportunidades || 1,
+                item.nota_invertida || 0,
+                item.descricao || null,
+                item.fixo_direcao ? 1 : 0,
+              ]
+            );
+          }
+        }
+      } else {
+        // ── Modo CLÁSSICO: sem notas lançadas — DELETE + INSERT seguro ──
+        await conn.query(`DELETE FROM itens_avaliacao WHERE plano_id = ?`, [planoId]);
+
+        if (itens && itens.length > 0) {
+          const insertData = itens.map(i => [
+            planoId,
+            i.atividade,
+            i.tipo_avaliacao || null,
+            toDateOnly(i.data || i.data_inicio),
+            toDateOnly(i.data_final || i.data || i.data_inicio),
+            i.nota_total || 0,
+            i.oportunidades || 1,
+            i.nota_invertida || 0,
+            i.descricao || null,
+            i.fixo_direcao ? 1 : 0
+          ]);
+
+          await conn.query(
+            `INSERT INTO itens_avaliacao 
+             (plano_id, atividade, tipo_avaliacao, data_inicio, data_final, nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
+             VALUES ?`,
+            [insertData]
+          );
+        }
       }
     }
 
