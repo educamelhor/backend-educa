@@ -238,7 +238,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       [alunoId, escola_id]
     );
 
-    // Registro individual — APENAS FINALIZADO
+    // Registro individual — exclui apenas CANCELADA (frontend já avisa sobre REGISTRADA)
     const [rows] = await pool.query(
       `SELECT LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
@@ -253,11 +253,11 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
-       WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'`,
+       WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [ocorrenciaId, alunoId, escola_id]
     );
 
-    if (!rows.length) return res.status(404).json({ error: "Registro não encontrado ou não está finalizado." });
+    if (!rows.length) return res.status(404).json({ error: "Registro não encontrado ou possui status cancelado." });
 
     const registros = rows;
 
