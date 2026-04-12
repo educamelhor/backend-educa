@@ -261,13 +261,23 @@ router.get("/__diag", async (req, res) => {
   } catch (e) {
     connErr = { name: e?.name, code: e?.code, message: e?.message?.slice(0, 200) };
   }
+
+  // Lista TODAS as chaves do process.env que mencionam mysql/db/host/port/mongo/pg
+  const relevantKeys = Object.keys(process.env).filter(k =>
+    /mysql|postgres|db_|host|port|database|sslmode|ssl_ca/i.test(k)
+  );
+  const relevantEnv = {};
+  for (const k of relevantKeys) {
+    const v = String(process.env[k] || "");
+    // Mostra apenas primeiros 10 chars por segurança
+    relevantEnv[k] = v.slice(0, 12) + (v.length > 12 ? "..." : "");
+  }
+
   res.json({
-    env: {
-      MYSQL_HOST: (process.env.MYSQL_HOST || "UNDEFINED").slice(0, 15),
-      MYSQL_PORT: process.env.MYSQL_PORT || "UNDEFINED",
-      MYSQL_DATABASE: process.env.MYSQL_DATABASE || "UNDEFINED",
-      NODE_ENV: process.env.NODE_ENV || "UNDEFINED",
-    },
+    NODE_ENV: process.env.NODE_ENV,
+    totalEnvKeys: Object.keys(process.env).length,
+    relevantEnvKeys: relevantKeys,
+    relevantEnv,
     pool: {
       injectedByServer: !!req.db,
       connectionOk: connOk,
