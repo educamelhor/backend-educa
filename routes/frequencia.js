@@ -1,7 +1,7 @@
 // routes/frequencia.js
 // ============================================================================
 // Módulo FREQUÊNCIA — Rotas da API
-// - CRUD de justificativas de faltas (atestados)
+// - CRUD completo de justificativas de faltas (atestados)
 // - CRUD de busca ativa (contatos com famílias)
 // - Relatórios de alunos faltosos
 // - Encaminhamentos ao Conselho Tutelar
@@ -12,7 +12,7 @@ import { Router } from "express";
 const router = Router();
 
 // ─────────────────────────────────────────────────
-// JUSTIFICATIVAS (Atestados)
+// JUSTIFICATIVAS (Atestados) — CRUD COMPLETO
 // ─────────────────────────────────────────────────
 
 // GET /api/frequencia/justificativas
@@ -55,11 +55,27 @@ router.get("/justificativas", async (req, res) => {
 });
 
 // POST /api/frequencia/justificativas
+// Verifica duplicata (mesmo aluno + tipo + período) antes de inserir
 router.post("/justificativas", async (req, res) => {
   try {
     const { escola_id, turma_id, aluno_id, tipo, data_inicio, data_fim, dias, observacao } = req.body;
     if (!escola_id || !aluno_id || !tipo || !data_inicio || !data_fim) {
       return res.status(400).json({ error: "Campos obrigatórios: escola_id, aluno_id, tipo, data_inicio, data_fim" });
+    }
+
+    // Verificação de duplicata
+    const [duplicados] = await req.db.query(
+      `SELECT id FROM frequencia_justificativas
+       WHERE escola_id = ? AND aluno_id = ? AND tipo = ? AND data_inicio = ? AND data_fim = ?
+       LIMIT 1`,
+      [escola_id, aluno_id, tipo, data_inicio, data_fim]
+    );
+    if (duplicados.length > 0) {
+      return res.status(409).json({
+        error: "Justificativa duplicada",
+        message: "Já existe um registro com os mesmos aluno, tipo e período. Use editar para atualizar.",
+        id_existente: duplicados[0].id,
+      });
     }
 
     const registrado_por = req.user?.id || null;
@@ -74,6 +90,76 @@ router.post("/justificativas", async (req, res) => {
     res.status(201).json({ id: result.insertId, message: "Justificativa registrada" });
   } catch (err) {
     console.error("[FREQUENCIA] Erro ao registrar justificativa:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+// PUT /api/frequencia/justificativas/:id
+router.put("/justificativas/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tipo, data_inicio, data_fim, dias, observacao } = req.body;
+    const escola_id = req.escola_id;
+
+    if (!tipo || !data_inicio || !data_fim) {
+      return res.status(400).json({ error: "Campos obrigatórios: tipo, data_inicio, data_fim" });
+    }
+
+    // Garante que o registro pertence a esta escola
+    const [[registro]] = await req.db.query(
+      "SELECT id, aluno_id FROM frequencia_justificativas WHERE id = ? AND escola_id = ? LIMIT 1",
+      [id, escola_id]
+    );
+    if (!registro) {
+      return res.status(404).json({ error: "Registro não encontrado" });
+    }
+
+    // Verifica duplicata para o mesmo aluno (exceto o próprio registro)
+    const [duplicados] = await req.db.query(
+      `SELECT id FROM frequencia_justificativas
+       WHERE escola_id = ? AND aluno_id = ? AND tipo = ? AND data_inicio = ? AND data_fim = ? AND id != ?
+       LIMIT 1`,
+      [escola_id, registro.aluno_id, tipo, data_inicio, data_fim, id]
+    );
+    if (duplicados.length > 0) {
+      return res.status(409).json({
+        error: "Justificativa duplicada",
+        message: "Já existe outro registro com os mesmos aluno, tipo e período.",
+      });
+    }
+
+    await req.db.query(
+      `UPDATE frequencia_justificativas
+       SET tipo = ?, data_inicio = ?, data_fim = ?, dias = ?, observacao = ?, atualizado_em = NOW()
+       WHERE id = ? AND escola_id = ?`,
+      [tipo, data_inicio, data_fim, dias || 1, observacao || null, id, escola_id]
+    );
+
+    res.json({ message: "Justificativa atualizada com sucesso" });
+  } catch (err) {
+    console.error("[FREQUENCIA] Erro ao atualizar justificativa:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+// DELETE /api/frequencia/justificativas/:id
+router.delete("/justificativas/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const escola_id = req.escola_id;
+
+    const [result] = await req.db.query(
+      "DELETE FROM frequencia_justificativas WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Registro não encontrado" });
+    }
+
+    res.json({ message: "Justificativa excluída com sucesso" });
+  } catch (err) {
+    console.error("[FREQUENCIA] Erro ao excluir justificativa:", err.message);
     res.status(500).json({ error: "Erro interno" });
   }
 });
@@ -149,8 +235,6 @@ router.get("/relatorios/faltosos", async (req, res) => {
     const { escola_id, turma_id } = req.query;
     if (!escola_id) return res.status(400).json({ error: "escola_id obrigatório" });
 
-    // Conta justificativas como proxy para faltas
-    // Em uma implementação completa, integraria com o diário de classe
     let sql = `
       SELECT
         a.id AS aluno_id,
@@ -195,26 +279,21 @@ router.get("/conselho-tutelar/relatorio", async (req, res) => {
     const { escola_id, aluno_id } = req.query;
     if (!escola_id || !aluno_id) return res.status(400).json({ error: "escola_id e aluno_id obrigatórios" });
 
-    // Dados do aluno
     const [[aluno]] = await req.db.query(
       "SELECT a.estudante AS aluno_nome, t.nome AS turma_nome FROM alunos a LEFT JOIN turmas t ON a.turma_id = t.id WHERE a.id = ?",
       [aluno_id]
     );
 
-    // Justificativas
     const [justificativas] = await req.db.query(
       "SELECT * FROM frequencia_justificativas WHERE aluno_id = ? AND escola_id = ? ORDER BY data_inicio DESC",
       [aluno_id, escola_id]
     );
 
-    // Busca Ativa
     const [buscaAtiva] = await req.db.query(
       "SELECT * FROM frequencia_busca_ativa WHERE aluno_id = ? AND escola_id = ? ORDER BY data_contato DESC",
       [aluno_id, escola_id]
     );
 
-    // Totais
-    const totalFaltas = justificativas.length;
     const totalDias = justificativas.reduce((s, j) => s + (j.dias || 1), 0);
 
     res.json({
