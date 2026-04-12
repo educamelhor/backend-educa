@@ -212,18 +212,7 @@ function validarTokenWorker(req, res, next) {
   }
 
   if (!safeEqualUtf8(tokenExpect, tokenGot)) {
-    return res.status(401).json({
-      ok: false,
-      message: "Token do worker inválido.",
-      debug: {
-        expectedPrefix: tokenExpect.slice(0, 4) + "...",
-        expectedLen: tokenExpect.length,
-        gotPrefix: tokenGot.slice(0, 4) + "...",
-        gotLen: tokenGot.length,
-        isProd,
-        hasSecret: !!secret,
-      }
-    });
+    return res.status(401).json({ ok: false, message: "Token do worker inválido." });
   }
 
   next();
@@ -250,41 +239,6 @@ router.use(async (req, _res, next) => {
   }
 });
 
-// ✅ DIAGNÓSTICO TEMPORÁRIO — remover após resolver
-router.get("/__diag", async (req, res) => {
-  let connOk = false;
-  let connErr = null;
-  try {
-    const c = await req.db.getConnection();
-    connOk = true;
-    c.release();
-  } catch (e) {
-    connErr = { name: e?.name, code: e?.code, message: e?.message?.slice(0, 200) };
-  }
-
-  // Lista TODAS as chaves do process.env que mencionam mysql/db/host/port/mongo/pg
-  const relevantKeys = Object.keys(process.env).filter(k =>
-    /mysql|postgres|db_|host|port|database|sslmode|ssl_ca/i.test(k)
-  );
-  const relevantEnv = {};
-  for (const k of relevantKeys) {
-    const v = String(process.env[k] || "");
-    // Mostra apenas primeiros 10 chars por segurança
-    relevantEnv[k] = v.slice(0, 12) + (v.length > 12 ? "..." : "");
-  }
-
-  res.json({
-    NODE_ENV: process.env.NODE_ENV,
-    totalEnvKeys: Object.keys(process.env).length,
-    relevantEnvKeys: relevantKeys,
-    relevantEnv,
-    pool: {
-      injectedByServer: !!req.db,
-      connectionOk: connOk,
-      connectionErr: connErr,
-    },
-  });
-});
 
 function exigirEscolaId(req, res, next) {
   const escola_id = toNumber(req.escola_id, 0);
@@ -796,25 +750,10 @@ router.post("/frame", validarTokenWorker, exigirEscolaId, async (req, res) => {
         connCam.release();
       }
     } catch (e) {
-      console.error("[ingest/frame] AggregateError validar camera_id:", {
-        name: e?.name,
-        message: e?.message,
-        code: e?.code,
-        errno: e?.errno,
-        sqlState: e?.sqlState,
-        errors: e?.errors?.map(x => ({ msg: x?.message, code: x?.code, errno: x?.errno })),
-        dbPoolReady: !!req.db,
-      });
       return res.status(500).json({
         ok: false,
         message: "Falha ao validar camera_id",
-        error: String(e?.message || e),
-        detail: {
-          name: e?.name,
-          code: e?.code,
-          errno: e?.errno,
-          errors: e?.errors?.map(x => x?.message)?.slice(0, 3),
-        }
+        error: String(e?.message || e)
       });
     }
 

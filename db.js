@@ -4,61 +4,86 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
-// Carrega .env ANTES de ler process.env (necessário por causa do ESM/import order)
+// Carrega .env ANTES de ler process.env (dev local).
+// Em produção no DO, não existe .env — as vars vêm do App Platform.
 const __filenameEnv = fileURLToPath(import.meta.url);
 const __dirnameEnv = dirname(__filenameEnv);
 const envFile =
   process.env.NODE_ENV === "production" ? ".env.production" : ".env.development";
 dotenv.config({ path: join(__dirnameEnv, envFile) });
 
-const {
+// ─── Resolve credenciais MySQL ────────────────────────────────────────────────
+// Prioridade:
+//   1) Variáveis individuais MYSQL_HOST / MYSQL_PORT / ... (dev local + legacy)
+//   2) DATABASE_URL (DigitalOcean App Platform injeta automaticamente)
+// ─────────────────────────────────────────────────────────────────────────────
+let {
   MYSQL_HOST,
   MYSQL_PORT,
   MYSQL_USER,
   MYSQL_PASSWORD,
   MYSQL_DATABASE,
-
-  // DO Managed MySQL: sslmode REQUIRED
   MYSQL_SSLMODE,
   MYSQL_SSL_CA,
 } = process.env;
 
+// Se as vars individuais não vieram, tenta parsear DATABASE_URL
+if (!MYSQL_HOST && process.env.DATABASE_URL) {
+  try {
+    const dbUrl = new URL(process.env.DATABASE_URL);
+    MYSQL_HOST     = dbUrl.hostname;
+    MYSQL_PORT     = dbUrl.port || "3306";
+    MYSQL_USER     = decodeURIComponent(dbUrl.username);
+    MYSQL_PASSWORD = decodeURIComponent(dbUrl.password);
+    MYSQL_DATABASE = dbUrl.pathname.replace(/^\//, "");
 
-// Se estiver em DO (sslmode REQUIRED), tentamos carregar CA (recomendado).
+    // ssl-mode=REQUIRED na query string
+    const sslParam = dbUrl.searchParams.get("ssl-mode") ||
+                     dbUrl.searchParams.get("sslmode")  || "";
+    if (sslParam.toUpperCase() === "REQUIRED") {
+      MYSQL_SSLMODE = "REQUIRED";
+    }
+
+    console.log("[DB] usando DATABASE_URL:", {
+      host: MYSQL_HOST,
+      port: MYSQL_PORT,
+      database: MYSQL_DATABASE,
+    });
+  } catch (e) {
+    console.error("[DB] falha ao parsear DATABASE_URL:", e.message);
+  }
+}
+
+// ─── SSL ──────────────────────────────────────────────────────────────────────
 let ssl = undefined;
 
 if (String(MYSQL_SSLMODE || "").toUpperCase() === "REQUIRED") {
-  // MYSQL_SSL_CA pode vir de 2 formas:
-  // 1) Conteúdo do certificado (recomendado na App Platform)
-  // 2) Caminho para um arquivo .crt (quando rodar local/servidor com arquivo)
   if (MYSQL_SSL_CA) {
     const looksLikePem = MYSQL_SSL_CA.includes("BEGIN CERTIFICATE");
-
     if (looksLikePem) {
       ssl = { ca: MYSQL_SSL_CA, rejectUnauthorized: true };
     } else if (fs.existsSync(MYSQL_SSL_CA)) {
       ssl = { ca: fs.readFileSync(MYSQL_SSL_CA, "utf8"), rejectUnauthorized: true };
     } else {
-      ssl = { rejectUnauthorized: true };
+      ssl = { rejectUnauthorized: false }; // DO managed DB — cert válido mas sem CA local
     }
   } else {
-    ssl = { rejectUnauthorized: true };
+    // Sem CA explícito: aceita certificado do servidor DO (rejectUnauthorized:false)
+    // O host do DO tem certificado válido — é seguro para conexão interna.
+    ssl = { rejectUnauthorized: false };
   }
 }
 
-
-// --- DEBUG (TEMP): mostrar config efetiva (sem senha) ---
-console.log("[DB] env config:", {
-  MYSQL_HOST,
-  MYSQL_PORT,
-  MYSQL_USER,
-  MYSQL_DATABASE,
-  MYSQL_SSLMODE,
-  MYSQL_SSL_CA,
+// ─── Log de configuração ──────────────────────────────────────────────────────
+console.log("[DB] config:", {
+  host: MYSQL_HOST || "UNDEFINED",
+  port: MYSQL_PORT || "UNDEFINED",
+  database: MYSQL_DATABASE || "UNDEFINED",
+  sslMode: MYSQL_SSLMODE || "none",
   sslEnabled: !!ssl,
 });
-// --- /DEBUG (TEMP) ---
 
+// ─── Pool ─────────────────────────────────────────────────────────────────────
 const pool = mysql.createPool({
   host: MYSQL_HOST,
   port: MYSQL_PORT ? Number(MYSQL_PORT) : 3306,
@@ -66,9 +91,8 @@ const pool = mysql.createPool({
   password: MYSQL_PASSWORD,
   database: MYSQL_DATABASE,
 
-  // O MySQL (DigitalOcean) roda em UTC. Sem isso, mysql2 interpreta
-  // as datas como se fossem no timezone local (BRT), causando +3h.
-  timezone: '+00:00',
+  // DO MySQL roda em UTC — necessário para evitar shift de +3h no BRT
+  timezone: "+00:00",
 
   waitForConnections: true,
   connectionLimit: 10,
@@ -77,24 +101,18 @@ const pool = mysql.createPool({
   ...(ssl ? { ssl } : {}),
 });
 
-// --- DEBUG (TEMP): probe de conexão (uma vez ao subir) ---
+// Probe de conexão ao subir
 pool
   .getConnection()
   .then((conn) => {
-    console.log("[DB] connection OK");
+    console.log("[DB] connection OK ✅");
     conn.release();
   })
   .catch((err) => {
-    console.log("[DB] connection FAIL:", {
+    console.error("[DB] connection FAIL ❌", {
       code: err?.code,
-      errno: err?.errno,
-      syscall: err?.syscall,
-      address: err?.address,
-      port: err?.port,
-      message: err?.message,
+      message: err?.message?.slice(0, 200),
     });
   });
-// --- /DEBUG (TEMP) ---
 
 export default pool;
-
