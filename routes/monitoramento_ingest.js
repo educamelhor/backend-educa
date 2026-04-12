@@ -132,7 +132,13 @@ function validarTokenWorker(req, res, next) {
   const isProd = nodeEnv === "production";
 
   const tokenExpect = (process.env.MONITOR_WORKER_TOKEN || "").trim();
-  const tokenGot = (req.header("x-worker-token") || "").trim();
+
+  // ✅ Lê token de múltiplos headers (suporte a proxy que filtra x-* headers):
+  // 1) x-worker-token (acesso interno/direto)
+  // 2) Authorization: Bearer <token> (proxy-safe, padrão HTTP)
+  const authHeader = (req.header("authorization") || "").trim();
+  const authBearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const tokenGot = ((req.header("x-worker-token") || authBearer || "")).trim();
 
   const secret = (process.env.MONITOR_WORKER_SECRET || "").trim();
   const sig = (req.header("x-worker-signature") || "").trim();
