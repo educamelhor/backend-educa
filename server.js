@@ -685,7 +685,8 @@ async function bootstrap() {
 
   if (monitoramentoIngestRouter) {
     // Ingest do Worker: sem JWT e sem verificarEscola (validação é feita por x-worker-token no próprio router)
-    app.use("/api/monitoramento/ingest", monitoramentoIngestRouter);
+    // ✅ Injeta pool do server.js (evita re-import dinâmico que falha em produção com host errado)
+    app.use("/api/monitoramento/ingest", (req, _res, next) => { req.db = pool; next(); }, monitoramentoIngestRouter);
   }
 
   if (monitoramentoEmbeddingsRouter) {

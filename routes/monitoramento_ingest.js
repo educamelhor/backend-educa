@@ -229,12 +229,15 @@ function validarTokenWorker(req, res, next) {
   next();
 }
 
-// Middleware simples para expor req.db = pool
+// Middleware: padroniza escola_id + garante req.db
+// ✅ req.db é injetado pelo server.js (pool correto do startup)
+// Fallback: se req.db não foi injetado (ex: teste isolado), tenta import dinâmico
 router.use(async (req, _res, next) => {
   try {
-    // db.js exporta pool (mysql2/promise)
-    const pool = (await import("../db.js")).default;
-    req.db = pool;
+    if (!req.db) {
+      const pool = (await import("../db.js")).default;
+      req.db = pool;
+    }
 
     // ✅ Padroniza escola_id para rotas do ingest
     // Worker deve enviar x-escola-id (numérico)
