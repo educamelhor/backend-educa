@@ -62,7 +62,7 @@ router.post("/justificativas", async (req, res) => {
       return res.status(400).json({ error: "Campos obrigatórios: escola_id, aluno_id, tipo, data_inicio, data_fim" });
     }
 
-    const registrado_por = req.usuario?.id || null;
+    const registrado_por = req.user?.id || null;
 
     const [result] = await req.db.query(
       `INSERT INTO frequencia_justificativas
@@ -123,7 +123,7 @@ router.post("/busca-ativa", async (req, res) => {
       return res.status(400).json({ error: "Campos obrigatórios: escola_id, aluno_id, meio_contato, resultado" });
     }
 
-    const registrado_por = req.usuario?.id || null;
+    const registrado_por = req.user?.id || null;
 
     const [result] = await req.db.query(
       `INSERT INTO frequencia_busca_ativa
@@ -269,7 +269,7 @@ router.post("/conselho-tutelar/encaminhamentos", async (req, res) => {
     const { escola_id, turma_id, aluno_id, motivo } = req.body;
     if (!escola_id || !aluno_id) return res.status(400).json({ error: "escola_id e aluno_id obrigatórios" });
 
-    const registrado_por = req.usuario?.id || null;
+    const registrado_por = req.user?.id || null;
 
     const [result] = await req.db.query(
       `INSERT INTO frequencia_encaminhamentos_ct
