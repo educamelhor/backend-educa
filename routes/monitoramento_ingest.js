@@ -9,7 +9,23 @@ import express from "express";
 import crypto from "node:crypto"
 import fs from "fs";
 import path from "path";
-import { enviarNotificacoesEntradaAluno } from "../services/mobileNotificacoesService.js";
+
+// ⚠️ Import lazy: mobileNotificacoesService depende de expo-server-sdk
+// que pode não estar disponível em todos os ambientes.
+// Resolvido dinamicamente apenas quando necessário.
+let _enviarNotificacoesEntradaAluno = null;
+async function getNotificacaoService() {
+  if (!_enviarNotificacoesEntradaAluno) {
+    try {
+      const mod = await import("../services/mobileNotificacoesService.js");
+      _enviarNotificacoesEntradaAluno = mod.enviarNotificacoesEntradaAluno;
+    } catch (e) {
+      console.warn("[ingest] mobileNotificacoesService indisponível:", e.message);
+      _enviarNotificacoesEntradaAluno = async () => {}; // no-op
+    }
+  }
+  return _enviarNotificacoesEntradaAluno;
+}
 
 const router = express.Router();
 
@@ -601,12 +617,12 @@ if (diffSeg < PRESENCA_JANELA_SEG) {
 
     // Dispara a notificação mobile (apenas na 1ª vez do dia)
     if (presencaInfo?.acao === "CRIADA" && presencaInfo?.motivo === "primeira_do_dia") {
-      enviarNotificacoesEntradaAluno({
+      getNotificacaoService().then(fn => fn({
         escolaId: escola_id,
         alunoId: aluno_id,
         cameraId: camera_id,
         horario: now
-      }).catch(err => console.error("[eventos] Falha ao disparar notificacao de entrada:", err));
+      })).catch(err => console.error("[eventos] Falha ao disparar notificacao de entrada:", err));
     }
 
     return res.status(200).json({
