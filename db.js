@@ -9,7 +9,7 @@ const __filenameEnv = fileURLToPath(import.meta.url);
 const __dirnameEnv = dirname(__filenameEnv);
 const envFile =
   process.env.NODE_ENV === "production" ? ".env.production" : ".env.development";
-dotenv.config({ path: join(__dirnameEnv, envFile), override: false });
+dotenv.config({ path: join(__dirnameEnv, envFile) });
 
 const {
   MYSQL_HOST,
