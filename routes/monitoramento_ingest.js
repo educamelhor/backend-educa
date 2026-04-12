@@ -214,7 +214,15 @@ function validarTokenWorker(req, res, next) {
   if (!safeEqualUtf8(tokenExpect, tokenGot)) {
     return res.status(401).json({
       ok: false,
-      message: "Token do worker inválido."
+      message: "Token do worker inválido.",
+      debug: {
+        expectedPrefix: tokenExpect.slice(0, 4) + "...",
+        expectedLen: tokenExpect.length,
+        gotPrefix: tokenGot.slice(0, 4) + "...",
+        gotLen: tokenGot.length,
+        isProd,
+        hasSecret: !!secret,
+      }
     });
   }
 
