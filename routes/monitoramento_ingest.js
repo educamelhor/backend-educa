@@ -680,8 +680,9 @@ router.post("/frame", validarTokenWorker, exigirEscolaId, async (req, res) => {
         .slice(0, 60);
     }
 
-    // ✅ PASSO 6.2.1 — NUNCA confiar em escola_dir do body (nem em DEV).
-    // Sempre resolve via x-escola-id -> DB (escolas.apelido).
+    // ✅ PASSO 6.2.1 — Resolve escola_dir via DB (escolas.apelido).
+    // Fallback: aceita header x-escola-dir quando o apelido não está no banco
+    // (útil quando o campo apelido é NULL em produção).
     let escola_dir = "";
 
     if (escola_id) {
@@ -701,6 +702,14 @@ router.post("/frame", validarTokenWorker, exigirEscolaId, async (req, res) => {
       }
     }
 
+    // Fallback via header x-escola-dir (enviado pelo worker quando apelido está vazio no DB)
+    if (!escola_dir) {
+      const dirHeader = (req.header("x-escola-dir") || "").trim();
+      if (dirHeader) {
+        escola_dir = slugDir(dirHeader);
+        console.warn(`[ingest/frame] escola_dir resolvido via header fallback: ${escola_dir} (escola_id=${escola_id})`);
+      }
+    }
 
     const camera_id = toNumber(req.body?.camera_id, 0);
     const ts = req.body?.ts ? String(req.body.ts) : new Date().toISOString();
