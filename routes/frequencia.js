@@ -78,7 +78,7 @@ router.post("/justificativas", async (req, res) => {
       });
     }
 
-    const registrado_por = req.user?.id || null;
+    const registrado_por = req.user?.usuario_id ?? req.user?.usuarioId ?? null;
 
     const [result] = await req.db.query(
       `INSERT INTO frequencia_justificativas
@@ -209,7 +209,7 @@ router.post("/busca-ativa", async (req, res) => {
       return res.status(400).json({ error: "Campos obrigatórios: escola_id, aluno_id, meio_contato, resultado" });
     }
 
-    const registrado_por = req.user?.id || null;
+    const registrado_por = req.user?.usuario_id ?? req.user?.usuarioId ?? null;
 
     const [result] = await req.db.query(
       `INSERT INTO frequencia_busca_ativa
