@@ -250,6 +250,32 @@ router.use(async (req, _res, next) => {
   }
 });
 
+// ✅ DIAGNÓSTICO TEMPORÁRIO — remover após resolver
+router.get("/__diag", async (req, res) => {
+  let connOk = false;
+  let connErr = null;
+  try {
+    const c = await req.db.getConnection();
+    connOk = true;
+    c.release();
+  } catch (e) {
+    connErr = { name: e?.name, code: e?.code, message: e?.message?.slice(0, 200) };
+  }
+  res.json({
+    env: {
+      MYSQL_HOST: (process.env.MYSQL_HOST || "UNDEFINED").slice(0, 15),
+      MYSQL_PORT: process.env.MYSQL_PORT || "UNDEFINED",
+      MYSQL_DATABASE: process.env.MYSQL_DATABASE || "UNDEFINED",
+      NODE_ENV: process.env.NODE_ENV || "UNDEFINED",
+    },
+    pool: {
+      injectedByServer: !!req.db,
+      connectionOk: connOk,
+      connectionErr: connErr,
+    },
+  });
+});
+
 function exigirEscolaId(req, res, next) {
   const escola_id = toNumber(req.escola_id, 0);
   if (!escola_id) {
