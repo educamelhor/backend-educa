@@ -24,7 +24,7 @@ router.get("/justificativas", async (req, res) => {
     let sql = `
       SELECT
         fj.*,
-        a.nome AS aluno_nome,
+        a.estudante AS aluno_nome,
         t.nome AS turma_nome,
         u.nome AS registrado_por_nome
       FROM frequencia_justificativas fj
@@ -91,7 +91,7 @@ router.get("/busca-ativa", async (req, res) => {
     let sql = `
       SELECT
         fba.*,
-        a.nome AS aluno_nome,
+        a.estudante AS aluno_nome,
         t.nome AS turma_nome,
         u.nome AS registrado_por_nome
       FROM frequencia_busca_ativa fba
@@ -154,7 +154,7 @@ router.get("/relatorios/faltosos", async (req, res) => {
     let sql = `
       SELECT
         a.id AS aluno_id,
-        a.nome AS aluno_nome,
+        a.estudante AS aluno_nome,
         t.nome AS turma_nome,
         COUNT(fj.id) AS total_faltas,
         SUM(fj.dias) AS total_dias_falta,
@@ -171,7 +171,7 @@ router.get("/relatorios/faltosos", async (req, res) => {
     if (turma_id) { sql += " AND a.turma_id = ?"; params.push(turma_id); }
 
     sql += `
-      GROUP BY a.id, a.nome, t.nome
+      GROUP BY a.id, a.estudante, t.nome
       HAVING total_faltas > 0
       ORDER BY total_dias_falta DESC
       LIMIT 100
@@ -197,7 +197,7 @@ router.get("/conselho-tutelar/relatorio", async (req, res) => {
 
     // Dados do aluno
     const [[aluno]] = await req.db.query(
-      "SELECT a.nome AS aluno_nome, t.nome AS turma_nome FROM alunos a LEFT JOIN turmas t ON a.turma_id = t.id WHERE a.id = ?",
+      "SELECT a.estudante AS aluno_nome, t.nome AS turma_nome FROM alunos a LEFT JOIN turmas t ON a.turma_id = t.id WHERE a.id = ?",
       [aluno_id]
     );
 
@@ -245,7 +245,7 @@ router.get("/conselho-tutelar/encaminhamentos", async (req, res) => {
     const [rows] = await req.db.query(`
       SELECT
         fec.*,
-        a.nome AS aluno_nome,
+        a.estudante AS aluno_nome,
         t.nome AS turma_nome,
         u.nome AS registrado_por_nome
       FROM frequencia_encaminhamentos_ct fec
