@@ -264,6 +264,39 @@ router.use(async (req, _res, next) => {
 });
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/monitoramento/ingest/snapshot/:camera_id.jpg
+// Serve o último frame JPEG salvo pelo worker — sem ffmpeg-static, sem JWT.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/snapshot/:camera_id.jpg", (req, res) => {
+  const camId = toNumber(req.params.camera_id, 0);
+  if (!camId) return res.status(400).json({ ok: false, message: "camera_id inválido" });
+
+  const escolaDir = String(
+    req.query.escola_dir || req.header("x-escola-dir") || ""
+  ).trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+  if (!escolaDir) return res.status(400).json({ ok: false, message: "escola_dir obrigatório" });
+
+  const camPad = String(camId).padStart(2, "0");
+  const uploadsBase = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1")),
+    "..", "uploads"
+  );
+  const framePath = path.join(uploadsBase, escolaDir, "monitoramento", `camera-${camPad}`, "frame.jpg");
+
+  if (!fs.existsSync(framePath)) {
+    return res.status(404).json({ ok: false, message: "Frame não disponível", frame_path: framePath });
+  }
+
+  try { res.setHeader("X-Frame-Age-Ms", String(Math.round(Date.now() - fs.statSync(framePath).mtimeMs))); } catch (_) {}
+
+  res.setHeader("Content-Type", "image/jpeg");
+  res.setHeader("Cache-Control", "no-store, no-cache");
+  res.setHeader("X-Source", "worker-frame-direct");
+  fs.createReadStream(framePath).pipe(res);
+});
+
 function exigirEscolaId(req, res, next) {
   const escola_id = toNumber(req.escola_id, 0);
   if (!escola_id) {
