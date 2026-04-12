@@ -749,10 +749,25 @@ router.post("/frame", validarTokenWorker, exigirEscolaId, async (req, res) => {
         connCam.release();
       }
     } catch (e) {
+      console.error("[ingest/frame] AggregateError validar camera_id:", {
+        name: e?.name,
+        message: e?.message,
+        code: e?.code,
+        errno: e?.errno,
+        sqlState: e?.sqlState,
+        errors: e?.errors?.map(x => ({ msg: x?.message, code: x?.code, errno: x?.errno })),
+        dbPoolReady: !!req.db,
+      });
       return res.status(500).json({
         ok: false,
         message: "Falha ao validar camera_id",
-        error: String(e?.message || e)
+        error: String(e?.message || e),
+        detail: {
+          name: e?.name,
+          code: e?.code,
+          errno: e?.errno,
+          errors: e?.errors?.map(x => x?.message)?.slice(0, 3),
+        }
       });
     }
 
