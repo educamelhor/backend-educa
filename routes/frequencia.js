@@ -202,11 +202,29 @@ router.get("/busca-ativa", async (req, res) => {
 });
 
 // POST /api/frequencia/busca-ativa
+// Verifica duplicata antes de inserir (mesmo aluno + data + meio + resultado)
 router.post("/busca-ativa", async (req, res) => {
   try {
     const { escola_id, turma_id, aluno_id, data_contato, meio_contato, resultado, observacao } = req.body;
     if (!escola_id || !aluno_id || !meio_contato || !resultado) {
       return res.status(400).json({ error: "Campos obrigatórios: escola_id, aluno_id, meio_contato, resultado" });
+    }
+
+    const dataContato = data_contato || new Date().toISOString().split("T")[0];
+
+    // Verificação de duplicata: mesmo aluno + mesma data + mesmo meio + mesmo resultado
+    const [duplicados] = await req.db.query(
+      `SELECT id FROM frequencia_busca_ativa
+       WHERE escola_id = ? AND aluno_id = ? AND DATE(data_contato) = ? AND meio_contato = ? AND resultado = ?
+       LIMIT 1`,
+      [escola_id, aluno_id, dataContato, meio_contato, resultado]
+    );
+    if (duplicados.length > 0) {
+      return res.status(409).json({
+        error: "Contato duplicado",
+        message: "Já existe um registro com os mesmos aluno, data, meio e resultado de contato.",
+        id_existente: duplicados[0].id,
+      });
     }
 
     const registrado_por = req.user?.usuario_id ?? req.user?.usuarioId ?? null;
@@ -215,12 +233,34 @@ router.post("/busca-ativa", async (req, res) => {
       `INSERT INTO frequencia_busca_ativa
         (escola_id, turma_id, aluno_id, data_contato, meio_contato, resultado, observacao, registrado_por)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [escola_id, turma_id || null, aluno_id, data_contato || new Date(), meio_contato, resultado, observacao || null, registrado_por]
+      [escola_id, turma_id || null, aluno_id, dataContato, meio_contato, resultado, observacao || null, registrado_por]
     );
 
     res.status(201).json({ id: result.insertId, message: "Contato registrado" });
   } catch (err) {
     console.error("[FREQUENCIA] Erro ao registrar busca ativa:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+// DELETE /api/frequencia/busca-ativa/:id
+router.delete("/busca-ativa/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const escola_id = req.escola_id;
+
+    const [result] = await req.db.query(
+      "DELETE FROM frequencia_busca_ativa WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Registro não encontrado" });
+    }
+
+    res.json({ message: "Contato excluído com sucesso" });
+  } catch (err) {
+    console.error("[FREQUENCIA] Erro ao excluir busca ativa:", err.message);
     res.status(500).json({ error: "Erro interno" });
   }
 });
