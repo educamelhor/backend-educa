@@ -336,7 +336,9 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
 });
 
 // ─── PUT /api/gabarito-lotes/:id/vincular-professor ──────────────────────────
-// Vincula um professor ao lote (turma)
+// Vincula um corretor (professor ou outro usuário) ao lote (turma)
+// Aceita professor_id (tabela professores) — busca nome em professores
+// Se o professor_id não for encontrado na tabela professores, tenta em usuarios
 router.put("/:id/vincular-professor", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
   const loteId = req.params.id;
@@ -355,9 +357,15 @@ router.put("/:id/vincular-professor", verificarEscola, async (req, res) => {
       return res.status(404).json({ error: "Lote não encontrado." });
     }
 
-    // Buscar nome do professor para retornar
+    // Buscar nome: primeiro tenta na tabela professores, depois em usuarios
+    let nome = "";
     const [profRows] = await pool.query("SELECT nome FROM professores WHERE id = ?", [professor_id]);
-    const nome = profRows[0]?.nome || "";
+    if (profRows[0]?.nome) {
+      nome = profRows[0].nome;
+    } else {
+      const [userRows] = await pool.query("SELECT nome FROM usuarios WHERE id = ?", [professor_id]);
+      nome = userRows[0]?.nome || "";
+    }
 
     res.json({ ok: true, professor_id, professor_nome: nome });
   } catch (err) {
@@ -376,7 +384,7 @@ router.get("/", verificarEscola, async (req, res) => {
     let sql = `
       SELECT l.*,
         l.professor_id,
-        p.nome AS professor_nome,
+        COALESCE(p.nome, u.nome) AS professor_nome,
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id) as total_arquivos_real,
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'corrigido') as total_corrigidos_real,
         (SELECT COUNT(*) FROM gabarito_arquivos a WHERE a.lote_id = l.id AND a.status = 'identificado') as total_identificados,
@@ -386,6 +394,7 @@ router.get("/", verificarEscola, async (req, res) => {
          WHERE a2.lote_id = l.id AND m.status = 'pendente') as ajustes_pendentes
       FROM gabarito_lotes l
       LEFT JOIN professores p ON p.id = l.professor_id
+      LEFT JOIN usuarios u ON u.id = l.professor_id
       WHERE l.escola_id = ?
     `;
     const params = [escola_id];
@@ -1135,5 +1144,89 @@ function safeJson(val) {
   if (typeof val === "object") return val;
   try { return JSON.parse(val); } catch { return null; }
 }
+
+// ─── GET /api/gabarito-lotes/corretores-disponiveis ──────────────────────────
+// Lista TODOS os usuários da escola elegíveis para corrigir gabaritos.
+// Inclui: professores, coordenadores, diretores, vice-diretores, supervisores
+// Exclui: secretaria, militar, comandante
+// Retorna lista unificada com id, nome, perfil, foto
+router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+
+  try {
+    // 1) Professores ativos (tabela professores)
+    const [profs] = await pool.query(
+      `SELECT p.id, p.nome, p.foto, 'professor' AS perfil, p.status
+       FROM professores p
+       WHERE p.escola_id = ? AND p.status = 'ativo'
+       ORDER BY p.nome`,
+      [escola_id]
+    );
+
+    // 2) Outros usuários com perfis elegíveis (tabela usuarios)
+    //    Perfis que têm acesso ao Gabarito: diretor, vice_diretor, coordenador, supervisor
+    //    NÃO incluir: secretaria, militar, comandante, professor (já vem da tabela professores)
+    const perfisElegiveis = ['diretor', 'vice_diretor', 'coordenador', 'supervisor'];
+    const [usuarios] = await pool.query(
+      `SELECT u.id AS usuario_id, u.nome, u.perfil, u.foto_url AS foto
+       FROM usuarios u
+       WHERE u.escola_id = ?
+         AND u.ativo = 1
+         AND u.perfil IN (${perfisElegiveis.map(() => '?').join(',')})
+       ORDER BY u.nome`,
+      [escola_id, ...perfisElegiveis]
+    );
+
+    // 3) Combinar: professores com "id" (para vincular ao lote) + outros com "usuario_id"
+    //    O frontend usa professor.id para vincular-professor. Para outros usuários,
+    //    verificamos se eles também têm registro na tabela professores (mesmo CPF).
+    const resultado = [];
+
+    // Adicionar professores da tabela professores
+    const idsAdicionados = new Set();
+    for (const p of profs) {
+      resultado.push({
+        id: p.id,
+        nome: p.nome,
+        foto: p.foto || "",
+        perfil: "professor",
+        status: p.status,
+      });
+      idsAdicionados.add(p.id);
+    }
+
+    // Adicionar outros usuários (evitar duplicatas — se o usuário já está como professor)
+    const nomesAdicionados = new Set(profs.map(p => (p.nome || "").toUpperCase().trim()));
+    for (const u of usuarios) {
+      const nomeUpper = (u.nome || "").toUpperCase().trim();
+      if (nomesAdicionados.has(nomeUpper)) continue; // evitar duplicata
+      // Tentar encontrar um professor_id correspondente (mesmo CPF)
+      const [profMatch] = await pool.query(
+        `SELECT p.id FROM professores p
+         JOIN usuarios u2 ON REPLACE(REPLACE(u2.cpf, '.', ''), '-', '') = REPLACE(REPLACE(p.cpf, '.', ''), '-', '')
+         WHERE u2.id = ? AND p.escola_id = ? AND p.status = 'ativo'
+         LIMIT 1`,
+        [u.usuario_id, escola_id]
+      );
+      resultado.push({
+        id: profMatch[0]?.id || null, // professor_id (se existe na tabela professores)
+        usuario_id: u.usuario_id,
+        nome: u.nome,
+        foto: u.foto || "",
+        perfil: u.perfil,
+        status: "ativo",
+      });
+      nomesAdicionados.add(nomeUpper);
+    }
+
+    // Ordenar por nome
+    resultado.sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+
+    res.json(resultado);
+  } catch (err) {
+    console.error("Erro ao listar corretores disponíveis:", err);
+    res.status(500).json({ error: "Erro ao listar corretores disponíveis." });
+  }
+});
 
 export default router;
