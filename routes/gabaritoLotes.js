@@ -1168,7 +1168,7 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
     //    NÃO incluir: secretaria, militar, comandante, professor (já vem da tabela professores)
     const perfisElegiveis = ['diretor', 'vice_diretor', 'coordenador', 'supervisor'];
     const [usuarios] = await pool.query(
-      `SELECT u.id AS usuario_id, u.nome, u.perfil, u.foto_url AS foto
+      `SELECT u.id AS usuario_id, u.nome, u.perfil, u.foto
        FROM usuarios u
        WHERE u.escola_id = ?
          AND u.ativo = 1
