@@ -318,6 +318,8 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     const perfil = getPerfil(req);
     const isGestor = ['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil);
 
+    console.log(`[agente.routes] POST /testar: credId=${credId}, escolaId=${escolaId}, usuarioId=${usuarioId}, perfil=${perfil}, isGestor=${isGestor}`);
+
     // Gestor pode testar qualquer credencial da escola; usuário comum só a própria
     const testarWhere = isGestor
       ? 'id = ? AND escola_id = ? AND ativo = 1'
@@ -332,7 +334,10 @@ router.post('/credenciais/:id/testar', async (req, res) => {
       testarParams
     );
 
+    console.log(`[agente.routes] POST /testar: credenciais encontradas=${rows?.length || 0}`);
+
     if (!rows?.length) {
+      console.error(`[agente.routes] POST /testar: credencial não encontrada (id=${credId}, escola=${escolaId}, usuario=${usuarioId}, ativo=1)`);
       return res.status(404).json({ ok: false, message: 'Credencial não encontrada.' });
     }
 
