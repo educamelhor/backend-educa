@@ -30,7 +30,8 @@ router.get("/", async (req, res) => {
 // ============================================================================
 router.get("/historico", async (req, res) => {
   try {
-    const { escola_id } = req.user;
+    const escola_id = req.escola_id ?? req.user?.escola_id;
+    if (!escola_id) return res.status(400).json({ error: "Escola não identificada." });
     const {
       status,
       turma_id,
