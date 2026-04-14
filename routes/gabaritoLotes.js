@@ -1155,9 +1155,12 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
 
   try {
     // 1) Professores ativos (tabela professores)
+    //    JOIN com usuarios via CPF para pegar a foto do perfil de login
     const [profs] = await pool.query(
-      `SELECT p.id, p.nome, p.foto, 'professor' AS perfil, p.status
+      `SELECT p.id, p.nome, COALESCE(p.foto, u.foto) AS foto, 'professor' AS perfil, p.status
        FROM professores p
+       LEFT JOIN usuarios u ON REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = REPLACE(REPLACE(p.cpf, '.', ''), '-', '')
+         AND u.escola_id = p.escola_id
        WHERE p.escola_id = ? AND p.status = 'ativo'
        ORDER BY p.nome`,
       [escola_id]
