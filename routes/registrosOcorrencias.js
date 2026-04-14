@@ -106,15 +106,15 @@ router.get("/historico", async (req, res) => {
          o.status,
          o.criado_em,
          o.dias_suspensao,
-         a.estudante AS aluno_nome,
-         a.codigo AS aluno_codigo,
-         t.nome AS turma_nome,
-         t.turno AS turma_turno,
-         COALESCE(r.medida_disciplinar, o.tipo_ocorrencia) AS medida_disciplinar,
-         COALESCE(r.pontos, 0) AS pontos,
-         resp.nome AS responsavel_nome,
-         resp.telefone_celular AS responsavel_telefone,
-         u.nome AS registrado_por
+         ANY_VALUE(a.estudante)                             AS aluno_nome,
+         ANY_VALUE(a.codigo)                               AS aluno_codigo,
+         ANY_VALUE(t.nome)                                 AS turma_nome,
+         ANY_VALUE(t.turno)                                AS turma_turno,
+         ANY_VALUE(COALESCE(r.medida_disciplinar, o.tipo_ocorrencia)) AS medida_disciplinar,
+         ANY_VALUE(COALESCE(r.pontos, 0))                  AS pontos,
+         ANY_VALUE(resp.nome)                              AS responsavel_nome,
+         ANY_VALUE(resp.telefone_celular)                  AS responsavel_telefone,
+         ANY_VALUE(u.nome)                                 AS registrado_por
        FROM ocorrencias_disciplinares o
        JOIN alunos a ON a.id = o.aluno_id AND a.escola_id = o.escola_id
        LEFT JOIN turmas t ON t.id = a.turma_id
@@ -124,7 +124,9 @@ router.get("/historico", async (req, res) => {
        LEFT JOIN responsaveis resp ON resp.id = ra.responsavel_id
        LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
        ${where}
-       GROUP BY o.id
+       GROUP BY o.id, o.aluno_id, o.data_ocorrencia, o.motivo, o.tipo_ocorrencia,
+                o.descricao, o.convocar_responsavel, o.data_comparecimento_responsavel,
+                o.status, o.criado_em, o.dias_suspensao
        ORDER BY o.criado_em DESC
        LIMIT ? OFFSET ?`,
       [...params, Number(limit), offset]
