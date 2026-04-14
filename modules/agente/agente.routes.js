@@ -184,11 +184,11 @@ router.post('/credenciais', async (req, res) => {
     );
 
     const savedId = result.insertId || null;
-    // Se insertId=0 (update), busca o id real
+    // Se insertId=0 (update/sem INSERT real), busca o id real da credencial ATIVA mais recente
     let credId = savedId;
     if (!credId) {
       const [[row]] = await db.query(
-        'SELECT id FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ? LIMIT 1',
+        'SELECT id FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ? AND ativo = 1 ORDER BY id DESC LIMIT 1',
         [escolaId, usuarioId]
       );
       credId = row?.id || null;
@@ -320,16 +320,22 @@ router.post('/credenciais/:id/testar', async (req, res) => {
 
     console.log(`[agente.routes] POST /testar: credId=${credId}, escolaId=${escolaId}, usuarioId=${usuarioId}, perfil=${perfil}, isGestor=${isGestor}`);
 
-    // Gestor pode testar qualquer credencial da escola; usuário comum só a própria
+    // Gestor: busca por id especifico (pode gerenciar qualquer credencial da escola)
+    // Professor/comum: ignora o id do frontend (pode estar desatualizado) e busca pela
+    // credencial ATIVA mais recente do proprio usuario na escola — unico critério seguro
     const testarWhere = isGestor
       ? 'id = ? AND escola_id = ? AND ativo = 1'
-      : 'id = ? AND escola_id = ? AND usuario_id = ? AND ativo = 1';
-    const testarParams = isGestor ? [credId, escolaId] : [credId, escolaId, usuarioId];
+      : 'escola_id = ? AND usuario_id = ? AND ativo = 1';
+    const testarParams = isGestor
+      ? [credId, escolaId]
+      : [escolaId, usuarioId];
+    const testarOrderBy = 'ORDER BY id DESC';
 
     const [rows] = await db.query(
       `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
        FROM agente_credenciais
        WHERE ${testarWhere}
+       ${testarOrderBy}
        LIMIT 1`,
       testarParams
     );
@@ -337,19 +343,24 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     console.log(`[agente.routes] POST /testar: credenciais encontradas=${rows?.length || 0}`);
 
     if (!rows?.length) {
-      console.error(`[agente.routes] POST /testar: credencial não encontrada (id=${credId}, escola=${escolaId}, usuario=${usuarioId}, ativo=1)`);
-      return res.status(404).json({ ok: false, message: 'Credencial não encontrada.' });
+      const queryInfo = isGestor
+        ? `id=${credId}, escola=${escolaId}`
+        : `escola=${escolaId}, usuario=${usuarioId}`;
+      console.error(`[agente.routes] POST /testar: credencial nao encontrada (${queryInfo}, ativo=1)`);
+      return res.status(404).json({ ok: false, message: 'Credencial não encontrada. Salve suas credenciais novamente.' });
     }
 
     const cred = rows[0];
-    const testeKey = `${escolaId}:${credId}`;
+    // Usa o id REAL da credencial encontrada no banco (não o do URL, que pode estar desatualizado)
+    const realCredId = cred.id;
+    const testeKey = `${escolaId}:${realCredId}`;
 
     // Perfil: usa o salvo no banco (definido pelo usuário) como prioridade
     // Fallback: detecta pelo perfil JWT do usuário logado
     const PERFIL_ID_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
     const perfilFinal = PERFIL_ID_MAP[cred.perfil_id] || perfilReq || 'professor';
 
-    console.log(`[agente.routes] perfil_id no banco: ${cred.perfil_id} → perfil EDUCADF: ${perfilFinal}`);
+    console.log(`[agente.routes] perfil_id no banco: ${cred.perfil_id} → perfil EDUCADF: ${perfilFinal} (credencial real id=${realCredId})`);
 
     // Se já há um teste em andamento, retorna o status atual sem iniciar novo
     const emAndamento = _testesEmAndamento.get(testeKey);
@@ -362,7 +373,7 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     const entry = { status: 'executando', result: null, startedAt: Date.now() };
     _testesEmAndamento.set(testeKey, entry);
 
-    console.log(`[agente.routes] Teste assíncrono iniciado: credencial #${credId} (perfil EDUCADF: ${perfilFinal})`);
+    console.log(`[agente.routes] Teste assíncrono iniciado: credencial #${realCredId} (perfil EDUCADF: ${perfilFinal})`);
 
     // Dispara o Playwright em background SEM bloquear a resposta HTTP
     (async () => {
@@ -373,7 +384,7 @@ router.post('/credenciais/:id/testar', async (req, res) => {
             senha: senhaPlain,
             perfil: perfilFinal,
           }),
-          { escolaId, professorId: cred.id, headless: true }
+          { escolaId, professorId: realCredId, headless: true }
         );
 
         entry.status = result.ok ? 'sucesso' : 'falha';
@@ -382,7 +393,7 @@ router.post('/credenciais/:id/testar', async (req, res) => {
         if (result.ok) {
           await db.query(
             'UPDATE agente_credenciais SET ultimo_teste_em = NOW() WHERE id = ?',
-            [credId]
+            [realCredId]
           ).catch(() => {});
         }
 
@@ -390,17 +401,17 @@ router.post('/credenciais/:id/testar', async (req, res) => {
           `INSERT INTO agente_audit_log (execucao_id, acao, detalhe, screenshot_path, duracao_ms)
            VALUES (0, 'TESTE_CREDENCIAL', ?, ?, ?)`,
           [
-            JSON.stringify({ credencial_id: credId, ok: result.ok, errorCode: result.errorCode }),
+            JSON.stringify({ credencial_id: realCredId, ok: result.ok, errorCode: result.errorCode }),
             result.screenshotPath,
             result.durationMs,
           ]
         ).catch(() => {});
 
-        console.log(`[agente.routes] Teste #${credId} finalizado: ${entry.status} (${result.durationMs}ms)`);
+        console.log(`[agente.routes] Teste #${realCredId} finalizado: ${entry.status} (${result.durationMs}ms)`);
       } catch (err) {
         entry.status = 'falha';
         entry.result = { ok: false, message: `Erro interno: ${err.message}`, errorCode: 'UNEXPECTED_ERROR' };
-        console.error(`[agente.routes] Erro no teste assíncrono #${credId}:`, err.message);
+        console.error(`[agente.routes] Erro no teste assíncrono #${realCredId}:`, err.message);
       }
       // Limpa cache após 5 min
       setTimeout(() => _testesEmAndamento.delete(testeKey), 5 * 60_000);
