@@ -1153,6 +1153,17 @@ function safeJson(val) {
 router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
 
+  // Helper: converte path relativo (/uploads/...) em URL pública do Spaces
+  // Em produção, o disco local é efêmero (redeploy limpa tudo)
+  const spacesUrl = (fotoPath) => {
+    if (!fotoPath) return "";
+    if (fotoPath.startsWith("http")) return fotoPath; // já é URL completa
+    const bucket = process.env.DO_SPACES_BUCKET || "educa-melhor-uploads";
+    const region = process.env.DO_SPACES_REGION || "nyc3";
+    const key = fotoPath.replace(/^\/+/, ""); // remove "/" inicial
+    return `https://${bucket}.${region}.digitaloceanspaces.com/${key}`;
+  };
+
   try {
     // 1) Professores ativos (tabela professores)
     //    JOIN com usuarios via CPF para pegar a foto do perfil de login
@@ -1191,7 +1202,7 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
       resultado.push({
         id: p.id,
         nome: p.nome,
-        foto: p.foto || "",
+        foto: spacesUrl(p.foto),
         perfil: "professor",
         status: p.status,
       });
@@ -1215,7 +1226,7 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
         id: profMatch[0]?.id || null, // professor_id (se existe na tabela professores)
         usuario_id: u.usuario_id,
         nome: u.nome,
-        foto: u.foto || "",
+        foto: spacesUrl(u.foto),
         perfil: u.perfil,
         status: "ativo",
       });
