@@ -394,6 +394,7 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
     const disciplinaFiltrada = req.query.disciplina;
+    const anoLetivo = req.query.ano ? Number(req.query.ano) : new Date().getFullYear();
 
     // Obtém o CPF
     let cpf = req.user?.cpf;
@@ -426,6 +427,7 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         t.etapa
       FROM turmas t
       WHERE t.escola_id = ?
+        AND t.ano = ?
         AND (
           t.id IN (
             SELECT p.turma_id FROM professores p WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
@@ -451,7 +453,7 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         t.nome ASC
       `;
 
-    let params = [Number(escolaId), Number(escolaId), cleanCpf];
+    let params = [Number(escolaId), anoLetivo, Number(escolaId), cleanCpf];
     if (disciplinaFiltrada) params.push(disciplinaFiltrada);
     params.push(Number(escolaId), cleanCpf);
 

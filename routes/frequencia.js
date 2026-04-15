@@ -16,10 +16,15 @@ const router = Router();
 // ─────────────────────────────────────────────────
 
 // GET /api/frequencia/justificativas
+// LGPD: professor acessa apenas turmas em que leciona (ano letivo corrente)
 router.get("/justificativas", async (req, res) => {
   try {
     const { escola_id, turma_id, tipo } = req.query;
     if (!escola_id) return res.status(400).json({ error: "escola_id obrigatório" });
+
+    const perfil = String(req.user?.perfil || "").toLowerCase();
+    const isProfessor = perfil === "professor";
+    const anoLetivo = new Date().getFullYear();
 
     let sql = `
       SELECT
@@ -34,6 +39,46 @@ router.get("/justificativas", async (req, res) => {
       WHERE fj.escola_id = ?
     `;
     const params = [escola_id];
+
+    // ── LGPD: professor só vê turmas em que leciona (ano letivo atual) ──
+    if (isProfessor) {
+      const cpf = req.user?.cpf;
+      let cleanCpf = cpf ? String(cpf).replace(/\D/g, "") : null;
+
+      // Fallback: busca CPF pelo usuario_id do token
+      if (!cleanCpf) {
+        const userId = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
+        if (userId) {
+          const [urows] = await req.db.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+          cleanCpf = urows?.[0]?.cpf ? String(urows[0].cpf).replace(/\D/g, "") : null;
+        }
+      }
+
+      if (cleanCpf) {
+        sql += `
+          AND fj.turma_id IN (
+            SELECT DISTINCT t2.id FROM turmas t2
+            WHERE t2.escola_id = ? AND t2.ano = ?
+              AND (
+                t2.id IN (
+                  SELECT p.turma_id FROM professores p
+                  WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+                )
+                OR
+                t2.id IN (
+                  SELECT m.turma_id FROM modulacao m
+                  JOIN professores p ON p.id = m.professor_id
+                  WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+                )
+              )
+          )
+        `;
+        params.push(escola_id, anoLetivo, escola_id, cleanCpf, escola_id, cleanCpf);
+      } else {
+        // CPF não encontrado: retorna lista vazia por segurança (LGPD — fail-safe)
+        return res.json([]);
+      }
+    }
 
     if (turma_id) {
       sql += " AND fj.turma_id = ?";
@@ -53,6 +98,7 @@ router.get("/justificativas", async (req, res) => {
     res.status(500).json({ error: "Erro interno" });
   }
 });
+
 
 // POST /api/frequencia/justificativas
 // Verifica duplicata (mesmo aluno + tipo + período) antes de inserir
