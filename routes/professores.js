@@ -516,7 +516,9 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
 
     const ids = rows.map(r => r.id);
 
-    return res.json({ ok: true, professor_ids: ids });
+    // Retorna usuario_id para que não-professores (coord, supervisor, apoio, etc.)
+    // possam localizar lotes que foram atribuídos pelo usuario_id (não pelo professor_id)
+    return res.json({ ok: true, professor_ids: ids, usuario_id: userId });
   } catch (err) {
     console.error("Erro ao buscar professor_id (me/id):", err);
     return res.status(500).json({ ok: false, message: "Erro ao resolver professor." });

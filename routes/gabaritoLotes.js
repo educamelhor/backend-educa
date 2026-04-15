@@ -1147,8 +1147,9 @@ function safeJson(val) {
 
 // ─── GET /api/gabarito-lotes/corretores-disponiveis ──────────────────────────
 // Lista TODOS os usuários da escola elegíveis para corrigir gabaritos.
-// Inclui: professores, coordenadores, diretores, vice-diretores, supervisores
-// Exclui: secretaria, militar, comandante
+// Inclui: qualquer usuário do contexto pedagógico:
+//   professores, coordenadores, vice-diretores, diretores, supervisores, apoio
+// Exclui perfis não-pedagógicos: secretaria, militar, comandante
 // Retorna lista unificada com id, nome, perfil, foto
 router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
@@ -1177,10 +1178,11 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
       [escola_id]
     );
 
-    // 2) Outros usuários com perfis elegíveis (tabela usuarios)
-    //    Perfis que têm acesso ao Gabarito: diretor, vice_diretor, coordenador, supervisor
-    //    NÃO incluir: secretaria, militar, comandante, professor (já vem da tabela professores)
-    const perfisElegiveis = ['diretor', 'vice_diretor', 'coordenador', 'supervisor'];
+    // 2) Outros usuários pedagógicos elegíveis (tabela usuarios)
+    //    Pedagogicos: diretor, vice_diretor, coordenador, supervisor, apoio
+    //    NÃO incluir: secretaria, militar, comandante
+    //    NÃO incluir 'professor' aqui — já vem da tabela professores (acima)
+    const perfisElegiveis = ['diretor', 'vice_diretor', 'coordenador', 'supervisor', 'apoio'];
     const [usuarios] = await pool.query(
       `SELECT u.id AS usuario_id, u.nome, u.perfil, u.foto
        FROM usuarios u
