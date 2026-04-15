@@ -82,6 +82,8 @@ import disciplinasRouter from "./routes/disciplinas.js";
 import turmasRouter from "./routes/turmas.js";
 import questoesRouter from "./routes/questoes.js";
 import questoesUploadRouter from "./routes/questoesUpload.js";
+import provasRouter from "./routes/provas.js";
+import provaPdfRouter from "./routes/prova_pdf.js";
 import escolasRouter from "./routes/escolas.js";
 import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/usuarios.js";
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
@@ -549,6 +551,10 @@ async function bootstrap() {
       verificarEscola,
       questoesUploadRouter
     );
+    // ✅ EDUCA.PROVA — Montador de Provas
+    app.use("/api/provas", autenticarToken, verificarEscola, provasRouter);
+    // ✅ EDUCA.PROVA — Geração de HTML/PDF (Playwright)
+    app.use("/api/provas", autenticarToken, verificarEscola, provaPdfRouter);
   } else {
     console.log("[FF] Questões desativado");
   }
