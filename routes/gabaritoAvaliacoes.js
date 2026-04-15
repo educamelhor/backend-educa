@@ -414,8 +414,11 @@ router.get("/:id/status-importacao", async (req, res) => {
 });
 
 // ─── POST /api/gabarito-avaliacoes/:id/importar-notas ────────────────────────
-// Importa notas dos gabaritos corrigidos para a tabela `notas` (diário do professor)
-// A nota TOTAL da prova é replicada igualmente para CADA disciplina no disciplinas_config
+// Importa notas do Provão Bimestral para a tabela `notas_diario` (diário do professor)
+// - Nome da disciplina SEMPRE vem da tabela `disciplinas` (padrão do secretário)
+// - Escreve na coluna Provão Bimestral (fixo_direcao=1, item_idx=0) do PAP de cada professor
+// - NÃO escreve em `notas` — boletim será alimentado quando o professor fechar o diário
+// - Nota é escalada: (nota_gabarito / nota_max_gabarito) × nota_total_item_PAP
 router.post("/:id/importar-notas", async (req, res) => {
   const conn = await pool.getConnection();
   try {
@@ -424,172 +427,208 @@ router.post("/:id/importar-notas", async (req, res) => {
     const { escola_id } = req.user;
     const { id } = req.params;
 
-    // 1. Buscar avaliação
+    // ── 1. Buscar avaliação ────────────────────────────────────────────────
     const [avRows] = await conn.query(
       "SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
       [id, escola_id]
     );
     if (avRows.length === 0) {
-      await conn.rollback();
-      conn.release();
+      await conn.rollback(); conn.release();
       return res.status(404).json({ error: "Avaliação não encontrada." });
     }
     const av = avRows[0];
+    const notaMaxGabarito = Number(av.nota_total) || 10;
 
-    // 2. Validar tipo = prova_padronizada
+    // ── 2. Validar tipo ────────────────────────────────────────────────────
     if (av.tipo !== "prova_padronizada") {
-      await conn.rollback();
-      conn.release();
+      await conn.rollback(); conn.release();
       return res.status(400).json({ error: "Apenas avaliações do tipo 'Prova Padronizada' podem ter notas importadas para o diário." });
     }
 
-    // 3. Validar disciplinas_config
-    const discConfig = safeJson(av.disciplinas_config);
-    if (!Array.isArray(discConfig) || discConfig.length === 0) {
-      await conn.rollback();
-      conn.release();
-      return res.status(400).json({ error: "Esta avaliação não possui disciplinas configuradas. Configure as disciplinas por faixa de questões na Etapa 1." });
+    // ── 3. Enriquecer disciplinas_config — nome SEMPRE da tabela disciplinas ─
+    const discConfigRaw = safeJson(av.disciplinas_config);
+    if (!Array.isArray(discConfigRaw) || discConfigRaw.length === 0) {
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: "Esta avaliação não possui disciplinas configuradas." });
     }
 
-    // 4. Converter bimestre (texto → número)
+    const discConfig = [];
+    for (const dc of discConfigRaw) {
+      if (!dc.disciplina_id) continue;
+      const [[discRow]] = await conn.query(
+        "SELECT id, nome FROM disciplinas WHERE id = ? AND escola_id = ?",
+        [dc.disciplina_id, escola_id]
+      );
+      if (!discRow) {
+        await conn.rollback(); conn.release();
+        return res.status(400).json({ error: `Disciplina ID ${dc.disciplina_id} não encontrada na tabela de disciplinas. Verifique o cadastro com o secretário.` });
+      }
+      discConfig.push({ ...dc, nome: discRow.nome, disciplinaId: discRow.id });
+    }
+
+    // ── 4. Converter bimestre ──────────────────────────────────────────────
     const bimestreNum = parseBimestre(av.bimestre);
     if (!bimestreNum) {
-      await conn.rollback();
-      conn.release();
-      return res.status(400).json({ error: `Bimestre inválido ou não definido: "${av.bimestre}". Defina o bimestre na avaliação.` });
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: `Bimestre inválido: "${av.bimestre}".` });
     }
 
-    // 5. Verificar se todos os lotes estão finalizados
+    // ── 5. Verificar lotes finalizados ─────────────────────────────────────
     const [lotes] = await conn.query(
       "SELECT id, status, turma_nome FROM gabarito_lotes WHERE avaliacao_id = ? AND escola_id = ?",
       [id, escola_id]
     );
     if (lotes.length === 0) {
-      await conn.rollback();
-      conn.release();
+      await conn.rollback(); conn.release();
       return res.status(400).json({ error: "Nenhum lote encontrado para esta avaliação." });
     }
     const lotesNaoFinalizados = lotes.filter(l => l.status !== "finalizado");
     if (lotesNaoFinalizados.length > 0) {
-      const turmas = lotesNaoFinalizados.map(l => l.turma_nome).join(", ");
-      await conn.rollback();
-      conn.release();
-      return res.status(400).json({ error: `Os seguintes lotes ainda não foram finalizados: ${turmas}. Finalize a correção antes de importar.` });
+      const turmasNomes = lotesNaoFinalizados.map(l => l.turma_nome).join(", ");
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: `Os seguintes lotes ainda não foram finalizados: ${turmasNomes}. Finalize a correção antes de importar.` });
     }
 
-    // 6. Buscar todas as respostas corrigidas
+    // ── 6. Buscar respostas corrigidas ─────────────────────────────────────
     const [respostas] = await conn.query(
-      "SELECT codigo_aluno, nome_aluno, nota, turma_id, turma_nome, acertos_por_disciplina FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
+      "SELECT codigo_aluno, nome_aluno, nota, turma_id, turma_nome FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
       [id, escola_id]
     );
-
     if (respostas.length === 0) {
-      await conn.rollback();
-      conn.release();
+      await conn.rollback(); conn.release();
       return res.status(400).json({ error: "Nenhuma resposta de aluno encontrada para esta avaliação." });
     }
 
-    // 7. Fetch governance config for nota-por-área
-    let notaPorArea = true; // default: all disciplines get total grade
-    try {
-      const [cfgRows] = await conn.query(
-        `SELECT chave, valor FROM configuracoes_escola
-         WHERE escola_id = ? AND chave = 'nota.avaliacao_padrao.bimestral'`,
-        [escola_id]
+    // ── 7. Cache: PAP por (disciplina + turma) ─────────────────────────────
+    // Usa CONVERT/COLLATE para evitar Error 1267 (Illegal mix of collations)
+    const papCache = new Map();
+    async function resolverPAP(discNome, turmaNome) {
+      const key = `${discNome}::${turmaNome}`;
+      if (papCache.has(key)) return papCache.get(key);
+
+      const [rows] = await conn.query(
+        `SELECT pa.id AS plano_id, ia.nota_total AS item_nota_total
+         FROM planos_avaliacao pa
+         JOIN itens_avaliacao ia ON ia.plano_id = pa.id AND ia.fixo_direcao = 1
+         WHERE pa.escola_id = ?
+           AND CONVERT(pa.disciplina USING utf8mb4) COLLATE utf8mb4_unicode_ci
+               = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+           AND CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci
+               = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+           AND pa.bimestre LIKE ?
+           AND pa.status IN ('APROVADO', 'ENVIADO')
+         ORDER BY ia.id ASC
+         LIMIT 1`,
+        [escola_id, discNome, turmaNome, `${bimestreNum}%`]
       );
-      if (cfgRows.length > 0) {
-        notaPorArea = cfgRows[0].valor === "1";
-      }
-    } catch {
-      // Fallback: use default (por área)
+
+      const result = rows.length > 0 ? rows[0] : null;
+      papCache.set(key, result);
+      return result;
     }
 
-    // Extract disciplina IDs for the por-área branch
-    const disciplinaIds = discConfig.map(dc => dc.disciplina_id);
+    // ── 8. Cache: turma_id numérico por nome ──────────────────────────────
+    const turmaIdCache = new Map();
+    async function resolverTurmaId(resp) {
+      const numId = Number(resp.turma_id);
+      if (numId && numId > 0) return numId; // already a valid FK
 
-    // 8. Para cada aluno, resolver aluno_id e inserir notas
-    const anoLetivo = anoLetivoAtual();
+      const nome = resp.turma_nome;
+      if (turmaIdCache.has(nome)) return turmaIdCache.get(nome);
+
+      const [[row]] = await conn.query(
+        `SELECT id FROM turmas
+         WHERE escola_id = ?
+           AND CONVERT(nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
+               = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         LIMIT 1`,
+        [escola_id, nome]
+      );
+      const resolved = row?.id || null;
+      turmaIdCache.set(nome, resolved);
+      return resolved;
+    }
+
+    // ── 9. Processar cada aluno ────────────────────────────────────────────
     let totalInseridos = 0;
     let totalAtualizados = 0;
     const erros = [];
+    const avisos = [];
     const alunosProcessados = [];
 
     for (const resp of respostas) {
-      // Pular códigos artificiais (ARQ_xxx — gabaritos sem QR identificado)
       if (!resp.codigo_aluno || resp.codigo_aluno.startsWith("ARQ_")) {
         erros.push({ codigo: resp.codigo_aluno, motivo: "Aluno não identificado (sem QR Code)" });
         continue;
       }
 
-      // Resolver aluno_id a partir do codigo_aluno
-      const [alunoRows] = await conn.query(
+      const [[alunoRow]] = await conn.query(
         "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ?",
         [resp.codigo_aluno, escola_id]
       );
-
-      if (alunoRows.length === 0) {
+      if (!alunoRow) {
         erros.push({ codigo: resp.codigo_aluno, nome: resp.nome_aluno, motivo: "Aluno não encontrado na base de dados" });
         continue;
       }
 
-      const alunoId = alunoRows[0].id;
-      const notaTotal = Number(resp.nota) || 0;
+      const alunoId = alunoRow.id;
+      const notaGabarito = Number(resp.nota) || 0;
 
-      if (notaPorArea) {
-        // ── MODO POR ÁREA: todas as disciplinas recebem a nota TOTAL da prova ──
-        for (const discId of disciplinaIds) {
-          const [result] = await conn.query(
-            `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
-            [escola_id, alunoId, anoLetivo, bimestreNum, discId, notaTotal]
-          );
-          if (result.affectedRows === 1) totalInseridos++;
-          else if (result.affectedRows === 2) totalAtualizados++;
-        }
-      } else {
-        // ── MODO POR DISCIPLINA: cada disciplina recebe sua nota proporcional ──
-        const acertosPorDisc = safeJson(resp.acertos_por_disciplina) || [];
-        const notaTotalProva = Number(av.nota_total) || 10;
-        const numQuestoes = Number(av.num_questoes) || 1;
-
-        for (const dc of discConfig) {
-          // Buscar acertos desta disciplina nos acertos_por_disciplina
-          const discAcertos = acertosPorDisc.find(
-            a => a.disciplina_id === dc.disciplina_id || a.nome === dc.nome
-          );
-
-          let notaDisciplina;
-          if (discAcertos) {
-            // Nota proporcional: (acertos / totalQuestoesDisciplina) * (questoesDisciplina / totalQuestoesProva) * notaTotalProva
-            const totalQuestoesDisc = discAcertos.total || (dc.ate - dc.de + 1);
-            const acertosDisc = discAcertos.acertos || 0;
-            const pesoDisc = totalQuestoesDisc / numQuestoes;
-            notaDisciplina = parseFloat(((acertosDisc / totalQuestoesDisc) * pesoDisc * notaTotalProva).toFixed(2));
-          } else {
-            // Fallback: proporção igual da nota total
-            notaDisciplina = parseFloat((notaTotal / discConfig.length).toFixed(2));
-          }
-
-          const [result] = await conn.query(
-            `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
-            [escola_id, alunoId, anoLetivo, bimestreNum, dc.disciplina_id, notaDisciplina]
-          );
-          if (result.affectedRows === 1) totalInseridos++;
-          else if (result.affectedRows === 2) totalAtualizados++;
-        }
+      const turmaNumericalId = await resolverTurmaId(resp);
+      if (!turmaNumericalId) {
+        erros.push({ codigo: resp.codigo_aluno, nome: resp.nome_aluno, motivo: `Turma "${resp.turma_nome}" não encontrada` });
+        continue;
       }
 
-      alunosProcessados.push({
-        codigo: resp.codigo_aluno,
-        nome: resp.nome_aluno || alunoRows[0].estudante,
-        nota: notaTotal,
-      });
+      let alunoImportou = false;
+
+      for (const dc of discConfig) {
+        const pap = await resolverPAP(dc.nome, resp.turma_nome);
+
+        if (!pap) {
+          const avisoKey = `${dc.nome}::${resp.turma_nome}`;
+          if (!avisos.find(a => a.chave === avisoKey)) {
+            avisos.push({
+              chave: avisoKey,
+              disciplina: dc.nome,
+              turma: resp.turma_nome,
+              motivo: `PAP não encontrado para ${dc.nome} / ${resp.turma_nome} / ${av.bimestre} (status APROVADO ou ENVIADO)`,
+            });
+          }
+          continue;
+        }
+
+        // Escalar nota: aluno tirou X/nota_max_gabarito → converte para escala do PAP
+        // Ex: 7/10 no gabarito, PAP Provão vale 5.0 → nota_diario = (7/10) × 5 = 3.50
+        const notaItemPAP = Number(pap.item_nota_total) || 5;
+        const notaEscalada = parseFloat(((notaGabarito / notaMaxGabarito) * notaItemPAP).toFixed(2));
+
+        // item_idx=0 (Provão Bimestral é sempre o 1º item do PAP — confirmado via BD)
+        // oportunidade_idx=0 (única oportunidade do Provão)
+        const [result] = await conn.query(
+          `INSERT INTO notas_diario
+             (escola_id, plano_id, turma_id, aluno_id, item_idx, oportunidade_idx, nota, updated_at)
+           VALUES (?, ?, ?, ?, 0, 0, ?, NOW())
+           ON DUPLICATE KEY UPDATE nota = VALUES(nota), updated_at = NOW()`,
+          [escola_id, pap.plano_id, turmaNumericalId, alunoId, notaEscalada]
+        );
+
+        if (result.affectedRows === 1) totalInseridos++;
+        else if (result.affectedRows === 2) totalAtualizados++;
+        alunoImportou = true;
+      }
+
+      if (alunoImportou) {
+        alunosProcessados.push({
+          codigo: resp.codigo_aluno,
+          nome: resp.nome_aluno || alunoRow.estudante,
+          nota: notaGabarito,
+          turma: resp.turma_nome,
+        });
+      }
     }
 
-    // 9. Atualizar status da avaliação
+    // ── 10. Atualizar status da avaliação ──────────────────────────────────
     await conn.query(
       "UPDATE gabarito_avaliacoes SET status = 'notas_importadas' WHERE id = ? AND escola_id = ?",
       [id, escola_id]
@@ -598,11 +637,12 @@ router.post("/:id/importar-notas", async (req, res) => {
     await conn.commit();
     conn.release();
 
-    const discNomes = discConfig.map(dc => dc.nome).join(", ");
+    console.log(`[importar-notas] Avaliação #${id}: ${alunosProcessados.length} alunos, ${totalInseridos} inseridas, ${totalAtualizados} atualizadas, ${avisos.length} avisos, ${erros.length} erros`);
 
+    const discNomes = discConfig.map(dc => dc.nome).join(", ");
     res.json({
       success: true,
-      message: `Importação concluída! ${alunosProcessados.length} alunos processados para ${disciplinaIds.length} disciplina(s).`,
+      message: `Importação concluída! ${alunosProcessados.length} aluno(s) importado(s) para ${discConfig.length} disciplina(s) no diário.`,
       resumo: {
         totalAlunos: respostas.length,
         alunosImportados: alunosProcessados.length,
@@ -612,13 +652,15 @@ router.post("/:id/importar-notas", async (req, res) => {
         disciplinas: discNomes,
         bimestre: av.bimestre,
         erros: erros.length,
+        avisos: avisos.length,
         detalheErros: erros,
+        detalheAvisos: avisos,
       },
     });
   } catch (err) {
     await conn.rollback();
     conn.release();
-    console.error("Erro ao importar notas:", err);
+    console.error("Erro ao importar notas para o diário:", err);
     res.status(500).json({ error: "Erro ao importar notas para o diário. A operação foi revertida." });
   }
 });
