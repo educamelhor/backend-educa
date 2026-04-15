@@ -50,9 +50,9 @@ function buildWhere(escola_id, professor_id, perfil, filters = {}) {
     params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`);
   }
 
-    params
-  };
+  return { where: conditions.length > 0 ? conditions.join(' AND ') : '1=1', params };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1) GET /questoes — Lista questões com filtros opcionais e paginação
