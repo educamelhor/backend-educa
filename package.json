@@ -9,8 +9,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
+    "postinstall": "npx playwright install chromium --with-deps",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+
   "keywords": [],
   "author": "",
   "license": "ISC",
