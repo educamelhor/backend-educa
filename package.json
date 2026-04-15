@@ -9,7 +9,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "npx playwright install chromium || true",
+    "postinstall": "npx playwright install chromium || true && node scripts/run_migration_agente_v2.mjs || true",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
 
