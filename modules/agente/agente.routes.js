@@ -586,14 +586,20 @@ router.get('/credenciais/:id/testar/status', async (req, res) => {
     const testeKey = `${escolaId}:${credId}`;
     const entry = _testesEmAndamento.get(testeKey);
 
+    // Log para diagnóstico (polling frequente — loga só primeira e quando conclui)
     if (!entry) {
-      // Nenhum teste ativo — verifica banco
+      // Nenhum teste ativo na memória — verifica banco
       const db = req.db;
       const [[cred]] = await db.query(
         'SELECT ultimo_teste_em FROM agente_credenciais WHERE id = ? AND escola_id = ? LIMIT 1',
         [credId, escolaId]
       );
+      console.log(`[agente.routes] GET /testar/status: key=${testeKey} → sem_teste (ultimo_teste_em=${cred?.ultimo_teste_em || 'null'})`);
       return res.json({ ok: null, status: 'sem_teste', ultimo_teste_em: cred?.ultimo_teste_em || null });
+    }
+
+    if (entry.status !== 'executando') {
+      console.log(`[agente.routes] GET /testar/status: key=${testeKey} → ${entry.status} (ok=${entry.result?.ok})`);
     }
 
     return res.json({
