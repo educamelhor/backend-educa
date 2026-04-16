@@ -332,23 +332,62 @@ router.put("/:id", async (req, res) => {
 
 // ─── DELETE /api/gabarito-avaliacoes/:id ──────────────────────────────────────
 router.delete("/:id", async (req, res) => {
+  const conn = await pool.getConnection();
   try {
+    await conn.beginTransaction();
     const { escola_id } = req.user;
     const { id } = req.params;
 
-    const [result] = await pool.query(
-      "DELETE FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ? AND status IN ('rascunho', 'publicada')",
+    // Verificar se a avaliação existe
+    const [existing] = await conn.query(
+      "SELECT id FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (existing.length === 0) {
+      await conn.rollback(); conn.release();
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    // 1. Buscar lotes vinculados
+    const [lotes] = await conn.query(
+      "SELECT id FROM gabarito_lotes WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    const loteIds = lotes.map(l => l.id);
+
+    // 2. Excluir arquivos dos lotes
+    if (loteIds.length > 0) {
+      await conn.query(
+        `DELETE FROM gabarito_lote_arquivos WHERE lote_id IN (${loteIds.map(() => "?").join(",")})`,
+        loteIds
+      );
+    }
+
+    // 3. Excluir lotes
+    await conn.query(
+      "DELETE FROM gabarito_lotes WHERE avaliacao_id = ? AND escola_id = ?",
       [id, escola_id]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(400).json({
-        error: "Não é possível excluir. A avaliação não existe ou já foi publicada/finalizada.",
-      });
-    }
+    // 4. Excluir respostas (gabarito_respostas)
+    await conn.query(
+      "DELETE FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    // 5. Excluir a avaliação (qualquer status)
+    await conn.query(
+      "DELETE FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    await conn.commit();
+    conn.release();
 
     res.json({ ok: true, message: "Avaliação excluída com sucesso." });
   } catch (err) {
+    await conn.rollback();
+    conn.release();
     console.error("Erro ao excluir avaliação:", err);
     res.status(500).json({ error: "Erro ao excluir avaliação." });
   }
