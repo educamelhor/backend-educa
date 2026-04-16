@@ -65,6 +65,20 @@ async function run() {
       }
     }
 
+    // 2.7 REMOVE LINHAS ÓRFÃS — usuario_id=0 E professor_id=0
+    // Estas surgem quando: o Diretor/Vice/Coord salvou credenciais com professor_id=0
+    // e a migration anterior setou usuario_id=professor_id=0 (sem dono identificável).
+    // São inúteis (dados criptografados podem estar corrompidos) e bloqueiam novos INSERTs.
+    // Usuários afetados precisarão re-salvar UMA VEZ — o código já lida com isso (422).
+    const [orphansDeleted] = await db.query(`
+      DELETE FROM agente_credenciais
+      WHERE usuario_id = 0 AND professor_id = 0
+    `);
+    if (orphansDeleted.affectedRows > 0) {
+      console.log(`[MIG-v2] ✅ ${orphansDeleted.affectedRows} linha(s) órfã(s) removida(s) (usuario_id=0, professor_id=0).`);
+      console.log('[MIG-v2] ℹ️  Usuários impactados precisarão salvar suas credenciais UMA VEZ.');
+    }
+
     // 3. Adiciona unique key (escola_id, usuario_id) se não existir
     try {
       await db.query(`

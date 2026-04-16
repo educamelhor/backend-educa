@@ -167,9 +167,10 @@ router.post('/credenciais', async (req, res) => {
     const { encrypted, iv, tag } = encrypt(educadf_senha);
     const db = req.db;
 
-    // 1. Busca credencial existente deste usuário nesta escola (por usuario_id)
-    //    Tenta primeiro pela coluna usuario_id (pós-migration), com fallback seguro.
+    // ── Passo 1: Localiza credencial existente deste usuário ──────────────────
+    // Tenta pela coluna usuario_id (schema novo). Fallback para schema antigo.
     let existingId = null;
+    let hasUsuarioIdColumn = true;
     try {
       const [[existing]] = await db.query(
         `SELECT id FROM agente_credenciais
@@ -179,23 +180,65 @@ router.post('/credenciais', async (req, res) => {
       );
       existingId = existing?.id || null;
     } catch (colErr) {
-      // Coluna usuario_id pode não existir em ambientes antigos — sem migration
-      console.warn('[agente.routes] usuario_id column missing, falling back to professor_id lookup:', colErr.code);
-      try {
-        const [[existing]] = await db.query(
-          `SELECT id FROM agente_credenciais
-           WHERE escola_id = ? AND professor_id = ?
-           ORDER BY id DESC LIMIT 1`,
-          [escolaId, usuarioId]  // professor_id === usuarioId para perfil professor
+      hasUsuarioIdColumn = false;
+      console.warn('[agente.routes] usuario_id column missing (schema antigo):', colErr.code);
+      // Schema antigo: busca por professor_id (para usuários que são professores)
+      // Nota: professorId vem do body e é o id real na tabela professores
+      if (professorId > 0) {
+        try {
+          const [[existing]] = await db.query(
+            `SELECT id FROM agente_credenciais
+             WHERE escola_id = ? AND professor_id = ?
+             ORDER BY id DESC LIMIT 1`,
+            [escolaId, professorId]
+          );
+          existingId = existing?.id || null;
+        } catch { /* ignora */ }
+      }
+    }
+
+    // ── Passo 2: Se não encontrou por usuario_id, limpa órfãs (usuario_id=0) ──
+    // Linhas órfãs surgem da migration que setou usuario_id=professor_id=0
+    // para usuários não-professor. Ao limpar, o INSERT terá espaço livre.
+    if (!existingId && hasUsuarioIdColumn) {
+      // Tenta encontrar a linha órfã desta escola (usuario_id=0, sem dono definido)
+      const [[orphan]] = await db.query(
+        `SELECT id FROM agente_credenciais
+         WHERE escola_id = ? AND usuario_id = 0
+         ORDER BY id DESC LIMIT 1`,
+        [escolaId]
+      ).catch(() => [[null]]);
+
+      if (orphan?.id) {
+        // Reclama a linha órfã: UPDATE com os dados deste usuário
+        // (mais seguro que DELETE+INSERT: não perde a linha em caso de conflito)
+        await db.query(
+          `UPDATE agente_credenciais SET
+            usuario_id        = ?,
+            professor_id      = ?,
+            educadf_login     = ?,
+            educadf_senha_enc = ?,
+            educadf_senha_iv  = ?,
+            educadf_senha_tag = ?,
+            perfil_id         = ?,
+            ativo             = 1,
+            updated_at        = CURRENT_TIMESTAMP
+           WHERE id = ? AND escola_id = ?`,
+          [usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId, orphan.id, escolaId]
         );
-        existingId = existing?.id || null;
-      } catch { /* ignora */ }
+        console.log(`[agente.routes] Linha órfã id=${orphan.id} reclamada por usuario=${usuarioId} (${perfilStr})`);
+        return res.status(201).json({
+          ok: true,
+          id: orphan.id,
+          message: 'Credencial cadastrada com sucesso.',
+        });
+      }
     }
 
     let credId;
 
     if (existingId) {
-      // 2a. UPDATE na linha existente — nunca mexe em outra linha
+      // ── Passo 3a: UPDATE na linha existente ──
       try {
         await db.query(
           `UPDATE agente_credenciais SET
@@ -212,8 +255,7 @@ router.post('/credenciais', async (req, res) => {
           [usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId, existingId, escolaId]
         );
       } catch (updErr) {
-        // Se UPDATE falhou por falta de usuario_id, tenta sem ela (schema antigo)
-        console.warn('[agente.routes] UPDATE com usuario_id falhou, tentando sem coluna:', updErr.code);
+        console.warn('[agente.routes] UPDATE com usuario_id falhou, schema antigo:', updErr.code);
         await db.query(
           `UPDATE agente_credenciais SET
             educadf_login     = ?,
@@ -230,7 +272,7 @@ router.post('/credenciais', async (req, res) => {
       credId = existingId;
       console.log(`[agente.routes] Credencial ATUALIZADA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
     } else {
-      // 2b. INSERT nova credencial
+      // ── Passo 3b: INSERT nova credencial ──
       let insertResult;
       try {
         [insertResult] = await db.query(
@@ -240,14 +282,30 @@ router.post('/credenciais', async (req, res) => {
           [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
         );
       } catch (insErr) {
-        // Schema antigo sem usuario_id: insere sem a coluna
-        console.warn('[agente.routes] INSERT com usuario_id falhou, tentando schema antigo:', insErr.code);
-        [insertResult] = await db.query(
-          `INSERT INTO agente_credenciais
-            (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-          [escolaId, professorId || usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-        );
+        // Schema antigo (sem usuario_id) OU conflito inesperado
+        // Último recurso: DELETE + INSERT limpo
+        console.warn('[agente.routes] INSERT falhou, tentando DELETE+INSERT:', insErr.code, insErr.sqlMessage);
+        // Deleta qualquer linha que conflite com este usuario/escola
+        await db.query(
+          `DELETE FROM agente_credenciais WHERE escola_id = ? AND (usuario_id = ? OR usuario_id = 0)`,
+          [escolaId, usuarioId]
+        ).catch(() => {});
+        // INSERT limpo com schema que existir
+        try {
+          [insertResult] = await db.query(
+            `INSERT INTO agente_credenciais
+              (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+            [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+          );
+        } catch {
+          [insertResult] = await db.query(
+            `INSERT INTO agente_credenciais
+              (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+            [escolaId, professorId || usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+          );
+        }
       }
       credId = insertResult.insertId;
       console.log(`[agente.routes] Credencial INSERIDA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
@@ -442,7 +500,23 @@ router.post('/credenciais/:id/testar', async (req, res) => {
       return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando' });
     }
 
-    const senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+    // Decrypt com proteção: se falhar, os dados estão corrompidos (chave trocada ou
+    // ON DUPLICATE KEY UPDATE mesclou dados de usuários diferentes). Pede re-save.
+    let senhaPlain;
+    try {
+      senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+    } catch (decryptErr) {
+      console.error(`[agente.routes] Falha ao descriptografar credencial #${realCredId}:`, decryptErr.message);
+      // Marca a linha como inativa para forçar re-save
+      await db.query(
+        'UPDATE agente_credenciais SET ativo = 0, updated_at = NOW() WHERE id = ?',
+        [realCredId]
+      ).catch(() => {});
+      return res.status(422).json({
+        ok: false,
+        message: 'Suas credenciais estão desatualizadas (dados corrompidos). Por favor, salve novamente com sua senha.',
+      });
+    }
 
     const entry = { status: 'executando', result: null, startedAt: Date.now() };
     _testesEmAndamento.set(testeKey, entry);
