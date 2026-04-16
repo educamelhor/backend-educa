@@ -168,6 +168,30 @@ async function carregarRbac(usuarioId, escolaId) {
 
 
 
+
+/**
+ * Busca a foto de perfil do usuário.
+ * Tenta: professores.foto_url -> usuarios.foto -> string vazia.
+ */
+async function buscarFotoUsuario(usuarioId, escolaId) {
+  try {
+    const [[row]] = await pool.query(
+      `SELECT
+         COALESCE(p.foto_url, u.foto, '') AS foto_url
+       FROM usuarios u
+       LEFT JOIN professores p
+         ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
+        AND p.escola_id = u.escola_id
+       WHERE u.id = ?
+       LIMIT 1`,
+      [Number(usuarioId)]
+    );
+    return row?.foto_url || '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Helpers — Convite do Diretor (hash) + emissão de JWT escolar
  */
@@ -412,6 +436,8 @@ router.post("/login", async (req, res) => {
         perfil: "diretor",
       });
 
+      const fotoUrl = await buscarFotoUsuario(usuario.id, usuario.escola_id);
+
       // ✅ Registra acesso para Usage Insights (CEO)
       registrarAcesso(pool, {
         usuario_id: usuario.id,
@@ -425,6 +451,8 @@ router.post("/login", async (req, res) => {
       return res.json({
         ok: true,
         nome: usuario.nome || "Diretor",
+        cpf: String(usuario.cpf || "").replace(/\D/g, ""),
+        foto_url: fotoUrl,
         ...jwtEscolar,
       });
     } catch (err) {
@@ -606,9 +634,14 @@ router.post("/confirmar", async (req, res) => {
         action: "login",
       });
 
+      const fotoUrlLogin = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
+      const cpfLoginLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
+
       return res.json({
         token,
         nome: usuarioBase.nome || "Usuário",
+        cpf: cpfLoginLimpo,
+        foto_url: fotoUrlLogin,
         escola_id: escolaIdFinal,
         nome_escola: escolaRow?.apelido || "Escola não definida",
         perfil: perfilFinal, // compatibilidade
@@ -1422,9 +1455,14 @@ router.post("/confirmar-escola", async (req, res) => {
       { expiresIn: "8h" }
     );
 
+    const fotoUrlEscola = await buscarFotoUsuario(usuarioEscola.id, usuarioEscola.escola_id);
+    const cpfEscolaLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
+
     return res.json({
       token,
       nome: usuarioBase.nome || "Usuário",
+      cpf: cpfEscolaLimpo,
+      foto_url: fotoUrlEscola,
       escola_id: usuarioEscola.escola_id,
       nome_escola: usuarioEscola.nome_escola || "Escola não definida",
       perfil: usuarioEscola.perfil || "aluno",
