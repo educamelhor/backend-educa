@@ -600,7 +600,9 @@ router.get("/:id/status-diario", async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/avaliacoes/:id/exportar-boletim
-// Exporta os TOTAIs do diário para a tabela notas (boletim) e fecha o diário
+// Exporta os TOTAIs do diário para a tabela notas (boletim).
+// fechar_diario = false/omitido → exporta sem fechar (professor pode atualizar depois)
+// fechar_diario = true          → exporta E fecha o diário definitivamente
 // ═══════════════════════════════════════════════════════════════════════════
 router.post("/:id/exportar-boletim", async (req, res) => {
   const conn = await pool.getConnection();
@@ -608,7 +610,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
     const { escola_id } = req.user;
     const userId = req.user?.id || req.user?.usuario_id;
     const planoId = req.params.id;
-    const { turma_id } = req.body;
+    const { turma_id, fechar_diario } = req.body;
 
     if (!turma_id) {
       conn.release();
@@ -625,14 +627,14 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       return res.status(404).json({ error: "Plano não encontrado." });
     }
 
-    // 2) Verificar se já está fechado
+    // 2) Se o diário já está fechado, bloquear qualquer operação
     const [[jaFechado]] = await conn.query(
       "SELECT id FROM diario_fechamento WHERE plano_id = ? AND turma_id = ?",
       [planoId, turma_id]
     );
     if (jaFechado) {
       conn.release();
-      return res.status(400).json({ error: "Diário já foi exportado para o boletim anteriormente." });
+      return res.status(400).json({ error: "Diário já está fechado. Solicite à Secretaria para reabrir." });
     }
 
     // 3) Resolver disciplina_id a partir do nome
@@ -688,19 +690,24 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       else atualizadas++;
     }
 
-    // Registrar o fechamento
-    await conn.query(
-      `INSERT INTO diario_fechamento (escola_id, plano_id, turma_id, fechado_por, total_alunos, total_notas_exportadas)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [escola_id, planoId, turma_id, userId, totais.length, inseridas + atualizadas]
-    );
+    // 7) Registrar fechamento SOMENTE se o professor decidiu fechar
+    if (fechar_diario) {
+      await conn.query(
+        `INSERT INTO diario_fechamento (escola_id, plano_id, turma_id, fechado_por, total_alunos, total_notas_exportadas)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [escola_id, planoId, turma_id, userId, totais.length, inseridas + atualizadas]
+      );
+    }
 
     await conn.commit();
     conn.release();
 
     return res.json({
       ok: true,
-      message: `Notas exportadas com sucesso! ${totais.length} aluno(s) processado(s).`,
+      message: fechar_diario
+        ? `Diário fechado! ${totais.length} aluno(s) exportado(s) para o boletim.`
+        : `Notas exportadas! ${totais.length} aluno(s) processado(s). Diário permanece aberto.`,
+      diario_fechado: !!fechar_diario,
       resumo: {
         totalAlunos: totais.length,
         notasInseridas: inseridas,
