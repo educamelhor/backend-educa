@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";;
 import jwt from "jsonwebtoken";
 import pool from "../db.js";
 import nodemailer from "nodemailer";
-import { randomInt, createHash } from "crypto";
+import { randomInt, createHash, randomBytes } from "crypto";
 
 import multer from "multer";
 import fs from "fs";
@@ -467,6 +467,9 @@ router.post("/login", async (req, res) => {
   const emailNorm = rawLogin.includes("@") ? rawLogin.toLowerCase() : "";
   const celularNorm = rawLogin.replace(/\D/g, "");
 
+  // ✅ Device token enviado pelo frontend (dispositivo confiado)
+  const deviceTokenRaw = String(req.body?.device_token || "").trim();
+
   try {
     const [[usuario]] = await pool.query(
       `
@@ -489,7 +492,117 @@ router.post("/login", async (req, res) => {
     const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
     if (!senhaOk) return res.status(401).json({ message: "Senha incorreta." });
 
-    // ✅ Geração do código (string)
+    // ✅ DISPOSITIVO CONFIADO: se o frontend enviou um device_token válido, pula o OTP
+    if (deviceTokenRaw) {
+      const deviceHash = createHash("sha256").update(deviceTokenRaw, "utf8").digest("hex");
+      const [[dispositivo]] = await pool.query(
+        `SELECT id FROM dispositivos_confiados
+         WHERE token_hash = ? AND usuario_id = ? AND expira_em > NOW()
+         LIMIT 1`,
+        [deviceHash, usuario.id]
+      );
+
+      if (dispositivo?.id) {
+        // Atualiza último uso
+        await pool.query(
+          `UPDATE dispositivos_confiados SET ultimo_uso = NOW() WHERE id = ? LIMIT 1`,
+          [dispositivo.id]
+        );
+
+        // Descobre contextos do usuário (igual ao fluxo /confirmar)
+        const cpfLimpo = String(usuario.cpf || "").replace(/\D/g, "");
+        const [escolasVinculadas] = await pool.query(
+          `SELECT DISTINCT
+             u.escola_id AS id,
+             e.nome      AS nome,
+             e.apelido   AS apelido,
+             u.perfil    AS perfil,
+             u.id        AS usuario_ctx_id
+           FROM usuarios u
+           LEFT JOIN escolas e ON e.id = u.escola_id
+           WHERE REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), '/', '') = ?
+             AND u.ativo = 1
+             AND u.escola_id IS NOT NULL
+             AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
+             AND (
+               (u.email IS NOT NULL AND u.email <> '' AND u.email = ?)
+               OR
+               (u.celular IS NOT NULL AND u.celular <> '' AND u.celular = ?)
+             )
+           ORDER BY e.nome ASC, u.perfil ASC`,
+          [cpfLimpo, usuario.email || "", usuario.celular || ""]
+        );
+
+        // Multi-escola: ainda precisa escolher o contexto
+        if (Array.isArray(escolasVinculadas) && escolasVinculadas.length > 1) {
+          return res.json({
+            dispositivo_confiado: true,
+            multi_escola: true,
+            nome: usuario.nome || "Usuário",
+            perfil: usuario.perfil || "aluno",
+            escolas: escolasVinculadas,
+            usuarioId: usuario.id,
+          });
+        }
+
+        // Contexto único → emite JWT direto
+        const ctx0 = escolasVinculadas?.[0] || null;
+        const usuarioIdFinal = ctx0?.usuario_ctx_id ?? usuario.id;
+        const escolaIdFinal  = ctx0?.id ?? usuario.escola_id ?? null;
+        const perfilFinal    = ctx0?.perfil ?? usuario.perfil ?? "aluno";
+
+        const [[escolaRow]] = await pool.query(
+          `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
+          [escolaIdFinal]
+        );
+        const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
+
+        const token = jwt.sign(
+          {
+            scope: "escola",
+            usuario_id: usuarioIdFinal,
+            usuarioId: usuarioIdFinal,
+            escola_id: escolaIdFinal,
+            nome_escola: escolaRow?.apelido || null,
+            perfil: perfilFinal,
+            perfis,
+            permissoes,
+          },
+          getJwtSecret(),
+          { expiresIn: "8h" }
+        );
+
+        registrarAcesso(pool, {
+          usuario_id: usuarioIdFinal,
+          escola_id: escolaIdFinal,
+          perfil: perfilFinal,
+          ip: req.ip || req.headers["x-forwarded-for"],
+          user_agent: req.headers["user-agent"],
+          action: "login_dispositivo_confiado",
+        });
+
+        const fotoUrl = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
+        const cpfLoginLimpo = String(usuario.cpf || "").replace(/\D/g, "");
+
+        console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuario.id}, pulou OTP`);
+
+        return res.json({
+          ok: true,
+          dispositivo_confiado: true,
+          token,
+          nome: usuario.nome || "Usuário",
+          cpf: cpfLoginLimpo,
+          foto_url: fotoUrl,
+          escola_id: escolaIdFinal,
+          nome_escola: escolaRow?.apelido || "Escola não definida",
+          perfil: perfilFinal,
+          perfis,
+          permissoes,
+        });
+      }
+    }
+
+    // ✅ Geração do código OTP (string)
     const codigo = String(randomInt(100000, 999999));
 
     // ✅ LOG diagnóstico (mantido)
@@ -526,7 +639,8 @@ router.post("/login", async (req, res) => {
  * 2) Confirmar Código (login) – ajustado para incluir escola_id e nome_escola no token
  */
 router.post("/confirmar", async (req, res) => {
-  const { usuarioId, codigo } = req.body;
+  const { usuarioId, codigo, confiar_dispositivo } = req.body;
+  const userAgent = String(req.headers["user-agent"] || "").slice(0, 200);
 
   try {
     if (!usuarioId || !codigo) {
@@ -637,6 +751,24 @@ router.post("/confirmar", async (req, res) => {
       const fotoUrlLogin = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
       const cpfLoginLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
 
+      // ✅ DISPOSITIVO CONFIADO: grava token se o usuário optou por confiar neste aparelho
+      let deviceTokenNovo = null;
+      if (confiar_dispositivo) {
+        const rawToken = randomBytes(32).toString("hex"); // 64 chars hex
+        const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
+        try {
+          await pool.query(
+            `INSERT INTO dispositivos_confiados (usuario_id, token_hash, descricao, expira_em)
+             VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 90 DAY))`,
+            [usuarioIdFinal, tokenHash, userAgent]
+          );
+          deviceTokenNovo = rawToken;
+          console.log(`[AUTH/confirmar] Dispositivo confiado registrado para usuário ${usuarioIdFinal}`);
+        } catch (e) {
+          console.error("[AUTH/confirmar] Falha ao registrar dispositivo confiado:", e.message);
+        }
+      }
+
       return res.json({
         token,
         nome: usuarioBase.nome || "Usuário",
@@ -647,6 +779,7 @@ router.post("/confirmar", async (req, res) => {
         perfil: perfilFinal, // compatibilidade
         perfis,
         permissoes,
+        ...(deviceTokenNovo ? { device_token: deviceTokenNovo } : {}),
       });
   } catch (err) {
     console.error("Erro ao confirmar código:", err);
