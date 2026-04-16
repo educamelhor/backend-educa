@@ -52,6 +52,19 @@ async function run() {
     `);
     console.log(`[MIG-v2] ✅ ${updated.affectedRows} registros migrados professor_id → usuario_id.`);
 
+    // 2.5 Remove a antiga unique key (escola_id, professor_id) — causava conflito
+    //     quando professor_id=0 para múltiplos usuários (vice_diretor, coord, etc.)
+    try {
+      await db.query(`ALTER TABLE agente_credenciais DROP INDEX uk_prof_escola`);
+      console.log('[MIG-v2] ✅ Antiga unique key uk_prof_escola removida.');
+    } catch (e) {
+      if (e.message?.includes("Can't DROP") || e.message?.includes('check that it exists')) {
+        console.log('[MIG-v2] ℹ️  uk_prof_escola já não existe — pulando.');
+      } else {
+        console.warn('[MIG-v2] ⚠️  Erro ao remover uk_prof_escola (não crítico):', e.message);
+      }
+    }
+
     // 3. Adiciona unique key (escola_id, usuario_id) se não existir
     try {
       await db.query(`

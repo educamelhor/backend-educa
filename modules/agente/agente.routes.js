@@ -137,7 +137,8 @@ router.get('/status', async (req, res) => {
 // POST /api/agente/credenciais
 // Cadastrar/atualizar credencial PESSOAL do usuário logado.
 // Qualquer perfil pode cadastrar a própria credencial (professor, diretor, etc.)
-// A chave de upsert é (escola_id, usuario_id) — cada usuário tem 1 credencial.
+// Usa SELECT + UPDATE/INSERT explícito para evitar conflitos com chaves únicas
+// da tabela (velha uk em professor_id=0 conflitava para não-professores).
 // ============================================================================
 router.post('/credenciais', async (req, res) => {
   try {
@@ -160,41 +161,97 @@ router.post('/credenciais', async (req, res) => {
       : perfilStr === 'diretor'    ? 3
       : 1; // fallback professor
 
-    // Também detecta professor_id para manter compatibilidade com sincronização
+    // professor_id: só relevante para quem é professor (para manter compatibilidade sync)
     const professorId = Number(req.body?.professor_id) || 0;
 
     const { encrypted, iv, tag } = encrypt(educadf_senha);
     const db = req.db;
 
-    // Upsert por (escola_id, usuario_id) — cada usuário tem 1 credencial
-    const [result] = await db.query(
-      `INSERT INTO agente_credenciais
-        (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-        professor_id        = VALUES(professor_id),
-        educadf_login       = VALUES(educadf_login),
-        educadf_senha_enc   = VALUES(educadf_senha_enc),
-        educadf_senha_iv    = VALUES(educadf_senha_iv),
-        educadf_senha_tag   = VALUES(educadf_senha_tag),
-        perfil_id           = VALUES(perfil_id),
-        ativo               = 1,
-        updated_at          = CURRENT_TIMESTAMP`,
-      [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-    );
-
-    const savedId = result.insertId || null;
-    // Se insertId=0 (update/sem INSERT real), busca o id real da credencial ATIVA mais recente
-    let credId = savedId;
-    if (!credId) {
-      const [[row]] = await db.query(
-        'SELECT id FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ? AND ativo = 1 ORDER BY id DESC LIMIT 1',
+    // 1. Busca credencial existente deste usuário nesta escola (por usuario_id)
+    //    Tenta primeiro pela coluna usuario_id (pós-migration), com fallback seguro.
+    let existingId = null;
+    try {
+      const [[existing]] = await db.query(
+        `SELECT id FROM agente_credenciais
+         WHERE escola_id = ? AND usuario_id = ?
+         ORDER BY id DESC LIMIT 1`,
         [escolaId, usuarioId]
       );
-      credId = row?.id || null;
+      existingId = existing?.id || null;
+    } catch (colErr) {
+      // Coluna usuario_id pode não existir em ambientes antigos — sem migration
+      console.warn('[agente.routes] usuario_id column missing, falling back to professor_id lookup:', colErr.code);
+      try {
+        const [[existing]] = await db.query(
+          `SELECT id FROM agente_credenciais
+           WHERE escola_id = ? AND professor_id = ?
+           ORDER BY id DESC LIMIT 1`,
+          [escolaId, usuarioId]  // professor_id === usuarioId para perfil professor
+        );
+        existingId = existing?.id || null;
+      } catch { /* ignora */ }
     }
 
-    console.log(`[agente.routes] Credencial salva: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
+    let credId;
+
+    if (existingId) {
+      // 2a. UPDATE na linha existente — nunca mexe em outra linha
+      try {
+        await db.query(
+          `UPDATE agente_credenciais SET
+            usuario_id        = ?,
+            professor_id      = ?,
+            educadf_login     = ?,
+            educadf_senha_enc = ?,
+            educadf_senha_iv  = ?,
+            educadf_senha_tag = ?,
+            perfil_id         = ?,
+            ativo             = 1,
+            updated_at        = CURRENT_TIMESTAMP
+           WHERE id = ? AND escola_id = ?`,
+          [usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId, existingId, escolaId]
+        );
+      } catch (updErr) {
+        // Se UPDATE falhou por falta de usuario_id, tenta sem ela (schema antigo)
+        console.warn('[agente.routes] UPDATE com usuario_id falhou, tentando sem coluna:', updErr.code);
+        await db.query(
+          `UPDATE agente_credenciais SET
+            educadf_login     = ?,
+            educadf_senha_enc = ?,
+            educadf_senha_iv  = ?,
+            educadf_senha_tag = ?,
+            perfil_id         = ?,
+            ativo             = 1,
+            updated_at        = CURRENT_TIMESTAMP
+           WHERE id = ? AND escola_id = ?`,
+          [String(educadf_login).trim(), encrypted, iv, tag, perfilId, existingId, escolaId]
+        );
+      }
+      credId = existingId;
+      console.log(`[agente.routes] Credencial ATUALIZADA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
+    } else {
+      // 2b. INSERT nova credencial
+      let insertResult;
+      try {
+        [insertResult] = await db.query(
+          `INSERT INTO agente_credenciais
+            (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+        );
+      } catch (insErr) {
+        // Schema antigo sem usuario_id: insere sem a coluna
+        console.warn('[agente.routes] INSERT com usuario_id falhou, tentando schema antigo:', insErr.code);
+        [insertResult] = await db.query(
+          `INSERT INTO agente_credenciais
+            (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+          [escolaId, professorId || usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+        );
+      }
+      credId = insertResult.insertId;
+      console.log(`[agente.routes] Credencial INSERIDA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
+    }
 
     return res.status(201).json({
       ok: true,
@@ -206,6 +263,7 @@ router.post('/credenciais', async (req, res) => {
     return res.status(500).json({ ok: false, message: 'Erro ao cadastrar credencial.' });
   }
 });
+
 
 // ============================================================================
 // GET /api/agente/credenciais
@@ -316,29 +374,45 @@ router.post('/credenciais/:id/testar', async (req, res) => {
 
     const usuarioId = getUserId(req);
     const perfil = getPerfil(req);
-    const isGestor = ['diretor', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil);
+    const isGestor = ['diretor', 'vice_diretor', 'coordenador', 'admin', 'administrador', 'plataforma', 'secretario'].includes(perfil);
 
     console.log(`[agente.routes] POST /testar: credId=${credId}, escolaId=${escolaId}, usuarioId=${usuarioId}, perfil=${perfil}, isGestor=${isGestor}`);
 
-    // Gestor: busca por id especifico (pode gerenciar qualquer credencial da escola)
-    // Professor/comum: ignora o id do frontend (pode estar desatualizado) e busca pela
-    // credencial ATIVA mais recente do proprio usuario na escola — unico critério seguro
-    const testarWhere = isGestor
-      ? 'id = ? AND escola_id = ? AND ativo = 1'
-      : 'escola_id = ? AND usuario_id = ? AND ativo = 1';
-    const testarParams = isGestor
-      ? [credId, escolaId]
-      : [escolaId, usuarioId];
-    const testarOrderBy = 'ORDER BY id DESC';
-
-    const [rows] = await db.query(
-      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
-       FROM agente_credenciais
-       WHERE ${testarWhere}
-       ${testarOrderBy}
-       LIMIT 1`,
-      testarParams
-    );
+    // Gestor: pode gerenciar qualquer cred da escola → busca por id
+    // Usuário comum: ignora o id do frontend (pode estar desatualizado) e busca
+    // pela credencial ATIVA do proprio usuario — mais seguro e resiliente
+    let rows;
+    if (isGestor) {
+      // Gestor: busca pelo id específico
+      [rows] = await db.query(
+        `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+         FROM agente_credenciais
+         WHERE id = ? AND escola_id = ? AND ativo = 1
+         ORDER BY id DESC LIMIT 1`,
+        [credId, escolaId]
+      );
+    } else {
+      // Usuário comum: busca pela credencial do proprio usuario_id
+      // Fallback: se usuario_id não existe (schema antigo), usa professor_id
+      try {
+        [rows] = await db.query(
+          `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+           FROM agente_credenciais
+           WHERE escola_id = ? AND usuario_id = ? AND ativo = 1
+           ORDER BY id DESC LIMIT 1`,
+          [escolaId, usuarioId]
+        );
+      } catch (colErr) {
+        console.warn('[agente.routes] /testar: usuario_id column missing, fallback professor_id:', colErr.code);
+        [rows] = await db.query(
+          `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+           FROM agente_credenciais
+           WHERE escola_id = ? AND professor_id = ? AND ativo = 1
+           ORDER BY id DESC LIMIT 1`,
+          [escolaId, usuarioId]
+        );
+      }
+    }
 
     console.log(`[agente.routes] POST /testar: credenciais encontradas=${rows?.length || 0}`);
 
