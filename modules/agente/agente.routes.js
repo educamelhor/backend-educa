@@ -76,6 +76,37 @@ function assertLogado(req, res) {
 }
 
 // ============================================================================
+// AUTO-HEAL: Remove a antiga unique key uk_prof_escola na primeira requisição.
+// Esta key causa ER_DUP_ENTRY quando professor_id=0 para múltiplos usuários.
+// ============================================================================
+let _oldKeyDropped = false;
+async function dropOldUniqueKey(db) {
+  if (_oldKeyDropped) return;
+  _oldKeyDropped = true;
+  try {
+    // Lista os indexes da tabela para encontrar o nome exato
+    const [indexes] = await db.query('SHOW INDEX FROM agente_credenciais WHERE Column_name = "professor_id" AND Non_unique = 0');
+    for (const idx of indexes) {
+      if (idx.Key_name && idx.Key_name !== 'PRIMARY') {
+        try {
+          await db.query(`ALTER TABLE agente_credenciais DROP INDEX \`${idx.Key_name}\``);
+          console.log(`[agente.routes] ✅ AUTO-HEAL: Unique key '${idx.Key_name}' (professor_id) removida com sucesso!`);
+        } catch (e) {
+          console.warn(`[agente.routes] ⚠️ AUTO-HEAL: Falha ao remover '${idx.Key_name}':`, e.message);
+        }
+      }
+    }
+    // Limpa linhas órfãs (usuario_id=0)
+    const [del] = await db.query('DELETE FROM agente_credenciais WHERE usuario_id = 0 AND professor_id = 0').catch(() => [{ affectedRows: 0 }]);
+    if (del.affectedRows > 0) {
+      console.log(`[agente.routes] ✅ AUTO-HEAL: ${del.affectedRows} linha(s) órfã(s) removida(s).`);
+    }
+  } catch (e) {
+    console.warn('[agente.routes] AUTO-HEAL check falhou (não crítico):', e.message);
+  }
+}
+
+// ============================================================================
 // GET /api/agente/status
 // Status geral do módulo
 // ============================================================================
@@ -137,8 +168,9 @@ router.get('/status', async (req, res) => {
 // POST /api/agente/credenciais
 // Cadastrar/atualizar credencial PESSOAL do usuário logado.
 // Qualquer perfil pode cadastrar a própria credencial (professor, diretor, etc.)
-// Usa SELECT + UPDATE/INSERT explícito para evitar conflitos com chaves únicas
-// da tabela (velha uk em professor_id=0 conflitava para não-professores).
+//
+// ESTRATÉGIA: DELETE conflitos + INSERT limpo. Simples e à prova de qualquer
+// combinação de unique keys (velhas ou novas). Sem UPDATE em colunas de chave.
 // ============================================================================
 router.post('/credenciais', async (req, res) => {
   try {
@@ -161,155 +193,60 @@ router.post('/credenciais', async (req, res) => {
       : perfilStr === 'diretor'    ? 3
       : 1; // fallback professor
 
-    // professor_id: só relevante para quem é professor (para manter compatibilidade sync)
-    const professorId = Number(req.body?.professor_id) || 0;
-
     const { encrypted, iv, tag } = encrypt(educadf_senha);
     const db = req.db;
 
-    // ── Passo 1: Localiza credencial existente deste usuário ──────────────────
-    // Tenta pela coluna usuario_id (schema novo). Fallback para schema antigo.
-    let existingId = null;
-    let hasUsuarioIdColumn = true;
+    // ── Auto-heal: tenta dropar a uk antiga na primeira requisiçao ──
+    await dropOldUniqueKey(db);
+
+    // ── Passo 1: DELETE qualquer credencial conflitante deste usuario/escola ──
+    // Isso garante que o INSERT abaixo nunca falhe por duplicate key,
+    // independente de quais unique keys existam na tabela.
     try {
-      const [[existing]] = await db.query(
-        `SELECT id FROM agente_credenciais
-         WHERE escola_id = ? AND usuario_id = ?
-         ORDER BY id DESC LIMIT 1`,
+      await db.query(
+        `DELETE FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ?`,
         [escolaId, usuarioId]
       );
-      existingId = existing?.id || null;
-    } catch (colErr) {
-      hasUsuarioIdColumn = false;
-      console.warn('[agente.routes] usuario_id column missing (schema antigo):', colErr.code);
-      // Schema antigo: busca por professor_id (para usuários que são professores)
-      // Nota: professorId vem do body e é o id real na tabela professores
-      if (professorId > 0) {
-        try {
-          const [[existing]] = await db.query(
-            `SELECT id FROM agente_credenciais
-             WHERE escola_id = ? AND professor_id = ?
-             ORDER BY id DESC LIMIT 1`,
-            [escolaId, professorId]
-          );
-          existingId = existing?.id || null;
-        } catch { /* ignora */ }
-      }
-    }
+    } catch { /* coluna usuario_id pode nao existir */ }
 
-    // ── Passo 2: Se não encontrou por usuario_id, limpa órfãs (usuario_id=0) ──
-    // Linhas órfãs surgem da migration que setou usuario_id=professor_id=0
-    // para usuários não-professor. Ao limpar, o INSERT terá espaço livre.
-    if (!existingId && hasUsuarioIdColumn) {
-      // Tenta encontrar a linha órfã desta escola (usuario_id=0, sem dono definido)
-      const [[orphan]] = await db.query(
-        `SELECT id FROM agente_credenciais
-         WHERE escola_id = ? AND usuario_id = 0
-         ORDER BY id DESC LIMIT 1`,
+    // Também limpa órfãs (usuario_id=0 ou professor_id=0) desta escola
+    try {
+      await db.query(
+        `DELETE FROM agente_credenciais WHERE escola_id = ? AND usuario_id = 0`,
         [escolaId]
-      ).catch(() => [[null]]);
+      );
+    } catch { /* ignora se coluna nao existe */ }
 
-      if (orphan?.id) {
-        // Reclama a linha órfã: UPDATE com os dados deste usuário
-        // (mais seguro que DELETE+INSERT: não perde a linha em caso de conflito)
-        await db.query(
-          `UPDATE agente_credenciais SET
-            usuario_id        = ?,
-            professor_id      = ?,
-            educadf_login     = ?,
-            educadf_senha_enc = ?,
-            educadf_senha_iv  = ?,
-            educadf_senha_tag = ?,
-            perfil_id         = ?,
-            ativo             = 1,
-            updated_at        = CURRENT_TIMESTAMP
-           WHERE id = ? AND escola_id = ?`,
-          [usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId, orphan.id, escolaId]
-        );
-        console.log(`[agente.routes] Linha órfã id=${orphan.id} reclamada por usuario=${usuarioId} (${perfilStr})`);
-        return res.status(201).json({
-          ok: true,
-          id: orphan.id,
-          message: 'Credencial cadastrada com sucesso.',
-        });
-      }
+    // ── Passo 2: INSERT LIMPO ──
+    let insertResult;
+    try {
+      [insertResult] = await db.query(
+        `INSERT INTO agente_credenciais
+          (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [escolaId, usuarioId, usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+      );
+    } catch (insErr) {
+      // Se ainda falhar (uk antiga em professor_id?), tenta com professor_id = usuario_id
+      // para evitar conflitos constantes com professor_id=0
+      console.warn('[agente.routes] INSERT falhou:', insErr.code, insErr.sqlMessage);
+
+      // Delete TUDO desta escola que possa conflitar (nuclear option)
+      await db.query(
+        `DELETE FROM agente_credenciais WHERE escola_id = ? AND (professor_id = 0 OR professor_id = ? OR usuario_id = ? OR usuario_id = 0)`,
+        [escolaId, usuarioId, usuarioId]
+      ).catch(() => {});
+
+      [insertResult] = await db.query(
+        `INSERT INTO agente_credenciais
+          (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [escolaId, usuarioId, usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+      );
     }
 
-    let credId;
-
-    if (existingId) {
-      // ── Passo 3a: UPDATE na linha existente ──
-      try {
-        await db.query(
-          `UPDATE agente_credenciais SET
-            usuario_id        = ?,
-            professor_id      = ?,
-            educadf_login     = ?,
-            educadf_senha_enc = ?,
-            educadf_senha_iv  = ?,
-            educadf_senha_tag = ?,
-            perfil_id         = ?,
-            ativo             = 1,
-            updated_at        = CURRENT_TIMESTAMP
-           WHERE id = ? AND escola_id = ?`,
-          [usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId, existingId, escolaId]
-        );
-      } catch (updErr) {
-        console.warn('[agente.routes] UPDATE com usuario_id falhou, schema antigo:', updErr.code);
-        await db.query(
-          `UPDATE agente_credenciais SET
-            educadf_login     = ?,
-            educadf_senha_enc = ?,
-            educadf_senha_iv  = ?,
-            educadf_senha_tag = ?,
-            perfil_id         = ?,
-            ativo             = 1,
-            updated_at        = CURRENT_TIMESTAMP
-           WHERE id = ? AND escola_id = ?`,
-          [String(educadf_login).trim(), encrypted, iv, tag, perfilId, existingId, escolaId]
-        );
-      }
-      credId = existingId;
-      console.log(`[agente.routes] Credencial ATUALIZADA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
-    } else {
-      // ── Passo 3b: INSERT nova credencial ──
-      let insertResult;
-      try {
-        [insertResult] = await db.query(
-          `INSERT INTO agente_credenciais
-            (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-          [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-        );
-      } catch (insErr) {
-        // Schema antigo (sem usuario_id) OU conflito inesperado
-        // Último recurso: DELETE + INSERT limpo
-        console.warn('[agente.routes] INSERT falhou, tentando DELETE+INSERT:', insErr.code, insErr.sqlMessage);
-        // Deleta qualquer linha que conflite com este usuario/escola
-        await db.query(
-          `DELETE FROM agente_credenciais WHERE escola_id = ? AND (usuario_id = ? OR usuario_id = 0)`,
-          [escolaId, usuarioId]
-        ).catch(() => {});
-        // INSERT limpo com schema que existir
-        try {
-          [insertResult] = await db.query(
-            `INSERT INTO agente_credenciais
-              (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-            [escolaId, usuarioId, professorId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-          );
-        } catch {
-          [insertResult] = await db.query(
-            `INSERT INTO agente_credenciais
-              (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-            [escolaId, professorId || usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-          );
-        }
-      }
-      credId = insertResult.insertId;
-      console.log(`[agente.routes] Credencial INSERIDA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
-    }
+    const credId = insertResult.insertId;
+    console.log(`[agente.routes] Credencial INSERIDA id=${credId}: escola=${escolaId}, usuario=${usuarioId}, perfil=${perfilStr}`);
 
     return res.status(201).json({
       ok: true,
