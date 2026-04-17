@@ -94,36 +94,48 @@ router.get("/me", async (req, res) => {
     const cleanCpf = String(cpf).replace(/\D/g, "");
     const anoParam = ano ? Number(ano) : new Date().getFullYear();
 
-    // JOIN: planos_avaliacao → turmas (pelo nome da turma) → modulacao → professores (pelo CPF)
-    //        planos_avaliacao → disciplinas (pelo nome) → modulacao (mesma linha)
-    // COLLATE utf8mb4_unicode_ci força a mesma collation nas comparações de texto
-    // (turmas.nome e planos_avaliacao.turmas podem ter collations distintas).
+    // ── Passo 1: turmas e disciplinas DO professor neste ano (via modulação) ──────────────
+    // Usa turmas.ano para garantir que são turmas do ano letivo correto.
+    const [vinculos] = await pool.query(
+      `SELECT DISTINCT
+         t.nome  AS turma_nome,
+         d.nome  AS disc_nome
+       FROM modulacao m
+       JOIN professores p  ON p.id  = m.professor_id AND p.escola_id = ?
+       JOIN turmas t       ON t.id  = m.turma_id
+       JOIN disciplinas d  ON d.id  = m.disciplina_id
+       WHERE REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND t.escola_id = ?
+         AND t.ano       = ?`,
+      [escola_id, cleanCpf, escola_id, anoParam]
+    );
+
+    if (vinculos.length === 0) {
+      return res.json({ ok: true, planos: [] });
+    }
+
+    const turmaNames = [...new Set(vinculos.map(v => v.turma_nome))];
+    const discNames  = [...new Set(vinculos.map(v => v.disc_nome))];
+
+    // ── Passo 2: planos da escola que cruzam as turmas e disciplinas acima ───────────────
+    const placeholdersTurmas = turmaNames.map(() => "?").join(", ");
+    const placeholdersDisc   = discNames.map(() => "?").join(", ");
+
     let sql = `
-      SELECT DISTINCT pa.*
-      FROM planos_avaliacao pa
-      JOIN turmas t
-        ON TRIM(t.nome)    COLLATE utf8mb4_unicode_ci = TRIM(pa.turmas) COLLATE utf8mb4_unicode_ci
-       AND t.escola_id  = pa.escola_id
-      JOIN modulacao m
-        ON m.turma_id   = t.id
-      JOIN professores p
-        ON p.id         = m.professor_id
-       AND p.escola_id  = pa.escola_id
-      JOIN disciplinas d
-        ON d.id         = m.disciplina_id
-       AND TRIM(d.nome) COLLATE utf8mb4_unicode_ci = TRIM(pa.disciplina) COLLATE utf8mb4_unicode_ci
-      WHERE pa.escola_id = ?
-        AND pa.ano       = ?
-        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+      SELECT * FROM planos_avaliacao
+      WHERE escola_id  = ?
+        AND ano        = ?
+        AND turmas     IN (${placeholdersTurmas})
+        AND disciplina IN (${placeholdersDisc})
     `;
-    const params = [escola_id, anoParam, cleanCpf];
+    const params = [escola_id, anoParam, ...turmaNames, ...discNames];
 
     if (bimestre) {
-      sql += ` AND pa.bimestre = ?`;
+      sql += ` AND bimestre = ?`;
       params.push(bimestre);
     }
 
-    sql += ` ORDER BY pa.disciplina, pa.turmas`;
+    sql += ` ORDER BY disciplina, turmas`;
 
     const [planos] = await pool.query(sql, params);
     return res.json({ ok: true, planos });
