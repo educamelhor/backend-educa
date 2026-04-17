@@ -535,9 +535,7 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
 router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
-
-    // 1) tenta cpf no token
-    let cpf = req.user?.cpf;
+    const anoParam = req.query.ano ? Number(req.query.ano) : null;
 
     // 2) fallback: pega cpf no banco via id do usuário (caso o token não traga cpf)
     const userId =
@@ -574,28 +572,44 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
 
 
 
-    const [rows] = await pool.query(
-      `
-      SELECT d.id AS id, d.nome AS nome
-      FROM professores p
-      JOIN disciplinas d ON d.id = p.disciplina_id
-      WHERE p.escola_id = ?
-        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-        AND p.disciplina_id IS NOT NULL
-        
-      UNION
-      
-      SELECT d.id AS id, d.nome AS nome
-      FROM professores p
-      JOIN modulacao m ON m.professor_id = p.id
-      JOIN disciplinas d ON d.id = m.disciplina_id
-      WHERE p.escola_id = ?
-        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-      
-      ORDER BY nome ASC
-      `,
-      [escolaId, cleanCpf, escolaId, cleanCpf]
-    );
+    let rows;
+
+    if (anoParam) {
+      // Modo ANO-LETIVO: disciplinas SOMENTE das turmas do ano via modulação
+      // Ignora registros antigos de professores.disciplina_id (sem filtro de ano).
+      [rows] = await pool.query(
+        `SELECT DISTINCT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN modulacao m   ON m.professor_id = p.id
+         JOIN turmas t      ON t.id = m.turma_id
+         JOIN disciplinas d ON d.id = m.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+           AND t.ano = ?
+           AND t.escola_id = ?
+         ORDER BY nome ASC`,
+        [escolaId, cleanCpf, anoParam, escolaId]
+      );
+    } else {
+      // Modo legado: comportamento original (sem filtro de ano)
+      [rows] = await pool.query(
+        `SELECT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN disciplinas d ON d.id = p.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+           AND p.disciplina_id IS NOT NULL
+         UNION
+         SELECT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN modulacao m ON m.professor_id = p.id
+         JOIN disciplinas d ON d.id = m.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         ORDER BY nome ASC`,
+        [escolaId, cleanCpf, escolaId, cleanCpf]
+      );
+    }
 
     const disciplinas = Array.isArray(rows)
       ? rows
