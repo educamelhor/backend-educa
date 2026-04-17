@@ -537,6 +537,9 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
     const escolaId = req.user?.escola_id;
     const anoParam = req.query.ano ? Number(req.query.ano) : null;
 
+    // 1) tenta cpf no token
+    let cpf = req.user?.cpf;
+
     // 2) fallback: pega cpf no banco via id do usuário (caso o token não traga cpf)
     const userId =
       req.user?.id ||
