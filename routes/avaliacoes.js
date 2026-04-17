@@ -62,6 +62,78 @@ router.get("/recall/check", async (req, res) => {
 });
 
 /**
+ * GET /api/avaliacoes/me
+ * Retorna os planos de avaliação DO professor logado (por CPF do token).
+ * Usa JOIN via modulação — único método confiável:
+ *   planos_avaliacao.turmas → turmas.nome → modulacao.turma_id → professores.cpf
+ *   planos_avaliacao.disciplina → disciplinas.nome → modulacao.disciplina_id
+ * Parâmetros opcionais: ?ano=2026 &bimestre=1º Bimestre
+ */
+router.get("/me", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { ano, bimestre } = req.query;
+
+    // Resolve CPF do professor logado (mesmo padrão dos outros /me endpoints)
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id || req.user?.usuario_id || req.user?.userId ||
+      req.user?.usuarioId || req.user?.user_id || req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query(
+        "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]
+      );
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escola_id || !cpf) {
+      return res.status(400).json({ ok: false, message: "Token inválido: escola ou cpf ausente." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+    const anoParam = ano ? Number(ano) : new Date().getFullYear();
+
+    // JOIN: planos_avaliacao → turmas (pelo nome da turma) → modulacao → professores (pelo CPF)
+    //        planos_avaliacao → disciplinas (pelo nome) → modulacao (mesma linha)
+    // Garante que apenas planos onde o professor TEM modulação na turma+disciplina apareçam.
+    let sql = `
+      SELECT DISTINCT pa.*
+      FROM planos_avaliacao pa
+      JOIN turmas t
+        ON TRIM(t.nome) = TRIM(pa.turmas)
+       AND t.escola_id  = pa.escola_id
+      JOIN modulacao m
+        ON m.turma_id   = t.id
+      JOIN professores p
+        ON p.id         = m.professor_id
+       AND p.escola_id  = pa.escola_id
+      JOIN disciplinas d
+        ON d.id         = m.disciplina_id
+       AND TRIM(d.nome) = TRIM(pa.disciplina)
+      WHERE pa.escola_id = ?
+        AND pa.ano       = ?
+        AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+    `;
+    const params = [escola_id, anoParam, cleanCpf];
+
+    if (bimestre) {
+      sql += ` AND pa.bimestre = ?`;
+      params.push(bimestre);
+    }
+
+    sql += ` ORDER BY pa.disciplina, pa.turmas`;
+
+    const [planos] = await pool.query(sql, params);
+    return res.json({ ok: true, planos });
+
+  } catch (err) {
+    console.error("Erro ao buscar planos do professor (avaliacoes/me):", err);
+    return res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
+
+/**
  * 1) GET /api/avaliacoes
  * Busca todos os planos de avaliação de uma escola, opcionalmente filtrando por ano, disciplina, bimestre.
  */
