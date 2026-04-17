@@ -96,12 +96,13 @@ router.get("/me", async (req, res) => {
 
     // JOIN: planos_avaliacao → turmas (pelo nome da turma) → modulacao → professores (pelo CPF)
     //        planos_avaliacao → disciplinas (pelo nome) → modulacao (mesma linha)
-    // Garante que apenas planos onde o professor TEM modulação na turma+disciplina apareçam.
+    // COLLATE utf8mb4_unicode_ci força a mesma collation nas comparações de texto
+    // (turmas.nome e planos_avaliacao.turmas podem ter collations distintas).
     let sql = `
       SELECT DISTINCT pa.*
       FROM planos_avaliacao pa
       JOIN turmas t
-        ON TRIM(t.nome) = TRIM(pa.turmas)
+        ON TRIM(t.nome)    COLLATE utf8mb4_unicode_ci = TRIM(pa.turmas) COLLATE utf8mb4_unicode_ci
        AND t.escola_id  = pa.escola_id
       JOIN modulacao m
         ON m.turma_id   = t.id
@@ -110,7 +111,7 @@ router.get("/me", async (req, res) => {
        AND p.escola_id  = pa.escola_id
       JOIN disciplinas d
         ON d.id         = m.disciplina_id
-       AND TRIM(d.nome) = TRIM(pa.disciplina)
+       AND TRIM(d.nome) COLLATE utf8mb4_unicode_ci = TRIM(pa.disciplina) COLLATE utf8mb4_unicode_ci
       WHERE pa.escola_id = ?
         AND pa.ano       = ?
         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
