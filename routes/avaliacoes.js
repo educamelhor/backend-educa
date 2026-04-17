@@ -138,6 +138,26 @@ router.get("/me", async (req, res) => {
     sql += ` ORDER BY disciplina, turmas`;
 
     const [planos] = await pool.query(sql, params);
+
+    // Debug temporário — expõe dados intermediários para diagnóstico
+    const debug = req.query.debug === "1";
+    if (debug) {
+      return res.json({
+        ok: true,
+        _debug: {
+          cpf: cleanCpf,
+          escola_id,
+          anoParam,
+          vinculos,
+          turmaNames,
+          discNames,
+          sql_step2: sql.replace(/\s+/g, " ").trim(),
+          params_step2: params,
+        },
+        planos,
+      });
+    }
+
     return res.json({ ok: true, planos });
 
   } catch (err) {
