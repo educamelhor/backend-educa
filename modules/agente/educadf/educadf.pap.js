@@ -34,6 +34,52 @@ import { loginEducaDF } from './educadf.login.js';
 import { TIMING } from './educadf.selectors.js';
 
 // ============================================================================
+// MAPEAMENTO DE DISCIPLINAS: EDUCA.MELHOR → EDUCADF (Componente)
+// Cada escola pode ter nomes diferentes para o mesmo componente.
+// Adicione mais entradas conforme necessário.
+// ============================================================================
+const DISCIPLINA_EDUCADF_MAP = {
+  // EDUCA.MELHOR nome (uppercase) → EDUCADF Componente (como aparece no dropdown)
+  'GEOMETRIA':     'PARTE DIVERSIFICADA II',
+  'PRATICA ESTUDANTIL': 'PARTE DIVERSIFICADA II',
+  // MATEMÁTICA, PORTUGUÊS, etc. tendem a manter o mesmo nome
+  // Adicione aqui novos mapeamentos conforme descobertos:
+};
+
+/**
+ * Converte o nome da disciplina do EDUCA.MELHOR para o Componente correspondente no EDUCADF.
+ * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Geometria')
+ * @returns {string} - Nome no EDUCADF (ex: 'PARTE DIVERSIFICADA II')
+ */
+function mapearDisciplina(disciplina) {
+  if (!disciplina) return disciplina;
+  const upper = String(disciplina).trim().toUpperCase();
+  return DISCIPLINA_EDUCADF_MAP[upper] || disciplina;
+}
+
+/**
+ * Comparação fuzzy de nomes de professores:
+ * divide em tokens, e verifica se há sobreposição suficiente.
+ * Useful para: 'MARIA MACIA REJAINE MATIAS DE ALMEIDA' vs 'MA MACIA REJAINE M DE ALMEIDA'
+ */
+function nomesCorrespondem(nomeA, nomeB) {
+  if (!nomeA || !nomeB) return false;
+  const norm = (s) => String(s)
+    .toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .replace(/[^A-Z0-9 ]/g, '')
+    .split(/\s+/)
+    .filter(t => t.length > 2); // ignora partículas como 'DE', 'DA'
+
+  const tokensA = norm(nomeA);
+  const tokensB = norm(nomeB);
+  const matches = tokensA.filter(t => tokensB.some(tb => tb.startsWith(t) || t.startsWith(tb)));
+  // Considera correspondência se pelo menos 60% dos tokens do nome menor coincidem
+  const menor = Math.min(tokensA.length, tokensB.length);
+  return menor > 0 && matches.length >= Math.ceil(menor * 0.6);
+}
+
+// ============================================================================
 // HELPER: Remove backdrops que bloqueiam cliques (mesmo padrão do Python)
 // ============================================================================
 async function removerBackdrops(page) {
@@ -49,7 +95,7 @@ async function removerBackdrops(page) {
 // HELPER: Seleciona opção em ng-select do Angular pelo placeholder e valor
 // Baseado DIRETAMENTE na função selecionar_ng_select() do educadf.py
 // ============================================================================
-async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
+async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzzyFn = null) {
   console.log(`[educadf.pap] ng-select[placeholder="${placeholder}"] = "${valor}"`);
 
   const ng = page.locator(`ng-select[placeholder="${placeholder}"]`);
@@ -60,14 +106,21 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
   }
 
   // Normalização para comparação robusta
-  // Remove ' - ' (EDUCADF usa '8º ANO - A', EDUCA.MELHOR usa '8º ANO A')
-  const normalize = (s) => s.trim().toUpperCase()
+  const normalize = (s) => String(s).trim().toUpperCase()
     .normalize('NFC')
     .replace(/°/g, 'º')
     .replace(/\s+-\s+/g, ' ')  // '8º ANO - A' → '8º ANO A'
     .replace(/\s+/g, ' ');
 
   const target = normalize(valor);
+
+  // Predicado de match — por padrão exato/contains, mas permite fuzzy externo
+  const isMatch = (t) => {
+    const tn = normalize(t);
+    if (tn === target || tn.includes(target) || target.includes(tn)) return true;
+    if (fuzzyFn && fuzzyFn(t, valor)) return true;
+    return false;
+  };
 
   // ── Estratégia 1: Digita e filtra ─────────────────────────────────────────
   await ng.click();
@@ -89,10 +142,10 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
   const count = await allOpts.count();
   for (let i = 0; i < count; i++) {
     const t = (await allOpts.nth(i).textContent()) || '';
-    if (normalize(t) === target || normalize(t).includes(target)) {
+    if (isMatch(t)) {
       await allOpts.nth(i).click();
       await page.waitForTimeout(800);
-      console.log(`[educadf.pap] ✅ ng-select "${placeholder}" → "${valor}" (estratégia 1)`);
+      console.log(`[educadf.pap] ✅ ng-select "${placeholder}" → "${t.trim()}" (estratégia 1)`);
       return true;
     }
   }
@@ -100,7 +153,6 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
   // Fecha e tenta estratégia 2: limpa e lista todas as opções
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
-
   await ng.click();
   await page.waitForTimeout(500);
 
@@ -116,7 +168,7 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
     return false;
   }
 
-  // Scroll manual (virtual scrolling)
+  // Scroll manual (virtual scrolling) — loga tudo para diagnóstico
   const seen = new Set();
   let staleCount = 0;
 
@@ -126,11 +178,14 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
     for (let i = 0; i < n; i++) {
       const t = (await opts.nth(i).textContent()) || '';
       const tn = normalize(t);
-      seen.add(tn);
-      if (tn === target || tn.includes(target)) {
+      if (!seen.has(tn)) {
+        seen.add(tn);
+        console.log(`[educadf.pap]   opção disponível: "${t.trim()}"`);
+      }
+      if (isMatch(t)) {
         await opts.nth(i).click();
         await page.waitForTimeout(800);
-        console.log(`[educadf.pap] ✅ ng-select "${placeholder}" → "${valor}" (scroll round ${round})`);
+        console.log(`[educadf.pap] ✅ ng-select "${placeholder}" → "${t.trim()}" (scroll round ${round})`);
         return true;
       }
     }
@@ -146,6 +201,7 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000) {
   }
 
   console.warn(`[educadf.pap] ❌ ng-select "${placeholder}" → "${valor}" não encontrado`);
+  console.warn(`[educadf.pap]   Opções vistas: ${[...seen].join(' | ')}`);
   await page.keyboard.press('Escape');
   return false;
 }
@@ -331,14 +387,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 4: Filtros laterais
     // Ano (2026) e Regional já pré-selecionados.
-    // Preencher: Turma/Agrupamento + Professor.
-    // Componente deixar vazio.
+    // Preencher: Turma/Agrupamento + Professor + Componente
+    // IMPORTANTE: Componente deve usar o nome do EDUCADF (mapeado da disciplina)
     // ══════════════════════════════════════════════════════════════════════
-    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas}`);
+    const componenteEducaDF = mapearDisciplina(plano.disciplina);
+    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} | Componente: ${componenteEducaDF}`);
 
     // ── Turma: tenta variações de placeholder ───────────────────────────────
-    // O placeholder exato pode ser: 'Turma/Agrupamento', 'Turma', 'Agrupamento'
-    // Descobre qual existe na página e usa esse
     const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
     let turmaOk = false;
     for (const ph of placeholdersTurma) {
@@ -354,7 +409,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
     await page.waitForTimeout(800);
 
-    // ── Professor: tenta variações de placeholder ────────────────────────────
+    // ── Professor: usa fuzzy matching pois nomes podem diferir entre sistemas ─
     if (plano.professorNome) {
       const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
       let profOk = false;
@@ -362,7 +417,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
         if (exists) {
           console.log(`[educadf.pap] Filtro Professor encontrado com placeholder: "${ph}"`);
-          profOk = await selecionarNgSelect(page, ph, plano.professorNome);
+          // Passa nomesCorrespondem como função fuzzy de fallback
+          profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
           if (profOk) break;
         }
       }
@@ -370,21 +426,38 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         console.warn('[educadf.pap] ⚠️  ng-select Professor não encontrado — continuando sem filtrar professor');
       }
     }
+    await page.waitForTimeout(800);
+
+    // ── Componente: usa o nome mapeado do EDUCADF ─────────────────────────────
+    if (componenteEducaDF) {
+      const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
+      let compOk = false;
+      for (const ph of placeholdersComp) {
+        const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+        if (exists) {
+          console.log(`[educadf.pap] Filtro Componente encontrado com placeholder: "${ph}"`);
+          compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
+          if (compOk) break;
+        }
+      }
+      if (!compOk) {
+        console.warn(`[educadf.pap] ⚠️  Componente "${componenteEducaDF}" não selecionado — continuando`);
+      }
+    }
 
     await session.screenshot('pap_04_filtros');
 
-    // Clicar Filtrar (tolerante a timeout)
+    // Clicar Filtrar
     console.log('[educadf.pap] Clicando em Filtrar...');
     try {
       await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 });
-      // Aguarda de forma tolerante: tenta networkidle mas não falha se demorar
       await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() =>
         console.warn('[educadf.pap] domcontentloaded timeout após Filtrar — continuando...')
       );
     } catch (filtrarErr) {
       console.warn(`[educadf.pap] Botão Filtrar não encontrado ou falhou: ${filtrarErr.message}`);
     }
-    await session.delay(2000);
+    await session.delay(3000);
     await session.screenshot('pap_04b_pos_filtrar');
 
     // ══════════════════════════════════════════════════════════════════════
