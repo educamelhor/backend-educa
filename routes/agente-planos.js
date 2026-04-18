@@ -47,11 +47,24 @@ async function buscarCredenciais(db, escolaId, usuarioId) {
 // ── Garante coluna agente_exportado_em na tabela ──────────────────────────────
 async function ensureAgenteExportadoField(db) {
   try {
-    await db.query(`
-      ALTER TABLE planos_avaliacao
-      ADD COLUMN IF NOT EXISTS agente_exportado_em DATETIME DEFAULT NULL
+    // MySQL 5.7 não suporta ADD COLUMN IF NOT EXISTS — usa INFORMATION_SCHEMA
+    const [[row]] = await db.query(`
+      SELECT COUNT(*) as cnt
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME   = 'planos_avaliacao'
+        AND COLUMN_NAME  = 'agente_exportado_em'
     `);
-  } catch { /* já existe ou banco não suporta IF NOT EXISTS */ }
+    if (!row || row.cnt === 0) {
+      await db.query(`
+        ALTER TABLE planos_avaliacao
+        ADD COLUMN agente_exportado_em DATETIME DEFAULT NULL
+      `);
+      console.log('[agente-planos] Coluna agente_exportado_em adicionada.');
+    }
+  } catch (err) {
+    console.warn('[agente-planos] ensureAgenteExportadoField:', err.message);
+  }
 }
 
 // ============================================================================
