@@ -651,35 +651,36 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(500);
 
     // — Campo: Nome —
+    // IMPORTANTE: para Angular, usar triple-click + pressSequentially + Tab
+    // para disparar input/change/blur e ativar o validador Angular.
     const nomeAtividade = item.atividade || 'Avaliação Bimestral';
-    // O campo Nome é o primeiro input visível dentro do modal
     const nomeInput = page.locator(
-      '.modal input[type="text"]:visible, [role="dialog"] input[type="text"]:visible'
+      'ngb-modal-window input[type="text"], .modal input[type="text"], [role="dialog"] input[type="text"]'
     ).first();
     await nomeInput.waitFor({ state: 'visible', timeout: 8000 });
-    await nomeInput.fill(nomeAtividade);
+    await nomeInput.click({ clickCount: 3 }); // seleciona tudo
+    await page.waitForTimeout(200);
+    await nomeInput.pressSequentially(nomeAtividade, { delay: 40 }); // dispara eventos input
+    await page.keyboard.press('Tab'); // dispara blur/change para Angular processar
+    await page.waitForTimeout(600);
     console.log(`[educadf.pap] Nome: "${nomeAtividade}"`);
-    await page.waitForTimeout(400);
 
     // — Campo: Tipo (ng-select no modal) —
     if (item.tipo_avaliacao) {
       await selecionarTipoNoModal(page, item.tipo_avaliacao);
-      await page.waitForTimeout(500);
+      // Aguarda Angular processar a seleção re-validar o formulário
+      await page.waitForTimeout(1000);
     }
 
     // — Campo: Data (date picker customizado) —
     const dataStr = item.data_inicio || item.data;
     if (dataStr) {
-      const dataSel = '.modal input[placeholder], [role="dialog"] input[placeholder]';
-      // O inputdo date picker tem placeholder com formato de data
-      const dateInputs = page.locator('.modal input, [role="dialog"] input');
+      const dateInputs = page.locator('ngb-modal-window input, .modal input, [role="dialog"] input');
       const inputCount = await dateInputs.count();
-      // Identifica o input de data: é aquele que contém uma data (não é o Nome)
       for (let i = 0; i < inputCount; i++) {
         const inp = dateInputs.nth(i);
         const val = await inp.inputValue().catch(() => '');
         const placeholder = await inp.getAttribute('placeholder').catch(() => '');
-        // O date picker já vem com uma data preenchida ("06 Abr, 2026")
         if (val.match(/\d{2}\s+\w{3},?\s+\d{4}/) || placeholder?.toLowerCase().includes('data')) {
           await preencherDatePickerByLocator(page, inp, dataStr);
           break;
@@ -692,13 +693,16 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // — Campo: Observações —
     if (item.descricao) {
-      const obs = page.locator('.modal textarea, [role="dialog"] textarea').first();
+      const obs = page.locator('ngb-modal-window textarea, .modal textarea, [role="dialog"] textarea').first();
       if ((await obs.count()) > 0) {
-        await obs.fill(item.descricao);
+        await obs.click({ clickCount: 3 });
+        await obs.pressSequentially(item.descricao, { delay: 20 });
         console.log(`[educadf.pap] Observações: "${item.descricao.substring(0, 60)}${item.descricao.length > 60 ? '...' : ''}"`);
       }
     }
 
+    // Aguarda Angular estabilizar
+    await page.waitForTimeout(800);
     await session.screenshot('pap_07_modal_preenchido');
 
     // — Salvar —
@@ -706,7 +710,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // e o Playwright.click() falha com "subtree intercepts pointer events".
     console.log('[educadf.pap] Clicando em Salvar (via JavaScript)...');
     const salvarOk = await page.evaluate(() => {
-      // Tenta pelo seletor mais específico
       const seletores = [
         'ngb-modal-window button[aria-label="Salvar"]',
         'ngb-modal-window button.btn-success',
@@ -718,8 +721,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         const btn = document.querySelector(sel);
         if (btn) {
           btn.scrollIntoView({ block: 'center' });
-          btn.click();
-          console.log('[JS] Botão Salvar clicado via:', sel);
+          // dispatchEvent é mais compatível com Angular do que .click() simples
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           return sel;
         }
       }
@@ -738,22 +741,36 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       console.log('[educadf.pap] ✅ Salvar clicado via force click.');
     }
 
-    await session.delay(TIMING.actionDelay + 1000);
+    // Aguarda o modal fechar (dá até 3s)
+    await session.delay(3000);
     await session.screenshot('pap_08_pos_salvar');
 
-    // ── Verificar sucesso ──────────────────────────────────────────────
-    // O modal some = sucesso. Fallback: verifica alert-success.
+    // ── Verifica erros de validação no modal (diagnóstico) ─────────────────
     const modalAindaAberto = await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
-    const alertSucesso = await page.locator('.alert-success, .toast-success').isVisible().catch(() => false);
+    if (modalAindaAberto) {
+      const errosValidacao = await page.evaluate(() => {
+        return [...document.querySelectorAll('.invalid-feedback, .text-danger, .form-text.text-danger')]
+          .map(e => e.textContent?.trim()).filter(Boolean);
+      });
+      const camposInvalidos = await page.evaluate(() => {
+        return [...document.querySelectorAll('ngb-modal-window .ng-invalid')]
+          .map(el => ({ tag: el.tagName, aria: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder') }));
+      });
+      if (errosValidacao.length > 0) console.warn(`[educadf.pap] Erros validação: ${JSON.stringify(errosValidacao)}`);
+      if (camposInvalidos.length > 0) console.warn(`[educadf.pap] Campos inválidos ng-invalid: ${JSON.stringify(camposInvalidos)}`);
+    }
+
+    // ── Verificar sucesso ──────────────────────────────────────────────
+    const alertSucesso = await page.locator('.alert-success, .toast-success, .swal2-success').isVisible().catch(() => false);
     const ok = !modalAindaAberto || alertSucesso;
 
-    console.log(`[educadf.pap] ✅ Resultado: modalFechado=${!modalAindaAberto}, alertSucesso=${alertSucesso}`);
+    console.log(`[educadf.pap] Resultado: modalFechado=${!modalAindaAberto}, alertSucesso=${alertSucesso}`);
 
     return {
       ok,
       message: ok
         ? `Procedimento "${nomeAtividade}" criado no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
-        : `Modal ainda aberto após salvar — pode ter ocorrido erro de validação no EDUCADF.`,
+        : `Modal ainda aberto após salvar — verifique os logs de validação acima.`,
       durationMs: Date.now() - startedAt,
     };
 
