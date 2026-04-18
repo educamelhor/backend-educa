@@ -389,9 +389,62 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 5: Tab/menu superior → "Registro de Procedimento Avaliativo"
+    // Estratégia multi-seletor: o portal EDUCADF pode ter textos diferentes
+    // dependendo do perfil ou versão do portal. Tentamos várias variações.
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 5/7 Abrindo aba "Registro de Procedimento Avaliativo"...');
-    await page.locator("a:has-text('Registro de Procedimento Avaliativo')").first().click({ timeout: 10000 });
+
+    // Aguarda tempo extra para o filtro terminar de carregar os dados
+    await session.delay(3000);
+    await removerBackdrops(page);
+    await session.screenshot('pap_04c_antes_aba_procedimento');
+
+    // Variações de texto da aba no portal
+    const textoAba = [
+      'Registro de Procedimento Avaliativo',
+      'Procedimento Avaliativo',
+      'Registro de Procedimento',
+      'Proc. Avaliativo',
+    ];
+
+    let abaClicada = false;
+    for (const texto of textoAba) {
+      try {
+        const loc = page.locator(`a:has-text('${texto}'), li:has-text('${texto}') a, [role="tab"]:has-text('${texto}')`).first();
+        const count = await loc.count();
+        if (count > 0) {
+          console.log(`[educadf.pap] Aba encontrada com texto: "${texto}"`);
+          await loc.click({ timeout: 30000 });
+          abaClicada = true;
+          break;
+        }
+      } catch (err) {
+        console.warn(`[educadf.pap] Tentativa com "${texto}" falhou: ${err.message}`);
+      }
+    }
+
+    // Último recurso: busca qualquer link/aba que contenha "procedimento" (case-insensitive) via JS
+    if (!abaClicada) {
+      console.warn('[educadf.pap] Tentando JS click genérico para aba de Procedimento Avaliativo...');
+      const jsClicked = await page.evaluate(() => {
+        const links = [...document.querySelectorAll('a, li a, [role="tab"]')];
+        const el = links.find(l =>
+          l.textContent?.toLowerCase().includes('procedimento') &&
+          l.textContent?.toLowerCase().includes('avaliativo')
+        );
+        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
+        return false;
+      });
+      if (jsClicked) {
+        console.log('[educadf.pap] Aba clicada via JavaScript fallback.');
+        abaClicada = true;
+      }
+    }
+
+    if (!abaClicada) {
+      throw new Error('Aba "Registro de Procedimento Avaliativo" não encontrada na página após múltiplas tentativas.');
+    }
+
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_05_aba_procedimento');
 
@@ -399,7 +452,48 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // PASSO 6: Botão "Criar procedimento avaliativo" (azul)
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 6/7 Clicando em "Criar procedimento avaliativo"...');
-    await page.locator("button:has-text('Criar procedimento avaliativo')").first().click({ timeout: 10000 });
+
+    const textosBotaoCriar = [
+      'Criar procedimento avaliativo',
+      'Criar Procedimento Avaliativo',
+      'Criar Procedimento',
+      'Novo Procedimento',
+      'Adicionar',
+    ];
+
+    let botaoCriarClicado = false;
+    for (const texto of textosBotaoCriar) {
+      try {
+        const loc = page.locator(`button:has-text('${texto}')`).first();
+        if (await loc.count() > 0) {
+          console.log(`[educadf.pap] Botão Criar encontrado: "${texto}"`);
+          await loc.click({ timeout: 20000 });
+          botaoCriarClicado = true;
+          break;
+        }
+      } catch (err) {
+        console.warn(`[educadf.pap] Botão "${texto}" falhou: ${err.message}`);
+      }
+    }
+
+    // Fallback JS: qualquer botão azul (btn-primary) visível
+    if (!botaoCriarClicado) {
+      const jsClicked = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button.btn-primary, button.btn-success')];
+        const el = btns.find(b => b.textContent?.toLowerCase().includes('criar') || b.textContent?.toLowerCase().includes('novo') || b.textContent?.toLowerCase().includes('adicionar'));
+        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
+        return false;
+      });
+      if (jsClicked) {
+        console.log('[educadf.pap] Botão Criar clicado via JS fallback.');
+        botaoCriarClicado = true;
+      }
+    }
+
+    if (!botaoCriarClicado) {
+      throw new Error('Botão "Criar procedimento avaliativo" não encontrado na página.');
+    }
+
     await session.delay(TIMING.actionDelay + 500);
     await session.screenshot('pap_06_modal_aberto');
 
