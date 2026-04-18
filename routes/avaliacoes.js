@@ -556,7 +556,7 @@ router.patch("/:id/status", async (req, res) => {
     const { id } = req.params;
     const { status, motivo } = req.body;
 
-    const statusPermitidos = ["APROVADO", "DEVOLVIDO", "RASCUNHO", "LIBERACAO_SOLICITADA"];
+    const statusPermitidos = ["APROVADO", "DEVOLVIDO", "RASCUNHO", "LIBERADO", "LIBERACAO_SOLICITADA"];
     if (!status || !statusPermitidos.includes(status)) {
       return res.status(400).json({ error: `Status inválido. Permitidos: ${statusPermitidos.join(", ")}` });
     }
