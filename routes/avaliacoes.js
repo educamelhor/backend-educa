@@ -31,6 +31,14 @@ router.get("/recall/check", async (req, res) => {
     const { escola_id, usuario_id } = req.user;
 
     const anoAtual = new Date().getFullYear();
+
+    // Resolve CPF do professor logado (igual ao /me)
+    let cpf = req.user?.cpf;
+    if (!cpf && usuario_id) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [usuario_id]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf).replace(/\D/g, '') : null;
+    }
+
     const [pendentes] = await pool.query(
       `SELECT DISTINCT
          pa.id AS plano_id,
@@ -45,9 +53,22 @@ router.get("/recall/check", async (req, res) => {
          AND pa.usuario_id = ?
          AND pa.ano = ?
          AND (ia.tipo_avaliacao IS NULL OR ia.tipo_avaliacao = '')
+         -- ✅ Valida que (turma, disciplina) existe na modulação atual do professor
+         AND EXISTS (
+           SELECT 1
+           FROM turmas tt
+           JOIN modulacao m ON m.turma_id = tt.id
+           JOIN disciplinas dd ON dd.id = m.disciplina_id
+           JOIN professores pp ON pp.id = m.professor_id
+           WHERE tt.nome COLLATE utf8mb4_general_ci = pa.turmas COLLATE utf8mb4_general_ci
+             AND tt.escola_id = pa.escola_id
+             AND tt.ano = pa.ano
+             AND dd.nome COLLATE utf8mb4_general_ci = pa.disciplina COLLATE utf8mb4_general_ci
+             AND REPLACE(REPLACE(pp.cpf, '.', ''), '-', '') = ?
+         )
        GROUP BY pa.id
        ORDER BY pa.disciplina, pa.turmas`,
-      [escola_id, usuario_id, anoAtual]
+      [escola_id, usuario_id, anoAtual, cpf || '']
     );
 
     return res.json({
