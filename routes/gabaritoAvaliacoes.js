@@ -160,6 +160,7 @@ router.post("/", async (req, res) => {
       disciplinas_config,
       turmas_ids,
       turno,
+      data_aplicacao,  // ← DATA DA PROVA BIMESTRAL (definida pela direção)
     } = req.body;
 
     // Validações
@@ -197,8 +198,8 @@ router.post("/", async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO gabarito_avaliacoes 
        (escola_id, titulo, tipo, bimestre, num_questoes, num_alternativas, nota_total, 
-        modelo, gabarito_oficial, disciplinas_config, turmas_ids, turno, status, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        modelo, gabarito_oficial, disciplinas_config, turmas_ids, turno, status, criado_por, data_aplicacao)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         escola_id,
         titulo.trim(),
@@ -214,6 +215,7 @@ router.post("/", async (req, res) => {
         turno || null,
         status,
         userId,
+        data_aplicacao || null,
       ]
     );
 
@@ -223,6 +225,27 @@ router.post("/", async (req, res) => {
       [result.insertId]
     );
     const r = created[0];
+
+    // ── PROPAGA data_aplicacao para os itens fixo_direcao do PAP ──────────────
+    // Quando a direção cria um gabarito com data, essa data é automaticamente
+    // preenchida no campo data_inicio do item Prova Bimestral de cada PAP
+    // aprovado/enviado do mesmo bimestre na escola.
+    if (data_aplicacao && bimestre) {
+      try {
+        const [propagado] = await pool.query(
+          `UPDATE itens_avaliacao ia
+           JOIN planos_avaliacao pa ON pa.id = ia.plano_id
+           SET ia.data_inicio = ?, ia.data_final = ?
+           WHERE pa.escola_id = ?
+             AND pa.bimestre LIKE ?
+             AND ia.fixo_direcao = 1`,
+          [data_aplicacao, data_aplicacao, escola_id, `%${bimestre.replace(/[^\d]/g, '')}%`]
+        );
+        console.log(`[gabarito] Propagou data_aplicacao ${data_aplicacao} para ${propagado.affectedRows} item(ns) fixo_direcao`);
+      } catch (propErr) {
+        console.warn('[gabarito] Propagação de data_aplicacao falhou (não crítico):', propErr.message);
+      }
+    }
 
     res.status(201).json({
       ...r,
@@ -291,6 +314,10 @@ router.put("/:id", async (req, res) => {
     }
     if (turno !== undefined) { sets.push("turno = ?"); params.push(turno); }
     if (status !== undefined) { sets.push("status = ?"); params.push(status); }
+    if (req.body.data_aplicacao !== undefined) {
+      sets.push("data_aplicacao = ?");
+      params.push(req.body.data_aplicacao || null);
+    }
 
     // Auto-update status when gabarito_oficial is set
     if (gabarito_oficial && !status) {

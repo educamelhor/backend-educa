@@ -485,6 +485,53 @@ router.post("/", async (req, res) => {
       }
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // AUTO-ITEM: Prova Bimestral padronizada
+    // Se a escola adota avaliação bimestral padronizada (governança),
+    // garante que cada plano criado/salvo tenha um item fixo_direcao=1
+    // com atividade='Prova Bimestral' e tipo_avaliacao='PROVA'.
+    // A DATA será preenchida pela direção ao criar o gabarito.
+    // ════════════════════════════════════════════════════════════════════
+    try {
+      const [[config]] = await conn.query(
+        `SELECT valor FROM configuracoes_escola
+         WHERE escola_id = ? AND chave = 'escola.avaliacao_padrao_bimestral' LIMIT 1`,
+        [escola_id]
+      );
+
+      if (config?.valor === '1') {
+        for (const planoId of planoIds) {
+          // Verifica se já existe item fixo_direcao nesse plano
+          const [[jaExiste]] = await conn.query(
+            `SELECT id FROM itens_avaliacao WHERE plano_id = ? AND fixo_direcao = 1 LIMIT 1`,
+            [planoId]
+          );
+
+          if (!jaExiste) {
+            await conn.query(
+              `INSERT INTO itens_avaliacao
+                (plano_id, atividade, tipo_avaliacao, data_inicio, data_final,
+                 nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
+               VALUES (?, 'Prova Bimestral', 'PROVA', NULL, NULL, 5, 1, 0, NULL, 1)`,
+              [planoId]
+            );
+            console.log(`[avaliacoes] Auto-item Prova Bimestral inserido no plano ${planoId}`);
+          } else {
+            // Já existe — garante que tipo_avaliacao está correto (PROVA)
+            await conn.query(
+              `UPDATE itens_avaliacao
+               SET atividade = 'Prova Bimestral', tipo_avaliacao = 'PROVA'
+               WHERE plano_id = ? AND fixo_direcao = 1`,
+              [planoId]
+            );
+          }
+        }
+      }
+    } catch (govErr) {
+      // Não bloqueia o salvamento do plano se a verificação de governança falhar
+      console.warn('[avaliacoes] Auto-item Prova Bimestral ignorado:', govErr.message);
+    }
+
     await conn.commit();
     return res.json({ success: true, plano_ids: planoIds });
   } catch (error) {
