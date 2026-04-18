@@ -393,7 +393,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const componenteEducaDF = mapearDisciplina(plano.disciplina);
     console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} | Componente: ${componenteEducaDF}`);
 
-    // ── Turma: tenta variações de placeholder ───────────────────────────────
+    // ── Aguarda os ng-selects da página carregarem (até 15s) ────────────
+    await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
+      console.warn('[educadf.pap] ng-select não apareceu em 15s — tentando assim mesmo...')
+    );
+    await page.waitForTimeout(1000);
+
+    // ── Turma (OBRIGATÓRIO): sem turma não prosseguir ─────────────────
     const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
     let turmaOk = false;
     for (const ph of placeholdersTurma) {
@@ -405,7 +411,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
     if (!turmaOk) {
-      console.warn('[educadf.pap] ⚠️  Nenhum ng-select de Turma encontrado — continuando sem filtrar turma');
+      // Turma é crítica — sem ela o evento errado pode ser clicado
+      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a página carregou corretamente.`);
     }
     await page.waitForTimeout(800);
 
@@ -417,7 +424,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
         if (exists) {
           console.log(`[educadf.pap] Filtro Professor encontrado com placeholder: "${ph}"`);
-          // Passa nomesCorrespondem como função fuzzy de fallback
           profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
           if (profOk) break;
         }
@@ -473,49 +479,81 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
 
-    // Busca eventos fc-event (aulas da turma filtrada)
+    // Helper de normalização para comparar turma/componente com texto do evento
+    const normEv = (s) => String(s)
+      .toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+      .replace(/[^A-Z0-9\s]/g, ' ')                     // remove pontuação
+      .replace(/\s+/g, ' ').trim();
+
+    const turmaNorm   = normEv(plano.turmas);       // ex: '9 ANO I'
+    const compNorm    = normEv(componenteEducaDF);  // ex: 'MATEMATICA'
+    const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, ''); // '1º Bimestre' → '1'
+
+    // Tokens mínimos que devem aparecer no texto do evento para validar a turma
+    // Ex: '9 ANO I' → tokens ['9', 'ANO', 'I']; filtra tokens de 1 char (exceto números de turma)
+    const turmaTkns = turmaNorm.split(' ').filter(t => t.length > 0);
+    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
+
+    const eventoCorreto = (txt) => {
+      const n = normEv(txt);
+      const turmaOkEv = turmaTkns.every(t => n.includes(t));
+      const compOkEv  = compTkns.some(c => n.includes(c));
+      return turmaOkEv && compOkEv;
+    };
+
+    // Busca eventos fc-event 
     const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
     const totalFcEventos = await fcEventos.count();
-    console.log(`[educadf.pap] Eventos de aula encontrados no calendário: ${totalFcEventos}`);
+    console.log(`[educadf.pap] Eventos de aula no calendário: ${totalFcEventos} | Buscando Turma="${plano.turmas}" + Componente="${componenteEducaDF}"`);
 
     let eventoClicado = false;
 
-    if (totalFcEventos > 0) {
-      // Tenta clicar no primeiro evento que contenha o bimestre correto
-      const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, '').trim(); // '1º Bimestre' → '1'
-      for (let i = 0; i < Math.min(totalFcEventos, 10) && !eventoClicado; i++) {
-        const ev = fcEventos.nth(i);
+    for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
+      const ev  = fcEventos.nth(i);
+      const txt = (await ev.textContent().catch(() => '')) || '';
+
+      if (!eventoCorreto(txt)) continue; // pula eventos da turma/componente errados
+
+      // Filtra pelo bimestre se disponível (preferência mas não obrigatório)
+      const bimestreMatch = !bimestreNum || txt.includes(`${bimestreNum}º BIMESTRE`);
+      if (!bimestreMatch) continue;
+
+      try {
+        await ev.scrollIntoViewIfNeeded().catch(() => {});
+        await ev.click({ timeout: 10000 });
+        eventoClicado = true;
+        console.log(`[educadf.pap] ✅ Evento correto clicado [${i}]: "${txt.substring(0, 80)}"`);
+      } catch (err) {
+        console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
+      }
+    }
+
+    // Segunda tentativa sem exigir bimestre específico (aceita qualquer evento da turma+componente)
+    if (!eventoClicado) {
+      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
+        const ev  = fcEventos.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
-        // Prefere evento do bimestre correto, mas qualquer evento serve
-        const doBimestre = bimestreNum && txt.includes(`${bimestreNum}º BIMESTRE`);
-        if (doBimestre || i === 0) {
-          try {
-            await ev.scrollIntoViewIfNeeded().catch(() => {});
-            await ev.click({ timeout: 10000 });
-            eventoClicado = true;
-            console.log(`[educadf.pap] ✅ Evento clicado [${i}]: "${txt.substring(0, 60)}"`);
-          } catch (err) {
-            console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
-          }
+        if (!eventoCorreto(txt)) continue;
+        try {
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await ev.click({ timeout: 10000 });
+          eventoClicado = true;
+          console.log(`[educadf.pap] ✅ Evento (qualquer bimestre) [${i}]: "${txt.substring(0, 80)}"`);
+        } catch (err) {
+          console.warn(`[educadf.pap] Clique evento [${i}] segunda tentativa falhou: ${err.message}`);
         }
       }
     }
 
-    // Fallback JS: clica no primeiro fc-event do DOM
     if (!eventoClicado) {
-      const jsClicked = await page.evaluate(() => {
-        const ev = document.querySelector('a.fc-event, .fc-daygrid-event a, .fc-event');
-        if (ev) { ev.scrollIntoView({ block: 'center' }); ev.click(); return true; }
-        return false;
-      });
-      if (jsClicked) {
-        eventoClicado = true;
-        console.log('[educadf.pap] Evento clicado via JS fallback.');
+      // Log diagnóstico dos primeiros eventos encontrados
+      console.error(`[educadf.pap] ❌ Nenhum evento com Turma="${plano.turmas}" e Componente="${componenteEducaDF}" encontrado!`);
+      for (let i = 0; i < Math.min(totalFcEventos, 8); i++) {
+        const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
+        console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
       }
-    }
-
-    if (!eventoClicado) {
-      throw new Error('Nenhum evento de aula encontrado no calendário. Verifique se os filtros Turma + Professor + Componente foram aplicados corretamente.');
+      throw new Error(`Nenhum evento de aula correto encontrado para Turma="${plano.turmas}" e Componente="${componenteEducaDF}". Verifique se os filtros foram aplicados.`);
     }
 
     // Aguarda o diário carregar (exibe abas no topo)
