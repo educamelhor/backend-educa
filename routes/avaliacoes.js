@@ -141,17 +141,19 @@ router.get("/me", async (req, res) => {
     const discNames  = [...new Set(vinculos.map(v => v.disc_nome))];
 
     // ── Passo 2: planos da escola que cruzam as turmas e disciplinas acima ───────────────
-    const placeholdersTurmas = turmaNames.map(() => "?").join(", ");
-    const placeholdersDisc   = discNames.map(() => "?").join(", ");
-
+    // Usamos pares exatos (turma, disciplina) para evitar "data leakage" cruzando turmas e disciplinas incorretas
+    const conditions = vinculos.map(() => "(turmas = ? AND disciplina = ?)").join(" OR ");
+    
     let sql = `
       SELECT * FROM planos_avaliacao
       WHERE escola_id  = ?
         AND ano        = ?
-        AND turmas     IN (${placeholdersTurmas})
-        AND disciplina IN (${placeholdersDisc})
+        AND (${conditions})
     `;
-    const params = [escola_id, anoParam, ...turmaNames, ...discNames];
+    const params = [escola_id, anoParam];
+    vinculos.forEach(v => {
+      params.push(v.turma_nome, v.disc_nome);
+    });
 
     if (bimestre) {
       sql += ` AND bimestre = ?`;
