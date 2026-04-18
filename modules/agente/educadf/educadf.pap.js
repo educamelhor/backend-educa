@@ -461,109 +461,148 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.screenshot('pap_04b_pos_filtrar');
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 5: Tab/menu superior → "Registro de Procedimento Avaliativo"
-    // Estratégia multi-seletor: o portal EDUCADF pode ter textos diferentes
-    // dependendo do perfil ou versão do portal. Tentamos várias variações.
+    // PASSO 5: Clicar num evento do calendário (fc-event)
+    // FLUXO CORRETO: após filtrar, o calendário mostra os eventos de aula.
+    // Clicar em qualquer evento abre o DIÁRIO DA AULA com as abas:
+    //   "Registro de Aula" | "Registro de Frequência" |
+    //   "Registro de Procedimentos Avaliativos" | "Observações do Diário" | etc.
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 5/7 Abrindo aba "Registro de Procedimento Avaliativo"...');
+    console.log('[educadf.pap] 5/7 Clicando num evento do calendário para abrir o diário...');
 
-    // Aguarda tempo extra para o filtro terminar de carregar os dados
-    await session.delay(3000);
+    await session.delay(2000);
     await removerBackdrops(page);
-    await session.screenshot('pap_04c_antes_aba_procedimento');
+    await session.screenshot('pap_04c_calendario');
 
-    // ── DIAGNÓSTICO: loga TODOS os links e tabs visíveis para descobrir texto exato ──────
-    const todosLinks = await page.evaluate(() => {
-      const seletores = 'a, [role="tab"], li.nav-item a, .nav-tabs a, .nav-link, ul.nav a';
-      return [...document.querySelectorAll(seletores)]
-        .filter(el => {
-          const rect = el.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        })
-        .map(el => ({
-          tag: el.tagName,
-          text: el.textContent?.trim().substring(0, 80),
-          href: el.href,
-          class: el.className?.substring(0, 60),
-        }))
-        .filter(el => el.text);
-    });
-    console.log(`[educadf.pap] 🔍 Links/tabs visíveis na página (${todosLinks.length}):`);
-    todosLinks.forEach((l, i) => console.log(`  [${i}] ${l.tag} | "${l.text}" | class="${l.class}" | href="${l.href}"`));
+    // Busca eventos fc-event (aulas da turma filtrada)
+    const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
+    const totalFcEventos = await fcEventos.count();
+    console.log(`[educadf.pap] Eventos de aula encontrados no calendário: ${totalFcEventos}`);
 
-    // Variações de texto da aba no portal (incluindo plurais e abreviações)
-    const textoAba = [
-      'Registro de Procedimento Avaliativo',
+    let eventoClicado = false;
+
+    if (totalFcEventos > 0) {
+      // Tenta clicar no primeiro evento que contenha o bimestre correto
+      const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, '').trim(); // '1º Bimestre' → '1'
+      for (let i = 0; i < Math.min(totalFcEventos, 10) && !eventoClicado; i++) {
+        const ev = fcEventos.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        // Prefere evento do bimestre correto, mas qualquer evento serve
+        const doBimestre = bimestreNum && txt.includes(`${bimestreNum}º BIMESTRE`);
+        if (doBimestre || i === 0) {
+          try {
+            await ev.scrollIntoViewIfNeeded().catch(() => {});
+            await ev.click({ timeout: 10000 });
+            eventoClicado = true;
+            console.log(`[educadf.pap] ✅ Evento clicado [${i}]: "${txt.substring(0, 60)}"`);
+          } catch (err) {
+            console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    // Fallback JS: clica no primeiro fc-event do DOM
+    if (!eventoClicado) {
+      const jsClicked = await page.evaluate(() => {
+        const ev = document.querySelector('a.fc-event, .fc-daygrid-event a, .fc-event');
+        if (ev) { ev.scrollIntoView({ block: 'center' }); ev.click(); return true; }
+        return false;
+      });
+      if (jsClicked) {
+        eventoClicado = true;
+        console.log('[educadf.pap] Evento clicado via JS fallback.');
+      }
+    }
+
+    if (!eventoClicado) {
+      throw new Error('Nenhum evento de aula encontrado no calendário. Verifique se os filtros Turma + Professor + Componente foram aplicados corretamente.');
+    }
+
+    // Aguarda o diário carregar (exibe abas no topo)
+    await session.delay(TIMING.navigationDelay);
+    await session.screenshot('pap_05_diario_aula');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 6: Clicar na aba "Registro de Procedimentos Avaliativos"
+    // A aba aparece no menu horizontal após entrar no diário de aula
+    // ══════════════════════════════════════════════════════════════════════
+    console.log('[educadf.pap] 6/7 Clicando na aba "Registro de Procedimentos Avaliativos"...');
+
+    await removerBackdrops(page);
+
+    const textosProcedimento = [
       'Registro de Procedimentos Avaliativos',
-      'Procedimento Avaliativo',
+      'Registro de Procedimento Avaliativos',
+      'Registro de Procedimento Avaliativo',
       'Procedimentos Avaliativos',
-      'Registro de Procedimento',
-      'Proc. Avaliativo',
-      'PAP',
+      'Procedimento Avaliativo',
     ];
 
     let abaClicada = false;
-    for (const texto of textoAba) {
+    for (const texto of textosProcedimento) {
       try {
-        const loc = page.locator(`a:has-text('${texto}'), li:has-text('${texto}') a, [role="tab"]:has-text('${texto}'), .nav-link:has-text('${texto}')`).first();
-        const count = await loc.count();
-        if (count > 0) {
-          console.log(`[educadf.pap] Aba encontrada com texto: "${texto}"`);
+        const loc = page.locator(`a:has-text('${texto}'), [role="tab"]:has-text('${texto}')`).first();
+        if (await loc.count() > 0) {
+          console.log(`[educadf.pap] Aba encontrada: "${texto}"`);
           await loc.scrollIntoViewIfNeeded().catch(() => {});
-          await loc.click({ timeout: 30000 });
+          await loc.click({ timeout: 15000 });
           abaClicada = true;
           break;
         }
       } catch (err) {
-        console.warn(`[educadf.pap] Tentativa com "${texto}" falhou: ${err.message}`);
+        console.warn(`[educadf.pap] Aba "${texto}" falhou: ${err.message}`);
       }
     }
 
-    // Último recurso: JS genérico — tenta "procedimento" OU "PAP" nos links de navegação
+    // Fallback JS
     if (!abaClicada) {
-      console.warn('[educadf.pap] Tentando JS click genérico para aba de Procedimento/PAP...');
       const jsClicked = await page.evaluate(() => {
-        // Tenta em todos os links/nav visíveis
-        const links = [...document.querySelectorAll('a, [role="tab"], .nav-link, li.nav-item a')];
-        const palavras = ['procedimento', 'pap', 'avaliativo', 'instrumento'];
+        const links = [...document.querySelectorAll('a, [role="tab"]')];
         const el = links.find(l => {
           const txt = l.textContent?.toLowerCase() || '';
-          return palavras.some(p => txt.includes(p));
+          return txt.includes('procedimento') && txt.includes('avaliativo');
         });
         if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return el.textContent?.trim(); }
         return null;
       });
       if (jsClicked) {
-        console.log(`[educadf.pap] Aba clicada via JS fallback: "${jsClicked}"`);
+        console.log(`[educadf.pap] Aba clicada via JS: "${jsClicked}"`);
         abaClicada = true;
-      } else {
-        // Log the full page HTML of .nav, .tabs for diagnosis
-        const navHtml = await page.evaluate(() => {
-          const nav = document.querySelector('.nav, .nav-tabs, ul.nav, [role="tablist"]');
-          return nav ? nav.outerHTML.substring(0, 2000) : 'NAV não encontrado';
-        });
-        console.warn(`[educadf.pap] HTML da navegação:\n${navHtml}`);
       }
     }
 
     if (!abaClicada) {
-      throw new Error('Aba "Registro de Procedimento Avaliativo" não encontrada na página após múltiplas tentativas. Verifique os logs acima para o texto exato dos links.');
+      throw new Error('Aba "Registro de Procedimentos Avaliativos" não encontrada. Verifique se o evento do calendário foi clicado corretamente.');
     }
 
     await session.delay(TIMING.navigationDelay);
-    await session.screenshot('pap_05_aba_procedimento');
+    await session.screenshot('pap_06_procedimentos_avaliativos');
+
+    // ── Seleciona a aba do bimestre correto (1º, 2º, 3º ou 4º Bimestre) ──────
+    const bimestreLabel = String(plano.bimestre || '').trim(); // ex: '1º Bimestre'
+    if (bimestreLabel) {
+      try {
+        const abaBimestre = page.locator(`a:has-text('${bimestreLabel}'), button:has-text('${bimestreLabel}')`).first();
+        if (await abaBimestre.count() > 0) {
+          await abaBimestre.click({ timeout: 8000 });
+          console.log(`[educadf.pap] Bimestre selecionado: "${bimestreLabel}"`);
+          await session.delay(1000);
+        }
+      } catch (err) {
+        console.warn(`[educadf.pap] Aba bimestre "${bimestreLabel}" não encontrada: ${err.message}`);
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 6: Botão "Criar procedimento avaliativo" (azul)
+    // PASSO 7: Clicar em "+ Criar procedimento avaliativo"
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 6/7 Clicando em "Criar procedimento avaliativo"...');
+    console.log('[educadf.pap] 7/7 Clicando em "+ Criar procedimento avaliativo"...');
 
     const textosBotaoCriar = [
       'Criar procedimento avaliativo',
       'Criar Procedimento Avaliativo',
       'Criar Procedimento',
       'Novo Procedimento',
-      'Adicionar',
     ];
 
     let botaoCriarClicado = false;
