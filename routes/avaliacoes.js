@@ -30,6 +30,7 @@ router.get("/recall/check", async (req, res) => {
   try {
     const { escola_id, usuario_id } = req.user;
 
+    const anoAtual = new Date().getFullYear();
     const [pendentes] = await pool.query(
       `SELECT DISTINCT
          pa.id AS plano_id,
@@ -42,10 +43,11 @@ router.get("/recall/check", async (req, res) => {
        JOIN planos_avaliacao pa ON pa.id = ia.plano_id
        WHERE pa.escola_id = ?
          AND pa.usuario_id = ?
+         AND pa.ano = ?
          AND (ia.tipo_avaliacao IS NULL OR ia.tipo_avaliacao = '')
        GROUP BY pa.id
        ORDER BY pa.disciplina, pa.turmas`,
-      [escola_id, usuario_id]
+      [escola_id, usuario_id, anoAtual]
     );
 
     return res.json({
