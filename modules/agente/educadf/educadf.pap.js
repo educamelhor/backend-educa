@@ -743,47 +743,67 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     // — Campo: Data —
-    // O ngb-datepicker NÃO aceita .value = data (usa NgbDateStruct interno).
-    // Estratégia: JS focus() no input para bypassar o bloqueio de pointer-event
-    // do ngb-modal-window, depois Playwright keyboard type (que vai ao elemento focado).
+    // O ngb-datepicker NÃO aceita .value = data. Precisamos focar o campo via JS
+    // e digitar a data com o teclado do Playwright.
     const dataStr = item.data_inicio || item.data;
+    console.log(`[educadf.pap] Data do plano (item.data_inicio): "${dataStr}"`);
+
     if (dataStr) {
       const dataFormatada = formatarDataEducaDF(dataStr); // ex: "24 Abr, 2026"
+      console.log(`[educadf.pap] Data formatada para EDUCADF: "${dataFormatada}"`);
+
       if (dataFormatada) {
-        // Passo 1: Encontra e foca o date input via JS (não requer clique)
-        const dateInputFocused = await page.evaluate(() => {
+        // Passo 1: Foca o date input via JS + retorna info do input identificado
+        const dateInfo = await page.evaluate(() => {
           const modal = document.querySelector('ngb-modal-window');
-          if (!modal) return false;
+          if (!modal) return null;
           const allInputs = [...modal.querySelectorAll('input')];
-          // O date picker tem um input com valor no formato "DD Mmm, YYYY"
-          const dateInp = allInputs.find(inp => {
+          // ngb-datepicker usa um input único com formato "DD Mmm, YYYY"
+          // Identifica pelo valor atual (que é a data do evento clicado)
+          let dateInp = allInputs.find(inp => {
             const val = inp.value || '';
-            return val.match(/\d{1,2}\s+\w{3}/) || /^(data|date)/i.test(inp.placeholder || '');
-          }) || allInputs.find(inp => {
-            // Fallback: qualquer input que não seja o Nome (size=1 ou maxlength pequeno)
-            const sz = parseInt(inp.getAttribute('size') || '100');
-            const ml = parseInt(inp.getAttribute('maxlength') || '9999');
-            return sz <= 2 || ml <= 10;
+            return val.match(/\d{1,2}\s+\w{3}/);
           });
-          if (!dateInp) return false;
+          // Fallback: input com size=1 e maxlength pequeno (partes do date picker)
+          if (!dateInp) {
+            dateInp = allInputs.find(inp => {
+              const sz = parseInt(inp.getAttribute('size') || '100');
+              const ml = parseInt(inp.getAttribute('maxlength') || '9999');
+              return sz <= 2 || ml <= 10;
+            });
+          }
+          // Último fallback: qualquer input que não seja o Nome
+          if (!dateInp) {
+            const nomeInp = allInputs.find(inp => {
+              const sz = parseInt(inp.getAttribute('size') || '100');
+              const ml = parseInt(inp.getAttribute('maxlength') || '9999');
+              return sz > 2 && ml > 10;
+            });
+            dateInp = allInputs.find(inp => inp !== nomeInp);
+          }
+          if (!dateInp) return null;
           dateInp.focus();
-          return true;
+          return { val: dateInp.value, size: dateInp.size, maxlen: dateInp.maxLength };
         });
 
-        if (dateInputFocused) {
-          // Passo 2: Com o input focado, usa teclado do Playwright (não bloqueado por pointer-event)
+        console.log(`[educadf.pap] Date input info: ${JSON.stringify(dateInfo)}`);
+
+        if (dateInfo) {
+          // Passo 2: Seleciona todo o conteúdo do input focado e digita a nova data
           await page.waitForTimeout(300);
           await page.keyboard.press('Control+A');
-          await page.waitForTimeout(150);
-          await page.keyboard.type(dataFormatada, { delay: 50 });
-          await page.waitForTimeout(300);
-          await page.keyboard.press('Tab');
+          await page.waitForTimeout(200);
+          await page.keyboard.type(dataFormatada, { delay: 60 });
           await page.waitForTimeout(400);
+          await page.keyboard.press('Tab');
+          await page.waitForTimeout(500);
           console.log(`[educadf.pap] Data ✅: "${dataFormatada}"`);
         } else {
-          console.warn(`[educadf.pap] Data ⚠️: input de data não encontrado no modal para "${dataFormatada}"`);
+          console.warn(`[educadf.pap] Data ⚠️: nenhum date input encontrado no modal`);
         }
       }
+    } else {
+      console.warn('[educadf.pap] Data ⚠️: item.data_inicio está vazio — data não será alterada');
     }
 
     // — Campo: Observações —
