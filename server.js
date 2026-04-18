@@ -67,6 +67,7 @@ import turnosRouter from "./routes/turnos.js";
 import suporteRouter from "./routes/suporte.js";
 import notasRouter from "./routes/notas.js";
 import avaliacoesRouter from "./routes/avaliacoes.js";
+import agentePlanosRouter from "./routes/agente-planos.js";
 import ferramentasIndexRouter from "./routes/ferramentas/index.js";
 
 
@@ -607,6 +608,8 @@ async function bootstrap() {
   app.use("/api/gabarito-lotes", autenticarToken, verificarEscola, gabaritoLotesRouter);
   app.use("/api/notas", autenticarToken, verificarEscola, notasRouter);
   app.use("/api/avaliacoes", autenticarToken, verificarEscola, avaliacoesRouter);
+  // ✅ Agente EDUCA — Exportar PAP para EDUCADF (Playwright)
+  app.use("/api/agente-planos", autenticarToken, verificarEscola, agentePlanosRouter);
 
 
   // ⚠️ BOLETINS (temporariamente OFF)
