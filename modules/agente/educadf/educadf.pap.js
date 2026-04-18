@@ -399,21 +399,44 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await removerBackdrops(page);
     await session.screenshot('pap_04c_antes_aba_procedimento');
 
-    // Variações de texto da aba no portal
+    // ── DIAGNÓSTICO: loga TODOS os links e tabs visíveis para descobrir texto exato ──────
+    const todosLinks = await page.evaluate(() => {
+      const seletores = 'a, [role="tab"], li.nav-item a, .nav-tabs a, .nav-link, ul.nav a';
+      return [...document.querySelectorAll(seletores)]
+        .filter(el => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })
+        .map(el => ({
+          tag: el.tagName,
+          text: el.textContent?.trim().substring(0, 80),
+          href: el.href,
+          class: el.className?.substring(0, 60),
+        }))
+        .filter(el => el.text);
+    });
+    console.log(`[educadf.pap] 🔍 Links/tabs visíveis na página (${todosLinks.length}):`);
+    todosLinks.forEach((l, i) => console.log(`  [${i}] ${l.tag} | "${l.text}" | class="${l.class}" | href="${l.href}"`));
+
+    // Variações de texto da aba no portal (incluindo plurais e abreviações)
     const textoAba = [
       'Registro de Procedimento Avaliativo',
+      'Registro de Procedimentos Avaliativos',
       'Procedimento Avaliativo',
+      'Procedimentos Avaliativos',
       'Registro de Procedimento',
       'Proc. Avaliativo',
+      'PAP',
     ];
 
     let abaClicada = false;
     for (const texto of textoAba) {
       try {
-        const loc = page.locator(`a:has-text('${texto}'), li:has-text('${texto}') a, [role="tab"]:has-text('${texto}')`).first();
+        const loc = page.locator(`a:has-text('${texto}'), li:has-text('${texto}') a, [role="tab"]:has-text('${texto}'), .nav-link:has-text('${texto}')`).first();
         const count = await loc.count();
         if (count > 0) {
           console.log(`[educadf.pap] Aba encontrada com texto: "${texto}"`);
+          await loc.scrollIntoViewIfNeeded().catch(() => {});
           await loc.click({ timeout: 30000 });
           abaClicada = true;
           break;
@@ -423,26 +446,35 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
 
-    // Último recurso: busca qualquer link/aba que contenha "procedimento" (case-insensitive) via JS
+    // Último recurso: JS genérico — tenta "procedimento" OU "PAP" nos links de navegação
     if (!abaClicada) {
-      console.warn('[educadf.pap] Tentando JS click genérico para aba de Procedimento Avaliativo...');
+      console.warn('[educadf.pap] Tentando JS click genérico para aba de Procedimento/PAP...');
       const jsClicked = await page.evaluate(() => {
-        const links = [...document.querySelectorAll('a, li a, [role="tab"]')];
-        const el = links.find(l =>
-          l.textContent?.toLowerCase().includes('procedimento') &&
-          l.textContent?.toLowerCase().includes('avaliativo')
-        );
-        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
-        return false;
+        // Tenta em todos os links/nav visíveis
+        const links = [...document.querySelectorAll('a, [role="tab"], .nav-link, li.nav-item a')];
+        const palavras = ['procedimento', 'pap', 'avaliativo', 'instrumento'];
+        const el = links.find(l => {
+          const txt = l.textContent?.toLowerCase() || '';
+          return palavras.some(p => txt.includes(p));
+        });
+        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return el.textContent?.trim(); }
+        return null;
       });
       if (jsClicked) {
-        console.log('[educadf.pap] Aba clicada via JavaScript fallback.');
+        console.log(`[educadf.pap] Aba clicada via JS fallback: "${jsClicked}"`);
         abaClicada = true;
+      } else {
+        // Log the full page HTML of .nav, .tabs for diagnosis
+        const navHtml = await page.evaluate(() => {
+          const nav = document.querySelector('.nav, .nav-tabs, ul.nav, [role="tablist"]');
+          return nav ? nav.outerHTML.substring(0, 2000) : 'NAV não encontrado';
+        });
+        console.warn(`[educadf.pap] HTML da navegação:\n${navHtml}`);
       }
     }
 
     if (!abaClicada) {
-      throw new Error('Aba "Registro de Procedimento Avaliativo" não encontrada na página após múltiplas tentativas.');
+      throw new Error('Aba "Registro de Procedimento Avaliativo" não encontrada na página após múltiplas tentativas. Verifique os logs acima para o texto exato dos links.');
     }
 
     await session.delay(TIMING.navigationDelay);
