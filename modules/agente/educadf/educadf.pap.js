@@ -688,59 +688,110 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await page.waitForSelector('text=Criar Instrumento/Procedimento Avaliativo', { timeout: TIMING.defaultTimeout });
     await session.delay(500);
 
-    // — Campo: Nome —
-    // IMPORTANTE: para Angular, usar triple-click + pressSequentially + Tab
-    // para disparar input/change/blur e ativar o validador Angular.
+    // — PREENCHE CAMPOS DO MODAL VIA JAVASCRIPT —
+    // O ngb-modal-window (aria-modal=true) bloqueia TODOS os clicks do Playwright
+    // (click, triple-click, fill, pressSequentially). A única solução é usar
+    // page.evaluate() com manipulação DOM nativa que ignora pointer-events.
+
     const nomeAtividade = item.atividade || 'Avaliação Bimestral';
-    const nomeInput = page.locator(
-      'ngb-modal-window input[type="text"], .modal input[type="text"], [role="dialog"] input[type="text"]'
-    ).first();
-    await nomeInput.waitFor({ state: 'visible', timeout: 8000 });
-    await nomeInput.click({ clickCount: 3 }); // seleciona tudo
-    await page.waitForTimeout(200);
-    await nomeInput.pressSequentially(nomeAtividade, { delay: 40 }); // dispara eventos input
-    await page.keyboard.press('Tab'); // dispara blur/change para Angular processar
-    await page.waitForTimeout(600);
-    console.log(`[educadf.pap] Nome: "${nomeAtividade}"`);
+
+    // Helper: dispara os eventos que Angular precisa para marcar o campo como válido
+    const dispatchAngularOk = async (selector) => {
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return;
+        ['input', 'change', 'keyup', 'blur'].forEach(ev =>
+          el.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
+        );
+      }, selector);
+    };
+
+    // — Campo: Nome —
+    // O input de Nome é o ÚNICO input[type="text"] sem size=1 / maxlength<=5 (que são os date-picker)
+    const nomeOk = await page.evaluate((nome) => {
+      const modal = document.querySelector('ngb-modal-window');
+      if (!modal) return false;
+      const inputs = [...modal.querySelectorAll('input')];
+      const nomeInp = inputs.find(inp => {
+        const t = inp.type || 'text';
+        if (t !== 'text' && t !== '') return false;
+        const sz = parseInt(inp.getAttribute('size') || '100');
+        const ml = parseInt(inp.getAttribute('maxlength') || '9999');
+        return sz > 2 && ml > 10; // date-picker parts têm size=1, maxlength=5
+      });
+      if (!nomeInp) return false;
+      // Foca, limpa, preenche e dispara eventos Angular
+      nomeInp.focus();
+      nomeInp.value = '';
+      nomeInp.dispatchEvent(new Event('input', { bubbles: true }));
+      nomeInp.value = nome;
+      ['input', 'change', 'keyup'].forEach(ev =>
+        nomeInp.dispatchEvent(new Event(ev, { bubbles: true }))
+      );
+      nomeInp.blur();
+      nomeInp.dispatchEvent(new Event('blur', { bubbles: true }));
+      return true;
+    }, nomeAtividade);
+    console.log(`[educadf.pap] Nome ${nomeOk ? '✅' : '⚠️'}: "${nomeAtividade}"`);
+    await page.waitForTimeout(500);
 
     // — Campo: Tipo (ng-select no modal) —
+    // O ng-select ainda é clicável pois usa Playwright sobre él mesmo (não sobre o input)
     if (item.tipo_avaliacao) {
       await selecionarTipoNoModal(page, item.tipo_avaliacao);
-      // Aguarda Angular processar a seleção re-validar o formulário
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(800);
     }
 
-    // — Campo: Data (date picker customizado) —
+    // — Campo: Data —
+    // O date picker do Angular usa múltiplos inputs pequenos (size=1, maxlength=5).
+    // Usamos JS para preencher a data no formato correto do plano.
     const dataStr = item.data_inicio || item.data;
     if (dataStr) {
-      const dateInputs = page.locator('ngb-modal-window input, .modal input, [role="dialog"] input');
-      const inputCount = await dateInputs.count();
-      for (let i = 0; i < inputCount; i++) {
-        const inp = dateInputs.nth(i);
-        const val = await inp.inputValue().catch(() => '');
-        const placeholder = await inp.getAttribute('placeholder').catch(() => '');
-        if (val.match(/\d{2}\s+\w{3},?\s+\d{4}/) || placeholder?.toLowerCase().includes('data')) {
-          await preencherDatePickerByLocator(page, inp, dataStr);
-          break;
-        }
+      const dataFormatada = formatarDataEducaDF(dataStr); // ex: "24 Abr, 2026"
+      if (dataFormatada) {
+        const dataSet = await page.evaluate((dataFmt) => {
+          // O date picker do ngb tem 3 inputs: dia, mês, ano
+          // Tenta encontrar o campo que contém uma data já preenchida e substituir
+          const modal = document.querySelector('ngb-modal-window');
+          if (!modal) return false;
+          // Tenta o input com valor no formato "DD Mmm, YYYY" ou qualquer input com data
+          const allInputs = [...modal.querySelectorAll('input')];
+          const dateInp = allInputs.find(inp => {
+            const val = inp.value || '';
+            return val.match(/\d{1,2}\s+\w{3}/) || /^(data|date)/i.test(inp.placeholder || '');
+          });
+          if (!dateInp) return false;
+          dateInp.focus();
+          // Seleciona tudo e digita via execCommand
+          document.execCommand('selectAll');
+          dateInp.value = dataFmt;
+          ['input', 'change', 'blur'].forEach(ev =>
+            dateInp.dispatchEvent(new Event(ev, { bubbles: true }))
+          );
+          return true;
+        }, dataFormatada);
+        console.log(`[educadf.pap] Data ${dataSet ? '✅' : '⚠️'}: "${dataFormatada}"`);
       }
     }
-
-    // — Toggle "Atribuir nota" → JÁ ATIVO, não tocar —
-    // Recuperação Contínua e Recuperação Compensatória → NÃO TOCAR
 
     // — Campo: Observações —
     if (item.descricao) {
-      const obs = page.locator('ngb-modal-window textarea, .modal textarea, [role="dialog"] textarea').first();
-      if ((await obs.count()) > 0) {
-        await obs.click({ clickCount: 3 });
-        await obs.pressSequentially(item.descricao, { delay: 20 });
-        console.log(`[educadf.pap] Observações: "${item.descricao.substring(0, 60)}${item.descricao.length > 60 ? '...' : ''}"`);
-      }
+      await page.evaluate((desc) => {
+        const modal = document.querySelector('ngb-modal-window');
+        if (!modal) return;
+        const ta = modal.querySelector('textarea');
+        if (!ta) return;
+        ta.focus();
+        ta.value = desc;
+        ['input', 'change', 'blur'].forEach(ev =>
+          ta.dispatchEvent(new Event(ev, { bubbles: true }))
+        );
+      }, item.descricao);
+      console.log(`[educadf.pap] Observações: "${item.descricao.substring(0, 60)}"`);
     }
 
-    // Aguarda Angular estabilizar
-    await page.waitForTimeout(800);
+    // Aguarda Angular estabilizar os validadores
+    await page.waitForTimeout(1000);
     await session.screenshot('pap_07_modal_preenchido');
 
     // — Salvar —
