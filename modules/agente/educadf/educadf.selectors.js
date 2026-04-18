@@ -124,17 +124,17 @@ export const NOTAS = {
 // ============================================================================
 export const TIMING = {
   // Tempo máximo de espera por um elemento aparecer
-  defaultTimeout: 15000,
+  defaultTimeout: 30000,
 
-  // Tempo máximo de espera pelo login completar
-  loginTimeout: 20000,
+  // Tempo máximo de espera pelo login completar (o portal EDUCADF é lento)
+  loginTimeout: 60000,
 
   // Delay entre ações (respeitar rate limiting do EducaDF)
-  actionDelay: 1500,     // 1.5s entre cliques
+  actionDelay: 2000,     // 2s entre cliques (portal antigo AngularJS)
 
   // Delay após o login (aguardar dashboard carregar)
-  postLoginDelay: 3000,
+  postLoginDelay: 5000,
 
   // Delay para navegação SPA (Angular route change)
-  navigationDelay: 2000,
+  navigationDelay: 3000,
 };

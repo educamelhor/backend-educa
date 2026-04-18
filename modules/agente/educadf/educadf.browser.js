@@ -189,7 +189,14 @@ export class EducaDFBrowser {
    */
   async navigateTo(url) {
     console.log(`[EducaDFBrowser] Navegando para: ${url}`);
-    await this.page.goto(url, { waitUntil: 'networkidle' });
+    // Usa 'domcontentloaded' em vez de 'networkidle' pois portais Angular/AngularJS
+    // fazem polling constante de fundo e NUNCA atingem o estado "networkidle",
+    // causando timeout de 20-60s desnecessariamente.
+    await this.page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: TIMING.loginTimeout,
+    });
+    // Damos um delay extra para o Angular terminar de renderizar
     await this.delay(TIMING.navigationDelay);
   }
 

@@ -323,7 +323,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 3/7 Clicando em "Registro das Informações"...');
     await page.locator("a:has-text('Registro das Informações')").first().click({ timeout: 8000 });
-    await page.waitForLoadState('networkidle', { timeout: 20000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 30000 });
     await session.delay(TIMING.navigationDelay);
     await removerBackdrops(page);
     await session.screenshot('pap_03_registro_informacoes');
@@ -378,8 +378,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     try {
       await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 });
       // Aguarda de forma tolerante: tenta networkidle mas não falha se demorar
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() =>
-        console.warn('[educadf.pap] networkidle timeout após Filtrar — continuando...')
+      await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() =>
+        console.warn('[educadf.pap] domcontentloaded timeout após Filtrar — continuando...')
       );
     } catch (filtrarErr) {
       console.warn(`[educadf.pap] Botão Filtrar não encontrado ou falhou: ${filtrarErr.message}`);
