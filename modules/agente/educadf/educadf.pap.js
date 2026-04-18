@@ -578,20 +578,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_06_procedimentos_avaliativos');
 
-    // ── Seleciona a aba do bimestre correto (1º, 2º, 3º ou 4º Bimestre) ──────
-    const bimestreLabel = String(plano.bimestre || '').trim(); // ex: '1º Bimestre'
-    if (bimestreLabel) {
-      try {
-        const abaBimestre = page.locator(`a:has-text('${bimestreLabel}'), button:has-text('${bimestreLabel}')`).first();
-        if (await abaBimestre.count() > 0) {
-          await abaBimestre.click({ timeout: 8000 });
-          console.log(`[educadf.pap] Bimestre selecionado: "${bimestreLabel}"`);
-          await session.delay(1000);
-        }
-      } catch (err) {
-        console.warn(`[educadf.pap] Aba bimestre "${bimestreLabel}" não encontrada: ${err.message}`);
-      }
-    }
+    // ── O bimestre já está correto pois clicamos num evento do bimestre certo no calendário ─
+    // Apenas remove o offcanvas backdrop que pode bloquear interações
+    await removerBackdrops(page);
+    await session.delay(500);
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 7: Clicar em "+ Criar procedimento avaliativo"
@@ -638,6 +628,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       throw new Error('Botão "Criar procedimento avaliativo" não encontrado na página.');
     }
 
+    // Remove quaisquer backdrops e aguarda o modal abrir
+    await removerBackdrops(page);
     await session.delay(TIMING.actionDelay + 500);
     await session.screenshot('pap_06_modal_aberto');
 
@@ -710,12 +702,42 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.screenshot('pap_07_modal_preenchido');
 
     // — Salvar —
-    console.log('[educadf.pap] Clicando em Salvar...');
-    // Botão Salvar = button.btn-success com texto "Salvar"
-    const btnSalvar = page.locator(
-      '.modal button.btn-success, .modal button:has-text("Salvar"), [role="dialog"] button.btn-success'
-    ).first();
-    await btnSalvar.click({ timeout: 8000 });
+    // IMPORTANTE: usa JS click direto pois o ngb-modal-window intercepta pointer events
+    // e o Playwright.click() falha com "subtree intercepts pointer events".
+    console.log('[educadf.pap] Clicando em Salvar (via JavaScript)...');
+    const salvarOk = await page.evaluate(() => {
+      // Tenta pelo seletor mais específico
+      const seletores = [
+        'ngb-modal-window button[aria-label="Salvar"]',
+        'ngb-modal-window button.btn-success',
+        '.modal button.btn-success',
+        '.modal button[aria-label="Salvar"]',
+        '[role="dialog"] button.btn-success',
+      ];
+      for (const sel of seletores) {
+        const btn = document.querySelector(sel);
+        if (btn) {
+          btn.scrollIntoView({ block: 'center' });
+          btn.click();
+          console.log('[JS] Botão Salvar clicado via:', sel);
+          return sel;
+        }
+      }
+      return null;
+    });
+
+    if (salvarOk) {
+      console.log(`[educadf.pap] ✅ Salvar clicado via JS: ${salvarOk}`);
+    } else {
+      // Fallback final: Playwright com force:true (bypassa pointer-event checks)
+      console.warn('[educadf.pap] JS não encontrou botão — tentando force click...');
+      const btnSalvar = page.locator(
+        'ngb-modal-window button.btn-success, .modal button.btn-success'
+      ).first();
+      await btnSalvar.click({ timeout: 10000, force: true });
+      console.log('[educadf.pap] ✅ Salvar clicado via force click.');
+    }
+
     await session.delay(TIMING.actionDelay + 1000);
     await session.screenshot('pap_08_pos_salvar');
 
