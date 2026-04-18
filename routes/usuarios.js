@@ -370,7 +370,7 @@ router.post(
         [fotoUrl, userId]
       );
 
-      // 3) Retrocompatibilidade: se for professor, atualiza professores.foto também
+      // 3) Retrocompatibilidade: se for professor, atualiza professores.foto_url e professores.foto
       const [userRows] = await pool.query(
         "SELECT cpf, perfil, escola_id FROM usuarios WHERE id = ? LIMIT 1",
         [userId]
@@ -379,8 +379,8 @@ router.post(
       if (user && (user.perfil === "professor")) {
         const cleanCpf = String(user.cpf).replace(/\D/g, "");
         await pool.query(
-          "UPDATE professores SET foto = ? WHERE cpf = ? AND escola_id = ?",
-          [fotoUrl, cleanCpf, user.escola_id]
+          "UPDATE professores SET foto_url = ?, foto = ? WHERE cpf = ? AND escola_id = ?",
+          [fotoUrl, fotoUrl, cleanCpf, user.escola_id]
         ).catch(() => {}); // não bloqueia se falhar
       }
 
@@ -411,12 +411,20 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Usuário não identificado." });
     }
 
+    // Usa o mesmo COALESCE que buscarFotoUsuario:
+    // p.foto_url → p.foto (upload antigo) → u.foto (upload novo)
     const [rows] = await pool.query(
-      "SELECT foto FROM usuarios WHERE id = ? LIMIT 1",
+      `SELECT COALESCE(p.foto_url, p.foto, u.foto, '') AS foto_url
+       FROM usuarios u
+       LEFT JOIN professores p
+         ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
+        AND p.escola_id = u.escola_id
+       WHERE u.id = ?
+       LIMIT 1`,
       [userId]
     );
 
-    const fotoUrl = rows?.[0]?.foto ? String(rows[0].foto) : "";
+    const fotoUrl = rows?.[0]?.foto_url ? String(rows[0].foto_url) : "";
     return res.json({ foto_url: fotoUrl });
   } catch (err) {
     console.error("Erro ao buscar foto (usuarios/me/foto):", err);

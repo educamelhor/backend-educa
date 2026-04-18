@@ -177,7 +177,7 @@ async function buscarFotoUsuario(usuarioId, escolaId) {
   try {
     const [[row]] = await pool.query(
       `SELECT
-         COALESCE(p.foto_url, u.foto, '') AS foto_url
+         COALESCE(p.foto_url, p.foto, u.foto, '') AS foto_url
        FROM usuarios u
        LEFT JOIN professores p
          ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
