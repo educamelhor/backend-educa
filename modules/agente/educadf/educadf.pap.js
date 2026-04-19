@@ -234,75 +234,245 @@ function formatarDataEducaDF(dataStr) {
 }
 
 // ============================================================================
-// HELPER: Navega o calend\u00e1rio ngb-datepicker at\u00e9 o m\u00eas/ano correto e clica no dia.
+// ============================================================================
+// HELPER: Altera a data no modal de criação/edição do Procedimento Avaliativo.
 //
-// Esta \u00e9 a \u00danica estrat\u00e9gia confi\u00e1vel para atualizar o FormControl do Angular:
-// digitar no input de texto n\u00e3o dispara os eventos internos do ngb-datepicker.
-// Clicar no dia da grade do calend\u00e1rio atualiza o modelo diretamente.
+// ESTRATÉGIA TRIPLA:
+//  1. Procura um botão de toggle (ícone calendário) ao lado do input de data
+//     e clica nele para abrir o popup ngb-datepicker. Se abrir, navega até
+//     o mês/ano correto e clica no dia.
+//  2. Se não encontrar botão de toggle, tenta clicar no próprio input.
+//  3. Se o popup ngb-datepicker nunca aparece (componente customizado),
+//     faz fallback: manipula o input diretamente via JavaScript,
+//     disparando InputEvent + change + blur para Angular capturar.
 // ============================================================================
 async function navegarCalendarioEClicarDia(page, dataStr) {
   const target = parseDateUTC(dataStr);
   if (!target) {
-    console.warn('[educadf.pap] navegarCalendarioEClicarDia: data inv\u00e1lida:', dataStr);
+    console.warn('[educadf.pap] navegarCalendarioEClicarDia: data inválida:', dataStr);
     return false;
   }
 
   const tDay   = target.getUTCDate();
   const tMonth = target.getUTCMonth(); // 0-based
   const tYear  = target.getUTCFullYear();
-  console.log(`[educadf.pap] calend\u00e1rio: navegando para ${tDay}/${tMonth + 1}/${tYear}`);
+  const dataFormatada = formatarDataEducaDF(dataStr);
+  console.log('[educadf.pap] calendario: navegando para ' + tDay + '/' + (tMonth + 1) + '/' + tYear + ' (formatada: "' + dataFormatada + '")');
 
-  // PASSO 1: Abre o popup do datepicker clicando no input de data.
-  // IMPORTANTE: ngb-datepicker e portal Angular renderizado no <body>,
-  // fora do ngb-modal-window. Buscar no document inteiro, nao dentro do modal.
-  const inputAbrir = await page.evaluate(() => {
+  // ── PASSO 1: Diagnóstico — descobre quais elementos de data existem no modal ──
+  const diagnostico = await page.evaluate(() => {
     const modal = document.querySelector('ngb-modal-window');
-    if (!modal) return 'modal-not-found';
+    if (!modal) return { error: 'modal-not-found' };
+
     const allInputs = [...modal.querySelectorAll('input')];
     const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
-    if (dateInp) {
-      dateInp.focus();
-      dateInp.click();
-      dateInp.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      return 'input-clicado:' + dateInp.value;
-    }
-    return 'date-input-not-found';
-  });
-  console.log('[educadf.pap] calendario: abrindo popup -> ' + inputAbrir);
-  await page.waitForTimeout(900);
 
-  // PASSO 2: Verifica que ngb-datepicker apareceu no document (retry x3)
+    // Procura botões de toggle (ícone calendário) perto do date input
+    let toggleBtn = null;
+    let toggleInfo = 'nao-encontrado';
+    if (dateInp) {
+      // Procura no parent (div.input-group) por um botão com ícone de calendário
+      const parent = dateInp.closest('.input-group') || dateInp.parentElement;
+      if (parent) {
+        const buttons = [...parent.querySelectorAll('button, .input-group-append button, .input-group-text')];
+        toggleBtn = buttons.find(b => {
+          const hasIcon = b.querySelector('i.fa-calendar, i.fa-calendar-alt, .bi-calendar, [class*="calendar"]');
+          const isToggle = b.hasAttribute('ngbDatepickerToggle') || b.closest('[ngbDatepickerToggle]');
+          return hasIcon || isToggle;
+        });
+        if (toggleBtn) toggleInfo = 'botao-toggle:' + toggleBtn.tagName + '.' + toggleBtn.className;
+        else toggleInfo = 'sem-toggle. Filhos parent: ' + [...parent.children].map(c => c.tagName + '.' + (c.className || '')).join(' | ');
+      }
+    }
+
+    // Verifica se já existe ngb-datepicker no document
+    const dpExists = !!document.querySelector('ngb-datepicker');
+
+    // Procura QUALQUER componente de data no modal
+    const dateComponents = [...modal.querySelectorAll('*')].filter(el => {
+      const tag = el.tagName.toLowerCase();
+      return tag.includes('date') || tag.includes('calendar') || tag.includes('picker');
+    }).map(el => el.tagName.toLowerCase()).filter((v, i, a) => a.indexOf(v) === i);
+
+    return {
+      dateInputValue: dateInp?.value || 'not-found',
+      dateInputType: dateInp?.type || 'unknown',
+      dateInputSize: dateInp?.getAttribute('size') || 'null',
+      toggleBtn: toggleInfo,
+      dpAlreadyExists: dpExists,
+      dateComponents: dateComponents.join(', ') || 'nenhum',
+    };
+  });
+  console.log('[educadf.pap] calendario diagnostico:', JSON.stringify(diagnostico));
+
+  // ── PASSO 2: Tenta abrir o popup do datepicker ───────────────────────────
+  const popupAberto = await page.evaluate(() => {
+    const modal = document.querySelector('ngb-modal-window');
+    if (!modal) return 'modal-not-found';
+
+    const allInputs = [...modal.querySelectorAll('input')];
+    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+    if (!dateInp) return 'date-input-not-found';
+
+    // Estratégia A: clicar no botão de toggle (ícone calendário)
+    const parent = dateInp.closest('.input-group') || dateInp.parentElement;
+    if (parent) {
+      // Tenta encontrar o toggle via atributo Angular
+      let toggle = parent.querySelector('[ngbDatepickerToggle] button, button[ngbDatepickerToggle]');
+      // Tenta via ícone de calendário
+      if (!toggle) {
+        const allBtns = [...parent.querySelectorAll('button')];
+        toggle = allBtns.find(b => {
+          const icon = b.querySelector('i, span, svg');
+          if (!icon) return false;
+          const cls = (icon.className || '') + ' ' + (b.className || '');
+          return cls.includes('calendar') || cls.includes('datepicker');
+        });
+      }
+      // Tenta qualquer botão no input-group-append
+      if (!toggle) {
+        toggle = parent.querySelector('.input-group-append button, .input-group-text');
+      }
+      if (toggle) {
+        toggle.scrollIntoView({ block: 'center' });
+        toggle.click();
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return 'toggle-clicado:' + toggle.tagName + '.' + toggle.className;
+      }
+    }
+
+    // Estratégia B: clicar no próprio input (pode funcionar em alguns setups)
+    dateInp.focus();
+    dateInp.click();
+    dateInp.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // Estratégia C: simular Escape + re-focus (some datepickers toggle on focus)
+    return 'input-clicado:' + dateInp.value;
+  });
+  console.log('[educadf.pap] calendario: tentativa abertura -> ' + popupAberto);
+  await page.waitForTimeout(1000);
+
+  // ── PASSO 3: Verifica se ngb-datepicker apareceu no document ─────────────
   let calPopupOk = false;
   for (let attempt = 0; attempt < 3 && !calPopupOk; attempt++) {
     calPopupOk = await page.evaluate(() => !!document.querySelector('ngb-datepicker'));
     if (!calPopupOk) {
-      console.warn('[educadf.pap] calendario: popup nao abriu (tentativa ' + (attempt+1) + '/3)...');
+      console.warn('[educadf.pap] calendario: popup nao apareceu (tentativa ' + (attempt+1) + '/3)');
+      // Tenta novamente: click do Playwright com force no input ou button
+      try {
+        const toggle = page.locator('ngb-modal-window .input-group button, ngb-modal-window .input-group-append button').first();
+        if (await toggle.count() > 0) {
+          await toggle.click({ force: true, timeout: 2000 }).catch(() => {});
+        }
+      } catch {}
       await page.waitForTimeout(600);
     }
   }
-  if (!calPopupOk) {
-    console.warn('[educadf.pap] calendario: ngb-datepicker nao encontrado no document apos 3 tentativas.');
-    return false;
+
+  // ── Se o popup abriu, usa navegação por calendário (estratégia visual) ────
+  if (calPopupOk) {
+    console.log('[educadf.pap] calendario: popup ngb-datepicker encontrado! Navegando...');
+    return await _navegarCalendarioPopup(page, tDay, tMonth, tYear);
   }
 
+  // ── FALLBACK: Popup não existe — manipulação direta do input ──────────────
+  // O campo de data é provavelmente um input com formatação custom.
+  // Vamos limpar o input e preencher com o valor formatado, disparando os
+  // eventos que Angular precisa para atualizar o FormControl.
+  console.log('[educadf.pap] calendario: popup nao existe — usando manipulacao direta do input...');
+
+  const inputOk = await page.evaluate((novaData) => {
+    const modal = document.querySelector('ngb-modal-window');
+    if (!modal) return 'modal-not-found';
+
+    const allInputs = [...modal.querySelectorAll('input')];
+    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+    if (!dateInp) return 'date-input-not-found';
+
+    const valorAntigo = dateInp.value;
+
+    // Foca o input
+    dateInp.focus();
+    dateInp.dispatchEvent(new Event('focus', { bubbles: true }));
+
+    // Tenta usar Object.getOwnPropertyDescriptor para bypassing Angular's setter
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value'
+    )?.set;
+
+    if (nativeInputValueSetter) {
+      nativeInputValueSetter.call(dateInp, novaData);
+    } else {
+      dateInp.value = novaData;
+    }
+
+    // Dispara eventos que Angular precisa para capturar a mudança
+    dateInp.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    dateInp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    dateInp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Tab' }));
+    dateInp.dispatchEvent(new Event('blur', { bubbles: true }));
+
+    return 'valor-antigo:' + valorAntigo + ' -> novo:' + dateInp.value;
+  }, dataFormatada);
+  console.log('[educadf.pap] calendario manipulacao direta: ' + inputOk);
+
+  // Agora tenta também via Playwright keyboard (backup)
+  try {
+    // Procura o input e faz triple-click + type
+    const dateInputLocator = page.locator('ngb-modal-window input').first();
+    const allInputs = page.locator('ngb-modal-window input');
+    const inputCount = await allInputs.count();
+
+    for (let i = 0; i < inputCount; i++) {
+      const val = await allInputs.nth(i).inputValue().catch(() => '');
+      if (/\d{1,2}\s+\w{3}/.test(val)) {
+        await allInputs.nth(i).click({ clickCount: 3, force: true });
+        await page.waitForTimeout(200);
+        await page.keyboard.type(dataFormatada, { delay: 60 });
+        await page.waitForTimeout(300);
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(300);
+        console.log('[educadf.pap] calendario: keyboard type tambem executado como backup');
+        break;
+      }
+    }
+  } catch (kbErr) {
+    console.warn('[educadf.pap] calendario: keyboard backup falhou: ' + kbErr.message);
+  }
+
+  // Verifica se o valor mudou
+  const valorFinal = await page.evaluate(() => {
+    const modal = document.querySelector('ngb-modal-window');
+    if (!modal) return 'modal-null';
+    const allInputs = [...modal.querySelectorAll('input')];
+    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+    return dateInp?.value || 'input-null';
+  });
+  console.log('[educadf.pap] calendario: valor final do input = "' + valorFinal + '"');
+
+  const sucesso = valorFinal.includes(String(tDay));
+  if (sucesso) {
+    console.log('[educadf.pap] calendario OK: data atualizada para "' + valorFinal + '"');
+  } else {
+    console.warn('[educadf.pap] calendario WARN: data pode nao ter atualizado (esperado dia ' + tDay + ', got "' + valorFinal + '")');
+  }
+  return sucesso;
+}
+
+// ── Sub-helper: navega o popup ngb-datepicker e clica no dia ─────────────────
+async function _navegarCalendarioPopup(page, tDay, tMonth, tYear) {
   for (let nav = 0; nav < 14; nav++) {
-    // L\u00ea m\u00eas/ano atual do calend\u00e1rio
     const calInfo = await page.evaluate((mesesLong) => {
-      // PORTAL: ngb-datepicker é renderizado no <body>, fora do ngb-modal-window
       const cal = document.querySelector('ngb-datepicker');
       if (!cal) return null;
 
-      // Tenta via selects (ngb-datepicker com navega\u00e7\u00e3o por selects)
       const selects = [...cal.querySelectorAll('select')];
       if (selects.length >= 2) {
         const mSel = selects.find(s => parseInt(s.value) >= 1 && parseInt(s.value) <= 12);
         const ySel = selects.find(s => parseInt(s.value) > 100);
-        if (mSel && ySel) {
-          return { month: parseInt(mSel.value) - 1, year: parseInt(ySel.value), mode: 'selects' };
-        }
+        if (mSel && ySel) return { month: parseInt(mSel.value) - 1, year: parseInt(ySel.value), mode: 'selects' };
       }
 
-      // Fallback: texto do header "Abril 2026"
       const header = cal.querySelector('.ngb-dp-month-name');
       if (header) {
         const txt = header.textContent.trim().toLowerCase();
@@ -314,61 +484,48 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
       return null;
     }, MESES_PT_LONG);
 
-    if (!calInfo) {
-      console.warn('[educadf.pap] calend\u00e1rio: ngb-datepicker n\u00e3o encontrado no modal.');
-      break;
-    }
-
-    console.log(`[educadf.pap] calend\u00e1rio: m\u00eas atual ${calInfo.month + 1}/${calInfo.year} (modo: ${calInfo.mode})`);
+    if (!calInfo) { console.warn('[educadf.pap] calendario: popup sumiu'); break; }
+    console.log('[educadf.pap] calendario: mes atual ' + (calInfo.month+1) + '/' + calInfo.year + ' (' + calInfo.mode + ')');
 
     if (calInfo.month === tMonth && calInfo.year === tYear) {
-      // ── Clicar no dia correto ──────────────────────────────────────────
-      const clicked = await page.evaluate((day, tM, tY) => {
-        // PORTAL: ngb-datepicker é renderizado no <body>, fora do ngb-modal-window
+      const clicked = await page.evaluate((day, tY) => {
         const cal = document.querySelector('ngb-datepicker');
         if (!cal) return null;
 
-        // Botões de dias habilidados na grade
-        const btns = [...cal.querySelectorAll('.ngb-dp-day:not(.disabled) button, .ngb-dp-day button:not([disabled])')];
+        const btns = [...cal.querySelectorAll('.ngb-dp-day button:not([disabled])')];
         for (const btn of btns) {
           if (btn.textContent?.trim() === String(day)) {
             btn.scrollIntoView({ block: 'center' });
             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            return `dia ${day} clicado`;
+            return 'dia ' + day + ' clicado';
           }
         }
-        // Fallback aria-label ("sexta-feira, 24 de abril de 2026")
         const allBtns = [...cal.querySelectorAll('button')];
         for (const btn of allBtns) {
           const label = (btn.getAttribute('aria-label') || '').toLowerCase();
           if (label.includes(String(day)) && label.includes(String(tY))) {
             btn.scrollIntoView({ block: 'center' });
             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            return `dia ${day} clicado via aria-label`;
+            return 'dia ' + day + ' clicado via aria-label';
           }
         }
-        // Log diagnóstico: mostra quais dias estão disponíveis no calendário
-        const disponiveis = [...cal.querySelectorAll('.ngb-dp-day button')].map(b => b.textContent?.trim()).filter(Boolean).join(',');
-        return `nao-encontrado:[${disponiveis}]`;
-      }, tDay, tMonth, tYear);
+        const disp = btns.map(b => b.textContent?.trim()).filter(Boolean).join(',');
+        return 'nao-encontrado:[' + disp + ']';
+      }, tDay, tYear);
 
-      if (clicked && (clicked.startsWith('dia'))) {
-        console.log(`[educadf.pap] calend\u00e1rio \u2705: ${clicked}`);
+      if (clicked && clicked.startsWith('dia')) {
+        console.log('[educadf.pap] calendario via popup OK: ' + clicked);
         await page.waitForTimeout(600);
         return true;
-      } else {
-        console.warn(`[educadf.pap] calend\u00e1rio \u26a0\ufe0f: dia ${tDay} n\u00e3o encontrado. Tentando navega\u00e7\u00e3o de fallback.`);
-        break;
       }
+      console.warn('[educadf.pap] calendario popup: ' + clicked);
+      break;
     }
 
-    // ── Navegar para o m\u00eas correto ──────────────────────────────────────
+    // Navegar mês
     const diff = (tYear - calInfo.year) * 12 + (tMonth - calInfo.month);
-
     if (calInfo.mode === 'selects') {
-      // Navega\u00e7\u00e3o direta via selects
       await page.evaluate((m, y) => {
-        // PORTAL: busca no document inteiro
         const cal = document.querySelector('ngb-datepicker');
         const selects = [...(cal?.querySelectorAll('select') || [])];
         const mSel = selects.find(s => parseInt(s.value) >= 1 && parseInt(s.value) <= 12);
@@ -377,22 +534,18 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
         if (ySel) { ySel.value = String(y);     ySel.dispatchEvent(new Event('change', { bubbles: true })); }
       }, tMonth, tYear);
     } else {
-      // Bot\u00f5es prev/next
       const goNext = diff > 0;
       await page.evaluate((goNext) => {
-        // PORTAL: busca no document inteiro
         const cal = document.querySelector('ngb-datepicker');
         if (!cal) return;
         const btns = [...cal.querySelectorAll('button.ngb-dp-arrow-btn')];
-        // Normalmente: primeiro = anterior, \u00faltimo = pr\u00f3ximo
         const btn = goNext ? btns[btns.length - 1] : btns[0];
         if (btn) btn.click();
       }, goNext);
     }
     await page.waitForTimeout(500);
   }
-
-  console.warn(`[educadf.pap] calend\u00e1rio \u26a0\ufe0f: n\u00e3o foi poss\u00edvel clicar no dia ${tDay}/${tMonth+1}/${tYear}.`);
+  console.warn('[educadf.pap] calendario popup: nao conseguiu clicar no dia ' + tDay + '/' + (tMonth+1) + '/' + tYear);
   return false;
 }
 
