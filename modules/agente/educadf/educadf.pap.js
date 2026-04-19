@@ -207,75 +207,172 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
 }
 
 // ============================================================================
-// HELPER: Preenche o date picker customizado do EDUCADF
-// O portal mostra datas no formato "DD Mmm, YYYY" (ex: "06 Abr, 2026")
-// Estratégia: clicar → selecionar tudo → digitar ISO date → Tab para confirmar
+// HELPER: Converte dataStr em objeto Date UTC
 // ============================================================================
+function parseDateUTC(dataStr) {
+  if (!dataStr) return null;
+  if (dataStr instanceof Date) return isNaN(dataStr.getTime()) ? null : dataStr;
+  const s = String(dataStr).trim();
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T12:00:00') : new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 const MESES_PT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+// Nomes completos em pt-BR (usados pelo ngb-datepicker no aria-label dos dias)
+const MESES_PT_LONG = ['janeiro','fevereiro','mar\u00e7o','abril','maio','junho',
+                       'julho','agosto','setembro','outubro','novembro','dezembro'];
 
 function formatarDataEducaDF(dataStr) {
-  // Aceita:
-  //   - ISO puro:  "2026-04-24"  (mais seguro com fuso horário)
-  //   - Full Date: "Fri Apr 24 2026 00:00:00 GMT+0000 (...)" (vindo de MySQL/Node)
-  //   - Objeto Date
-  // Saída: "24 Abr, 2026" (formato do picker do EDUCADF)
-  if (!dataStr) return '';
-  try {
-    let d;
-    if (dataStr instanceof Date) {
-      d = dataStr;
-    } else {
-      const s = String(dataStr).trim();
-      // Se for YYYY-MM-DD fixamos o horário para evitar offset de TZ
-      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-        d = new Date(s + 'T12:00:00');
+  // Aceita ISO "2026-04-24", Date object, ou string completa "Fri Apr 24 2026..."
+  // Sa\u00edda: "24 Abr, 2026" (formato do picker do EDUCADF)
+  const d = parseDateUTC(dataStr);
+  if (!d) return '';
+  const dia = String(d.getUTCDate()).padStart(2, '0');
+  const mes = MESES_PT[d.getUTCMonth()];
+  const ano = d.getUTCFullYear();
+  return `${dia} ${mes}, ${ano}`;
+}
+
+// ============================================================================
+// HELPER: Navega o calend\u00e1rio ngb-datepicker at\u00e9 o m\u00eas/ano correto e clica no dia.
+//
+// Esta \u00e9 a \u00danica estrat\u00e9gia confi\u00e1vel para atualizar o FormControl do Angular:
+// digitar no input de texto n\u00e3o dispara os eventos internos do ngb-datepicker.
+// Clicar no dia da grade do calend\u00e1rio atualiza o modelo diretamente.
+// ============================================================================
+async function navegarCalendarioEClicarDia(page, dataStr) {
+  const target = parseDateUTC(dataStr);
+  if (!target) {
+    console.warn('[educadf.pap] navegarCalendarioEClicarDia: data inv\u00e1lida:', dataStr);
+    return false;
+  }
+
+  const tDay   = target.getUTCDate();
+  const tMonth = target.getUTCMonth(); // 0-based
+  const tYear  = target.getUTCFullYear();
+  console.log(`[educadf.pap] calend\u00e1rio: navegando para ${tDay}/${tMonth + 1}/${tYear}`);
+
+  // Primeiro: abre o datepicker clicando no input de data (ele j\u00e1 pode estar aberto)
+  await page.evaluate(() => {
+    const modal = document.querySelector('ngb-modal-window');
+    if (!modal) return;
+    const allInputs = [...modal.querySelectorAll('input')];
+    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+    if (dateInp) { dateInp.focus(); dateInp.click(); }
+  });
+  await page.waitForTimeout(600);
+
+  for (let nav = 0; nav < 14; nav++) {
+    // L\u00ea m\u00eas/ano atual do calend\u00e1rio
+    const calInfo = await page.evaluate((mesesLong) => {
+      const modal = document.querySelector('ngb-modal-window');
+      const cal   = modal?.querySelector('ngb-datepicker');
+      if (!cal) return null;
+
+      // Tenta via selects (ngb-datepicker com navega\u00e7\u00e3o por selects)
+      const selects = [...cal.querySelectorAll('select')];
+      if (selects.length >= 2) {
+        const mSel = selects.find(s => parseInt(s.value) >= 1 && parseInt(s.value) <= 12);
+        const ySel = selects.find(s => parseInt(s.value) > 100);
+        if (mSel && ySel) {
+          return { month: parseInt(mSel.value) - 1, year: parseInt(ySel.value), mode: 'selects' };
+        }
+      }
+
+      // Fallback: texto do header "Abril 2026"
+      const header = cal.querySelector('.ngb-dp-month-name');
+      if (header) {
+        const txt = header.textContent.trim().toLowerCase();
+        const parts = txt.split(/\s+/);
+        const m = mesesLong.indexOf(parts[0]);
+        const y = parseInt(parts[parts.length - 1]);
+        if (m >= 0 && !isNaN(y)) return { month: m, year: y, mode: 'header' };
+      }
+      return null;
+    }, MESES_PT_LONG);
+
+    if (!calInfo) {
+      console.warn('[educadf.pap] calend\u00e1rio: ngb-datepicker n\u00e3o encontrado no modal.');
+      break;
+    }
+
+    console.log(`[educadf.pap] calend\u00e1rio: m\u00eas atual ${calInfo.month + 1}/${calInfo.year} (modo: ${calInfo.mode})`);
+
+    if (calInfo.month === tMonth && calInfo.year === tYear) {
+      // ── Clicar no dia correto ──────────────────────────────────────────
+      const clicked = await page.evaluate((day, tM, tY) => {
+        const modal = document.querySelector('ngb-modal-window');
+        const cal   = modal?.querySelector('ngb-datepicker');
+        if (!cal) return false;
+
+        // Botões de dias habilidados na grade
+        const btns = [...cal.querySelectorAll('.ngb-dp-day:not(.disabled) button, .ngb-dp-day button:not([disabled])')];
+        for (const btn of btns) {
+          if (btn.textContent?.trim() === String(day)) {
+            btn.scrollIntoView({ block: 'center' });
+            btn.click();
+            return `dia ${day} clicado`;
+          }
+        }
+        // Fallback aria-label ("sexta-feira, 24 de abril de 2026")
+        const allBtns = [...cal.querySelectorAll('button')];
+        for (const btn of allBtns) {
+          const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+          if (label.includes(String(day)) && label.includes(String(tY))) {
+            btn.scrollIntoView({ block: 'center' });
+            btn.click();
+            return `dia ${day} clicado via aria-label`;
+          }
+        }
+        return null;
+      }, tDay, tMonth, tYear);
+
+      if (clicked) {
+        console.log(`[educadf.pap] calend\u00e1rio \u2705: ${clicked}`);
+        await page.waitForTimeout(600);
+        return true;
       } else {
-        // Qualquer outro formato (ex: "Fri Apr 24 2026 00:00:00 GMT+0000")
-        d = new Date(s);
+        console.warn(`[educadf.pap] calend\u00e1rio \u26a0\ufe0f: dia ${tDay} n\u00e3o encontrado. Tentando navega\u00e7\u00e3o de fallback.`);
+        break;
       }
     }
-    if (isNaN(d.getTime())) return '';
-    // Usa UTC para evitar que offset do servidor desvie 1 dia
-    const dia = String(d.getUTCDate()).padStart(2, '0');
-    const mes = MESES_PT[d.getUTCMonth()];
-    const ano = d.getUTCFullYear();
-    return `${dia} ${mes}, ${ano}`;
-  } catch {
-    return '';
-  }
-}
 
-async function preencherDatePicker(page, selector, dataStr) {
-  const dataFormatada = formatarDataEducaDF(dataStr);
-  if (!dataFormatada) {
-    console.warn('[educadf.pap] Data inválida ou vazia, pulando campo Data.');
-    return false;
-  }
+    // ── Navegar para o m\u00eas correto ──────────────────────────────────────
+    const diff = (tYear - calInfo.year) * 12 + (tMonth - calInfo.month);
 
-  try {
-    const input = page.locator(selector).first();
-    if ((await input.count()) === 0) return false;
-
-    await input.click();
+    if (calInfo.mode === 'selects') {
+      // Navega\u00e7\u00e3o direta via selects
+      await page.evaluate((m, y) => {
+        const modal = document.querySelector('ngb-modal-window');
+        const cal   = modal?.querySelector('ngb-datepicker');
+        const selects = [...(cal?.querySelectorAll('select') || [])];
+        const mSel = selects.find(s => parseInt(s.value) >= 1 && parseInt(s.value) <= 12);
+        const ySel = selects.find(s => parseInt(s.value) > 100);
+        if (mSel) { mSel.value = String(m + 1); mSel.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (ySel) { ySel.value = String(y);     ySel.dispatchEvent(new Event('change', { bubbles: true })); }
+      }, tMonth, tYear);
+    } else {
+      // Bot\u00f5es prev/next
+      const goNext = diff > 0;
+      await page.evaluate((goNext) => {
+        const modal = document.querySelector('ngb-modal-window');
+        const cal   = modal?.querySelector('ngb-datepicker');
+        if (!cal) return;
+        const btns = [...cal.querySelectorAll('button.ngb-dp-arrow-btn')];
+        // Normalmente: primeiro = anterior, \u00faltimo = pr\u00f3ximo
+        const btn = goNext ? btns[btns.length - 1] : btns[0];
+        if (btn) btn.click();
+      }, goNext);
+    }
     await page.waitForTimeout(500);
-
-    // Seleciona todo o conteúdo e substitui
-    await page.keyboard.press('Control+A');
-    await page.waitForTimeout(200);
-    await page.keyboard.type(dataFormatada, { delay: 60 });
-    await page.waitForTimeout(400);
-
-    // Pressiona Tab para confirmar o picker
-    await page.keyboard.press('Tab');
-    await page.waitForTimeout(600);
-
-    console.log(`[educadf.pap] Data: "${dataFormatada}"`);
-    return true;
-  } catch (err) {
-    console.warn(`[educadf.pap] Date picker falhou: ${err.message}`);
-    return false;
   }
+
+  console.warn(`[educadf.pap] calend\u00e1rio \u26a0\ufe0f: n\u00e3o foi poss\u00edvel clicar no dia ${tDay}/${tMonth+1}/${tYear}.`);
+  return false;
 }
+
+// ⚠️  preencherDatePicker() REMOVIDA — digitação via teclado não atualiza o modelo Angular.
+// Usar exclusivamente: navegarCalendarioEClicarDia(page, dataStr)
 
 // ============================================================================
 // HELPER: Seleciona opção em ng-select DENTRO DO MODAL
@@ -759,68 +856,24 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     // — Campo: Data —
-    // O ngb-datepicker NÃO aceita .value = data. Precisamos focar o campo via JS
-    // e digitar a data com o teclado do Playwright.
+    // O ngb-datepicker Angular IGNORA texto digitado via teclado simulado.
+    // A única forma confiável é navegar o calendário visual e clicar no dia correto.
     const dataStr = item.data_inicio || item.data;
-    console.log(`[educadf.pap] Data do plano (item.data_inicio): "${dataStr}"`);
+    console.log(`[educadf.pap] Data do plano: "${dataStr}"`);
 
     if (dataStr) {
-      const dataFormatada = formatarDataEducaDF(dataStr); // ex: "24 Abr, 2026"
-      console.log(`[educadf.pap] Data formatada para EDUCADF: "${dataFormatada}"`);
-
-      if (dataFormatada) {
-        // Passo 1: Foca o date input via JS + retorna info do input identificado
-        const dateInfo = await page.evaluate(() => {
-          const modal = document.querySelector('ngb-modal-window');
-          if (!modal) return null;
-          const allInputs = [...modal.querySelectorAll('input')];
-          // ngb-datepicker usa um input único com formato "DD Mmm, YYYY"
-          // Identifica pelo valor atual (que é a data do evento clicado)
-          let dateInp = allInputs.find(inp => {
-            const val = inp.value || '';
-            return val.match(/\d{1,2}\s+\w{3}/);
-          });
-          // Fallback: input com size=1 e maxlength pequeno (partes do date picker)
-          if (!dateInp) {
-            dateInp = allInputs.find(inp => {
-              const sz = parseInt(inp.getAttribute('size') || '100');
-              const ml = parseInt(inp.getAttribute('maxlength') || '9999');
-              return sz <= 2 || ml <= 10;
-            });
-          }
-          // Último fallback: qualquer input que não seja o Nome
-          if (!dateInp) {
-            const nomeInp = allInputs.find(inp => {
-              const sz = parseInt(inp.getAttribute('size') || '100');
-              const ml = parseInt(inp.getAttribute('maxlength') || '9999');
-              return sz > 2 && ml > 10;
-            });
-            dateInp = allInputs.find(inp => inp !== nomeInp);
-          }
-          if (!dateInp) return null;
-          dateInp.focus();
-          return { val: dateInp.value, size: dateInp.size, maxlen: dateInp.maxLength };
-        });
-
-        console.log(`[educadf.pap] Date input info: ${JSON.stringify(dateInfo)}`);
-
-        if (dateInfo) {
-          // Passo 2: Seleciona todo o conteúdo do input focado e digita a nova data
-          await page.waitForTimeout(300);
-          await page.keyboard.press('Control+A');
-          await page.waitForTimeout(200);
-          await page.keyboard.type(dataFormatada, { delay: 60 });
-          await page.waitForTimeout(400);
-          await page.keyboard.press('Tab');
-          await page.waitForTimeout(500);
-          console.log(`[educadf.pap] Data ✅: "${dataFormatada}"`);
-        } else {
-          console.warn(`[educadf.pap] Data ⚠️: nenhum date input encontrado no modal`);
-        }
+      const dataFormatada = formatarDataEducaDF(dataStr);
+      console.log(`[educadf.pap] Data formatada: "${dataFormatada}"`);
+      const calOkCriacao = await navegarCalendarioEClicarDia(page, dataStr);
+      if (!calOkCriacao) {
+        console.warn('[educadf.pap] Data ⚠️: calendário não respondeu — a data pode estar incorreta.');
+      } else {
+        console.log(`[educadf.pap] Data ✅: "${dataFormatada}" selecionada no calendário.`);
       }
     } else {
-      console.warn('[educadf.pap] Data ⚠️: item.data_inicio está vazio — data não será alterada');
+      console.warn('[educadf.pap] Data ⚠️: item.data_inicio está vazio.');
     }
+
 
     // — Campo: Observações —
     if (item.descricao) {
@@ -957,41 +1010,12 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           await session.delay(1000);
           await session.screenshot('pap_08c_modal_edicao_aberto');
 
-          // Localiza e foca o date input no modal de edição
-          const dateInputFocado = await page.evaluate(() => {
-            const modal = document.querySelector('ngb-modal-window');
-            if (!modal) return null;
-            const allInputs = [...modal.querySelectorAll('input')];
-            // Prioriza: input cujo value já tem formato data ("dd Mmm, yyyy")
-            let dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
-            // Fallback: input com size pequeno (date-picker parts)
-            if (!dateInp) {
-              dateInp = allInputs.find(inp => {
-                const sz = parseInt(inp.getAttribute('size') || '100');
-                const ml = parseInt(inp.getAttribute('maxlength') || '9999');
-                return sz <= 4 || ml <= 12;
-              });
-            }
-            if (!dateInp) return null;
-            dateInp.focus();
-            return { val: dateInp.value, sz: dateInp.size, ml: dateInp.maxLength };
-          });
-
-          console.log(`[educadf.pap] Date input no modal edição: ${JSON.stringify(dateInputFocado)}`);
-
-          if (dateInputFocado) {
-            await page.waitForTimeout(300);
-            await page.keyboard.press('Control+A');
-            await page.waitForTimeout(200);
-            await page.keyboard.press('Backspace');
-            await page.waitForTimeout(200);
-            await page.keyboard.type(dataFormatadaWk, { delay: 60 });
-            await page.waitForTimeout(500);
-            await page.keyboard.press('Tab');
-            await page.waitForTimeout(600);
+          // Usa calendário visual — digitar no input NÃO atualiza o modelo Angular
+          const calOkEdit = await navegarCalendarioEClicarDia(page, dataStr);
+          if (calOkEdit) {
             console.log(`[educadf.pap] Workaround Data Edit ✅: "${dataFormatadaWk}"`);
           } else {
-            console.warn('[educadf.pap] ⚠️ Date input não encontrado no modal de edição.');
+            console.warn('[educadf.pap] ⚠️ Workaround: calendário não respondeu no modal de edição.');
           }
 
           // Salvar edição
@@ -1041,23 +1065,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
   }
 }
 
-// ── Helper interno para preencher date picker por locator ──────────────────
-async function preencherDatePickerByLocator(page, locator, dataStr) {
-  const dataFormatada = formatarDataEducaDF(dataStr);
-  if (!dataFormatada) return;
-  try {
-    await locator.click();
-    await page.waitForTimeout(300);
-    await page.keyboard.press('Control+A');
-    await page.waitForTimeout(150);
-    await page.keyboard.type(dataFormatada, { delay: 50 });
-    await page.waitForTimeout(400);
-    await page.keyboard.press('Tab');
-    await page.waitForTimeout(500);
-    console.log(`[educadf.pap] Data: "${dataFormatada}"`);
-  } catch (err) {
-    console.warn(`[educadf.pap] preencherDatePickerByLocator falhou: ${err.message}`);
-  }
-}
+// ⚠️  preencherDatePickerByLocator() REMOVIDA — digitação via teclado não atualiza o modelo Angular.
+// Usar exclusivamente: navegarCalendarioEClicarDia(page, dataStr)
 
 export default { exportarPAPEducaDF };
