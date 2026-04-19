@@ -1606,29 +1606,79 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     await session.screenshot('notas_07b_pos_preenchimento');
 
-    // 7c. Salva as notas — procura botão Salvar na página
-    console.log('[educadf.notas] Salvando notas...');
-    const salvou = await page.evaluate(() => {
-      const bots = [...document.querySelectorAll('button.btn-success, button.btn-primary, button')];
-      const btn  = bots.find(b => {
-        const t = (b.textContent || '').toLowerCase().trim();
-        return t.includes('salvar') || t.includes('confirmar') || t.includes('gravar');
-      });
-      if (btn) {
-        btn.scrollIntoView({ block: 'center' });
-        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return btn.textContent?.trim();
-      }
-      return null;
-    });
+    // ── 7c. SALVAR — botão verde no canto inferior direito ─────────────────
+    // O EDUCADF exige clicar "Salvar" após preencher as notas.
+    // Aguardamos Angular processar todos os events antes de clicar.
+    console.log('[educadf.notas] Aguardando Angular processar inputs...');
+    await session.delay(1500);
 
-    if (salvou) {
-      console.log(`[educadf.notas] Salvar clicado: "${salvou}"`);
-    } else {
-      console.warn('[educadf.notas] ⚠️ Botão Salvar não encontrado — as notas podem precisar ser salvas manualmente ou são salvas automaticamente (Angular).');
+    // Rola até o final da página para garantir que o botão esteja visível
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await session.delay(800);
+    await session.screenshot('notas_07c_antes_salvar');
+
+    console.log('[educadf.notas] Clicando em SALVAR...');
+    let salvarClicado = false;
+
+    // Tentativa 1: Playwright nativo — botão verde "Salvar" (btn-success)
+    const seletoresSalvar = [
+      "button.btn-success:has-text('Salvar')",
+      "button.btn-success:has-text('salvar')",
+      "button:has-text('Salvar')",
+      "button.btn-success",
+    ];
+
+    for (const sel of seletoresSalvar) {
+      try {
+        const loc = page.locator(sel).last(); // .last() pega o do canto inferior direito
+        if (await loc.count() > 0 && await loc.isVisible({ timeout: 3000 })) {
+          await loc.scrollIntoViewIfNeeded().catch(() => {});
+          await loc.click({ timeout: 10000, force: false });
+          salvarClicado = true;
+          console.log(`[educadf.notas] ✅ Salvar clicado via: "${sel}"`);
+          break;
+        }
+      } catch (e) {
+        console.warn(`  [Salvar] seletor "${sel}" falhou: ${e.message}`);
+      }
     }
 
-    await session.delay(3000);
+    // Tentativa 2: JS evaluate com scroll preciso
+    if (!salvarClicado) {
+      const jsResult = await page.evaluate(() => {
+        // Busca todos os botões que contenham "salvar" (case insensitive)
+        const todos = [...document.querySelectorAll('button')];
+        const btn   = todos.reverse().find(b => {
+          // .reverse() para pegar o último (canto inferior direito)
+          const t = (b.textContent || '').toLowerCase().trim();
+          return (t === 'salvar' || t.startsWith('salvar')) && !b.disabled;
+        });
+        if (btn) {
+          btn.scrollIntoView({ block: 'end', behavior: 'instant' });
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return { ok: true, texto: btn.textContent?.trim() };
+        }
+        // Fallback: qualquer btn-success visível na parte inferior
+        const btsSuc = [...document.querySelectorAll('button.btn-success')].filter(b => !b.disabled);
+        if (btsSuc.length) {
+          const last = btsSuc[btsSuc.length - 1];
+          last.scrollIntoView({ block: 'end', behavior: 'instant' });
+          last.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return { ok: true, texto: last.textContent?.trim(), via: 'btn-success-fallback' };
+        }
+        return { ok: false };
+      });
+
+      if (jsResult.ok) {
+        salvarClicado = true;
+        console.log(`[educadf.notas] ✅ Salvar clicado via JS evaluate: "${jsResult.texto}" (${jsResult.via || 'texto'})`);
+      } else {
+        console.warn('[educadf.notas] ⚠️ Botão SALVAR não encontrado por nenhum método.');
+      }
+    }
+
+    // Aguarda o servidor confirmar o save (rede Angular)
+    await session.delay(salvarClicado ? 4000 : 1500);
     await session.screenshot('notas_08_finalizado');
 
     const ok = totalPreenchidos > 0;
