@@ -887,11 +887,106 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     console.log(`[educadf.pap] Resultado: modalFechado=${!modalAindaAberto}, alertSucesso=${alertSucesso}`);
 
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 8: Workaround Robustez — Re-editar para forçar a confirmação da data
+    // Muitas vezes a data no modal de criação é ignorada e pega o dia da aula.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ok && dataStr) {
+      console.log(`[educadf.pap] 8/8 Workaround: Re-editando "${nomeAtividade}" para forçar a data correta...`);
+      await session.delay(3000); // Aguarda tabela renderizar a nova coluna
+      
+      const dataFormatada = formatarDataEducaDF(dataStr);
+      
+      try {
+        const editClicked = await page.evaluate((nome) => {
+          const normalize = s => s.toLowerCase().trim();
+          const alvo = normalize(nome);
+          
+          // Encontra headers das colunas de avaliações (nos THs)
+          const headers = [...document.querySelectorAll('th, td, .header-cell')];
+          for (const el of headers) {
+            const textContent = el.textContent || '';
+            if (textContent.length < 150 && normalize(textContent).includes(alvo)) {
+              // Procura ícone de lápis ou botão
+              const btn = el.querySelector('i.fa-edit, i.fa-pencil, .bi-pencil, i[class*="edit"], a[title*="Edit"], button');
+              if (btn) {
+                btn.scrollIntoView({ block: 'center' });
+                btn.click();
+                return true;
+              }
+            }
+          }
+          return false;
+        }, nomeAtividade);
+
+        if (editClicked) {
+          console.log('[educadf.pap] Clique no botão Editar efetuado, aguardando modal...');
+          await page.waitForSelector('text=Editar Instrumento/Procedimento Avaliativo', { timeout: 15000 });
+          await session.delay(1000);
+          
+          // Refazer data input
+          if (dataFormatada) {
+            const dateInfoEdit = await page.evaluate(() => {
+              const modal = document.querySelector('ngb-modal-window');
+              if (!modal) return null;
+              const allInputs = [...modal.querySelectorAll('input')];
+              let dateInp = allInputs.find(inp => {
+                const val = inp.value || '';
+                return val.match(/\d{1,2}\s+\w{3}/); // "24 Abr, 2026"
+              });
+              if (!dateInp) {
+                dateInp = allInputs.find(inp => {
+                  const sz = parseInt(inp.getAttribute('size') || '100');
+                  const ml = parseInt(inp.getAttribute('maxlength') || '9999');
+                  return sz <= 2 || ml <= 10;
+                });
+              }
+              if (!dateInp) return null;
+              dateInp.focus();
+              return true;
+            });
+
+            if (dateInfoEdit) {
+              await page.waitForTimeout(300);
+              await page.keyboard.press('Control+A');
+              await page.waitForTimeout(200);
+              await page.keyboard.press('Backspace'); // Força apagar
+              await page.waitForTimeout(200);
+              await page.keyboard.type(dataFormatada, { delay: 60 });
+              await page.waitForTimeout(500);
+              await page.keyboard.press('Tab');
+              await page.waitForTimeout(500);
+              console.log(`[educadf.pap] Workaround Data Edit ✅: "${dataFormatada}"`);
+            }
+            
+            // Salvar Novamente
+            console.log('[educadf.pap] Salvando edição do workaround...');
+            await page.evaluate(() => {
+              const btn = document.querySelector('ngb-modal-window button.btn-success, .modal button.btn-success');
+              if (btn) {
+                btn.scrollIntoView({ block: 'center' });
+                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              }
+            });
+            
+            // Espera salvar a edição
+            await session.delay(3000);
+            await session.screenshot('pap_09_pos_salvar_workaround');
+            console.log('[educadf.pap] Workaround concluído!');
+          }
+        } else {
+          console.warn('[educadf.pap] ⚠️ Workaround de edição: Não foi possível encontrar o ícone Lápis na tabela para o th correspondente.');
+        }
+      } catch (err) {
+        console.warn(`[educadf.pap] ⚠️  Workaround de edição falhou: ${err.message}`);
+      }
+    }
+
     return {
       ok,
       message: ok
-        ? `Procedimento "${nomeAtividade}" criado no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
-        : `Modal ainda aberto após salvar — verifique os logs de validação acima.`,
+        ? `Procedimento "${nomeAtividade}" criado (e revisado para forçar data) no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
+        : `Modal ainda aberto após salvar — verifique os logs de validação.`,
       durationMs: Date.now() - startedAt,
     };
 
