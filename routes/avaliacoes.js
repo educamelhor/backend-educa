@@ -306,6 +306,14 @@ router.get("/:id", async (req, res) => {
     );
 
     plano.itens = itens;
+
+    // Desserializa JSON de stats da exportação de notas (para o polling path no frontend)
+    if (plano.agente_notas_resultado_json) {
+      try {
+        plano.agente_notas_resultado = JSON.parse(plano.agente_notas_resultado_json);
+      } catch { plano.agente_notas_resultado = null; }
+    }
+
     return res.json(plano);
   } catch (error) {
     console.error("Erro ao buscar plano:", error);

@@ -1655,7 +1655,8 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // ─ Playwright nativo (click + fill + Tab) simula interação real e funciona.
     let totalPreenchidos = 0;
     let totalErros       = 0;
-    const alunosNaoEncontrados = [];
+    const alunosNaoEncontrados  = []; // dessincronização: está no EDUCA.MELHOR mas não no EDUCADF
+    const alunosDesabilitados   = []; // ausentes: campo bloqueado pelo EDUCADF (sem presença no dia)
 
     // Pré-carrega todos os REs visíveis na tabela (para diagnóstico rápido)
     const resEducaDF = await page.evaluate(() => {
@@ -1685,7 +1686,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ','); // ex: "3,5"
       const reNorm  = String(aluno.re || '').trim().replace(/^0+/, '');
 
-      // ── Passo 1: encontra a linha no DOM e retorna um seletor único ──────
+      // ── Passo 1: encontra a linha no DOM, verifica disabled, retorna uid ─
       const linhaInfo = await page.evaluate(({ re, nome, colIdx }) => {
         const norm   = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
         const normRE = s => String(s || '').trim().replace(/^0+/, '');
@@ -1711,6 +1712,16 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           const input = tdNota.querySelector('input[type="text"], input[type="number"], input');
           if (!input) return { ok: false, motivo: `sem input na célula ${colIdx} (html: ${tdNota.innerHTML?.substring(0, 80)})` };
 
+          // ── Detecta campo desabilitado ANTES de tentar preencher ────────
+          // (ex.: aluno estava ausente no dia da avaliação → EDUCADF bloqueia)
+          if (input.disabled || input.hasAttribute('disabled')) {
+            return {
+              ok:       false,
+              disabled: true,
+              motivo:   'campo desabilitado no EDUCADF (aluno sem presença registrada no dia da avaliação)',
+            };
+          }
+
           // Cria atributo temporário para o Playwright localizar o elemento
           const uid = `notas-aluno-${rIdx}-${colIdx}`;
           input.setAttribute('data-notas-uid', uid);
@@ -1724,26 +1735,43 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
       if (!linhaInfo.ok) {
         totalErros++;
-        alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: linhaInfo.motivo });
-        console.warn(`  ⚠️  ${aluno.nome} → ${linhaInfo.motivo}`);
+        if (linhaInfo.disabled) {
+          // Campo desabilitado: aluno estava ausente no dia da avaliação
+          alunosDesabilitados.push({ nome: aluno.nome, re: aluno.re });
+          console.warn(`  🚫 ${aluno.nome} → campo desabilitado (ausente no dia)`);
+        } else {
+          alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: linhaInfo.motivo });
+          console.warn(`  ⚠️  ${aluno.nome} → ${linhaInfo.motivo}`);
+        }
         continue;
       }
 
-      // ── Passo 2: usa Playwright nativo para preencher (Angular detecta) ──
+      // ── Passo 2: Playwright nativo pressSequentially (keydown+keypress+keyup+input por char) ──
+      // fill() apenas dispara 'input' genérico; Angular desta tela precisa de keystrokes reais.
       try {
         const inputLoc = page.locator(`[data-notas-uid="${linhaInfo.uid}"]`);
         await inputLoc.scrollIntoViewIfNeeded().catch(() => {});
-        await inputLoc.click({ clickCount: 3 }); // seleciona todo conteúdo existente
-        await inputLoc.fill(notaStr);
-        await page.keyboard.press('Tab');
-        await page.waitForTimeout(250); // Angular processar
+        await inputLoc.click({ clickCount: 3 });     // seleciona texto existente
+        await inputLoc.pressSequentially(notaStr, { delay: 40 }); // tecla a tecla → Angular detecta
+        await page.keyboard.press('Tab');            // blur → trigger change/validation
+
+        // Garante que Angular processou blur + change (segurança extra)
+        await page.evaluate((uid) => {
+          const el = document.querySelector(`[data-notas-uid="${uid}"]`);
+          if (el) {
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new FocusEvent('blur',  { bubbles: true }));
+          }
+        }, linhaInfo.uid);
+
+        await page.waitForTimeout(200); // Angular processar
 
         totalPreenchidos++;
         console.log(`  ✔ ${String(aluno.nome).padEnd(45)} RE=${aluno.re || '?'}  nota=${notaStr}  (${linhaInfo.via})`);
       } catch (e) {
         totalErros++;
-        alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: `Falha ao preencher input: ${e.message}` });
-        console.warn(`  ⚠️  ${aluno.nome} → Falha no fill: ${e.message}`);
+        alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: `Falha ao preencher input: ${e.message?.substring(0, 120)}` });
+        console.warn(`  ⚠️  ${aluno.nome} → Falha no fill: ${e.message?.substring(0, 120)}`);
       }
     }
 
@@ -1832,6 +1860,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       totalPreenchidos,
       totalErros,
       alunosNaoEncontrados,
+      alunosDesabilitados,
       message: ok
         ? `${totalPreenchidos} notas exportadas para EDUCADF — ${plano.turmas} · ${plano.bimestre}.`
         : `Nenhuma nota foi exportada. ${totalErros} erros.`,

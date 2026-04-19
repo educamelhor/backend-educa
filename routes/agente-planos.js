@@ -409,11 +409,40 @@ router.post('/:id/exportar-notas', async (req, res) => {
 
     // ── 9. Atualiza banco ─────────────────────────────────────────────────
     if (resultado.ok) {
+      // Persiste stats completos como JSON → polling path pode ler os dados reais
+      const statsJson = JSON.stringify({
+        totalPreenchidos:     resultado.totalPreenchidos,
+        totalErros:           resultado.totalErros,
+        alunosNaoEncontrados: resultado.alunosNaoEncontrados || [],
+        alunosDesabilitados:  resultado.alunosDesabilitados  || [],
+      });
+
       await db.query(
-        `UPDATE planos_avaliacao SET agente_notas_exportadas_em = NOW() WHERE id = ?`,
-        [planoId]
-      ).catch(e => console.warn('[agente-planos] Erro ao marcar notas_exportadas_em:', e.message));
-      console.log(`[agente-planos] ✅ Notas id=${planoId} exportadas! (${resultado.totalPreenchidos} alunos)`);
+        `UPDATE planos_avaliacao
+            SET agente_notas_exportadas_em  = NOW(),
+                agente_notas_resultado_json = ?
+          WHERE id = ?`,
+        [statsJson, planoId]
+      ).catch(async (e) => {
+        // Se a coluna não existir ainda, cria e tenta novamente
+        if (e.message?.includes('Unknown column')) {
+          await db.query(
+            `ALTER TABLE planos_avaliacao
+               ADD COLUMN agente_notas_resultado_json TEXT NULL AFTER agente_notas_exportadas_em`
+          ).catch(() => {});
+          await db.query(
+            `UPDATE planos_avaliacao
+                SET agente_notas_exportadas_em  = NOW(),
+                    agente_notas_resultado_json = ?
+              WHERE id = ?`,
+            [statsJson, planoId]
+          ).catch(e2 => console.warn('[agente-planos] Erro ao salvar stats JSON:', e2.message));
+        } else {
+          console.warn('[agente-planos] Erro ao marcar notas_exportadas_em:', e.message);
+        }
+      });
+
+      console.log(`[agente-planos] ✅ Notas id=${planoId} exportadas! (${resultado.totalPreenchidos} alunos, ${resultado.totalErros} erros)`);
     } else {
       console.warn(`[agente-planos] ❌ Notas id=${planoId} falhou: ${resultado.message}`);
     }
@@ -423,7 +452,8 @@ router.post('/:id/exportar-notas', async (req, res) => {
       message:               resultado.message,
       totalPreenchidos:      resultado.totalPreenchidos,
       totalErros:            resultado.totalErros,
-      alunosNaoEncontrados:  resultado.alunosNaoEncontrados || [],
+      alunosNaoEncontrados:  resultado.alunosNaoEncontrados  || [],
+      alunosDesabilitados:   resultado.alunosDesabilitados   || [],
       error:                 resultado.ok ? undefined : resultado.message,
       durationMs:            resultado.durationMs,
     });
