@@ -431,10 +431,25 @@ router.post('/credenciais/:id/testar', async (req, res) => {
 
     console.log(`[agente.routes] perfil_id no banco: ${cred.perfil_id} → perfil EDUCADF: ${perfilFinal} (credencial real id=${realCredId})`);
 
-    // Se já há um teste em andamento, retorna o status atual sem iniciar novo
+    // Se já há um teste ativo OU resultado recente (< 90s), retorna sem iniciar novo.
+    // CORREÇÃO DO RACE CONDITION: o usuário pode clicar novamente enquanto o teste está
+    // rodando ou logo após concluir. Se o Map já tem 'sucesso'/'falha', retorna imediatamente
+    // sem sobrescrever o resultado — evitando a janela de 2-3s onde o polling perde o resultado.
     const emAndamento = _testesEmAndamento.get(testeKey);
-    if (emAndamento && (emAndamento.status === 'executando')) {
-      return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando' });
+    if (emAndamento) {
+      const ageMs = Date.now() - emAndamento.startedAt;
+      const isRecent = emAndamento.status === 'executando' || ageMs < 90_000;
+      if (isRecent) {
+        console.log(`[agente.routes] Resultado recente reutilizado: status=${emAndamento.status}, age=${Math.round(ageMs/1000)}s`);
+        return res.json({
+          ok:       emAndamento.result?.ok ?? null,
+          async:    true,
+          teste_id: testeKey,
+          status:   emAndamento.status,
+          message:  emAndamento.result?.message || null,
+          credId:   realCredId,
+        });
+      }
     }
 
     // Decrypt com proteção: se falhar, os dados estão corrompidos (chave trocada ou
