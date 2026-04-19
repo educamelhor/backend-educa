@@ -458,6 +458,13 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     const entry = { status: 'executando', result: null, startedAt: Date.now() };
     _testesEmAndamento.set(testeKey, entry);
 
+    // Limpa ultimo_teste_status no banco para evitar que GET /status retorne
+    // 'falha' stale de tentativas anteriores e cancele o polling prematuramente.
+    await db.query(
+      'UPDATE agente_credenciais SET ultimo_teste_status = NULL WHERE id = ?',
+      [realCredId]
+    ).catch(() => {});
+
     console.log(`[agente.routes] Teste assíncrono iniciado: credencial #${realCredId} (perfil EDUCADF: ${perfilFinal})`);
 
     // Dispara o Playwright em background SEM bloquear a resposta HTTP
