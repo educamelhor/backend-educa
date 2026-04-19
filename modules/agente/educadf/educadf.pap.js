@@ -380,7 +380,8 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
   // Única forma confiável: usar input._flatpickr.setDate(date, triggerChange).
   console.log('[educadf.pap] calendario: popup ngb-datepicker nao existe — tentando via Flatpickr...');
 
-  const fpResult = await page.evaluate((isoDate, formatted) => {
+  const isoDate = `${tYear}-${String(tMonth + 1).padStart(2, '0')}-${String(tDay).padStart(2, '0')}`;
+  const fpResult = await page.evaluate(({ isoDate, formatted }) => {
     const modal = document.querySelector('ngb-modal-window');
     if (!modal) return 'modal-not-found';
 
@@ -429,14 +430,14 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
       inp.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
     );
     return 'fallback-value:' + valorAntigo + ' -> ' + inp.value;
-  }, `${tYear}-${String(tMonth + 1).padStart(2, '0')}-${String(tDay).padStart(2, '0')}`, dataFormatada);
+  }, { isoDate, formatted: dataFormatada });
 
   console.log('[educadf.pap] calendario Flatpickr resultado: ' + fpResult);
 
   // ── Verificação: Tenta também abrir o calendário visual do Flatpickr ─────
   // O Flatpickr cria um div.flatpickr-calendar no body. Se existir, podemos
   // clicar no dia diretamente como backup extra.
-  const calClickResult = await page.evaluate((dia, mes0, ano) => {
+  const calClickResult = await page.evaluate(({ dia, mes0, ano }) => {
     const cal = document.querySelector('.flatpickr-calendar.open, .flatpickr-calendar.animate');
     if (!cal) return 'flatpickr-calendar-not-open';
 
@@ -468,7 +469,7 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
       }
     }
     return 'flatpickr-dia-not-found. Disponiveis: ' + days.map(d => d.textContent.trim()).join(',');
-  }, tDay, tMonth, tYear);
+  }, { dia: tDay, mes0: tMonth, ano: tYear });
 
   if (calClickResult !== 'flatpickr-calendar-not-open') {
     console.log('[educadf.pap] calendario Flatpickr visual: ' + calClickResult);
