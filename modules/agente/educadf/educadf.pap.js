@@ -780,11 +780,60 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.screenshot('pap_04b_pos_filtrar');
 
     // ══════════════════════════════════════════════════════════════════════
+    // MELHORIA 1 — Verificação da turma no calendário após "Filtrar"
+    // Após clicar em Filtrar, o calendário renderiza eventos com o nome da
+    // turma visível em cada card. Confirmamos que a turma correta está lá
+    // antes de prosseguir — evita exportar plano na turma errada.
+    // ══════════════════════════════════════════════════════════════════════
+    console.log('[educadf.pap] Verificando se calendário confirmou a turma...');
+    const normStr = (s) => String(s)
+      .toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+
+    const turmaNorm   = normStr(plano.turmas);
+    const compNorm    = normStr(componenteEducaDF);
+    const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, '');
+    const turmaTkns   = turmaNorm.split(' ').filter(t => t.length > 0);
+    const compTkns    = compNorm.split(' ').filter(t => t.length > 2);
+
+    // Verifica se algum fc-event contém os tokens da turma
+    const turmaConfirmadaNoCalendario = await page.evaluate((tkns) => {
+      const eventos = [...document.querySelectorAll('a.fc-event, .fc-event a, .fc-daygrid-event')];
+      if (eventos.length === 0) return { ok: false, motivo: 'nenhum-evento-no-calendario', total: 0 };
+
+      const norm = (s) => String(s)
+        .toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^A-Z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
+
+      const confirmado = eventos.some(ev => {
+        const txt = norm(ev.textContent || '');
+        return tkns.every(t => txt.includes(t));
+      });
+
+      const amostras = eventos.slice(0, 3).map(ev => (ev.textContent || '').trim().substring(0, 60));
+      return { ok: confirmado, motivo: confirmado ? 'ok' : 'turma-nao-encontrada-nos-eventos', total: eventos.length, amostras };
+    }, turmaTkns);
+
+    console.log(`[educadf.pap] Calendário pós-filtro: ${JSON.stringify(turmaConfirmadaNoCalendario)}`);
+
+    if (!turmaConfirmadaNoCalendario.ok) {
+      throw new Error(
+        `Calendário não confirmou a turma "${plano.turmas}" após Filtrar. ` +
+        `Motivo: ${turmaConfirmadaNoCalendario.motivo} | ` +
+        `Total eventos: ${turmaConfirmadaNoCalendario.total}. ` +
+        `Verifique se o filtro de Turma foi aplicado corretamente.`
+      );
+    }
+    console.log(`[educadf.pap] ✅ Turma "${plano.turmas}" confirmada no calendário (${turmaConfirmadaNoCalendario.total} eventos).`);
+
+    // ══════════════════════════════════════════════════════════════════════
     // PASSO 5: Clicar num evento do calendário (fc-event)
-    // FLUXO CORRETO: após filtrar, o calendário mostra os eventos de aula.
-    // Clicar em qualquer evento abre o DIÁRIO DA AULA com as abas:
-    //   "Registro de Aula" | "Registro de Frequência" |
-    //   "Registro de Procedimentos Avaliativos" | "Observações do Diário" | etc.
+    // Turma é o critério determinante (confirmado acima).
+    // Componente é bônus — se não bater, ainda clica em evento da turma.
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 5/7 Clicando num evento do calendário para abrir o diário...');
 
@@ -792,81 +841,80 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
 
-    // Helper de normalização para comparar turma/componente com texto do evento
-    const normEv = (s) => String(s)
-      .toUpperCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
-      .replace(/[^A-Z0-9\s]/g, ' ')                     // remove pontuação
-      .replace(/\s+/g, ' ').trim();
-
-    const turmaNorm   = normEv(plano.turmas);       // ex: '9 ANO I'
-    const compNorm    = normEv(componenteEducaDF);  // ex: 'MATEMATICA'
-    const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, ''); // '1º Bimestre' → '1'
-
-    // Tokens mínimos que devem aparecer no texto do evento para validar a turma
-    // Ex: '9 ANO I' → tokens ['9', 'ANO', 'I']; filtra tokens de 1 char (exceto números de turma)
-    const turmaTkns = turmaNorm.split(' ').filter(t => t.length > 0);
-    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
-
-    const eventoCorreto = (txt) => {
-      const n = normEv(txt);
-      const turmaOkEv = turmaTkns.every(t => n.includes(t));
-      const compOkEv  = compTkns.some(c => n.includes(c));
-      return turmaOkEv && compOkEv;
+    const eventoOkTurmaComp = (txt) => {
+      const n = normStr(txt);
+      return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c));
+    };
+    const eventoOkSoTurma = (txt) => {
+      const n = normStr(txt);
+      return turmaTkns.every(t => n.includes(t));
     };
 
-    // Busca eventos fc-event 
     const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
     const totalFcEventos = await fcEventos.count();
-    console.log(`[educadf.pap] Eventos de aula no calendário: ${totalFcEventos} | Buscando Turma="${plano.turmas}" + Componente="${componenteEducaDF}"`);
+    console.log(`[educadf.pap] Eventos no calendário: ${totalFcEventos}`);
 
     let eventoClicado = false;
 
+    // Tentativa 1: turma + componente + bimestre
     for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
       const ev  = fcEventos.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
-
-      if (!eventoCorreto(txt)) continue; // pula eventos da turma/componente errados
-
-      // Filtra pelo bimestre se disponível (preferência mas não obrigatório)
-      const bimestreMatch = !bimestreNum || txt.includes(`${bimestreNum}º BIMESTRE`);
-      if (!bimestreMatch) continue;
-
+      if (!eventoOkTurmaComp(txt)) continue;
+      if (bimestreNum && !txt.includes(`${bimestreNum}º BIMESTRE`)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento correto clicado [${i}]: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento [turma+comp+bimestre] clicado: "${txt.substring(0, 80)}"`);
       } catch (err) {
         console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
       }
     }
 
-    // Segunda tentativa sem exigir bimestre específico (aceita qualquer evento da turma+componente)
+    // Tentativa 2: turma + componente (qualquer bimestre)
     if (!eventoClicado) {
       for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
         const ev  = fcEventos.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!eventoCorreto(txt)) continue;
+        if (!eventoOkTurmaComp(txt)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await ev.click({ timeout: 10000 });
           eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento (qualquer bimestre) [${i}]: "${txt.substring(0, 80)}"`);
+          console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado: "${txt.substring(0, 80)}"`);
         } catch (err) {
-          console.warn(`[educadf.pap] Clique evento [${i}] segunda tentativa falhou: ${err.message}`);
+          console.warn(`[educadf.pap] Clique evento [${i}] t2 falhou: ${err.message}`);
+        }
+      }
+    }
+
+    // Tentativa 3: só turma (componente não selecionado ou nome diferente)
+    if (!eventoClicado) {
+      console.warn('[educadf.pap] ⚠️  Tentativa com turma apenas (componente não bateu)...');
+      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
+        const ev  = fcEventos.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!eventoOkSoTurma(txt)) continue;
+        try {
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await ev.click({ timeout: 10000 });
+          eventoClicado = true;
+          console.log(`[educadf.pap] ✅ Evento [só turma] clicado: "${txt.substring(0, 80)}"`);
+        } catch (err) {
+          console.warn(`[educadf.pap] Clique evento [${i}] t3 falhou: ${err.message}`);
         }
       }
     }
 
     if (!eventoClicado) {
-      // Log diagnóstico dos primeiros eventos encontrados
-      console.error(`[educadf.pap] ❌ Nenhum evento com Turma="${plano.turmas}" e Componente="${componenteEducaDF}" encontrado!`);
-      for (let i = 0; i < Math.min(totalFcEventos, 8); i++) {
+      // Diagnóstico dos primeiros eventos
+      console.error(`[educadf.pap] ❌ Nenhum evento da turma "${plano.turmas}" clicável após 3 tentativas.`);
+      for (let i = 0; i < Math.min(totalFcEventos, 6); i++) {
         const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
         console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
       }
-      throw new Error(`Nenhum evento de aula correto encontrado para Turma="${plano.turmas}" e Componente="${componenteEducaDF}". Verifique se os filtros foram aplicados.`);
+      throw new Error(`Nenhum evento clicável encontrado para Turma="${plano.turmas}" no calendário.`);
     }
 
     // Aguarda o diário carregar (exibe abas no topo)
