@@ -475,12 +475,13 @@ router.post('/credenciais/:id/testar', async (req, res) => {
         entry.status = result.ok ? 'sucesso' : 'falha';
         entry.result = result;
 
-        if (result.ok) {
-          await db.query(
-            'UPDATE agente_credenciais SET ultimo_teste_em = NOW() WHERE id = ?',
-            [realCredId]
-          ).catch(() => {});
-        }
+        // Persiste resultado no banco (sobrevive a deploys/restarts do servidor)
+        // CORRIGE: antes só salvava ultimo_teste_em no sucesso. Agora salva
+        // ultimo_teste_status também — GET /status lê do banco se o Map foi limpo.
+        await db.query(
+          'UPDATE agente_credenciais SET ultimo_teste_em = NOW(), ultimo_teste_status = ? WHERE id = ?',
+          [entry.status, realCredId]
+        ).catch(() => {});
 
         await db.query(
           `INSERT INTO agente_audit_log (execucao_id, acao, detalhe, screenshot_path, duracao_ms)
@@ -496,6 +497,11 @@ router.post('/credenciais/:id/testar', async (req, res) => {
       } catch (err) {
         entry.status = 'falha';
         entry.result = { ok: false, message: `Erro interno: ${err.message}`, errorCode: 'UNEXPECTED_ERROR' };
+        // Persiste falha no banco também
+        await db.query(
+          'UPDATE agente_credenciais SET ultimo_teste_status = ? WHERE id = ?',
+          ['falha', realCredId]
+        ).catch(() => {});
         console.error(`[agente.routes] Erro no teste assíncrono #${realCredId}:`, err.message);
       }
       // Limpa cache após 5 min
@@ -503,7 +509,9 @@ router.post('/credenciais/:id/testar', async (req, res) => {
     })();
 
     // Responde IMEDIATAMENTE ao frontend
-    return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando' });
+    // CORRIGE: inclui realCredId para o frontend sincronizar o polling
+    // (o backend pode ter gerado um novo id via DELETE+INSERT ao salvar)
+    return res.json({ ok: true, async: true, teste_id: testeKey, status: 'executando', credId: realCredId });
   } catch (err) {
     console.error('[agente.routes] Erro POST /credenciais/:id/testar:', err);
     return res.status(500).json({ ok: false, message: `Erro ao iniciar teste: ${err.message}` });
@@ -527,10 +535,32 @@ router.get('/credenciais/:id/testar/status', async (req, res) => {
     if (!entry) {
       // Nenhum teste ativo na memória — verifica banco
       const db = req.db;
-      const [[cred]] = await db.query(
-        'SELECT ultimo_teste_em FROM agente_credenciais WHERE id = ? AND escola_id = ? LIMIT 1',
-        [credId, escolaId]
-      );
+      let cred;
+      try {
+        // Tenta ler ultimo_teste_status (nova coluna — pode não existir em BDs antigos)
+        [[cred]] = await db.query(
+          'SELECT ultimo_teste_em, ultimo_teste_status FROM agente_credenciais WHERE id = ? AND escola_id = ? LIMIT 1',
+          [credId, escolaId]
+        );
+      } catch {
+        // Fallback: coluna ainda não existe — usa apenas ultimo_teste_em
+        [[cred]] = await db.query(
+          'SELECT ultimo_teste_em FROM agente_credenciais WHERE id = ? AND escola_id = ? LIMIT 1',
+          [credId, escolaId]
+        );
+      }
+
+      // Se há resultado persistido no banco, retorna diretamente (não depende do Map)
+      if (cred?.ultimo_teste_status) {
+        console.log(`[agente.routes] GET /testar/status: key=${testeKey} → ${cred.ultimo_teste_status} (via banco)`);
+        return res.json({
+          ok:             cred.ultimo_teste_status === 'sucesso',
+          status:         cred.ultimo_teste_status,
+          message:        cred.ultimo_teste_status === 'sucesso' ? null : 'Último teste falhou.',
+          ultimo_teste_em: cred?.ultimo_teste_em || null,
+        });
+      }
+
       console.log(`[agente.routes] GET /testar/status: key=${testeKey} → sem_teste (ultimo_teste_em=${cred?.ultimo_teste_em || 'null'})`);
       return res.json({ ok: null, status: 'sem_teste', ultimo_teste_em: cred?.ultimo_teste_em || null });
     }

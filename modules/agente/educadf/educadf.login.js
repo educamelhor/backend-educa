@@ -38,15 +38,23 @@ import { LOGIN, TIMING } from './educadf.selectors.js';
 // ============================================================================
 async function dismissCookieBanner(session, page) {
   try {
-    // Dar tempo para o banner aparecer (ele pode ter animação)
-    await session.delay(2000);
+    // CORREÇÃO: verificação rápida se o banner está presente (≤500ms).
+    // Evita 5s de delay fixo quando o banner já foi aceito (cookie salvo).
+    const bannerEl = await page.$('.cookies-banner, [class*="cookie"], [class*="lgpd"], [class*="consent"]')
+      .catch(() => null);
 
-    // Screenshot para diagnóstico
+    if (!bannerEl) {
+      console.log('[educadf.login] Banner de cookies não detectado — pulando dismiss (early exit).');
+      return; // sai imediatamente, sem nenhum delay
+    }
+
+    // Banner presente: aguarda animação e tira screenshot
+    await session.delay(800);
     await session.screenshot('antes_cookie_banner');
 
     // Scrollar até o final da página para revelar o botão "Aceitar"
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await session.delay(1000);
+    await session.delay(600);
 
     // Tentar múltiplos seletores para o botão "Aceitar"
     const selectors = Array.isArray(LOGIN.cookieBanner.acceptButton)
@@ -106,8 +114,8 @@ async function dismissCookieBanner(session, page) {
       console.log('[educadf.login] Banner de cookies não encontrado (pode já ter sido aceito).');
     }
 
-    // Aguardar animação de dismiss do banner
-    await session.delay(1500);
+    // Aguardar animação de dismiss do banner (reduzido de 1500ms)
+    await session.delay(800);
 
     // Voltar ao topo da página
     await page.evaluate(() => window.scrollTo(0, 0));
