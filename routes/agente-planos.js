@@ -419,12 +419,13 @@ router.post('/:id/exportar-notas', async (req, res) => {
     }
 
     return res.status(resultado.ok ? 200 : 502).json({
-      ok:               resultado.ok,
-      message:          resultado.message,
-      totalPreenchidos: resultado.totalPreenchidos,
-      totalErros:       resultado.totalErros,
-      error:            resultado.ok ? undefined : resultado.message,
-      durationMs:       resultado.durationMs,
+      ok:                    resultado.ok,
+      message:               resultado.message,
+      totalPreenchidos:      resultado.totalPreenchidos,
+      totalErros:            resultado.totalErros,
+      alunosNaoEncontrados:  resultado.alunosNaoEncontrados || [],
+      error:                 resultado.ok ? undefined : resultado.message,
+      durationMs:            resultado.durationMs,
     });
 
   } catch (err) {

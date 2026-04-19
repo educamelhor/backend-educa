@@ -1650,9 +1650,31 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       console.log(`  Linha ${i}: cells=${d.totalCells} | cell[0]="${d.cell0}" | cell[1]="${d.cell1}" | cell[2]="${d.cell2}" | cell[alvo]="${d.cellAlvo?.substring(0, 60)}"`)
     );
 
-    // 7b. Para cada aluno, localiza a linha pelo RE ou nome e preenche o input
+    // 7b. Para cada aluno: Playwright nativo (.fill + Tab) para Angular detectar
+    // ─ page.evaluate + dispatchEvent NÃO atualiza NgModel do Angular.
+    // ─ Playwright nativo (click + fill + Tab) simula interação real e funciona.
     let totalPreenchidos = 0;
     let totalErros       = 0;
+    const alunosNaoEncontrados = [];
+
+    // Pré-carrega todos os REs visíveis na tabela (para diagnóstico rápido)
+    const resEducaDF = await page.evaluate(() => {
+      const normRE = s => String(s || '').trim().replace(/^0+/, '');
+      const rows = [...document.querySelectorAll('table tbody tr, tbody tr')];
+      const found = new Set();
+      for (const row of rows) {
+        const cells = [...row.querySelectorAll('td')];
+        if (cells.length >= 4 && cells.length <= 15) {
+          // Linhas de alunos têm entre 4 e ~10 células; calendário tem 43+
+          cells.slice(0, 2).forEach(c => {
+            const t = normRE(c.textContent?.trim() || '');
+            if (/^\d{4,7}$/.test(t)) found.add(t);
+          });
+        }
+      }
+      return [...found];
+    });
+    console.log(`[educadf.notas] REs encontrados no EDUCADF: [${resEducaDF.slice(0, 10).join(', ')}${resEducaDF.length > 10 ? '...' : ''}] (${resEducaDF.length} total)`);
 
     for (const aluno of (plano.alunos || [])) {
       if (aluno.nota === null || aluno.nota === undefined) {
@@ -1660,69 +1682,68 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         continue;
       }
 
-      const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ','); // "3,5"
+      const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ','); // ex: "3,5"
+      const reNorm  = String(aluno.re || '').trim().replace(/^0+/, '');
 
-      // Localiza a linha pelo RE (qualquer célula) ou nome
-      const preenchido = await page.evaluate(({ re, nome, colIdx, nota }) => {
-        const norm     = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
-        const normRE   = s => String(s || '').trim().replace(/^0+/, ''); // remove zeros à esquerda
-        const rows     = [...document.querySelectorAll('table tbody tr, tbody tr')];
-        const reNorm   = normRE(re);
+      // ── Passo 1: encontra a linha no DOM e retorna um seletor único ──────
+      const linhaInfo = await page.evaluate(({ re, nome, colIdx }) => {
+        const norm   = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+        const normRE = s => String(s || '').trim().replace(/^0+/, '');
+        const reNorm = normRE(re);
 
-        for (const row of rows) {
+        const rows = [...document.querySelectorAll('table tbody tr, tbody tr')];
+
+        for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+          const row   = rows[rIdx];
           const cells = [...row.querySelectorAll('td')];
-          if (!cells.length) continue;
+          // Ignora linhas do calendário (muitas células) e cabeçalhos (sem células)
+          if (cells.length < 4 || cells.length > 15) continue;
 
-          // Verifica RE em qualquer célula da linha (geralmente cell[0])
-          const reMatch = reNorm && cells.some(c => normRE(c.textContent?.trim() || '') === reNorm);
-
-          // Fallback: busca nome em qualquer célula
-          const rowText  = cells.map(c => c.textContent?.trim()).join(' ');
+          const reMatch   = reNorm && cells.some(c => normRE(c.textContent?.trim() || '') === reNorm);
+          const rowText   = cells.map(c => c.textContent?.trim()).join(' ');
           const nomeMatch = nome && norm(rowText).includes(norm(nome));
 
           if (!reMatch && !nomeMatch) continue;
 
-          // Pega a célula da coluna de nota
           const tdNota = cells[colIdx];
-          if (!tdNota) return { ok: false, motivo: `célula ${colIdx} não existe (max ${cells.length})` };
+          if (!tdNota) return { ok: false, motivo: `célula ${colIdx} não existe (max=${cells.length})` };
 
-          // Procura input na célula
-          let input = tdNota.querySelector('input[type="text"], input[type="number"], input');
-          if (!input) {
-            // Alguns portais usam div/span clicável — tenta clicar para revelar o input
-            const clickable = tdNota.querySelector('[contenteditable], [ng-model], span, div');
-            if (clickable) clickable.click();
-            input = tdNota.querySelector('input');
-            if (!input) return { ok: false, motivo: `input não encontrado na célula ${colIdx} (html: ${tdNota.innerHTML?.substring(0, 80)})` };
-          }
+          const input = tdNota.querySelector('input[type="text"], input[type="number"], input');
+          if (!input) return { ok: false, motivo: `sem input na célula ${colIdx} (html: ${tdNota.innerHTML?.substring(0, 80)})` };
 
-          // Preenche via events (Angular precisa de input + change + Tab)
+          // Cria atributo temporário para o Playwright localizar o elemento
+          const uid = `notas-aluno-${rIdx}-${colIdx}`;
+          input.setAttribute('data-notas-uid', uid);
           input.scrollIntoView({ block: 'center' });
-          input.focus();
-          input.value = '';
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.value = nota;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
-          return { ok: true, via: reMatch ? 're-match' : 'nome-match' };
+
+          return { ok: true, uid, via: reMatch ? 're-match' : 'nome-match' };
         }
 
-        // Não encontrou — retorna amostra de RE disponíveis para diagnóstico
-        const resSample = [...rows].slice(0, 5).map(r => {
-          const c = [...r.querySelectorAll('td')];
-          return c[0]?.textContent?.trim() || '?';
-        });
-        return { ok: false, motivo: `aluno não encontrado na tabela (RE buscado: "${reNorm}", primeiros REs: [${resSample.join(', ')}])` };
-      }, { re: aluno.re, nome: aluno.nome, colIdx: colunaIdx.idx, nota: notaStr });
+        return { ok: false, motivo: `RE="${reNorm}" não encontrado no EDUCADF` };
+      }, { re: aluno.re, nome: aluno.nome, colIdx: colunaIdx.idx });
 
-      if (preenchido.ok) {
-        totalPreenchidos++;
-        console.log(`  ✔ ${String(aluno.nome).padEnd(45)} RE=${aluno.re || '?'}  nota=${notaStr}  (${preenchido.via})`);
-        await page.waitForTimeout(300); // pequena pausa entre linhas para Angular processar
-      } else {
+      if (!linhaInfo.ok) {
         totalErros++;
-        console.warn(`  ⚠️  ${aluno.nome} → ${preenchido.motivo}`);
+        alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: linhaInfo.motivo });
+        console.warn(`  ⚠️  ${aluno.nome} → ${linhaInfo.motivo}`);
+        continue;
+      }
+
+      // ── Passo 2: usa Playwright nativo para preencher (Angular detecta) ──
+      try {
+        const inputLoc = page.locator(`[data-notas-uid="${linhaInfo.uid}"]`);
+        await inputLoc.scrollIntoViewIfNeeded().catch(() => {});
+        await inputLoc.click({ clickCount: 3 }); // seleciona todo conteúdo existente
+        await inputLoc.fill(notaStr);
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(250); // Angular processar
+
+        totalPreenchidos++;
+        console.log(`  ✔ ${String(aluno.nome).padEnd(45)} RE=${aluno.re || '?'}  nota=${notaStr}  (${linhaInfo.via})`);
+      } catch (e) {
+        totalErros++;
+        alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: `Falha ao preencher input: ${e.message}` });
+        console.warn(`  ⚠️  ${aluno.nome} → Falha no fill: ${e.message}`);
       }
     }
 
@@ -1810,6 +1831,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       ok,
       totalPreenchidos,
       totalErros,
+      alunosNaoEncontrados,
       message: ok
         ? `${totalPreenchidos} notas exportadas para EDUCADF — ${plano.turmas} · ${plano.bimestre}.`
         : `Nenhuma nota foi exportada. ${totalErros} erros.`,
