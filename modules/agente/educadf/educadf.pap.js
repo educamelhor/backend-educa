@@ -1577,10 +1577,20 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       const thRect   = targetTh.getBoundingClientRect();
       const thCenterX = thRect.left + thRect.width / 2;
 
-      // 2. Pega a primeira linha de dados do tbody
-      const firstRow = document.querySelector('table tbody tr, tbody tr');
+      // ───────────────────────────────────────────────────────────────────
+      // 2. CRÍTICO: pega a tabela DONA do <th> para calibrar o índice.
+      //    ANTES: document.querySelector('table tbody tr') retornava a 1ª linha
+      //    do calendário (43 células) → índice errado para turmas com 3+ colunas.
+      //    AGORA:  targetTh.closest('table') garante mesma tabela em 100% dos casos.
+      // ───────────────────────────────────────────────────────────────────
+      const targetTable = targetTh.closest('table');
+      if (!targetTable) {
+        return { idx: -1, motivo: 'tabela pai do th não encontrada', thFound: targetTh.textContent?.trim() };
+      }
+
+      const firstRow = targetTable.querySelector('tbody tr');
       if (!firstRow) {
-        return { idx: -1, motivo: 'nenhuma linha de dados encontrada', thFound: targetTh.textContent?.trim() };
+        return { idx: -1, motivo: 'nenhuma linha de dados na tabela de alunos', thFound: targetTh.textContent?.trim() };
       }
 
       const tds = [...firstRow.querySelectorAll('td')];
@@ -1600,20 +1610,36 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         if (dist < bestDist) { bestDist = dist; bestIdx = i; }
       }
 
+      // ─────────────────────────────────────────────────────────────────
+      // 4. VALIDAÇÃO CRUZADA: confirma que o th da coluna escolhida bate
+      //    com o nome esperado. Proteção dupla contra erro silencioso.
+      // ─────────────────────────────────────────────────────────────────
+      const allThsInTable = [...targetTable.querySelectorAll('thead th')];
+      const tdChosenCX    = tds[bestIdx].getBoundingClientRect().left + tds[bestIdx].getBoundingClientRect().width / 2;
+      const confirmTh     = allThsInTable.find(th => {
+        const r = th.getBoundingClientRect();
+        return Math.abs((r.left + r.width / 2) - tdChosenCX) < 35;
+      });
+      const confirmNome = confirmTh ? norm(confirmTh.textContent || '') : '';
+      const confirmOk   = confirmNome.includes(alvo) || alvo.includes(confirmNome.replace(/[^a-z0-9 ]/g, '').trim());
+
       return {
-        idx:      bestIdx,
-        thFound:  targetTh.textContent?.trim(),
-        thCenterX: Math.round(thCenterX),
-        tdCount:  tds.length,
-        bestDist: Math.round(bestDist),
-        via:      'bounding-rect',
+        idx:        bestIdx,
+        thFound:    targetTh.textContent?.trim(),
+        confirmTh:  confirmTh?.textContent?.trim() || '(não confirmado)',
+        confirmOk,
+        thCenterX:  Math.round(thCenterX),
+        tdCount:    tds.length,
+        bestDist:   Math.round(bestDist),
+        via:        'bounding-rect-same-table',
         debug,
       };
     }, plano.nomeColuna);
 
     console.log(`[educadf.notas] Coluna "${plano.nomeColuna}" → td[${colunaIdx.idx}] via ${colunaIdx.via || 'global'}`);
-    if (colunaIdx.debug) {
+    if (colunaIdx.thCenterX !== undefined) {
       console.log(`  thCenterX=${colunaIdx.thCenterX}px | tdCount=${colunaIdx.tdCount} | bestDist=${colunaIdx.bestDist}px`);
+      console.log(`  confirmTh="${colunaIdx.confirmTh}" | confirmOk=${colunaIdx.confirmOk}`);
     }
 
     if (colunaIdx.idx < 0) {
@@ -1623,6 +1649,17 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         `Motivo: ${colunaIdx.motivo}. ` +
         `Verifique se a Etapa 1 (exportar estrutura) foi realizada. ` +
         `Cabeçalhos disponíveis: ${dispStr}`
+      );
+    }
+
+    // ── FAIL-SAFE: aborta se a validação cruzada falhar ──────────────────
+    // Garante que nunca lançamos notas na coluna errada silenciosamente.
+    if (colunaIdx.confirmOk === false) {
+      throw new Error(
+        `VALIDAÇÃO CRUZADA FALHOU: esperava coluna "${plano.nomeColuna}" ` +
+        `mas td[${colunaIdx.idx}] corresponde ao th "${colunaIdx.confirmTh}". ` +
+        `Exportação ABORTADA para evitar notas na coluna errada. ` +
+        `Revise a estrutura do diário no EDUCADF.`
       );
     }
 
