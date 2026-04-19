@@ -38,16 +38,67 @@ import { LOGIN, TIMING } from './educadf.selectors.js';
 // ============================================================================
 async function dismissCookieBanner(session, page) {
   try {
-    // CORREÇÃO: verificação rápida se o banner está presente (≤500ms).
-    // Evita 5s de delay fixo quando o banner já foi aceito (cookie salvo).
-    const bannerEl = await page.$('.cookies-banner, [class*="cookie"], [class*="lgpd"], [class*="consent"]')
-      .catch(() => null);
+    // EDUCADF migrou o banner de cookies para ngb-offcanvas (Angular Bootstrap).
+    // O seletor agora deve incluir a tag do backdrop do offcanvas.
+    const BANNER_SELECTOR = [
+      'ngb-offcanvas-backdrop',
+      '.offcanvas-backdrop',
+      '.cookies-banner',
+      '[class*="cookie"]',
+      '[class*="lgpd"]',
+      '[class*="consent"]',
+    ].join(', ');
+
+    const bannerEl = await page.$(BANNER_SELECTOR).catch(() => null);
 
     if (!bannerEl) {
-      console.log('[educadf.login] Banner de cookies não detectado — pulando dismiss (early exit).');
-      return; // sai imediatamente, sem nenhum delay
+      console.log('[educadf.login] Nenhum banner/overlay detectado — pulando dismiss (early exit).');
+      return;
     }
 
+    // ─ ngb-offcanvas detectado: fechar via botão close ou Escape ─────────
+    const isOffcanvas = await page.$('ngb-offcanvas-backdrop, .offcanvas-backdrop').catch(() => null);
+    if (isOffcanvas) {
+      console.log('[educadf.login] ngb-offcanvas detectado (cookie consent angular) — fechando...');
+      try {
+        // Tenta clicar no botão de fechar dentro do offcanvas
+        const closeBtn = await page.$(
+          'ngb-offcanvas .btn-close, .offcanvas .btn-close, button[aria-label="Close"], button[aria-label="Fechar"]'
+        ).catch(() => null);
+
+        if (closeBtn) {
+          await closeBtn.click().catch(() => {});
+          console.log('[educadf.login] Offcanvas fechado via btn-close.');
+        } else {
+          // Busca qualquer botão "Aceitar" dentro do offcanvas via JS (bypassa pointer events)
+          const aceitoViaJS = await page.evaluate(() => {
+            const within = document.querySelector('ngb-offcanvas, .offcanvas');
+            const btns = within
+              ? [...within.querySelectorAll('button, a, .btn, [role="button"]')]
+              : [...document.querySelectorAll('ngb-offcanvas button, .offcanvas button')];
+            const aceitar = btns.find(el => {
+              const t = (el.textContent ?? '').trim().toLowerCase();
+              return t === 'aceitar' || t === 'aceito' || t === 'concordo' || t === 'ok';
+            });
+            if (aceitar) { aceitar.click(); return true; }
+            return false;
+          });
+
+          if (!aceitoViaJS) {
+            // Último recurso: Escape fecha o offcanvas
+            await page.keyboard.press('Escape');
+            console.log('[educadf.login] Offcanvas fechado via tecla Escape.');
+          }
+        }
+        await session.delay(600);
+        await session.screenshot('depois_offcanvas_fechado');
+        return; // offcanvas tratado — não precisa do fluxo de cookie banner tradicional
+      } catch (offErr) {
+        console.warn('[educadf.login] Erro ao fechar offcanvas:', offErr.message);
+      }
+    }
+
+    // ─ Banner tradicional (não-offcanvas) ───────────────────────────
     // Banner presente: aguarda animação e tira screenshot
     await session.delay(800);
     await session.screenshot('antes_cookie_banner');
@@ -206,12 +257,41 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     // ====================================================================
     console.log('[educadf.login] 5/5 Clicando "Acessar"...');
 
-    // Tentar clicar no botão (primeiro pelo texto, depois pelo seletor CSS)
+    // PRE-FLIGHT: se ainda houver ngb-offcanvas-backdrop (overlay Angular), remove antes de clicar.
+    // Este é o motivo principal de falha: o backdrop intercepta pointer events do botão Acessar.
+    const backdropAtivo = await page.$('ngb-offcanvas-backdrop, .offcanvas-backdrop').catch(() => null);
+    if (backdropAtivo) {
+      console.log('[educadf.login] AVISO: ngb-offcanvas-backdrop ainda ativo antes do submit — forçando fechamento...');
+      await page.keyboard.press('Escape');
+      await session.delay(600);
+      // Remove via JS se Escape não fechou (offcanvas pode não responder a Escape)
+      await page.evaluate(() => {
+        document.querySelectorAll('ngb-offcanvas-backdrop, .offcanvas-backdrop').forEach(el => el.remove());
+        document.querySelectorAll('ngb-offcanvas, .offcanvas.show').forEach(el => el.remove());
+        document.body.classList.remove('offcanvas-backdrop', 'modal-open');
+      });
+      await session.delay(300);
+    }
+
+    // Tenta clicar no botão via texto → seletor CSS → JS direct click (bypassa pointer events)
+    let submitClicked = false;
     try {
       await session.safeClick(LOGIN.form.submitButton, { delay: 500 });
+      submitClicked = true;
     } catch {
-      // Fallback: botão por classe CSS
-      await session.safeClick(LOGIN.form.submitButtonAlt, { delay: 500 });
+      try {
+        await session.safeClick(LOGIN.form.submitButtonAlt, { delay: 300 });
+        submitClicked = true;
+      } catch { /* cai no JS click */ }
+    }
+
+    if (!submitClicked) {
+      // JS click direto: bypassa QUALQUER interceptação de pointer events (offcanvas, modal, backdrop)
+      console.log('[educadf.login] safeClick falhou — usando JS click direto no botão Acessar...');
+      await page.evaluate(() => {
+        const btn = document.querySelector('button.btn-success[type="submit"], button:not([disabled])');
+        if (btn) btn.click();
+      });
     }
 
     // ====================================================================
