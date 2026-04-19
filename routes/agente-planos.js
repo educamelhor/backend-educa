@@ -1,13 +1,13 @@
 // routes/agente-planos.js
 // ============================================================================
 // POST /api/agente-planos/:id/exportar-estrutura
-// Exporta a coluna "Avaliação Bimestral" de um PAP para o portal EDUCADF.
+// POST /api/agente-planos/:id/exportar-notas
 // ============================================================================
 
 import express from 'express';
 import { decrypt } from '../modules/agente/agente.crypt.js';
 import { EducaDFBrowser } from '../modules/agente/educadf/educadf.browser.js';
-import { exportarPAPEducaDF } from '../modules/agente/educadf/educadf.pap.js';
+import { exportarPAPEducaDF, exportarNotasEducaDF } from '../modules/agente/educadf/educadf.pap.js';
 
 const router = express.Router();
 
@@ -246,6 +246,190 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       ok: false,
       error: `Erro interno: ${err.message}`,
     });
+  }
+});
+
+// ============================================================================
+// POST /api/agente-planos/:id/exportar-notas
+// ============================================================================
+router.post('/:id/exportar-notas', async (req, res) => {
+  const db       = req.db;
+  const planoId  = Number(req.params.id);
+  const escolaId = getEscolaId(req);
+  const usuarioId = getUserId(req);
+
+  try {
+    if (!planoId || !escolaId || !usuarioId) {
+      return res.status(400).json({ ok: false, error: 'Parâmetros inválidos.' });
+    }
+
+    // ── Garante coluna agente_notas_exportadas_em ─────────────────────────
+    try {
+      const [[col]] = await db.query(`
+        SELECT COUNT(*) as cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME   = 'planos_avaliacao'
+          AND COLUMN_NAME  = 'agente_notas_exportadas_em'
+      `);
+      if (!col || col.cnt === 0) {
+        await db.query(`ALTER TABLE planos_avaliacao ADD COLUMN agente_notas_exportadas_em DATETIME DEFAULT NULL`);
+        console.log('[agente-planos] Coluna agente_notas_exportadas_em adicionada.');
+      }
+    } catch (e) { console.warn('[agente-planos] ensureNotasField:', e.message); }
+
+    // ── 1. Busca plano ────────────────────────────────────────────────────
+    const [[plano]] = await db.query(
+      `SELECT * FROM planos_avaliacao WHERE id = ? AND escola_id = ?`,
+      [planoId, escolaId]
+    );
+
+    if (!plano) return res.status(404).json({ ok: false, error: 'Plano não encontrado.' });
+
+    if (plano.status !== 'APROVADO' && plano.status !== 'ENVIADO') {
+      return res.status(400).json({
+        ok: false,
+        error: `Apenas planos APROVADOS ou ENVIADOS podem ter notas exportadas. Status: ${plano.status}`,
+      });
+    }
+
+    if (!plano.agente_exportado_em) {
+      return res.status(422).json({
+        ok: false,
+        error: 'A estrutura ainda não foi exportada (Etapa 1). Execute a Etapa 1 primeiro.',
+      });
+    }
+
+    // ── 2. Busca item bimestral ───────────────────────────────────────────
+    const [itens] = await db.query(
+      `SELECT * FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC`, [planoId]
+    );
+    const itemBimestral = (itens || []).find(i => i.fixo_direcao);
+    if (!itemBimestral) {
+      return res.status(422).json({
+        ok: false,
+        error: 'Plano não possui item de Avaliação Bimestral (fixo_direcao).',
+      });
+    }
+
+    // item_idx = posição base-0 dentro do plano
+    const itemIdx = itens.findIndex(i => i.id === itemBimestral.id);
+
+    // ── 3. Busca turma_id pelo nome ───────────────────────────────────────
+    let turmaId = null;
+    try {
+      const [[t]] = await db.query(
+        `SELECT id FROM turmas WHERE escola_id = ? AND nome = ? LIMIT 1`,
+        [escolaId, plano.turmas]
+      );
+      turmaId = t?.id || null;
+    } catch {}
+
+    // ── 4. Busca alunos com notas na coluna bimestral ─────────────────────
+    let alunosComNotas = [];
+    try {
+      // Via notas_diario (tabela do diário)
+      const [rows] = await db.query(`
+        SELECT
+          a.codigo   AS re,
+          a.estudante AS nome,
+          nd.nota
+        FROM notas_diario nd
+        JOIN alunos a ON a.id = nd.aluno_id
+        WHERE nd.plano_id    = ?
+          AND nd.item_idx    = ?
+          AND nd.nota        IS NOT NULL
+        ORDER BY a.estudante ASC
+      `, [planoId, itemIdx]);
+      alunosComNotas = rows || [];
+    } catch (e) {
+      console.warn('[agente-planos] Erro ao buscar notas_diario:', e.message);
+    }
+
+    if (!alunosComNotas.length) {
+      return res.status(422).json({
+        ok: false,
+        error: 'Nenhuma nota encontrada para este plano. Verifique se as notas foram lançadas.',
+      });
+    }
+
+    console.log(`[agente-planos] Exportar notas: plano=${planoId} | ${plano.turmas} | ${alunosComNotas.length} alunos com nota.`);
+
+    // ── 5. Busca nome do professor ────────────────────────────────────────
+    let professorNome = '';
+    try {
+      const [[prof]] = await db.query(
+        `SELECT u.nome FROM usuarios u JOIN planos_avaliacao p ON p.usuario_id = u.id WHERE p.id = ? LIMIT 1`,
+        [planoId]
+      );
+      professorNome = prof?.nome || '';
+    } catch {}
+
+    // ── 6. Credenciais ────────────────────────────────────────────────────
+    const cred = await buscarCredenciais(db, escolaId, usuarioId);
+    if (!cred) {
+      return res.status(422).json({ ok: false, error: 'Credenciais EDUCADF não configuradas.', codigo: 'SEM_CREDENCIAIS' });
+    }
+
+    let senhaPlain;
+    try {
+      senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+    } catch {
+      return res.status(422).json({ ok: false, error: 'Credenciais desatualizadas. Salve novamente.', codigo: 'CREDENCIAIS_CORROMPIDAS' });
+    }
+
+    const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
+    const perfil = PERFIL_MAP[cred.perfil_id] || 'professor';
+
+    // ── 7. Dados para o Playwright ────────────────────────────────────────
+    const dadosPlano = {
+      turmas:       plano.turmas,
+      disciplina:   plano.disciplina,
+      bimestre:     plano.bimestre,
+      ano:          plano.ano,
+      professorNome,
+      nomeColuna:   itemBimestral.atividade, // ex: "Prova Bimestral"
+      alunos:       alunosComNotas.map(a => ({
+        re:   String(a.re || ''),
+        nome: String(a.nome || ''),
+        nota: a.nota !== null && a.nota !== undefined ? Number(a.nota) : null,
+      })),
+    };
+
+    // ── 8. Playwright ─────────────────────────────────────────────────────
+    let resultado;
+    try {
+      resultado = await EducaDFBrowser.withSession(
+        async (session) => exportarNotasEducaDF(session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano),
+        { escolaId, professorId: usuarioId, headless: true }
+      );
+    } catch (err) {
+      console.error('[agente-planos] Erro no Playwright (notas):', err.message);
+      return res.status(500).json({ ok: false, error: `Erro na automação: ${err.message}` });
+    }
+
+    // ── 9. Atualiza banco ─────────────────────────────────────────────────
+    if (resultado.ok) {
+      await db.query(
+        `UPDATE planos_avaliacao SET agente_notas_exportadas_em = NOW() WHERE id = ?`,
+        [planoId]
+      ).catch(e => console.warn('[agente-planos] Erro ao marcar notas_exportadas_em:', e.message));
+      console.log(`[agente-planos] ✅ Notas id=${planoId} exportadas! (${resultado.totalPreenchidos} alunos)`);
+    } else {
+      console.warn(`[agente-planos] ❌ Notas id=${planoId} falhou: ${resultado.message}`);
+    }
+
+    return res.status(resultado.ok ? 200 : 502).json({
+      ok:               resultado.ok,
+      message:          resultado.message,
+      totalPreenchidos: resultado.totalPreenchidos,
+      totalErros:       resultado.totalErros,
+      error:            resultado.ok ? undefined : resultado.message,
+      durationMs:       resultado.durationMs,
+    });
+
+  } catch (err) {
+    console.error(`[agente-planos] ERRO exportar-notas (plano=${planoId}):`, err.message);
+    return res.status(500).json({ ok: false, error: `Erro interno: ${err.message}` });
   }
 });
 

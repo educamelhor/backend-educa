@@ -1316,4 +1316,344 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 // ⚠️  preencherDatePickerByLocator() REMOVIDA — digitação via teclado não atualiza o modelo Angular.
 // Usar exclusivamente: navegarCalendarioEClicarDia(page, dataStr)
 
-export default { exportarPAPEducaDF };
+// ============================================================================
+// EXPORTAR NOTAS — Etapa 2
+// ============================================================================
+// Fluxo idêntico ao exportarPAPEducaDF até a aba "Registro de Procedimentos
+// Avaliativos". A partir daí, localiza a coluna "Prova Bimestral" pelo header
+// da tabela e preenche a nota de cada aluno linha a linha.
+// ============================================================================
+
+/**
+ * @param {import('../educadf.browser.js').EducaDFSession} session
+ * @param {{ login: string, senha: string, perfil: string }} credenciais
+ * @param {{ turmas:string, disciplina:string, bimestre:string, ano:number,
+ *            professorNome:string, nomeColuna:string,
+ *            alunos: Array<{ re:string, nome:string, nota:number|null }> }} plano
+ */
+export async function exportarNotasEducaDF(session, credenciais, plano) {
+  const startedAt = Date.now();
+  const { page } = session;
+
+  console.log(`\n${'='.repeat(70)}`);
+  console.log(`[educadf.notas] INICIANDO exportação de notas`);
+  console.log(`  Turma:    ${plano.turmas}`);
+  console.log(`  Coluna:   ${plano.nomeColuna}`);
+  console.log(`  Alunos:   ${plano.alunos?.length || 0}`);
+  console.log(`${'='.repeat(70)}\n`);
+
+  try {
+    // ════════════════════════════════════════════════════════════════════
+    // PASSOS 1–6: idênticos ao exportarPAPEducaDF
+    // (Login → Diário de Classe → Filtros → Filtrar → Calendário → Aba)
+    // ════════════════════════════════════════════════════════════════════
+
+    // PASSO 1: Login
+    console.log('[educadf.notas] 1/7 Login...');
+    await loginEducaDF(page, credenciais.login, credenciais.senha, credenciais.perfil);
+    await session.screenshot('notas_01_login');
+
+    // PASSO 2: Navegar direto para o calendário
+    console.log('[educadf.notas] 2/7 Navegando para Diário de Classe → Calendário...');
+    await page.goto('https://educadf.se.df.gov.br/diario_classe/modulos/calendario', {
+      waitUntil: 'domcontentloaded', timeout: 60000,
+    });
+    await session.delay(3000);
+    await session.screenshot('notas_02_calendario');
+
+    // PASSO 3: Filtrar — Turma (obrigatório) + Professor + Componente (opcionais)
+    console.log(`[educadf.notas] 3/7 Filtros — Turma: "${plano.turmas}"`);
+
+    await selecionarNgSelect(page, 'Turma/Agrupamento', plano.turmas, 15000).catch(e =>
+      console.warn(`[educadf.notas] Turma falhou: ${e.message}`)
+    );
+    await session.delay(1000);
+
+    if (plano.professorNome) {
+      const componenteEducaDF = mapearDisciplina(plano.disciplina);
+      await selecionarNgSelect(page, 'Professor', plano.professorNome, 12000, nomesCorrespondem).catch(e =>
+        console.warn(`[educadf.notas] Professor falhou (não crítico): ${e.message}`)
+      );
+      await session.delay(800);
+      await selecionarNgSelect(page, 'Componente', componenteEducaDF, 10000).catch(e =>
+        console.warn(`[educadf.notas] Componente falhou (não crítico): ${e.message}`)
+      );
+      await session.delay(800);
+    }
+
+    await session.screenshot('notas_03_filtros');
+
+    // PASSO 4: Clicar Filtrar
+    console.log('[educadf.notas] 4/7 Clicando em Filtrar...');
+    await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 }).catch(e =>
+      console.warn(`[educadf.notas] Filtrar falhou: ${e.message}`)
+    );
+    await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+    await session.delay(3000);
+    await session.screenshot('notas_04_filtrado');
+
+    // Valida turma no calendário
+    const normStr = s => String(s).toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const turmaTkns = normStr(plano.turmas).split(' ').filter(t => t.length > 0);
+
+    const calConf = await page.evaluate(tkns => {
+      const evs = [...document.querySelectorAll('a.fc-event, .fc-event a, .fc-daygrid-event')];
+      if (!evs.length) return { ok: false, motivo: 'nenhum-evento', total: 0 };
+      const norm = s => String(s).toUpperCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      const ok = evs.some(ev => tkns.every(t => norm(ev.textContent || '').includes(t)));
+      return { ok, total: evs.length, motivo: ok ? 'ok' : 'turma-nao-encontrada' };
+    }, turmaTkns);
+
+    if (!calConf.ok) {
+      throw new Error(
+        `Calendário não confirmou a turma "${plano.turmas}" após Filtrar. ` +
+        `${calConf.motivo} | ${calConf.total} eventos.`
+      );
+    }
+    console.log(`[educadf.notas] ✅ Turma confirmada no calendário (${calConf.total} eventos).`);
+
+    // PASSO 5: Clicar num evento do calendário
+    console.log('[educadf.notas] 5/7 Clicando num evento do calendário...');
+    await session.delay(2000);
+    await removerBackdrops(page);
+
+    const compNorm  = normStr(mapearDisciplina(plano.disciplina));
+    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
+    const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
+    const fcEvs     = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
+    const total     = await fcEvs.count();
+
+    const okTurmaComp  = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c)); };
+    const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
+
+    let eventoClicado = false;
+    // Tentativa 1: turma + comp + bimestre
+    for (let i = 0; i < total && !eventoClicado; i++) {
+      const ev  = fcEvs.nth(i);
+      const txt = (await ev.textContent().catch(() => '')) || '';
+      if (!okTurmaComp(txt)) continue;
+      if (bimNum && !txt.includes(`${bimNum}º BIMESTRE`)) continue;
+      try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
+    }
+    // Tentativa 2: turma + comp
+    if (!eventoClicado) {
+      for (let i = 0; i < total && !eventoClicado; i++) {
+        const ev  = fcEvs.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!okTurmaComp(txt)) continue;
+        try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
+      }
+    }
+    // Tentativa 3: só turma
+    if (!eventoClicado) {
+      for (let i = 0; i < total && !eventoClicado; i++) {
+        const ev  = fcEvs.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!okSoTurma(txt)) continue;
+        try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
+      }
+    }
+    if (!eventoClicado) throw new Error(`Nenhum evento clicável para Turma="${plano.turmas}".`);
+
+    await session.delay(TIMING.navigationDelay);
+    await session.screenshot('notas_05_diario');
+
+    // PASSO 6: Aba "Registro de Procedimentos Avaliativos"
+    console.log('[educadf.notas] 6/7 Abrindo aba Registro de Procedimentos Avaliativos...');
+    await removerBackdrops(page);
+
+    let abaClicada = false;
+    for (const texto of [
+      'Registro de Procedimentos Avaliativos',
+      'Registro de Procedimento Avaliativos',
+      'Registro de Procedimento Avaliativo',
+      'Procedimentos Avaliativos',
+    ]) {
+      try {
+        const loc = page.locator(`a:has-text('${texto}'), [role="tab"]:has-text('${texto}')`).first();
+        if (await loc.count() > 0) { await loc.click({ timeout: 15000 }); abaClicada = true; break; }
+      } catch {}
+    }
+    if (!abaClicada) {
+      const jsClick = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+          const t = l.textContent?.toLowerCase() || '';
+          return t.includes('procedimento') && t.includes('avaliativo');
+        });
+        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return el.textContent?.trim(); }
+        return null;
+      });
+      if (jsClick) abaClicada = true;
+    }
+    if (!abaClicada) throw new Error('Aba "Registro de Procedimentos Avaliativos" não encontrada.');
+
+    await session.delay(TIMING.navigationDelay);
+    await removerBackdrops(page);
+    await session.screenshot('notas_06_procedimentos');
+
+    // ════════════════════════════════════════════════════════════════════
+    // PASSO 7 — INSERIR NOTAS NA COLUNA "Prova Bimestral"
+    // ════════════════════════════════════════════════════════════════════
+    console.log(`\n[educadf.notas] 7/7 Inserindo notas na coluna "${plano.nomeColuna}"...`);
+
+    // 7a. Descobre o índice da coluna pelo texto do header <th>
+    const colunaIdx = await page.evaluate((nomeCol) => {
+      const norm = s => String(s).toLowerCase().trim().replace(/\s+/g, ' ');
+      const alvo  = norm(nomeCol);
+      const ths   = [...document.querySelectorAll('table th, thead th')];
+      let idx = -1;
+      let thCount = 0;
+      for (const th of ths) {
+        const txt = norm(th.textContent || '');
+        if (txt.includes(alvo) || alvo.includes(txt.replace(/[^a-z0-9 ]/g, '').trim())) {
+          idx = thCount;
+          break;
+        }
+        thCount++;
+      }
+      return { idx, total: thCount };
+    }, plano.nomeColuna);
+
+    console.log(`[educadf.notas] Coluna "${plano.nomeColuna}" → index ${colunaIdx.idx} (de ${colunaIdx.total} colunas)`);
+
+    if (colunaIdx.idx < 0) {
+      throw new Error(
+        `Coluna "${plano.nomeColuna}" não encontrada na tabela. ` +
+        `Verifique se a Etapa 1 (exportar estrutura) foi realizada para esta turma/bimestre.`
+      );
+    }
+
+    await session.screenshot('notas_07a_tabela');
+
+    // 7b. Para cada aluno, localiza a linha pelo RE ou nome e preenche o input
+    let totalPreenchidos = 0;
+    let totalErros       = 0;
+
+    for (const aluno of (plano.alunos || [])) {
+      if (aluno.nota === null || aluno.nota === undefined) {
+        console.log(`  → [${aluno.re || aluno.nome}] sem nota — pulando`);
+        continue;
+      }
+
+      const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ','); // "3,5"
+
+      // Localiza a linha pelo RE (código do aluno) ou pelo nome
+      const preenchido = await page.evaluate(({ re, nome, colIdx, nota }) => {
+        const norm = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+        const rows = [...document.querySelectorAll('table tbody tr, tbody tr')];
+
+        for (const row of rows) {
+          const cells = [...row.querySelectorAll('td')];
+          if (!cells.length) continue;
+
+          // Procura o RE na primeira ou segunda célula
+          const reCell   = cells[0]?.textContent?.trim();
+          const nomeCell = cells.map(c => c.textContent?.trim()).join(' ');
+
+          const reMatch   = re && reCell === String(re);
+          const nomeMatch = nome && norm(nomeCell).includes(norm(nome));
+
+          if (!reMatch && !nomeMatch) continue;
+
+          // Pega a célula da coluna de nota
+          const tdNota = cells[colIdx];
+          if (!tdNota) return { ok: false, motivo: `célula ${colIdx} não existe (max ${cells.length})` };
+
+          // Procura input na célula
+          const input = tdNota.querySelector('input[type="text"], input[type="number"], input');
+          if (!input) {
+            // Alguns portais usam div/span clicável — tenta clicar para revelar o input
+            const clickable = tdNota.querySelector('[contenteditable], [ng-model], span, div');
+            if (clickable) clickable.click();
+            const inputApos = tdNota.querySelector('input');
+            if (!inputApos) return { ok: false, motivo: 'input não encontrado na célula' };
+
+            // Preenche via events
+            inputApos.focus();
+            inputApos.value = nota;
+            inputApos.dispatchEvent(new Event('input', { bubbles: true }));
+            inputApos.dispatchEvent(new Event('change', { bubbles: true }));
+            inputApos.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+            return { ok: true, via: 'input-após-click' };
+          }
+
+          input.scrollIntoView({ block: 'center' });
+          input.focus();
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.value = nota;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+          return { ok: true, via: 'direct-input' };
+        }
+
+        return { ok: false, motivo: `aluno RE="${re}" / nome="${nome}" não encontrado na tabela` };
+      }, { re: aluno.re, nome: aluno.nome, colIdx: colunaIdx.idx, nota: notaStr });
+
+      if (preenchido.ok) {
+        totalPreenchidos++;
+        console.log(`  ✔ ${String(aluno.nome).padEnd(45)} RE=${aluno.re || '?'}  nota=${notaStr}  (${preenchido.via})`);
+        await page.waitForTimeout(300); // pequena pausa entre linhas para Angular processar
+      } else {
+        totalErros++;
+        console.warn(`  ⚠️  ${aluno.nome} → ${preenchido.motivo}`);
+      }
+    }
+
+    await session.screenshot('notas_07b_pos_preenchimento');
+
+    // 7c. Salva as notas — procura botão Salvar na página
+    console.log('[educadf.notas] Salvando notas...');
+    const salvou = await page.evaluate(() => {
+      const bots = [...document.querySelectorAll('button.btn-success, button.btn-primary, button')];
+      const btn  = bots.find(b => {
+        const t = (b.textContent || '').toLowerCase().trim();
+        return t.includes('salvar') || t.includes('confirmar') || t.includes('gravar');
+      });
+      if (btn) {
+        btn.scrollIntoView({ block: 'center' });
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return btn.textContent?.trim();
+      }
+      return null;
+    });
+
+    if (salvou) {
+      console.log(`[educadf.notas] Salvar clicado: "${salvou}"`);
+    } else {
+      console.warn('[educadf.notas] ⚠️ Botão Salvar não encontrado — as notas podem precisar ser salvas manualmente ou são salvas automaticamente (Angular).');
+    }
+
+    await session.delay(3000);
+    await session.screenshot('notas_08_finalizado');
+
+    const ok = totalPreenchidos > 0;
+    console.log(`\n[educadf.notas] ✅ Concluído: ${totalPreenchidos} notas preenchidas, ${totalErros} erros.`);
+
+    return {
+      ok,
+      totalPreenchidos,
+      totalErros,
+      message: ok
+        ? `${totalPreenchidos} notas exportadas para EDUCADF — ${plano.turmas} · ${plano.bimestre}.`
+        : `Nenhuma nota foi exportada. ${totalErros} erros.`,
+      durationMs: Date.now() - startedAt,
+    };
+
+  } catch (err) {
+    await session.screenshot('notas_erro').catch(() => {});
+    console.error(`[educadf.notas] ❌ Erro: ${err.message}`);
+    return {
+      ok: false,
+      message: `Erro durante exportação de notas: ${err.message}`,
+      durationMs: Date.now() - startedAt,
+      errorCode: 'NOTAS_EXPORT_ERROR',
+    };
+  }
+}
+
+export default { exportarPAPEducaDF, exportarNotasEducaDF };
