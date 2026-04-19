@@ -361,48 +361,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 2: Menu lateral → "Diário de Classe"
-    // Tenta múltiplos seletores antes de usar JS como fallback.
+    // Baseado no Python: span:text-is('Matrícula') → aqui é span:"Diário de Classe"
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 2/7 Clicando em "Diário de Classe" na sidebar...');
-    {
-      const seletoresDiario = [
-        "span:text-is('Diário de Classe')",
-        "a:text-is('Diário de Classe')",
-        "a:has-text('Diário de Classe')",
-        "li:has-text('Diário de Classe') a",
-        "[class*='menu'] :text('Diário de Classe')",
-      ];
-      let diarioClicado = false;
-      for (const sel of seletoresDiario) {
-        try {
-          const loc = page.locator(sel).first();
-          if ((await loc.count()) > 0) {
-            await loc.click({ timeout: 5000 });
-            console.log(`[educadf.pap] ✅ "Diário de Classe" via: ${sel}`);
-            diarioClicado = true;
-            break;
-          }
-        } catch { /* tenta próximo */ }
-      }
-      // Fallback JS: procura qualquer elemento com o texto exato
-      if (!diarioClicado) {
-        const jsOk = await page.evaluate(() => {
-          const all = [...document.querySelectorAll('a, span, li, button')];
-          const el = all.find(e => e.textContent?.trim() === 'Diário de Classe');
-          if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
-          // tenta contains
-          const el2 = all.find(e => e.textContent?.includes('Diário de Classe'));
-          if (el2) { el2.scrollIntoView({ block: 'center' }); el2.click(); return true; }
-          return false;
-        });
-        if (jsOk) {
-          console.log('[educadf.pap] ✅ "Diário de Classe" via JS fallback.');
-          diarioClicado = true;
-        }
-      }
-      if (!diarioClicado) {
-        throw new Error('Item "Diário de Classe" não encontrado na sidebar do EDUCADF. Verifique se o login foi bem-sucedido e o menu lateral está visível.');
-      }
+    try {
+      // Tenta via span (mesmo padrão do Python para "Matrícula")
+      await page.locator("span:text-is('Diário de Classe')").first().click({ timeout: 8000 });
+    } catch {
+      // Fallback: link
+      await page.locator("a:has-text('Diário de Classe')").first().click({ timeout: 8000 });
     }
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_02_diario_classe');
