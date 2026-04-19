@@ -1348,47 +1348,92 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // (Login → Diário de Classe → Filtros → Filtrar → Calendário → Aba)
     // ════════════════════════════════════════════════════════════════════
 
-    // PASSO 1: Login
+    // PASSO 1: Login (mesmo padrão exato da Etapa 1)
     console.log('[educadf.notas] 1/7 Login...');
-    await loginEducaDF(page, credenciais.login, credenciais.senha, credenciais.perfil);
+    const loginResult = await loginEducaDF(session, credenciais);
+    if (!loginResult.ok) {
+      return { ok: false, message: `Falha no login: ${loginResult.message}`, durationMs: Date.now() - startedAt };
+    }
     await session.screenshot('notas_01_login');
+    await removerBackdrops(page);
+    await session.delay(TIMING.postLoginDelay);
 
-    // PASSO 2: Navegar direto para o calendário
-    console.log('[educadf.notas] 2/7 Navegando para Diário de Classe → Calendário...');
-    await page.goto('https://educadf.se.df.gov.br/diario_classe/modulos/calendario', {
-      waitUntil: 'domcontentloaded', timeout: 60000,
-    });
-    await session.delay(3000);
+    // PASSO 2: Navega direto para o Calendário (como na Etapa 1)
+    console.log('[educadf.notas] 2/7 Navegando direto para Diário de Classe → Calendário...');
+    await session.navigateTo('https://educadf.se.df.gov.br/diario_classe/modulos/calendario');
+    await session.delay(TIMING.navigationDelay);
+    await removerBackdrops(page);
     await session.screenshot('notas_02_calendario');
 
-    // PASSO 3: Filtrar — Turma (obrigatório) + Professor + Componente (opcionais)
-    console.log(`[educadf.notas] 3/7 Filtros — Turma: "${plano.turmas}"`);
+    // PASSO 3: Filtros — idêntico ao da Etapa 1
+    const componenteEducaDF = mapearDisciplina(plano.disciplina);
+    console.log(`[educadf.notas] 3/7 Aplicando filtros — Turma: "${plano.turmas}" | Componente: ${componenteEducaDF}`);
 
-    await selecionarNgSelect(page, 'Turma/Agrupamento', plano.turmas, 15000).catch(e =>
-      console.warn(`[educadf.notas] Turma falhou: ${e.message}`)
+    // Aguarda os ng-selects carregarem (Angular pode demorar)
+    await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
+      console.warn('[educadf.notas] ng-select não apareceu em 15s — tentando assim mesmo...')
     );
-    await session.delay(1000);
+    await page.waitForTimeout(1000);
 
+    // ── Turma (OBRIGATÓRIO) — múltiplos placeholders alternativos ──────────
+    const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
+    let turmaOk = false;
+    for (const ph of placeholdersTurma) {
+      const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+      if (exists) {
+        console.log(`[educadf.notas] Filtro Turma encontrado com placeholder: "${ph}"`);
+        turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+        if (turmaOk) break;
+      }
+    }
+    if (!turmaOk) {
+      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a página carregou corretamente.`);
+    }
+    await page.waitForTimeout(800);
+
+    // ── Professor (não crítico — fuzzy match) ────────────────────────────────
     if (plano.professorNome) {
-      const componenteEducaDF = mapearDisciplina(plano.disciplina);
-      await selecionarNgSelect(page, 'Professor', plano.professorNome, 12000, nomesCorrespondem).catch(e =>
-        console.warn(`[educadf.notas] Professor falhou (não crítico): ${e.message}`)
-      );
-      await session.delay(800);
-      await selecionarNgSelect(page, 'Componente', componenteEducaDF, 10000).catch(e =>
-        console.warn(`[educadf.notas] Componente falhou (não crítico): ${e.message}`)
-      );
-      await session.delay(800);
+      const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
+      let profOk = false;
+      for (const ph of placeholdersProfessor) {
+        const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+        if (exists) {
+          console.log(`[educadf.notas] Filtro Professor encontrado com placeholder: "${ph}"`);
+          profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
+          if (profOk) break;
+        }
+      }
+      if (!profOk) console.warn('[educadf.notas] ⚠️ ng-select Professor não encontrado — continuando sem filtrar professor');
+    }
+    await page.waitForTimeout(800);
+
+    // ── Componente (não crítico) ───────────────────────────────────────────
+    if (componenteEducaDF) {
+      const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
+      let compOk = false;
+      for (const ph of placeholdersComp) {
+        const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+        if (exists) {
+          console.log(`[educadf.notas] Filtro Componente encontrado com placeholder: "${ph}"`);
+          compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
+          if (compOk) break;
+        }
+      }
+      if (!compOk) console.warn(`[educadf.notas] ⚠️ Componente "${componenteEducaDF}" não selecionado — continuando`);
     }
 
     await session.screenshot('notas_03_filtros');
 
-    // PASSO 4: Clicar Filtrar
+    // PASSO 4: Clicar Filtrar (mesmo padrão Etapa 1)
     console.log('[educadf.notas] 4/7 Clicando em Filtrar...');
-    await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 }).catch(e =>
-      console.warn(`[educadf.notas] Filtrar falhou: ${e.message}`)
-    );
-    await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+    try {
+      await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() =>
+        console.warn('[educadf.notas] domcontentloaded timeout após Filtrar — continuando...')
+      );
+    } catch (filtrarErr) {
+      console.warn(`[educadf.notas] Botão Filtrar não encontrado ou falhou: ${filtrarErr.message}`);
+    }
     await session.delay(3000);
     await session.screenshot('notas_04_filtrado');
 
