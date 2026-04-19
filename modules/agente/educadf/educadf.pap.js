@@ -375,78 +375,113 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
     return await _navegarCalendarioPopup(page, tDay, tMonth, tYear);
   }
 
-  // ── FALLBACK: Popup não existe — manipulação direta do input ──────────────
-  // O campo de data é provavelmente um input com formatação custom.
-  // Vamos limpar o input e preencher com o valor formatado, disparando os
-  // eventos que Angular precisa para atualizar o FormControl.
-  console.log('[educadf.pap] calendario: popup nao existe — usando manipulacao direta do input...');
+  // ── FALLBACK FLATPICKR: O input usa a classe flatpickr-input ──────────────
+  // O Flatpickr IGNORA mudanças manuais em input.value — mantém modelo interno.
+  // Única forma confiável: usar input._flatpickr.setDate(date, triggerChange).
+  console.log('[educadf.pap] calendario: popup ngb-datepicker nao existe — tentando via Flatpickr...');
 
-  const inputOk = await page.evaluate((novaData) => {
+  const fpResult = await page.evaluate((isoDate, formatted) => {
     const modal = document.querySelector('ngb-modal-window');
     if (!modal) return 'modal-not-found';
 
-    const allInputs = [...modal.querySelectorAll('input')];
-    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
-    if (!dateInp) return 'date-input-not-found';
-
-    const valorAntigo = dateInp.value;
-
-    // Foca o input
-    dateInp.focus();
-    dateInp.dispatchEvent(new Event('focus', { bubbles: true }));
-
-    // Tenta usar Object.getOwnPropertyDescriptor para bypassing Angular's setter
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value'
-    )?.set;
-
-    if (nativeInputValueSetter) {
-      nativeInputValueSetter.call(dateInp, novaData);
-    } else {
-      dateInp.value = novaData;
+    // Encontra o input do Flatpickr
+    const fpInput = modal.querySelector('.flatpickr-input, input.flatpickr-input');
+    if (!fpInput) {
+      // Fallback: qualquer input com valor de data
+      const allInputs = [...modal.querySelectorAll('input')];
+      const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+      if (!dateInp) return 'flatpickr-input-not-found';
     }
 
-    // Dispara eventos que Angular precisa para capturar a mudança
-    dateInp.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-    dateInp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-    dateInp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Tab' }));
-    dateInp.dispatchEvent(new Event('blur', { bubbles: true }));
+    const inp = fpInput || modal.querySelector('input');
+    const valorAntigo = inp.value;
 
-    return 'valor-antigo:' + valorAntigo + ' -> novo:' + dateInp.value;
-  }, dataFormatada);
-  console.log('[educadf.pap] calendario manipulacao direta: ' + inputOk);
+    // ── Estratégia 1: API Flatpickr direta ─────────────────────────────────
+    const fp = inp._flatpickr;
+    if (fp && typeof fp.setDate === 'function') {
+      // setDate(date, triggerChange, dateFormat)
+      // Usa a data ISO para parsing confiável
+      fp.setDate(isoDate, true);
+      return 'flatpickr-setDate:' + valorAntigo + ' -> ' + inp.value;
+    }
 
-  // Agora tenta também via Playwright keyboard (backup)
-  try {
-    // Procura o input e faz triple-click + type
-    const dateInputLocator = page.locator('ngb-modal-window input').first();
-    const allInputs = page.locator('ngb-modal-window input');
-    const inputCount = await allInputs.count();
-
-    for (let i = 0; i < inputCount; i++) {
-      const val = await allInputs.nth(i).inputValue().catch(() => '');
-      if (/\d{1,2}\s+\w{3}/.test(val)) {
-        await allInputs.nth(i).click({ clickCount: 3, force: true });
-        await page.waitForTimeout(200);
-        await page.keyboard.type(dataFormatada, { delay: 60 });
-        await page.waitForTimeout(300);
-        await page.keyboard.press('Tab');
-        await page.waitForTimeout(300);
-        console.log('[educadf.pap] calendario: keyboard type tambem executado como backup');
-        break;
+    // ── Estratégia 2: Procura Flatpickr em inputs vizinhos ─────────────────
+    // Flatpickr às vezes cria um input hidden e usa o visível como display
+    const allFpInputs = [...modal.querySelectorAll('.flatpickr-input')];
+    for (const fpi of allFpInputs) {
+      const fp2 = fpi._flatpickr;
+      if (fp2 && typeof fp2.setDate === 'function') {
+        fp2.setDate(isoDate, true);
+        return 'flatpickr-setDate-alt:' + valorAntigo + ' -> ' + fpi.value;
       }
     }
-  } catch (kbErr) {
-    console.warn('[educadf.pap] calendario: keyboard backup falhou: ' + kbErr.message);
+
+    // ── Estratégia 3: Fallback genérico (value + eventos) ──────────────────
+    // Se por algum motivo _flatpickr não existir
+    inp.focus();
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value'
+    )?.set;
+    if (nativeSetter) nativeSetter.call(inp, formatted);
+    else inp.value = formatted;
+
+    ['input', 'change', 'blur'].forEach(ev =>
+      inp.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
+    );
+    return 'fallback-value:' + valorAntigo + ' -> ' + inp.value;
+  }, `${tYear}-${String(tMonth + 1).padStart(2, '0')}-${String(tDay).padStart(2, '0')}`, dataFormatada);
+
+  console.log('[educadf.pap] calendario Flatpickr resultado: ' + fpResult);
+
+  // ── Verificação: Tenta também abrir o calendário visual do Flatpickr ─────
+  // O Flatpickr cria um div.flatpickr-calendar no body. Se existir, podemos
+  // clicar no dia diretamente como backup extra.
+  const calClickResult = await page.evaluate((dia, mes0, ano) => {
+    const cal = document.querySelector('.flatpickr-calendar.open, .flatpickr-calendar.animate');
+    if (!cal) return 'flatpickr-calendar-not-open';
+
+    // Navegar ao mês correto (se necessário)
+    const curMonthEl = cal.querySelector('.flatpickr-current-month select.flatpickr-monthDropdown-months, .cur-month');
+    const curYearEl = cal.querySelector('.flatpickr-current-month .numInputWrapper input.cur-year, input.cur-year');
+
+    if (curMonthEl && curYearEl) {
+      const curMonth = parseInt(curMonthEl.value);
+      const curYear = parseInt(curYearEl.value);
+
+      if (curMonth !== mes0 || curYear !== ano) {
+        if (curMonthEl.tagName === 'SELECT') {
+          curMonthEl.value = String(mes0);
+          curMonthEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        curYearEl.value = String(ano);
+        curYearEl.dispatchEvent(new Event('input', { bubbles: true }));
+        curYearEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+
+    // Clicar no dia
+    const days = [...cal.querySelectorAll('.flatpickr-day:not(.flatpickr-disabled)')];
+    for (const d of days) {
+      if (d.textContent.trim() === String(dia) && !d.classList.contains('prevMonthDay') && !d.classList.contains('nextMonthDay')) {
+        d.click();
+        return 'flatpickr-dia-clicado:' + dia;
+      }
+    }
+    return 'flatpickr-dia-not-found. Disponiveis: ' + days.map(d => d.textContent.trim()).join(',');
+  }, tDay, tMonth, tYear);
+
+  if (calClickResult !== 'flatpickr-calendar-not-open') {
+    console.log('[educadf.pap] calendario Flatpickr visual: ' + calClickResult);
   }
 
-  // Verifica se o valor mudou
+  // ── Verifica valor final ─────────────────────────────────────────────────
+  await page.waitForTimeout(500);
   const valorFinal = await page.evaluate(() => {
     const modal = document.querySelector('ngb-modal-window');
     if (!modal) return 'modal-null';
-    const allInputs = [...modal.querySelectorAll('input')];
-    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
-    return dateInp?.value || 'input-null';
+    const fpInp = modal.querySelector('.flatpickr-input') ||
+                  [...modal.querySelectorAll('input')].find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+    return fpInp?.value || 'input-null';
   });
   console.log('[educadf.pap] calendario: valor final do input = "' + valorFinal + '"');
 
