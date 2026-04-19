@@ -498,29 +498,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(TIMING.postLoginDelay);
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 2: Menu lateral → "Diário de Classe"
-    // Baseado no Python: span:text-is('Matrícula') → aqui é span:"Diário de Classe"
+    // PASSO 2+3: Navega direto para o Calendário do Diário de Classe via URL.
+    // A sidebar Angular tem itens colapsados/submenus que causam timeout.
+    // Navegar direto via URL é determinístico e evita depender da sidebar.
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 2/7 Clicando em "Diário de Classe" na sidebar...');
-    try {
-      // Tenta via span (mesmo padrão do Python para "Matrícula")
-      await page.locator("span:text-is('Diário de Classe')").first().click({ timeout: 8000 });
-    } catch {
-      // Fallback: link
-      await page.locator("a:has-text('Diário de Classe')").first().click({ timeout: 8000 });
-    }
-    await session.delay(TIMING.navigationDelay);
-    await session.screenshot('pap_02_diario_classe');
-
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 3: Submenu → "Registro das Informações"
-    // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 3/7 Clicando em "Registro das Informações"...');
-    await page.locator("a:has-text('Registro das Informações')").first().click({ timeout: 8000 });
-    await page.waitForLoadState('domcontentloaded', { timeout: 30000 });
+    console.log('[educadf.pap] 2/7 Navegando direto para Diário de Classe → Calendário...');
+    await session.navigateTo('https://educadf.se.df.gov.br/diario_classe/modulos/calendario');
     await session.delay(TIMING.navigationDelay);
     await removerBackdrops(page);
-    await session.screenshot('pap_03_registro_informacoes');
+    await session.screenshot('pap_02_calendario');
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 4: Filtros laterais
