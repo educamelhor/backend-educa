@@ -1544,34 +1544,111 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // ════════════════════════════════════════════════════════════════════
     console.log(`\n[educadf.notas] 7/7 Inserindo notas na coluna "${plano.nomeColuna}"...`);
 
-    // 7a. Descobre o índice da coluna pelo texto do header <th>
+    // 7a. Descobre o índice td da coluna pelo alinhamento VISUAL (bounding rect)
+    // ─ A tabela do EDUCADF tem thead com múltiplas linhas (datas + nomes),
+    //   então contar <th> globalmente dá índice errado.
+    //   Solução: pegar o centro-X do <th> alvo e achar o <td> com posição mais próxima.
     const colunaIdx = await page.evaluate((nomeCol) => {
-      const norm = s => String(s).toLowerCase().trim().replace(/\s+/g, ' ');
-      const alvo  = norm(nomeCol);
-      const ths   = [...document.querySelectorAll('table th, thead th')];
-      let idx = -1;
-      let thCount = 0;
-      for (const th of ths) {
-        const txt = norm(th.textContent || '');
-        if (txt.includes(alvo) || alvo.includes(txt.replace(/[^a-z0-9 ]/g, '').trim())) {
-          idx = thCount;
-          break;
-        }
-        thCount++;
+      const norm = s => String(s).toLowerCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ');
+      const alvo = norm(nomeCol);
+
+      // 1. Acha o <th> que contém o texto da coluna
+      const allThs = [...document.querySelectorAll('table th, thead th')];
+      let targetTh = null;
+
+      // Busca exata primeiro, depois parcial
+      targetTh = allThs.find(th => norm(th.textContent || '') === alvo);
+      if (!targetTh) {
+        targetTh = allThs.find(th => norm(th.textContent || '').includes(alvo));
       }
-      return { idx, total: thCount };
+      if (!targetTh) {
+        targetTh = allThs.find(th => alvo.includes(norm(th.textContent || '').replace(/[^a-z0-9 ]/g, '').trim()));
+      }
+
+      if (!targetTh) {
+        return {
+          idx: -1,
+          motivo: 'th não encontrado',
+          disponiveis: allThs.slice(0, 20).map(t => norm(t.textContent || '').substring(0, 40)),
+        };
+      }
+
+      const thRect   = targetTh.getBoundingClientRect();
+      const thCenterX = thRect.left + thRect.width / 2;
+
+      // 2. Pega a primeira linha de dados do tbody
+      const firstRow = document.querySelector('table tbody tr, tbody tr');
+      if (!firstRow) {
+        return { idx: -1, motivo: 'nenhuma linha de dados encontrada', thFound: targetTh.textContent?.trim() };
+      }
+
+      const tds = [...firstRow.querySelectorAll('td')];
+      if (!tds.length) {
+        return { idx: -1, motivo: 'nenhuma td na primeira linha', thFound: targetTh.textContent?.trim() };
+      }
+
+      // 3. Acha o td cuja posição horizontal está mais próxima do centro do th
+      let bestIdx  = -1;
+      let bestDist = Infinity;
+      const debug  = [];
+      for (let i = 0; i < tds.length; i++) {
+        const rect    = tds[i].getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const dist    = Math.abs(centerX - thCenterX);
+        debug.push({ i, centerX: Math.round(centerX), dist: Math.round(dist) });
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+
+      return {
+        idx:      bestIdx,
+        thFound:  targetTh.textContent?.trim(),
+        thCenterX: Math.round(thCenterX),
+        tdCount:  tds.length,
+        bestDist: Math.round(bestDist),
+        via:      'bounding-rect',
+        debug,
+      };
     }, plano.nomeColuna);
 
-    console.log(`[educadf.notas] Coluna "${plano.nomeColuna}" → index ${colunaIdx.idx} (de ${colunaIdx.total} colunas)`);
+    console.log(`[educadf.notas] Coluna "${plano.nomeColuna}" → td[${colunaIdx.idx}] via ${colunaIdx.via || 'global'}`);
+    if (colunaIdx.debug) {
+      console.log(`  thCenterX=${colunaIdx.thCenterX}px | tdCount=${colunaIdx.tdCount} | bestDist=${colunaIdx.bestDist}px`);
+    }
 
     if (colunaIdx.idx < 0) {
+      const dispStr = (colunaIdx.disponiveis || []).join(' | ');
       throw new Error(
         `Coluna "${plano.nomeColuna}" não encontrada na tabela. ` +
-        `Verifique se a Etapa 1 (exportar estrutura) foi realizada para esta turma/bimestre.`
+        `Motivo: ${colunaIdx.motivo}. ` +
+        `Verifique se a Etapa 1 (exportar estrutura) foi realizada. ` +
+        `Cabeçalhos disponíveis: ${dispStr}`
       );
     }
 
     await session.screenshot('notas_07a_tabela');
+
+    // ── Diagnóstico da estrutura da tabela (primeiras 3 linhas) ──────────
+    const diagnostico = await page.evaluate((colIdx) => {
+      const rows = [...document.querySelectorAll('table tbody tr, tbody tr')].slice(0, 3);
+      return rows.map(row => {
+        const cells = [...row.querySelectorAll('td')];
+        return {
+          totalCells: cells.length,
+          cell0: cells[0]?.textContent?.trim()?.substring(0, 30),
+          cell1: cells[1]?.textContent?.trim()?.substring(0, 30),
+          cell2: cells[2]?.textContent?.trim()?.substring(0, 40),
+          cellAlvo: cells[colIdx]
+            ? (cells[colIdx].innerHTML?.substring(0, 80) || '[vazio]')
+            : `[colIdx=${colIdx} fora do range]`,
+        };
+      });
+    }, colunaIdx.idx);
+
+    console.log('[educadf.notas] Diagnóstico das primeiras linhas da tabela:');
+    diagnostico.forEach((d, i) =>
+      console.log(`  Linha ${i}: cells=${d.totalCells} | cell[0]="${d.cell0}" | cell[1]="${d.cell1}" | cell[2]="${d.cell2}" | cell[alvo]="${d.cellAlvo?.substring(0, 60)}"`)
+    );
 
     // 7b. Para cada aluno, localiza a linha pelo RE ou nome e preenche o input
     let totalPreenchidos = 0;
@@ -1585,21 +1662,23 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
       const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ','); // "3,5"
 
-      // Localiza a linha pelo RE (código do aluno) ou pelo nome
+      // Localiza a linha pelo RE (qualquer célula) ou nome
       const preenchido = await page.evaluate(({ re, nome, colIdx, nota }) => {
-        const norm = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
-        const rows = [...document.querySelectorAll('table tbody tr, tbody tr')];
+        const norm     = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+        const normRE   = s => String(s || '').trim().replace(/^0+/, ''); // remove zeros à esquerda
+        const rows     = [...document.querySelectorAll('table tbody tr, tbody tr')];
+        const reNorm   = normRE(re);
 
         for (const row of rows) {
           const cells = [...row.querySelectorAll('td')];
           if (!cells.length) continue;
 
-          // Procura o RE na primeira ou segunda célula
-          const reCell   = cells[0]?.textContent?.trim();
-          const nomeCell = cells.map(c => c.textContent?.trim()).join(' ');
+          // Verifica RE em qualquer célula da linha (geralmente cell[0])
+          const reMatch = reNorm && cells.some(c => normRE(c.textContent?.trim() || '') === reNorm);
 
-          const reMatch   = re && reCell === String(re);
-          const nomeMatch = nome && norm(nomeCell).includes(norm(nome));
+          // Fallback: busca nome em qualquer célula
+          const rowText  = cells.map(c => c.textContent?.trim()).join(' ');
+          const nomeMatch = nome && norm(rowText).includes(norm(nome));
 
           if (!reMatch && !nomeMatch) continue;
 
@@ -1608,23 +1687,16 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           if (!tdNota) return { ok: false, motivo: `célula ${colIdx} não existe (max ${cells.length})` };
 
           // Procura input na célula
-          const input = tdNota.querySelector('input[type="text"], input[type="number"], input');
+          let input = tdNota.querySelector('input[type="text"], input[type="number"], input');
           if (!input) {
             // Alguns portais usam div/span clicável — tenta clicar para revelar o input
             const clickable = tdNota.querySelector('[contenteditable], [ng-model], span, div');
             if (clickable) clickable.click();
-            const inputApos = tdNota.querySelector('input');
-            if (!inputApos) return { ok: false, motivo: 'input não encontrado na célula' };
-
-            // Preenche via events
-            inputApos.focus();
-            inputApos.value = nota;
-            inputApos.dispatchEvent(new Event('input', { bubbles: true }));
-            inputApos.dispatchEvent(new Event('change', { bubbles: true }));
-            inputApos.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-            return { ok: true, via: 'input-após-click' };
+            input = tdNota.querySelector('input');
+            if (!input) return { ok: false, motivo: `input não encontrado na célula ${colIdx} (html: ${tdNota.innerHTML?.substring(0, 80)})` };
           }
 
+          // Preenche via events (Angular precisa de input + change + Tab)
           input.scrollIntoView({ block: 'center' });
           input.focus();
           input.value = '';
@@ -1632,11 +1704,16 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           input.value = nota;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-          return { ok: true, via: 'direct-input' };
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
+          return { ok: true, via: reMatch ? 're-match' : 'nome-match' };
         }
 
-        return { ok: false, motivo: `aluno RE="${re}" / nome="${nome}" não encontrado na tabela` };
+        // Não encontrou — retorna amostra de RE disponíveis para diagnóstico
+        const resSample = [...rows].slice(0, 5).map(r => {
+          const c = [...r.querySelectorAll('td')];
+          return c[0]?.textContent?.trim() || '?';
+        });
+        return { ok: false, motivo: `aluno não encontrado na tabela (RE buscado: "${reNorm}", primeiros REs: [${resSample.join(', ')}])` };
       }, { re: aluno.re, nome: aluno.nome, colIdx: colunaIdx.idx, nota: notaStr });
 
       if (preenchido.ok) {
