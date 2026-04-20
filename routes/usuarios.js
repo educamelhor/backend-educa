@@ -411,10 +411,9 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Usuário não identificado." });
     }
 
-    // p.foto (upload do professor) → u.foto (upload de usuário genérico)
-    // NOTA: a tabela professores NÃO tem coluna foto_url — usar apenas p.foto
+    // p.foto_url → p.foto → u.foto (mesma ordem de prioridade que auth.js/buscarFotoUsuario)
     const [rows] = await pool.query(
-      `SELECT COALESCE(p.foto, u.foto, '') AS foto_url
+      `SELECT COALESCE(p.foto_url, p.foto, u.foto, '') AS foto_url
        FROM usuarios u
        LEFT JOIN professores p
          ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
