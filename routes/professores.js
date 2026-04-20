@@ -567,34 +567,35 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
       return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
     }
 
-    // ✅ Estratégia híbrida (UNION):
-    // 1) disciplina_id estático em professores → cargo atual (ex: Português)
-    // 2) modulacao + turmas WHERE t.ano = anoLetivo → atribuições dinâmicas do ano
-    // Disciplinas de anos passados em modulacao NÃO aparecem.
+    // ✅ Fonte de verdade ÚNICA: modulacao + turmas.
+    // Usa MAX(t.ano) para pegar o ano letivo mais recente com dados reais — robusto
+    // mesmo se as turmas estiverem cadastradas como 2025 ou 2026.
+    // NÃO usa professores.disciplina_id pois essa tabela tem 1 linha por disciplina
+    // histórica do professor (não reflete o vínculo atual).
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
     const [rows] = await pool.query(
-      `SELECT DISTINCT id, nome FROM (
-         SELECT d.id AS id, d.nome AS nome
-         FROM professores p
-         JOIN disciplinas d ON d.id = p.disciplina_id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-           AND p.disciplina_id IS NOT NULL
-         UNION
-         SELECT DISTINCT d.id AS id, d.nome AS nome
-         FROM professores p
-         JOIN modulacao m   ON m.professor_id = p.id
-         JOIN turmas t      ON t.id = m.turma_id
-         JOIN disciplinas d ON d.id = m.disciplina_id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-           AND t.ano = ?
-           AND t.escola_id = ?
-       ) combined
+      `SELECT DISTINCT d.id AS id, d.nome AS nome
+       FROM professores p
+       JOIN modulacao m   ON m.professor_id = p.id
+       JOIN turmas t      ON t.id = m.turma_id
+       JOIN disciplinas d ON d.id = m.disciplina_id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND t.escola_id = ?
+         AND t.ano = (
+           SELECT MAX(t2.ano)
+           FROM turmas t2
+           JOIN modulacao m2 ON m2.turma_id = t2.id
+           JOIN professores p2 ON p2.id = m2.professor_id
+           WHERE p2.escola_id = ?
+             AND REPLACE(REPLACE(p2.cpf, '.', ''), '-', '') = ?
+         )
        ORDER BY nome ASC`,
-      [escolaId, cleanCpf, escolaId, cleanCpf, anoLetivo, escolaId]
+      [escolaId, cleanCpf, escolaId, escolaId, cleanCpf]
     );
+
+
 
 
 
