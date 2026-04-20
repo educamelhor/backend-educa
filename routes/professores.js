@@ -535,7 +535,8 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
 router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
-    const anoParam = req.query.ano ? Number(req.query.ano) : null;
+    const anoLetivo = req.query.ano ? Number(req.query.ano) : new Date().getFullYear();
+
 
     // 1) tenta cpf no token
     let cpf = req.user?.cpf;
@@ -566,53 +567,23 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
       return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
     }
 
-    const cleanCpf = String(cpf).replace(/\D/g, "");
-    // - Hoje seu modelo indica 1 disciplina por professor (professores.disciplina_id),
-    //   mas retornamos como ARRAY para já nascer compatível com múltiplas no futuro.
+    // ✅ Sempre filtra pelo ano letivo atual — elimina disciplinas históricas de anos anteriores.
+    // Fonte de verdade: tabela `modulacao` + `turmas` com t.ano = anoLetivo.
+    // O "modo legado" (UNION sem filtro de ano) foi removido por ser a causa-raiz do bug.
+    const [rows] = await pool.query(
+      `SELECT DISTINCT d.id AS id, d.nome AS nome
+       FROM professores p
+       JOIN modulacao m   ON m.professor_id = p.id
+       JOIN turmas t      ON t.id = m.turma_id
+       JOIN disciplinas d ON d.id = m.disciplina_id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND t.ano = ?
+         AND t.escola_id = ?
+       ORDER BY nome ASC`,
+      [escolaId, cleanCpf, anoLetivo, escolaId]
+    );
 
-
-
-
-
-
-    let rows;
-
-    if (anoParam) {
-      // Modo ANO-LETIVO: disciplinas SOMENTE das turmas do ano via modulação
-      // Ignora registros antigos de professores.disciplina_id (sem filtro de ano).
-      [rows] = await pool.query(
-        `SELECT DISTINCT d.id AS id, d.nome AS nome
-         FROM professores p
-         JOIN modulacao m   ON m.professor_id = p.id
-         JOIN turmas t      ON t.id = m.turma_id
-         JOIN disciplinas d ON d.id = m.disciplina_id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-           AND t.ano = ?
-           AND t.escola_id = ?
-         ORDER BY nome ASC`,
-        [escolaId, cleanCpf, anoParam, escolaId]
-      );
-    } else {
-      // Modo legado: comportamento original (sem filtro de ano)
-      [rows] = await pool.query(
-        `SELECT d.id AS id, d.nome AS nome
-         FROM professores p
-         JOIN disciplinas d ON d.id = p.disciplina_id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-           AND p.disciplina_id IS NOT NULL
-         UNION
-         SELECT d.id AS id, d.nome AS nome
-         FROM professores p
-         JOIN modulacao m ON m.professor_id = p.id
-         JOIN disciplinas d ON d.id = m.disciplina_id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-         ORDER BY nome ASC`,
-        [escolaId, cleanCpf, escolaId, cleanCpf]
-      );
-    }
 
     const disciplinas = Array.isArray(rows)
       ? rows
