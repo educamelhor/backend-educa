@@ -170,8 +170,8 @@ async function carregarRbac(usuarioId, escolaId) {
 
 
 /**
- * Busca a foto de perfil do usuário.
- * Tenta: professores.foto_url -> usuarios.foto -> string vazia.
+ * Busca a foto de perfil do usuário e retorna sempre URL pública completa (Spaces CDN).
+ * Tenta: professores.foto_url → professores.foto → usuarios.foto → string vazia.
  */
 async function buscarFotoUsuario(usuarioId, escolaId) {
   try {
@@ -186,7 +186,19 @@ async function buscarFotoUsuario(usuarioId, escolaId) {
        LIMIT 1`,
       [Number(usuarioId)]
     );
-    return row?.foto_url || '';
+
+    let fotoUrl = row?.foto_url || '';
+
+    // Converte path relativo (/uploads/...) em URL pública do Spaces/CDN
+    // O disco local é efêmero no DigitalOcean — as fotos ficam SEMPRE no Spaces
+    if (fotoUrl && !fotoUrl.startsWith('http')) {
+      const bucket = process.env.DO_SPACES_BUCKET || process.env.SPACES_BUCKET || 'educa-melhor-uploads';
+      const region = process.env.DO_SPACES_REGION || process.env.SPACES_REGION || 'nyc3';
+      const key = fotoUrl.replace(/^\/+/, '');
+      fotoUrl = `https://${bucket}.${region}.digitaloceanspaces.com/${key}`;
+    }
+
+    return fotoUrl;
   } catch {
     return '';
   }

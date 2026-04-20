@@ -423,7 +423,17 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
       [userId]
     );
 
-    const fotoUrl = rows?.[0]?.foto_url ? String(rows[0].foto_url) : "";
+    let fotoUrl = rows?.[0]?.foto_url ? String(rows[0].foto_url) : "";
+
+    // Converte path relativo (/uploads/...) em URL pública do Spaces/CDN
+    // O disco local é efêmero no DigitalOcean — as fotos ficam SEMPRE no Spaces
+    if (fotoUrl && !fotoUrl.startsWith("http")) {
+      const bucket = process.env.DO_SPACES_BUCKET || process.env.SPACES_BUCKET || "educa-melhor-uploads";
+      const region = process.env.DO_SPACES_REGION || process.env.SPACES_REGION || "nyc3";
+      const key = fotoUrl.replace(/^\/+/, "");
+      fotoUrl = `https://${bucket}.${region}.digitaloceanspaces.com/${key}`;
+    }
+
     return res.json({ foto_url: fotoUrl });
   } catch (err) {
     console.error("Erro ao buscar foto (usuarios/me/foto):", err);
