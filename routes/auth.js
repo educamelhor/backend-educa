@@ -506,11 +506,20 @@ router.post("/login", async (req, res) => {
     // ✅ DISPOSITIVO CONFIADO: se o frontend enviou um device_token válido, pula o OTP
     if (deviceTokenRaw) {
       const deviceHash = createHash("sha256").update(deviceTokenRaw, "utf8").digest("hex");
+
+      // ⚠️  IMPORTANTE: o device_token é salvo com usuario_ctx_id (linha específica do contexto),
+      // não com usuario.id (linha base do login). Para multi-escola, são IDs diferentes.
+      // Por isso buscamos pelo hash + CPF (via JOIN), não pelo usuario.id diretamente.
+      const cpfBase = String(usuario.cpf || "").replace(/\D/g, "");
       const [[dispositivo]] = await pool.query(
-        `SELECT id FROM dispositivos_confiados
-         WHERE token_hash = ? AND usuario_id = ? AND expira_em > NOW()
+        `SELECT dc.id, dc.usuario_id
+         FROM dispositivos_confiados dc
+         JOIN usuarios u2 ON u2.id = dc.usuario_id
+         WHERE dc.token_hash = ?
+           AND REPLACE(REPLACE(REPLACE(u2.cpf,'.',''),'-',''),'/','') = ?
+           AND dc.expira_em > NOW()
          LIMIT 1`,
-        [deviceHash, usuario.id]
+        [deviceHash, cpfBase]
       );
 
       if (dispositivo?.id) {
@@ -544,7 +553,7 @@ router.post("/login", async (req, res) => {
           [cpfLimpo, usuario.email || "", usuario.celular || ""]
         );
 
-        // Multi-escola: ainda precisa escolher o contexto
+        // Multi-escola: ainda precisa escolher o contexto (frontend mostrará seleção de escola)
         if (Array.isArray(escolasVinculadas) && escolasVinculadas.length > 1) {
           return res.json({
             dispositivo_confiado: true,
@@ -595,7 +604,7 @@ router.post("/login", async (req, res) => {
         const fotoUrl = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
         const cpfLoginLimpo = String(usuario.cpf || "").replace(/\D/g, "");
 
-        console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuario.id}, pulou OTP`);
+        console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuarioIdFinal}, pulou OTP`);
 
         return res.json({
           ok: true,
