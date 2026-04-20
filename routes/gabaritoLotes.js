@@ -1167,13 +1167,25 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
 
   try {
     // 1) Professores ativos (tabela professores)
-    //    JOIN com usuarios via CPF para pegar a foto do perfil de login
+    //    Agrupados por CPF para evitar duplicatas (um professor pode ter múltiplos
+    //    registros por disciplina/turno). Usa MIN(p.id) como ID canônico.
+    //    Retorna disciplinas concatenadas para exibição no modal.
     const [profs] = await pool.query(
-      `SELECT p.id, p.nome, COALESCE(p.foto, u.foto) AS foto, 'professor' AS perfil, p.status
+      `SELECT
+         MIN(p.id) AS id,
+         p.nome,
+         COALESCE(MIN(p.foto), MIN(u.foto)) AS foto,
+         'professor' AS perfil,
+         'ativo' AS status,
+         GROUP_CONCAT(DISTINCT d.nome ORDER BY d.nome SEPARATOR ', ') AS disciplina_nome,
+         MIN(p.turno) AS turno
        FROM professores p
-       LEFT JOIN usuarios u ON REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = REPLACE(REPLACE(p.cpf, '.', ''), '-', '')
+       LEFT JOIN usuarios u
+         ON REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = REPLACE(REPLACE(p.cpf, '.', ''), '-', '')
          AND u.escola_id = p.escola_id
+       LEFT JOIN disciplinas d ON d.id = p.disciplina_id
        WHERE p.escola_id = ? AND p.status = 'ativo'
+       GROUP BY REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), p.nome
        ORDER BY p.nome`,
       [escola_id]
     );
@@ -1198,8 +1210,8 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
     //    verificamos se eles também têm registro na tabela professores (mesmo CPF).
     const resultado = [];
 
-    // Adicionar professores da tabela professores
-    const idsAdicionados = new Set();
+    // Adicionar professores da tabela professores (já deduplicados via GROUP BY)
+    const nomesAdicionados = new Set();
     for (const p of profs) {
       resultado.push({
         id: p.id,
@@ -1207,12 +1219,13 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
         foto: spacesUrl(p.foto),
         perfil: "professor",
         status: p.status,
+        disciplina_nome: p.disciplina_nome || null,
+        turno: p.turno || null,
       });
-      idsAdicionados.add(p.id);
+      nomesAdicionados.add((p.nome || "").toUpperCase().trim());
     }
 
     // Adicionar outros usuários (evitar duplicatas — se o usuário já está como professor)
-    const nomesAdicionados = new Set(profs.map(p => (p.nome || "").toUpperCase().trim()));
     for (const u of usuarios) {
       const nomeUpper = (u.nome || "").toUpperCase().trim();
       if (nomesAdicionados.has(nomeUpper)) continue; // evitar duplicata
@@ -1231,6 +1244,8 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
         foto: spacesUrl(u.foto),
         perfil: u.perfil,
         status: "ativo",
+        disciplina_nome: null,
+        turno: null,
       });
       nomesAdicionados.add(nomeUpper);
     }
