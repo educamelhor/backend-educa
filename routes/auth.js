@@ -170,14 +170,13 @@ async function carregarRbac(usuarioId, escolaId) {
 
 
 /**
- * Busca a foto de perfil do usuário e retorna sempre URL pública completa (Spaces CDN).
- * Tenta: professores.foto_url → professores.foto → usuarios.foto → string vazia.
+ * Busca a foto de perfil do usuário e retorna URL pública completa (Spaces CDN).
+ * Usa p.foto (professores) → u.foto (usuarios).
  */
 async function buscarFotoUsuario(usuarioId, escolaId) {
   try {
     const [[row]] = await pool.query(
-      `SELECT
-         COALESCE(p.foto_url, p.foto, u.foto, '') AS foto_url
+      `SELECT COALESCE(p.foto, u.foto, '') AS foto_url
        FROM usuarios u
        LEFT JOIN professores p
          ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
@@ -189,8 +188,8 @@ async function buscarFotoUsuario(usuarioId, escolaId) {
 
     let fotoUrl = row?.foto_url || '';
 
-    // Converte path relativo (/uploads/...) em URL pública do Spaces/CDN
-    // O disco local é efêmero no DigitalOcean — as fotos ficam SEMPRE no Spaces
+    // Converte path relativo (/uploads/...) → URL pública do Spaces CDN
+    // Disco local é efêmero no DigitalOcean — fotos ficam SEMPRE no Spaces
     if (fotoUrl && !fotoUrl.startsWith('http')) {
       const bucket = process.env.DO_SPACES_BUCKET || process.env.SPACES_BUCKET || 'educa-melhor-uploads';
       const region = process.env.DO_SPACES_REGION || process.env.SPACES_REGION || 'nyc3';

@@ -411,9 +411,10 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Usuário não identificado." });
     }
 
-    // p.foto_url → p.foto → u.foto (mesma ordem de prioridade que auth.js/buscarFotoUsuario)
+    // Ordem de prioridade: p.foto (professores) → u.foto (usuarios)
+    // NOTA: usa p.foto (não p.foto_url) — coluna garantida no schema de produção
     const [rows] = await pool.query(
-      `SELECT COALESCE(p.foto_url, p.foto, u.foto, '') AS foto_url
+      `SELECT COALESCE(p.foto, u.foto, '') AS foto_url
        FROM usuarios u
        LEFT JOIN professores p
          ON REPLACE(REPLACE(p.cpf,'.',''),'-','') = REPLACE(REPLACE(u.cpf,'.',''),'-','')
@@ -425,8 +426,8 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
 
     let fotoUrl = rows?.[0]?.foto_url ? String(rows[0].foto_url) : "";
 
-    // Converte path relativo (/uploads/...) em URL pública do Spaces/CDN
-    // O disco local é efêmero no DigitalOcean — as fotos ficam SEMPRE no Spaces
+    // Converte path relativo (/uploads/...) → URL pública do Spaces CDN
+    // Disco local é efêmero no DigitalOcean — fotos ficam SEMPRE no Spaces
     if (fotoUrl && !fotoUrl.startsWith("http")) {
       const bucket = process.env.DO_SPACES_BUCKET || process.env.SPACES_BUCKET || "educa-melhor-uploads";
       const region = process.env.DO_SPACES_REGION || process.env.SPACES_REGION || "nyc3";
