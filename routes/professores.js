@@ -567,22 +567,35 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
       return res.status(400).json({ ok: false, message: "Token inválido: cpf/escola ausentes." });
     }
 
-    // ✅ Sempre filtra pelo ano letivo atual — elimina disciplinas históricas de anos anteriores.
-    // Fonte de verdade: tabela `modulacao` + `turmas` com t.ano = anoLetivo.
-    // O "modo legado" (UNION sem filtro de ano) foi removido por ser a causa-raiz do bug.
+    // ✅ Estratégia híbrida (UNION):
+    // 1) disciplina_id estático em professores → cargo atual (ex: Português)
+    // 2) modulacao + turmas WHERE t.ano = anoLetivo → atribuições dinâmicas do ano
+    // Disciplinas de anos passados em modulacao NÃO aparecem.
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
     const [rows] = await pool.query(
-      `SELECT DISTINCT d.id AS id, d.nome AS nome
-       FROM professores p
-       JOIN modulacao m   ON m.professor_id = p.id
-       JOIN turmas t      ON t.id = m.turma_id
-       JOIN disciplinas d ON d.id = m.disciplina_id
-       WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-         AND t.ano = ?
-         AND t.escola_id = ?
+      `SELECT DISTINCT id, nome FROM (
+         SELECT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN disciplinas d ON d.id = p.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+           AND p.disciplina_id IS NOT NULL
+         UNION
+         SELECT DISTINCT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN modulacao m   ON m.professor_id = p.id
+         JOIN turmas t      ON t.id = m.turma_id
+         JOIN disciplinas d ON d.id = m.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+           AND t.ano = ?
+           AND t.escola_id = ?
+       ) combined
        ORDER BY nome ASC`,
-      [escolaId, cleanCpf, anoLetivo, escolaId]
+      [escolaId, cleanCpf, escolaId, cleanCpf, anoLetivo, escolaId]
     );
+
 
 
     const disciplinas = Array.isArray(rows)
