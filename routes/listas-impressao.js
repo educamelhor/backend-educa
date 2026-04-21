@@ -1041,4 +1041,420 @@ router.get("/:turmaId", async (req, res) => {
   }
 });
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// LISTA DE NOTAS
+// ══════════════════════════════════════════════════════════════════════════
+
+// GET /api/listas-impressao/notas/avaliacoes
+// Lista avaliações que possuem gabaritos corrigidos (respostas salvas)
+router.get("/notas/avaliacoes", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+
+    const [rows] = await pool.query(
+      `SELECT
+         ga.id, ga.titulo, ga.bimestre, ga.tipo, ga.nota_total,
+         ga.turno, ga.status, ga.created_at,
+         COUNT(DISTINCT gr.id) AS total_respostas,
+         COUNT(DISTINCT gl.turma_nome) AS total_turmas
+       FROM gabarito_avaliacoes ga
+       LEFT JOIN gabarito_respostas gr ON gr.avaliacao_id = ga.id AND gr.escola_id = ga.escola_id
+       LEFT JOIN gabarito_lotes gl ON gl.avaliacao_id = ga.id AND gl.escola_id = ga.escola_id
+       WHERE ga.escola_id = ?
+         AND ga.status IN ('publicada', 'notas_importadas')
+       GROUP BY ga.id
+       HAVING total_respostas > 0
+       ORDER BY ga.created_at DESC`,
+      [escola_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("[LISTA-NOTAS] Erro ao listar avaliações:", err);
+    res.status(500).json({ error: "Erro ao carregar avaliações." });
+  }
+});
+
+// GET /api/listas-impressao/notas/:avaliacaoId/turmas
+// Lista turmas com respostas para uma avaliação específica
+router.get("/notas/:avaliacaoId/turmas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { avaliacaoId } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT DISTINCT
+         gl.id AS lote_id, gl.turma_nome,
+         t.id AS turma_id, t.turno,
+         COUNT(gr.id) AS total_alunos_corrigidos
+       FROM gabarito_lotes gl
+       LEFT JOIN gabarito_respostas gr ON gr.avaliacao_id = gl.avaliacao_id
+         AND gr.turma_nome = gl.turma_nome AND gr.escola_id = gl.escola_id
+       LEFT JOIN turmas t ON CONVERT(t.nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         = CONVERT(gl.turma_nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         AND t.escola_id = gl.escola_id
+       WHERE gl.avaliacao_id = ? AND gl.escola_id = ?
+       GROUP BY gl.id, gl.turma_nome, t.id, t.turno
+       HAVING total_alunos_corrigidos > 0
+       ORDER BY gl.turma_nome ASC`,
+      [avaliacaoId, escola_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("[LISTA-NOTAS] Erro ao listar turmas:", err);
+    res.status(500).json({ error: "Erro ao carregar turmas." });
+  }
+});
+
+// GET /api/listas-impressao/notas/:avaliacaoId/:turmaId
+// Gera PDF da Lista de Notas para uma turma + avaliação
+// Query params: turma_nome (nome textual da turma, alternativa ao turmaId)
+router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { avaliacaoId, turmaId } = req.params;
+    const { turma_nome: turmaNomeParam } = req.query;
+
+    const anoLetivo = anoLetivoPadrao();
+
+    // ── Dados da escola ──
+    const [[escola]] = await pool.query(
+      "SELECT id, nome, apelido, endereco, cidade FROM escolas WHERE id = ?",
+      [escola_id]
+    );
+
+    // ── Dados da avaliação ──
+    const [[av]] = await pool.query(
+      "SELECT id, titulo, bimestre, nota_total, tipo, turno FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [avaliacaoId, escola_id]
+    );
+    if (!av) return res.status(404).json({ error: "Avaliação não encontrada." });
+
+    // ── Dados da turma ──
+    let turma = null;
+    let turmaNomeConsulta = turmaNomeParam;
+
+    if (turmaId !== "por-nome") {
+      const [[turmaRow]] = await pool.query(
+        "SELECT id, nome, turno, serie FROM turmas WHERE id = ? AND escola_id = ?",
+        [turmaId, escola_id]
+      );
+      if (turmaRow) {
+        turma = turmaRow;
+        turmaNomeConsulta = turmaRow.nome;
+      }
+    }
+
+    // Fallback: busca pelo nome informado
+    if (!turma && turmaNomeConsulta) {
+      const [[turmaRow]] = await pool.query(
+        `SELECT id, nome, turno, serie FROM turmas
+         WHERE escola_id = ?
+           AND CONVERT(nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
+             = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         LIMIT 1`,
+        [escola_id, turmaNomeConsulta]
+      );
+      if (turmaRow) turma = turmaRow;
+    }
+
+    const turmaLabel = turma?.nome || turmaNomeConsulta || "Turma";
+    const turnoLabel = turma?.turno || av.turno || "";
+
+    // ── Notas corrigidas da turma via gabarito ──
+    const [respostas] = await pool.query(
+      `SELECT gr.codigo_aluno, gr.nome_aluno, gr.nota, gr.acertos,
+              (SELECT num_questoes FROM gabarito_avaliacoes WHERE id = gr.avaliacao_id) AS total_questoes
+       FROM gabarito_respostas gr
+       WHERE gr.avaliacao_id = ? AND gr.escola_id = ?
+         AND CONVERT(gr.turma_nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
+           = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+       ORDER BY gr.nome_aluno ASC`,
+      [avaliacaoId, escola_id, turmaNomeConsulta]
+    );
+
+    if (respostas.length === 0) {
+      return res.status(404).json({ error: "Nenhuma nota encontrada para esta turma/avaliação." });
+    }
+
+    // ── Logos ──
+    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
+    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
+    const hasLogoLeft = existsSync(logoLeft);
+    const hasLogoRight = existsSync(logoRight);
+
+    // ══════════════════════════════════════════════════════════════════
+    // GERAR PDF
+    // ══════════════════════════════════════════════════════════════════
+    const L = 40;
+    const R = 40;
+    const PW = 595.28 - L - R;
+    const PAGE_H = 841.89;
+    const FOOTER_Y = PAGE_H - 25;
+    const MAX_Y = FOOTER_Y - 15;
+
+    const titulo = `LISTA DE NOTAS — ${av.titulo.toUpperCase()}`;
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 30, bottom: 0, left: L, right: R },
+      autoFirstPage: true,
+      info: {
+        Title: `${titulo} - ${turmaLabel}`,
+        Author: "EDUCA.MELHOR — Sistema Educacional",
+        Subject: "Lista de Notas",
+      },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="lista_notas_${turmaLabel.replace(/\s+/g, "_")}_${av.titulo.replace(/\s+/g, "_")}.pdf"`);
+
+    const pdfChunks = [];
+    const { PassThrough } = await import("stream");
+    const passThrough = new PassThrough();
+    passThrough.on("data", (chunk) => pdfChunks.push(chunk));
+    doc.pipe(passThrough);
+
+    let pageNum = 1;
+
+    const COR_AZUL = "#1e3a5f";
+    const COR_DOURADO = "#b8860b";
+    const COR_CINZA = "#555";
+    const COR_VERDE = "#166534";
+    const COR_VERDE_BG = "#dcfce7";
+    const COR_VERMELHO = "#991b1b";
+    const COR_VERMELHO_BG = "#fee2e2";
+    const COR_AMARELO = "#854d0e";
+    const COR_AMARELO_BG = "#fef9c3";
+
+    function drawFooter() {
+      doc
+        .font("Helvetica").fontSize(6.5).fillColor("#aaa")
+        .text(
+          `${titulo} • ${turmaLabel} • Documento gerado pelo EDUCA.MELHOR • Página ${pageNum}`,
+          L, FOOTER_Y, { width: PW, align: "center", lineBreak: false }
+        );
+    }
+
+    function ensureSpace(needed) {
+      if (doc.y + needed > MAX_Y) {
+        drawFooter();
+        doc.addPage();
+        pageNum++;
+        doc.y = 30;
+      }
+    }
+
+    // ── Cabeçalho Institucional Premium ──
+    const headerTop = doc.y;
+    const logoSize = 58;
+
+    if (hasLogoLeft) doc.image(logoLeft, L, headerTop, { width: logoSize, height: logoSize });
+    if (hasLogoRight) doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
+
+    const hx = L + logoSize + 8;
+    const hw = PW - (logoSize + 8) * 2;
+
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+      .text("SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL", hx, headerTop + 4, { width: hw, align: "center" });
+    doc.font("Helvetica-Bold").fontSize(8.5).fillColor(COR_AZUL)
+      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${(escola?.cidade || "PLANALTINA").toUpperCase()}`, hx, doc.y + 1, { width: hw, align: "center" });
+    const nomeCompleto = escola?.apelido ? `${escola.nome} — ${escola.apelido}` : (escola?.nome || "");
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+      .text(nomeCompleto.toUpperCase(), hx, doc.y + 1, { width: hw, align: "center" });
+    doc.font("Helvetica").fontSize(7.5).fillColor(COR_CINZA)
+      .text(escola?.endereco || "", hx, doc.y + 1, { width: hw, align: "center" });
+
+    doc.y = headerTop + logoSize + 4;
+
+    // Linhas decorativas duplas
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_DOURADO).lineWidth(2).stroke();
+    doc.y += 3;
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(0.8).stroke();
+    doc.y += 8;
+
+    // TÍTULO
+    doc.font("Helvetica-Bold").fontSize(14).fillColor(COR_AZUL)
+      .text(titulo, L, doc.y, { width: PW, align: "center" });
+    doc.y += 4;
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ccc").lineWidth(0.5).stroke();
+    doc.y += 6;
+
+    // ── Faixa de identificação premium ──
+    const infoY = doc.y;
+    const infoH = 20;
+    doc.roundedRect(L, infoY, PW, infoH, 3).fill("#f0f4ff");
+    doc.roundedRect(L, infoY, PW, infoH, 3).strokeColor("#c7d2fe").lineWidth(0.5).stroke();
+
+    const colW = PW / 5;
+    const infoCols = [
+      { label: "Turma:", value: turmaLabel },
+      { label: "Turno:", value: turnoLabel },
+      { label: "Bimestre:", value: av.bimestre || "—" },
+      { label: "Total alunos:", value: String(respostas.length) },
+      { label: "Ano Letivo:", value: String(anoLetivo) },
+    ];
+    const infoTextY = infoY + 6;
+    infoCols.forEach((col, i) => {
+      const cx = L + colW * i + 6;
+      doc.font("Helvetica-Bold").fontSize(7).fillColor(COR_AZUL)
+        .text(col.label, cx, infoTextY, { width: colW - 12, lineBreak: false, continued: true });
+      doc.font("Helvetica").fontSize(7).fillColor("#334155")
+        .text(` ${col.value}`, { lineBreak: false });
+    });
+    doc.y = infoY + infoH + 8;
+
+    // ── Estatísticas resumo ──
+    const notaMax = Number(av.nota_total) || 10;
+    const notas = respostas.map(r => Number(r.nota) || 0);
+    const media = notas.length ? (notas.reduce((a, b) => a + b, 0) / notas.length) : 0;
+    const aprov = notas.filter(n => n >= notaMax * 0.5).length;
+    const reprov = notas.length - aprov;
+    const maiorNota = Math.max(...notas);
+    const menorNota = Math.min(...notas);
+
+    const statY = doc.y;
+    const statH = 22;
+    const statW = PW / 5;
+    const stats = [
+      { label: "Média da Turma", value: media.toFixed(1), cor: COR_AZUL, bg: "#f0f4ff", border: "#c7d2fe" },
+      { label: "Aprovados", value: `${aprov} (${Math.round((aprov / notas.length) * 100)}%)`, cor: COR_VERDE, bg: COR_VERDE_BG, border: "#86efac" },
+      { label: "Reprovados", value: `${reprov} (${Math.round((reprov / notas.length) * 100)}%)`, cor: COR_VERMELHO, bg: COR_VERMELHO_BG, border: "#fca5a5" },
+      { label: "Maior Nota", value: maiorNota.toFixed(1), cor: COR_VERDE, bg: COR_VERDE_BG, border: "#86efac" },
+      { label: "Menor Nota", value: menorNota.toFixed(1), cor: COR_VERMELHO, bg: COR_VERMELHO_BG, border: "#fca5a5" },
+    ];
+    stats.forEach((s, i) => {
+      const sx = L + statW * i + (i > 0 ? 3 : 0);
+      const sw = statW - (i > 0 ? 3 : 0);
+      doc.roundedRect(sx, statY, sw, statH, 3).fill(s.bg);
+      doc.roundedRect(sx, statY, sw, statH, 3).strokeColor(s.border).lineWidth(0.5).stroke();
+      doc.font("Helvetica").fontSize(6).fillColor(s.cor)
+        .text(s.label, sx + 3, statY + 3, { width: sw - 6, align: "center", lineBreak: false });
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(s.cor)
+        .text(s.value, sx + 3, statY + 10, { width: sw - 6, align: "center", lineBreak: false });
+    });
+    doc.y = statY + statH + 10;
+
+    // ════════════════════════════════════════════════════
+    // TABELA DE NOTAS
+    // ════════════════════════════════════════════════════
+    const COL_N_W = 26;
+    const COL_RE_W = 52;
+    const COL_ACERTOS_W = 54;
+    const COL_NOTA_W = 58;
+    const COL_CONCEITO_W = 62;
+    const COL_NOME_W = PW - COL_N_W - COL_RE_W - COL_ACERTOS_W - COL_NOTA_W - COL_CONCEITO_W;
+    const TH = 16;
+    const TR = 18;
+
+    const thY = doc.y;
+    doc.rect(L, thY, PW, TH).fill(COR_AZUL);
+    let tx = L;
+    [
+      { text: "Nº", w: COL_N_W, align: "center" },
+      { text: "RE", w: COL_RE_W, align: "center" },
+      { text: "ESTUDANTE", w: COL_NOME_W, align: "left" },
+      { text: "ACERTOS", w: COL_ACERTOS_W, align: "center" },
+      { text: `NOTA (${notaMax})`, w: COL_NOTA_W, align: "center" },
+      { text: "SITUAÇÃO", w: COL_CONCEITO_W, align: "center" },
+    ].forEach((col) => {
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff")
+        .text(col.text, tx + 3, thY + 4, { width: col.w - 6, align: col.align, lineBreak: false });
+      tx += col.w;
+    });
+    doc.y = thY + TH;
+
+    respostas.forEach((r, i) => {
+      ensureSpace(TR + 2);
+      const rowY = doc.y;
+      const nota = Number(r.nota) || 0;
+      const aprovado = nota >= notaMax * 0.5;
+
+      // Linha zebrada
+      if (i % 2 === 0) doc.rect(L, rowY, PW, TR).fill("#f8fafc");
+      doc.moveTo(L, rowY + TR).lineTo(L + PW, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+
+      // Divisórias das colunas
+      let bx = L;
+      [COL_N_W, COL_RE_W, COL_NOME_W, COL_ACERTOS_W, COL_NOTA_W].forEach(w => {
+        bx += w;
+        doc.moveTo(bx, rowY).lineTo(bx, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+      });
+
+      const cy = rowY + 5;
+
+      // Número
+      doc.font("Helvetica").fontSize(7.5).fillColor("#64748b")
+        .text(String(i + 1), L + 1, cy, { width: COL_N_W - 2, align: "center", lineBreak: false });
+
+      // RE (código)
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(COR_AZUL)
+        .text(String(r.codigo_aluno || "—"), L + COL_N_W + 2, cy, { width: COL_RE_W - 4, align: "center", lineBreak: false });
+
+      // Nome
+      doc.font("Helvetica").fontSize(8.5).fillColor("#1e293b")
+        .text(r.nome_aluno || "—", L + COL_N_W + COL_RE_W + 4, cy, { width: COL_NOME_W - 8, lineBreak: false });
+
+      // Acertos
+      const totalQ = Number(r.total_questoes) || 0;
+      const acertos = Number(r.acertos) || 0;
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(aprovado ? COR_VERDE : COR_VERMELHO)
+        .text(totalQ > 0 ? `${acertos}/${totalQ}` : String(acertos), L + COL_N_W + COL_RE_W + COL_NOME_W, cy, { width: COL_ACERTOS_W, align: "center", lineBreak: false });
+
+      // Nota — badge colorido
+      const bNotaX = L + COL_N_W + COL_RE_W + COL_NOME_W + COL_ACERTOS_W + 4;
+      const bNotaW = COL_NOTA_W - 8;
+      const bNotaH = TR - 6;
+      const bNotaBg = aprovado ? COR_VERDE_BG : COR_VERMELHO_BG;
+      const bNotaCor = aprovado ? COR_VERDE : COR_VERMELHO;
+      doc.roundedRect(bNotaX, rowY + 3, bNotaW, bNotaH, 3).fill(bNotaBg);
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(bNotaCor)
+        .text(nota.toFixed(1), bNotaX, rowY + 5, { width: bNotaW, align: "center", lineBreak: false });
+
+      // Situação
+      const sitTxt = aprovado ? "APROVADO" : "REPROVADO";
+      const sitCor = aprovado ? COR_VERDE : COR_VERMELHO;
+      doc.font("Helvetica-Bold").fontSize(7).fillColor(sitCor)
+        .text(sitTxt, L + COL_N_W + COL_RE_W + COL_NOME_W + COL_ACERTOS_W + COL_NOTA_W, cy, {
+          width: COL_CONCEITO_W, align: "center", lineBreak: false
+        });
+
+      doc.y = rowY + TR;
+    });
+
+    // Borda inferior da tabela
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(1).stroke();
+    doc.y += 14;
+
+    // ── Assinaturas ──
+    ensureSpace(70);
+    const sigW = 180;
+    const sigLineY = doc.y + 30;
+    const sigNames = ["Coordenador(a) Pedagógico(a)", "Professor(a) Responsável"];
+    const sigPositions = [L + 20, L + PW - sigW - 20];
+    sigPositions.forEach((sx, i) => {
+      doc.moveTo(sx, sigLineY).lineTo(sx + sigW, sigLineY).strokeColor("#334155").lineWidth(0.5).stroke();
+      doc.font("Helvetica").fontSize(8).fillColor("#475569")
+        .text(sigNames[i], sx, sigLineY + 3, { width: sigW, align: "center", lineBreak: false });
+    });
+
+    // ── Rodapé ──
+    drawFooter();
+
+    // ── Finalize PDF ──
+    passThrough.on("end", () => {
+      const pdfBuffer = Buffer.concat(pdfChunks);
+      res.setHeader("Content-Length", pdfBuffer.length);
+      res.end(pdfBuffer);
+    });
+    doc.end();
+  } catch (err) {
+    console.error("[LISTA-NOTAS] Erro ao gerar PDF:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Erro ao gerar Lista de Notas." });
+  }
+});
+
 export default router;
+
