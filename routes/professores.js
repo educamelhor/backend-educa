@@ -509,9 +509,12 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
+    // Retorna TODOS os IDs do professor (incluindo inativo), pois o que importa aqui é
+    // identificar quais gabarito_lotes estão vinculados a este CPF — independente de status.
+    // O filtro status='ativo' fica em corretores-disponiveis (quem pode RECEBER novos lotes).
     const [rows] = await pool.query(
       `SELECT id FROM professores
-       WHERE escola_id = ? AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND status = 'ativo'
+       WHERE escola_id = ? AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
        ORDER BY id`,
       [escolaId, cleanCpf]
     );
