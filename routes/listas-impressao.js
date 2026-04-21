@@ -1354,8 +1354,8 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
     const COL_RE_W = 52;
     const COL_ACERTOS_W = 54;
     const COL_NOTA_W = 58;
-    const COL_CONCEITO_W = 62;
-    const COL_NOME_W = PW - COL_N_W - COL_RE_W - COL_ACERTOS_W - COL_NOTA_W - COL_CONCEITO_W;
+    // COL_NOME_W absorve a largura que era da coluna SITUAÇÃO (removida)
+    const COL_NOME_W = PW - COL_N_W - COL_RE_W - COL_ACERTOS_W - COL_NOTA_W;
     const TH = 16;
     const TR = 18;
 
@@ -1368,7 +1368,6 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
       { text: "ESTUDANTE", w: COL_NOME_W, align: "left" },
       { text: "ACERTOS", w: COL_ACERTOS_W, align: "center" },
       { text: `NOTA (${notaMax})`, w: COL_NOTA_W, align: "center" },
-      { text: "SITUAÇÃO", w: COL_CONCEITO_W, align: "center" },
     ].forEach((col) => {
       doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff")
         .text(col.text, tx + 3, thY + 4, { width: col.w - 6, align: col.align, lineBreak: false });
@@ -1386,9 +1385,9 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
       if (i % 2 === 0) doc.rect(L, rowY, PW, TR).fill("#f8fafc");
       doc.moveTo(L, rowY + TR).lineTo(L + PW, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
 
-      // Divisórias das colunas
+      // Divisórias das colunas (sem a última — fim da tabela)
       let bx = L;
-      [COL_N_W, COL_RE_W, COL_NOME_W, COL_ACERTOS_W, COL_NOTA_W].forEach(w => {
+      [COL_N_W, COL_RE_W, COL_NOME_W, COL_ACERTOS_W].forEach(w => {
         bx += w;
         doc.moveTo(bx, rowY).lineTo(bx, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
       });
@@ -1423,13 +1422,7 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
       doc.font("Helvetica-Bold").fontSize(9).fillColor(bNotaCor)
         .text(nota.toFixed(1), bNotaX, rowY + 5, { width: bNotaW, align: "center", lineBreak: false });
 
-      // Situação
-      const sitTxt = aprovado ? "APROVADO" : "REPROVADO";
-      const sitCor = aprovado ? COR_VERDE : COR_VERMELHO;
-      doc.font("Helvetica-Bold").fontSize(7).fillColor(sitCor)
-        .text(sitTxt, L + COL_N_W + COL_RE_W + COL_NOME_W + COL_ACERTOS_W + COL_NOTA_W, cy, {
-          width: COL_CONCEITO_W, align: "center", lineBreak: false
-        });
+      // Coluna SITUAÇÃO removida — nota de avaliação parcial não implica aprovação/reprovação
 
       doc.y = rowY + TR;
     });
