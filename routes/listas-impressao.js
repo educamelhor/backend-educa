@@ -1077,31 +1077,41 @@ router.get("/notas/avaliacoes", async (req, res) => {
 });
 
 // GET /api/listas-impressao/notas/:avaliacaoId/turmas
-// Lista turmas com respostas para uma avaliação específica
+// Lista turmas com respostas para uma avaliação específica.
+// Query vai direto em gabarito_respostas (sem JOIN com gabarito_lotes)
+// para evitar falhas de collation no cruzamento por turma_nome.
 router.get("/notas/:avaliacaoId/turmas", async (req, res) => {
   try {
     const { escola_id } = req.user;
     const { avaliacaoId } = req.params;
 
     const [rows] = await pool.query(
-      `SELECT DISTINCT
-         gl.id AS lote_id, gl.turma_nome,
-         t.id AS turma_id, t.turno,
-         COUNT(gr.id) AS total_alunos_corrigidos
-       FROM gabarito_lotes gl
-       LEFT JOIN gabarito_respostas gr ON gr.avaliacao_id = gl.avaliacao_id
-         AND gr.turma_nome = gl.turma_nome AND gr.escola_id = gl.escola_id
-       LEFT JOIN turmas t ON CONVERT(t.nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         = CONVERT(gl.turma_nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         AND t.escola_id = gl.escola_id
-       WHERE gl.avaliacao_id = ? AND gl.escola_id = ?
-       GROUP BY gl.id, gl.turma_nome, t.id, t.turno
+      `SELECT
+         gr.turma_nome,
+         gr.turma_id,
+         COUNT(gr.id) AS total_alunos_corrigidos,
+         t.turno
+       FROM gabarito_respostas gr
+       LEFT JOIN turmas t
+         ON t.id = gr.turma_id
+         AND t.escola_id = gr.escola_id
+       WHERE gr.avaliacao_id = ? AND gr.escola_id = ?
+       GROUP BY gr.turma_nome, gr.turma_id, t.turno
        HAVING total_alunos_corrigidos > 0
-       ORDER BY gl.turma_nome ASC`,
+       ORDER BY gr.turma_nome ASC`,
       [avaliacaoId, escola_id]
     );
 
-    res.json(rows);
+    // Garantir lote_id compatível com o frontend (usa lote_id como key)
+    const resultado = rows.map((r, i) => ({
+      lote_id: r.turma_id || `turma_${i}`,
+      turma_nome: r.turma_nome,
+      turma_id: r.turma_id,
+      turno: r.turno || null,
+      total_alunos_corrigidos: r.total_alunos_corrigidos,
+    }));
+
+    res.json(resultado);
   } catch (err) {
     console.error("[LISTA-NOTAS] Erro ao listar turmas:", err);
     res.status(500).json({ error: "Erro ao carregar turmas." });
