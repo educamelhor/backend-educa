@@ -59,10 +59,23 @@ router.post("/", verificarEscola, async (req, res) => {
   }
 
   try {
+    // ✅ FIX MÉDIO 7: Validar unicidade no backend (nome normalizado + escola_id)
+    const nomeNormalizado = nome.trim();
+    const [[existente]] = await pool.query(
+      `SELECT id FROM disciplinas
+       WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? LIMIT 1`,
+      [nomeNormalizado, escola_id]
+    );
+    if (existente) {
+      return res.status(409).json({
+        message: `Já existe uma disciplina com o nome "${nomeNormalizado}" nesta escola.`
+      });
+    }
+
     const [result] = await pool.query(
       `INSERT INTO disciplinas (nome, carga, escola_id, created_at, updated_at)
        VALUES (?, ?, ?, NOW(), NOW())`,
-      [nome, carga, escola_id]
+      [nomeNormalizado, carga, escola_id]
     );
 
     const [rows] = await pool.query(
@@ -78,6 +91,7 @@ router.post("/", verificarEscola, async (req, res) => {
     res.status(500).json({ message: "Não foi possível criar a disciplina." });
   }
 });
+
 
 
 
@@ -103,10 +117,17 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 
     return res.json({ message: "Disciplina excluída com sucesso." });
   } catch (err) {
+    // ✅ FIX ALTO 3: trata FK constraint — disciplina vinculada não pode ser excluída
+    if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') {
+      return res.status(409).json({
+        message: "Não é possível excluir: esta disciplina está vinculada a professores, modulação ou planos de avaliação."
+      });
+    }
     console.error("Erro ao excluir disciplina:", err);
     return res.status(500).json({ message: "Erro ao excluir disciplina." });
   }
 });
+
 
 
 
@@ -126,11 +147,24 @@ router.put("/:id", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Nome e carga são obrigatórios." });
     }
 
+    // ✅ FIX MÉDIO 7: Validar unicidade no backend ao editar (exclui o próprio registro)
+    const nomeNormalizado = nome.trim();
+    const [[duplicada]] = await pool.query(
+      `SELECT id FROM disciplinas
+       WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? AND id != ? LIMIT 1`,
+      [nomeNormalizado, escola_id, id]
+    );
+    if (duplicada) {
+      return res.status(409).json({
+        message: `Já existe outra disciplina com o nome "${nomeNormalizado}" nesta escola.`
+      });
+    }
+
     const [result] = await pool.query(
-      `UPDATE disciplinas 
-       SET nome = ?, carga = ? 
+      `UPDATE disciplinas
+       SET nome = ?, carga = ?
        WHERE id = ? AND escola_id = ?`,
-      [nome, carga, id, escola_id]
+      [nomeNormalizado, carga, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
@@ -143,6 +177,7 @@ router.put("/:id", verificarEscola, async (req, res) => {
     res.status(500).json({ message: "Erro ao atualizar disciplina." });
   }
 });
+
 
 
 

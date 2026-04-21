@@ -676,6 +676,37 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
 
 
 // ────────────────────────────────────────────────
+// GET: Verificar duplicidade CPF + Disciplina antes de cadastrar
+// ✅ FIX ALTO: rota específica ANTES de /:id para não ser capturada como parâmetro
+// Retorna o professor se existir (frontend usa para bloquear duplicata), 404 se não existir
+// ────────────────────────────────────────────────
+router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const cpfLimpo = String(req.params.cpf).replace(/\D/g, "");
+    const disciplinaId = Number(req.params.disciplina_id);
+
+    const [[prof]] = await pool.query(
+      `SELECT id, nome, cpf, status FROM professores
+       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+         AND disciplina_id = ?
+         AND escola_id = ?
+       LIMIT 1`,
+      [cpfLimpo, disciplinaId, escola_id]
+    );
+
+    if (!prof) {
+      return res.status(404).json({ message: "Professor não encontrado." });
+    }
+
+    return res.json(prof);
+  } catch (err) {
+    console.error("Erro ao verificar CPF/disciplina:", err);
+    return res.status(500).json({ message: "Erro ao verificar duplicidade." });
+  }
+});
+
+// ────────────────────────────────────────────────
 // GET: Buscar professor por ID
 // - Retorna p.turno (campo da própria tabela)
 // ────────────────────────────────────────────────
@@ -844,15 +875,17 @@ router.put("/:id", verificarEscola, async (req, res) => {
 
 // ────────────────────────────────────────────────
 // PUT: Inativar professor
+// ✅ FIX multi-escola: exige escola_id do token — impede escola A de inativar professor da escola B
 // ────────────────────────────────────────────────
-router.put("/inativar/:id", async (req, res) => {
+router.put("/inativar/:id", verificarEscola, async (req, res) => {
   try {
+    const { escola_id } = req.user;
     const [result] = await pool.query(
-      "UPDATE professores SET status = 'inativo' WHERE id = ?",
-      [req.params.id]
+      "UPDATE professores SET status = 'inativo' WHERE id = ? AND escola_id = ?",
+      [req.params.id, escola_id]
     );
     if (!result.affectedRows) {
-      return res.status(404).json({ message: "Professor não encontrado." });
+      return res.status(404).json({ message: "Professor não encontrado ou não pertence à sua escola." });
     }
     res.json({ message: "Professor inativado com sucesso." });
   } catch (err) {
@@ -863,15 +896,17 @@ router.put("/inativar/:id", async (req, res) => {
 
 // ────────────────────────────────────────────────
 // PUT: Ativar professor (manual)
+// ✅ FIX multi-escola: exige escola_id do token — impede escola A de ativar professor da escola B
 // ────────────────────────────────────────────────
-router.put("/ativar/:id", async (req, res) => {
+router.put("/ativar/:id", verificarEscola, async (req, res) => {
   try {
+    const { escola_id } = req.user;
     const [result] = await pool.query(
-      "UPDATE professores SET status = 'ativo' WHERE id = ?",
-      [req.params.id]
+      "UPDATE professores SET status = 'ativo' WHERE id = ? AND escola_id = ?",
+      [req.params.id, escola_id]
     );
     if (!result.affectedRows) {
-      return res.status(404).json({ message: "Professor não encontrado." });
+      return res.status(404).json({ message: "Professor não encontrado ou não pertence à sua escola." });
     }
     res.json({ message: "Professor ativado com sucesso." });
   } catch (err) {
