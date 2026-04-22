@@ -481,6 +481,27 @@ if (!IS_PROD) {
 
 async function bootstrap() {
   // ============================================================================
+  // Migrations automáticas (idempotentes) — executam no boot
+  // ============================================================================
+  try {
+    // [2026-04-22] Cancelamento de questão em lote no módulo Gabarito
+    const [cols] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gabarito_avaliacoes' AND COLUMN_NAME = 'questoes_canceladas'
+    `);
+    if (cols.length === 0) {
+      await pool.query(`
+        ALTER TABLE gabarito_avaliacoes
+          ADD COLUMN questoes_canceladas JSON DEFAULT NULL
+          COMMENT 'Questoes anuladas em lote: [{numero, modo (bonificar|desconsiderar), motivo, cancelado_em, cancelado_por}]'
+      `);
+      console.log("[MIGRATION] Coluna 'questoes_canceladas' adicionada em 'gabarito_avaliacoes' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration questoes_canceladas (não crítico):", migErr.message);
+  }
+
+  // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
   // ============================================================================
   app.use("/api/auth-plataforma", authPlataformaRouter);
@@ -488,6 +509,7 @@ async function bootstrap() {
   app.use("/api/plataforma/usage", autenticarToken, exigirEscopo("plataforma"), plataformaUsageRouter);
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
+
 
   if (appPaisRouter) app.use("/api/app-pais", appPaisRouter);
   if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);

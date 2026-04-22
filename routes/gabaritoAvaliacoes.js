@@ -757,4 +757,344 @@ function safeJson(val) {
   }
 }
 
+/**
+ * Recalcula em lote todas as respostas de uma avaliação aplicando as questões canceladas.
+ * Deve ser chamado dentro de uma transação existente (conn).
+ *
+ * Modos:
+ *   "bonificar"     → todos ganham o ponto desta questão
+ *   "desconsiderar" → questão excluída do total (nota / N-1 questões)
+ */
+async function recalcularRespostasEmLote(conn, avaliacaoId, escola_id) {
+  // Buscar avaliação com gabarito oficial + questões canceladas
+  const [[av]] = await conn.query(
+    `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config, questoes_canceladas
+     FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+    [avaliacaoId, escola_id]
+  );
+  if (!av) throw new Error("Avaliação não encontrada no recálculo.");
+
+  const gabOficial       = safeJson(av.gabarito_oficial) || [];
+  const numQuestoes      = av.num_questoes || gabOficial.length;
+  const notaTotal        = Number(av.nota_total) || 10;
+  const disciplinasConfig = safeJson(av.disciplinas_config) || [];
+  const canceladas       = safeJson(av.questoes_canceladas) || [];
+
+  // Indexar cancelamentos por número de questão
+  const cancelMap = {};
+  for (const c of canceladas) {
+    cancelMap[c.numero] = c.modo; // "bonificar" | "desconsiderar"
+  }
+
+  // Contar questões efetivas (excluindo as desconsideradas)
+  const numDesconsideradas = canceladas.filter(c => c.modo === "desconsiderar").length;
+  const numQuestoesEfetivas = Math.max(1, numQuestoes - numDesconsideradas);
+
+  // Buscar todas as respostas desta avaliação
+  const [respostas] = await conn.query(
+    `SELECT id, codigo_aluno, respostas_aluno
+     FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?`,
+    [avaliacaoId, escola_id]
+  );
+
+  let totalAtualizados = 0;
+
+  for (const resp of respostas) {
+    const respostasAluno = safeJson(resp.respostas_aluno) || [];
+    const detalhes = [];
+
+    for (let i = 0; i < numQuestoes; i++) {
+      const questaoNum = i + 1;
+      const modo = cancelMap[questaoNum];
+
+      if (modo === "desconsiderar") continue; // pula — não entra no cálculo
+
+      if (modo === "bonificar") {
+        // Todos ganham o ponto independente da resposta
+        detalhes.push({
+          numero: questaoNum,
+          resposta: respostasAluno[i] || null,
+          correto: gabOficial[i] || "",
+          acertou: true,
+          cancelada: "bonificada",
+        });
+        continue;
+      }
+
+      // Questão normal
+      const resp_aluno = respostasAluno[i] || null;
+      const correto    = gabOficial[i] || "";
+      const isNulo     = resp_aluno === "N";
+      detalhes.push({
+        numero: questaoNum,
+        resposta: resp_aluno,
+        correto,
+        acertou: !isNulo && resp_aluno !== null && resp_aluno === correto,
+      });
+    }
+
+    const acertos      = detalhes.filter(d => d.acertou).length;
+    const valorQuestao = notaTotal / numQuestoesEfetivas;
+    const nota         = parseFloat((acertos * valorQuestao).toFixed(2));
+
+    // Acertos por disciplina (exclui questões desconsideradas)
+    let acertosPorDisciplina = null;
+    if (disciplinasConfig.length > 0) {
+      acertosPorDisciplina = disciplinasConfig.map(dc => {
+        const questoesDc = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
+        return {
+          nome: dc.nome,
+          disciplina_id: dc.disciplina_id,
+          de: dc.de,
+          ate: dc.ate,
+          total: questoesDc.length,
+          acertos: questoesDc.filter(d => d.acertou).length,
+        };
+      });
+    }
+
+    await conn.query(
+      `UPDATE gabarito_respostas
+       SET acertos = ?, total_questoes = ?, nota = ?, detalhes = ?, acertos_por_disciplina = ?
+       WHERE id = ?`,
+      [
+        acertos,
+        numQuestoesEfetivas,
+        nota,
+        JSON.stringify(detalhes),
+        acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
+        resp.id,
+      ]
+    );
+    totalAtualizados++;
+  }
+
+  // Atualizar gabarito_arquivos também (para nota exibida no lote do professor)
+  // Faz JOIN via lote para garantir escola correta
+  await conn.query(
+    `UPDATE gabarito_arquivos ga
+     JOIN gabarito_lotes gl ON gl.id = ga.lote_id
+     SET ga.nota = (
+       SELECT gr.nota FROM gabarito_respostas gr
+       WHERE gr.avaliacao_id = gl.avaliacao_id
+         AND gr.codigo_aluno = ga.codigo_aluno
+         AND gr.escola_id = ?
+       LIMIT 1
+     )
+     WHERE gl.avaliacao_id = ? AND ga.status = 'corrigido'`,
+    [escola_id, avaliacaoId]
+  );
+
+  return { totalAtualizados, numQuestoesEfetivas, canceladas };
+}
+
+// ─── PUT /api/gabarito-avaliacoes/:id/cancelar-questao ────────────────────────
+// Registra o cancelamento de uma questão e recalcula TODAS as notas em lote.
+// Governança: apenas coordenador, diretor, vice_diretor, supervisor
+router.put("/:id/cancelar-questao", async (req, res) => {
+  // Verificar perfil (governança)
+  const perfilUsuario = (req.user?.perfil || "").toLowerCase();
+  const perfisPermitidos = ["coordenador", "diretor", "vice_diretor", "supervisor", "admin"];
+  if (!perfisPermitidos.includes(perfilUsuario)) {
+    return res.status(403).json({
+      error: "Apenas coordenador, diretor ou supervisor podem cancelar questões.",
+    });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const { escola_id } = req.user;
+    const userId = req.user.id || req.user.userId;
+    const { id } = req.params;
+    const { numero, modo, motivo } = req.body;
+
+    // Validações
+    const numQ = Number(numero);
+    if (!numQ || numQ < 1) {
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: "Número da questão inválido." });
+    }
+    if (!["bonificar", "desconsiderar"].includes(modo)) {
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: "Modo deve ser 'bonificar' ou 'desconsiderar'." });
+    }
+
+    // Verificar avaliação
+    const [[av]] = await conn.query(
+      "SELECT id, num_questoes, questoes_canceladas, status FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (!av) {
+      await conn.rollback(); conn.release();
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+    if (numQ > av.num_questoes) {
+      await conn.rollback(); conn.release();
+      return res.status(400).json({ error: `Questão ${numQ} não existe (avaliação tem ${av.num_questoes} questões).` });
+    }
+
+    // Montar array de cancelamentos (merge com existentes)
+    const canceladas = safeJson(av.questoes_canceladas) || [];
+    const idx = canceladas.findIndex(c => c.numero === numQ);
+
+    const novoItem = {
+      numero: numQ,
+      modo,
+      motivo: motivo?.trim() || null,
+      cancelado_em: new Date().toISOString(),
+      cancelado_por: userId,
+    };
+
+    if (idx >= 0) {
+      canceladas[idx] = novoItem; // atualiza existente
+    } else {
+      canceladas.push(novoItem);
+    }
+    canceladas.sort((a, b) => a.numero - b.numero);
+
+    // Gravar no BD
+    await conn.query(
+      "UPDATE gabarito_avaliacoes SET questoes_canceladas = ? WHERE id = ? AND escola_id = ?",
+      [JSON.stringify(canceladas), id, escola_id]
+    );
+
+    // Recalcular todas as respostas em lote
+    const resultado = await recalcularRespostasEmLote(conn, id, escola_id);
+
+    await conn.commit();
+    conn.release();
+
+    console.log(
+      `[cancelar-questao] Avaliação #${id}: questão ${numQ} (${modo}). ` +
+      `${resultado.totalAtualizados} alunos recalculados. Total efetivo: ${resultado.numQuestoesEfetivas} questões.`
+    );
+
+    res.json({
+      ok: true,
+      questao_cancelada: novoItem,
+      questoes_canceladas: canceladas,
+      total_recalculados: resultado.totalAtualizados,
+      num_questoes_efetivas: resultado.numQuestoesEfetivas,
+    });
+  } catch (err) {
+    await conn.rollback();
+    conn.release();
+    console.error("Erro ao cancelar questão:", err);
+    res.status(500).json({ error: "Erro ao cancelar questão. A operação foi revertida." });
+  }
+});
+
+// ─── GET /api/gabarito-avaliacoes/:id/questoes-canceladas ─────────────────────
+// Lista as questões canceladas de uma avaliação
+router.get("/:id/questoes-canceladas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { id } = req.params;
+
+    const [[av]] = await pool.query(
+      "SELECT id, num_questoes, nota_total, questoes_canceladas FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (!av) return res.status(404).json({ error: "Avaliação não encontrada." });
+
+    const canceladas = safeJson(av.questoes_canceladas) || [];
+
+    // Enriquecer com nome do usuário que cancelou
+    const enriquecidas = [];
+    for (const c of canceladas) {
+      let cancelado_por_nome = null;
+      if (c.cancelado_por) {
+        const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ?", [c.cancelado_por]);
+        cancelado_por_nome = u?.nome || null;
+      }
+      enriquecidas.push({ ...c, cancelado_por_nome });
+    }
+
+    const numDesconsideradas = canceladas.filter(c => c.modo === "desconsiderar").length;
+
+    res.json({
+      avaliacao_id: av.id,
+      num_questoes_original: av.num_questoes,
+      num_questoes_efetivas: Math.max(1, av.num_questoes - numDesconsideradas),
+      nota_total: av.nota_total,
+      questoes_canceladas: enriquecidas,
+    });
+  } catch (err) {
+    console.error("Erro ao listar questões canceladas:", err);
+    res.status(500).json({ error: "Erro ao listar questões canceladas." });
+  }
+});
+
+// ─── DELETE /api/gabarito-avaliacoes/:id/cancelar-questao/:numero ─────────────
+// Reverte o cancelamento de uma questão e recalcula todas as notas em lote.
+// Governança: apenas coordenador, diretor, vice_diretor, supervisor
+router.delete("/:id/cancelar-questao/:numero", async (req, res) => {
+  // Verificar perfil (governança)
+  const perfilUsuario = (req.user?.perfil || "").toLowerCase();
+  const perfisPermitidos = ["coordenador", "diretor", "vice_diretor", "supervisor", "admin"];
+  if (!perfisPermitidos.includes(perfilUsuario)) {
+    return res.status(403).json({
+      error: "Apenas coordenador, diretor ou supervisor podem reverter cancelamentos.",
+    });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const { escola_id } = req.user;
+    const { id, numero } = req.params;
+    const numQ = Number(numero);
+
+    const [[av]] = await conn.query(
+      "SELECT id, num_questoes, questoes_canceladas FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (!av) {
+      await conn.rollback(); conn.release();
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    const canceladas = safeJson(av.questoes_canceladas) || [];
+    const novaLista = canceladas.filter(c => c.numero !== numQ);
+
+    if (novaLista.length === canceladas.length) {
+      await conn.rollback(); conn.release();
+      return res.status(404).json({ error: `Questão ${numQ} não está cancelada.` });
+    }
+
+    // Gravar lista atualizada
+    await conn.query(
+      "UPDATE gabarito_avaliacoes SET questoes_canceladas = ? WHERE id = ? AND escola_id = ?",
+      [novaLista.length > 0 ? JSON.stringify(novaLista) : null, id, escola_id]
+    );
+
+    // Recalcular todas as respostas em lote (sem o cancelamento revertido)
+    const resultado = await recalcularRespostasEmLote(conn, id, escola_id);
+
+    await conn.commit();
+    conn.release();
+
+    console.log(
+      `[cancelar-questao] Avaliação #${id}: cancelamento da questão ${numQ} REVERTIDO. ` +
+      `${resultado.totalAtualizados} alunos recalculados.`
+    );
+
+    res.json({
+      ok: true,
+      questao_revertida: numQ,
+      questoes_canceladas: novaLista,
+      total_recalculados: resultado.totalAtualizados,
+      num_questoes_efetivas: resultado.numQuestoesEfetivas,
+    });
+  } catch (err) {
+    await conn.rollback();
+    conn.release();
+    console.error("Erro ao reverter cancelamento:", err);
+    res.status(500).json({ error: "Erro ao reverter cancelamento. A operação foi revertida." });
+  }
+});
+
 export default router;
