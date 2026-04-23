@@ -509,10 +509,10 @@ async function bootstrap() {
 
 
   // ─── DEBUG CRÍTICO: confirmar montagem do app_pais ─────────────────────────
-  console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter);
+  console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter, "| stack:", appPaisRouter?.stack?.length);
   if (appPaisRouter) {
     app.use("/api/app-pais", appPaisRouter);
-    console.log("[DEBUG][APP_PAIS] app.use('/api/app-pais') executado ✅");
+    console.log("[DEBUG][APP_PAIS] app.use('/api/app-pais') executado ✅ | app._router stack:", app._router?.stack?.length);
   } else {
     console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
   }
