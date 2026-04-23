@@ -400,24 +400,18 @@ app.get("/api/visitantes-ping", (_req, res) =>
 );
 
 // ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
-// Teste fora do bloco if:
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
-// CATCH-ALL DIAGNÓSTICO: confirma se app.use() modulo-level é chamado
+// UMA ÚNICA app.use que loga TUDO e redireciona app_pais
 app.use((req, res, next) => {
-  console.log(`[ALL-MW] ${req.method} ${req.originalUrl}`);
-  next();
-});
-
-// Rotas app_pais com originalUrl
-app.use((req, res, next) => {
+  console.log(`[ALL-MW] ${req.method} ${req.originalUrl} router=${!!appPaisRouter}`);
   if (!appPaisRouter) return next();
   if (!req.originalUrl.startsWith("/api/app-pais")) return next();
   req.url = req.originalUrl;
-  console.log(`[APPPAIS-MW] ${req.method} ${req.url}`);
+  console.log(`[APPPAIS-MW] delegando para router`);
   appPaisRouter.handle(req, res, next);
 });
-console.log("[FF] FF_APP_PAIS: middleware URL-check registrado (pós-app, pré-bootstrap) ✅");
+console.log("[FF] FF_APP_PAIS: middleware único registrado ✅");
 
 
 // ============================================================================
