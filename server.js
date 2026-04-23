@@ -400,10 +400,15 @@ app.get("/api/visitantes-ping", (_req, res) =>
 );
 
 // ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
+// Teste fora do bloco if:
+app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
+
 if (appPaisRouter) {
-  // TESTE: literal app.get no mesmo contexto que mountToApp
+  // Teste dentro do bloco if, sem hifen no path:
+  app.get("/api/test-dentro-if", (_req, res) => res.json({ ok: true, msg: "dentro do if, sem hifen - funciona?" }));
+  // Teste dentro do bloco if, com hifen no path:
   app.get("/api/app-pais/ping-literal", (_req, res) =>
-    res.json({ ok: true, msg: "ping LITERAL modulo funciona!", stack: appPaisRouter?.stack?.length })
+    res.json({ ok: true, msg: "dentro do if, COM hifen - funciona?" })
   );
   mountAppPaisToApp(app);
   console.log("[FF] FF_APP_PAIS: montado em nível de módulo (pós-app, pré-bootstrap) ✅");
