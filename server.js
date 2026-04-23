@@ -106,8 +106,11 @@ import direcaoRouter from "./routes/direcao.js";
 import governancaRouter from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
+import appPaisRouterModule from "./routes/app_pais.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
+// appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
+// porque import() dinâmico no Express 5 retorna namespace object, não monta corretamente)
 let appPaisRouter = null;
 let responsavelRoutes = null;
 let deviceRoutes = null;
@@ -176,14 +179,9 @@ const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
 
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
-  appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
-  if (appPaisRouter) {
-    console.log("[FF] FF_APP_PAIS: router /api/app-pais carregado com sucesso.");
-  } else {
-    console.error("[FF] FF_APP_PAIS: FALHA ao carregar routes/app_pais.js — verifique o arquivo.");
-  }
-  // Nota: responsavel.routes.js e device.routes.js ainda não existem como módulos separados.
-  // Todo o código do App Pais está consolidado em routes/app_pais.js.
+  // Usa import estático (não dinâmico) para garantir compatibilidade com Express 5
+  appPaisRouter = appPaisRouterModule;
+  console.log("[FF] FF_APP_PAIS: router /api/app-pais carregado (estático) com sucesso. Stack:", appPaisRouter?.stack?.length);
 } else if (FF_APP_PAIS) {
   console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
 }
