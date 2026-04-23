@@ -179,11 +179,13 @@ const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
 
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
-  // Usa import estático (não dinâmico) para garantir compatibilidade com Express 5
   appPaisRouter = appPaisRouterModule;
-  console.log("[FF] FF_APP_PAIS: router /api/app-pais carregado (estático) com sucesso. Stack:", appPaisRouter?.stack?.length);
+  console.log("[FF] FF_APP_PAIS: router carregado. Stack:", appPaisRouter?.stack?.length);
+  // Registra rotas em nível de módulo (workaround: bootstrap-level app.use/app.post não funciona neste ambiente)
+  mountAppPaisToApp(app);
+  console.log("[FF] FF_APP_PAIS: montado em nível de módulo ✅");
 } else if (FF_APP_PAIS) {
-  console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
+  console.warn("[FF] FF_APP_PAIS foi desativado por falta de ENV obrigatórias.");
 }
 
 if (FF_EDUCA_CAPTURE) {
@@ -506,34 +508,10 @@ async function bootstrap() {
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
 
 
-  // ─── APP_PAIS (Express 5 compat) ──────────────────────────────────────────
-  // Estratégia dupla:
-  // 1) Rotas críticas registradas DIRETAMENTE em app.get/app.post (funciona sempre)
-  // 2) app.use(appPaisRouter) para as demais rotas (fullpath internamente)
+  // ─── APP_PAIS: rotas montadas em nível de módulo (ver ~linha 183) ────────────
+  // APP_PAIS: montado em nível de módulo (ver linhas ~181). Apenas diagnóstico aqui.
   console.log("[FF] APP_PAIS router ok?", !!appPaisRouter, "stack:", appPaisRouter?.stack?.length);
 
-  // Ping público (sem auth) — registrado diretamente para garantir 200
-  app.get("/api/app-pais/ping", (_req, res) =>
-    res.json({ ok: true, msg: "APP_PAIS router OK", router_stack: appPaisRouter?.stack?.length })
-  );
-
-  // TESTE: POST direto com path contendo app-pais
-  app.post("/api/app-pais/_test-post", (req, res) =>
-    res.json({ ok: true, msg: "POST direto funcionou!", body: req.body })
-  );
-
-  // TESTE DEFINITIVO: POST com hifen no segmento final (solicitar-codigo)
-  app.post("/api/app-pais/solicitar-codigo-direto", (req, res) =>
-    res.json({ ok: true, msg: "POST com hifen no segmento DIRETO funcionou!", cpf: req.body?.cpf })
-  );
-
-  if (appPaisRouter) {
-    // Express 5: app.use(path, router) falha neste ambiente.
-    // Solução: mountToApp() chama app.get/app.post DENTRO do módulo app_pais.js
-    // evitando cross-module extraction que pode causar problemas.
-    mountAppPaisToApp(app);
-    console.log("[FF] FF_APP_PAIS: mountToApp executado ✅");
-  }
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
 
