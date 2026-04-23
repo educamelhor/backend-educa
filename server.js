@@ -521,6 +521,7 @@ async function bootstrap() {
     // Express 5: app.use(path, router) não ativa sub-rotas com hifen no path.
     // Solução: iterar o stack do router e registrar CADA rota diretamente no app.
     let routesRegistered = 0;
+    const registeredPaths = [];
     for (const layer of appPaisRouter.stack ?? []) {
       const route = layer.route;
       if (!route?.path || !route?.methods) continue;
@@ -529,11 +530,13 @@ async function bootstrap() {
         const handlers = route.stack.map((l) => l.handle);
         if (typeof app[method] === "function") {
           app[method](route.path, ...handlers);
+          registeredPaths.push(`${method.toUpperCase()} ${route.path}`);
           routesRegistered++;
         }
       }
     }
     console.log(`[FF] FF_APP_PAIS: ${routesRegistered} rotas registradas diretamente no app ✅`);
+    console.log(`[FF] FF_APP_PAIS paths:`, JSON.stringify(registeredPaths));
   }
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);

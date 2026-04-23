@@ -1,10 +1,13 @@
-// routes/app_pais.js
+// routes/app_pais.js — v2 (2026-04-23: paths completos /api/app-pais/*)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
 import pool from "../db.js";
 import { enviarEmail } from "../services/mailer.js";
 import { getSignedGetObjectUrl } from "../storage/spacesUpload.js";
+
+const APP_PAIS_VERSION = "v2-fullpath-2026-04-23";
+console.log("[APP_PAIS] Módulo carregado:", APP_PAIS_VERSION);
 
 const router = express.Router();
 
