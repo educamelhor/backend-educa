@@ -515,11 +515,12 @@ async function bootstrap() {
   );
 
   if (appPaisRouter) {
-    // Tentativa 1: sem prefix (mais compatível com Express 5)
-    app.use("/api/app-pais", appPaisRouter);
-    // Tentativa 2: com wildcard
-    app.use("/api/app-pais/*path", appPaisRouter);
-    console.log("[DEBUG][APP_PAIS] dvojne mount executado ✅");
+    // DEBUG: capturar req.url que chega no router para entender o stripping
+    app.use("/api/app-pais", (req, res, next) => {
+      console.log("[DEBUG-URL] app-pais req.url:", req.url, "| originalUrl:", req.originalUrl, "| method:", req.method);
+      next();
+    }, appPaisRouter);
+    console.log("[DEBUG][APP_PAIS] mount com wrapper de debug executado ✅");
   } else {
     console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
   }
