@@ -403,14 +403,16 @@ app.get("/api/visitantes-ping", (_req, res) =>
 // Teste fora do bloco if:
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
-// Rotas app_pais: app.use() SEM prefixo + verificação manual de URL.
-// IMPORTANTE: app.use() sem path strippa o '/' inicial de req.url.
-// Por isso a condição usa req.originalUrl (imutável pelo Express).
+// CATCH-ALL DIAGNÓSTICO: confirma se app.use() modulo-level é chamado
+app.use((req, res, next) => {
+  console.log(`[ALL-MW] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+// Rotas app_pais com originalUrl
 app.use((req, res, next) => {
   if (!appPaisRouter) return next();
   if (!req.originalUrl.startsWith("/api/app-pais")) return next();
-  // Restaura req.url = originalUrl para que router.handle() consiga
-  // fazer match com os paths completos (/api/app-pais/ping etc.)
   req.url = req.originalUrl;
   console.log(`[APPPAIS-MW] ${req.method} ${req.url}`);
   appPaisRouter.handle(req, res, next);
