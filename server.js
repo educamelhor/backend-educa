@@ -403,16 +403,16 @@ app.get("/api/visitantes-ping", (_req, res) =>
 // Teste fora do bloco if:
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
-if (appPaisRouter) {
-  // Teste dentro do bloco if, sem hifen no path:
-  app.get("/api/test-dentro-if", (_req, res) => res.json({ ok: true, msg: "dentro do if, sem hifen - funciona?" }));
-  // Teste dentro do bloco if, com hifen no path:
-  app.get("/api/app-pais/ping-literal", (_req, res) =>
-    res.json({ ok: true, msg: "dentro do if, COM hifen - funciona?" })
-  );
-  mountAppPaisToApp(app);
-  console.log("[FF] FF_APP_PAIS: montado em nível de módulo (pós-app, pré-bootstrap) ✅");
-}
+// Rotas app_pais: app.use() SEM prefixo + verificação manual de URL.
+// Registrado FORA do if(appPaisRouter) porque qualquer app.get() dentro do if
+// não é alcançável neste ambiente (Express 5 + Docker DO).
+app.use((req, res, next) => {
+  if (!appPaisRouter) return next();
+  if (!req.url.startsWith("/api/app-pais")) return next();
+  appPaisRouter.handle(req, res, next);
+});
+console.log("[FF] FF_APP_PAIS: middleware URL-check registrado (pós-app, pré-bootstrap) ✅");
+
 
 // ============================================================================
 // DEBUG (somente DEV) — evita expor rotas e logs sensíveis em produção
