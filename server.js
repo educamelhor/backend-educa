@@ -522,6 +522,11 @@ async function bootstrap() {
     res.json({ ok: true, msg: "POST direto funcionou!", body: req.body })
   );
 
+  // TESTE DEFINITIVO: POST com hifen no segmento final (solicitar-codigo)
+  app.post("/api/app-pais/solicitar-codigo-direto", (req, res) =>
+    res.json({ ok: true, msg: "POST com hifen no segmento DIRETO funcionou!", cpf: req.body?.cpf })
+  );
+
   if (appPaisRouter) {
     // Express 5: app.use(path, router) falha neste ambiente.
     // Solução: mountToApp() chama app.get/app.post DENTRO do módulo app_pais.js
