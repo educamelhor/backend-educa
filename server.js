@@ -400,9 +400,11 @@ app.get("/api/visitantes-ping", (_req, res) =>
 );
 
 // ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
-// mountToApp() deve ser chamado AQUI: app já existe (linha 263) + CORS/body-parser
-// já configurados (linhas 319-346) + antes do bootstrap() (linha 479)
 if (appPaisRouter) {
+  // TESTE: literal app.get no mesmo contexto que mountToApp
+  app.get("/api/app-pais/ping-literal", (_req, res) =>
+    res.json({ ok: true, msg: "ping LITERAL modulo funciona!", stack: appPaisRouter?.stack?.length })
+  );
   mountAppPaisToApp(app);
   console.log("[FF] FF_APP_PAIS: montado em nível de módulo (pós-app, pré-bootstrap) ✅");
 }
