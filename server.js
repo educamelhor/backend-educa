@@ -106,7 +106,7 @@ import direcaoRouter from "./routes/direcao.js";
 import governancaRouter from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
-import appPaisRouterModule from "./routes/app_pais.js";
+import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -523,25 +523,11 @@ async function bootstrap() {
   );
 
   if (appPaisRouter) {
-    // Express 5: app.use(path, router) não ativa sub-rotas com hifen no path.
-    // Solução: iterar o stack do router e registrar CADA rota diretamente no app.
-    let routesRegistered = 0;
-    const registeredPaths = [];
-    for (const layer of appPaisRouter.stack ?? []) {
-      const route = layer.route;
-      if (!route?.path || !route?.methods) continue;
-      for (const [method, active] of Object.entries(route.methods)) {
-        if (!active) continue;
-        const handlers = route.stack.map((l) => l.handle);
-        if (typeof app[method] === "function") {
-          app[method](route.path, ...handlers);
-          registeredPaths.push(`${method.toUpperCase()} ${route.path}`);
-          routesRegistered++;
-        }
-      }
-    }
-    console.log(`[FF] FF_APP_PAIS: ${routesRegistered} rotas registradas diretamente no app ✅`);
-    console.log(`[FF] FF_APP_PAIS paths:`, JSON.stringify(registeredPaths));
+    // Express 5: app.use(path, router) falha neste ambiente.
+    // Solução: mountToApp() chama app.get/app.post DENTRO do módulo app_pais.js
+    // evitando cross-module extraction que pode causar problemas.
+    mountAppPaisToApp(app);
+    console.log("[FF] FF_APP_PAIS: mountToApp executado ✅");
   }
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);

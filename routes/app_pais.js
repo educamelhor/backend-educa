@@ -1066,6 +1066,7 @@ router.get("/api/app-pais/credenciais/contextos", authAppPais, async (req, res) 
 // POST /solicitar-codigo
 // ============================================================================
 router.post("/api/app-pais/solicitar-codigo", async (req, res) => {
+  console.log("[SOLICITAR-CODIGO] Handler chamado! body:", JSON.stringify(req.body ?? null));
   const db = pool;
   const cpf = normalizarCpf(req.body?.cpf);
 
@@ -1875,6 +1876,29 @@ router.get("/api/app-pais/registros", authAppPais, async (req, res) => {
     return res.status(500).json({ message: "Erro ao carregar registros." });
   }
 });
+
+/**
+ * mountToApp — registra as rotas do app_pais DIRETAMENTE no app Express,
+ * chamando app.get/app.post _dentro_ deste módulo (sem cross-module extraction).
+ * Workaround para bug do Express 5 com app.use(router) em ambiente Docker/DO.
+ *
+ * @param {import('express').Application} app
+ */
+export function mountToApp(app) {
+  let count = 0;
+  for (const layer of router.stack ?? []) {
+    const route = layer.route;
+    if (!route?.path || !route?.methods) continue;
+    for (const [method, active] of Object.entries(route.methods)) {
+      if (!active || typeof app[method] !== "function") continue;
+      const handlers = route.stack.map((l) => l.handle);
+      if (!handlers.length) continue;
+      app[method](route.path, ...handlers);
+      count++;
+    }
+  }
+  console.log(`[APP_PAIS] mountToApp: ${count} rotas registradas em app.`);
+}
 
 export default router;
 
