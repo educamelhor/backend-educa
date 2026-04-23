@@ -181,9 +181,6 @@ const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = appPaisRouterModule;
   console.log("[FF] FF_APP_PAIS: router carregado. Stack:", appPaisRouter?.stack?.length);
-  // Registra rotas em nível de módulo (workaround: bootstrap-level app.use/app.post não funciona neste ambiente)
-  mountAppPaisToApp(app);
-  console.log("[FF] FF_APP_PAIS: montado em nível de módulo ✅");
 } else if (FF_APP_PAIS) {
   console.warn("[FF] FF_APP_PAIS foi desativado por falta de ENV obrigatórias.");
 }
@@ -401,6 +398,14 @@ app.get("/api/visitantes-ping", (_req, res) =>
     message: "router de visitantes acessível — /api/visitantes-ping",
   })
 );
+
+// ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
+// mountToApp() deve ser chamado AQUI: app já existe (linha 263) + CORS/body-parser
+// já configurados (linhas 319-346) + antes do bootstrap() (linha 479)
+if (appPaisRouter) {
+  mountAppPaisToApp(app);
+  console.log("[FF] FF_APP_PAIS: montado em nível de módulo (pós-app, pré-bootstrap) ✅");
+}
 
 // ============================================================================
 // DEBUG (somente DEV) — evita expor rotas e logs sensíveis em produção
