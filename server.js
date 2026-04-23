@@ -178,14 +178,13 @@ const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 // ⚠️ Horários/Grade (Urania/solver) fica separado e pode continuar OFF em produção
 const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
 
-console.log("[FF] APP_PAIS PRE-ASSIGN: typeof appPaisRouterModule =", typeof appPaisRouterModule, "stack=", appPaisRouterModule?.stack?.length);
+// IMPORTANTE: appPaisRouter DEVE ser atribuído incondicionalmente aqui
+// (antes do middleware na ~linha 405). O bloco if abaixo só valida ENVs.
 appPaisRouter = appPaisRouterModule;
-console.log("[FF] APP_PAIS POST-ASSIGN: !!appPaisRouter =", !!appPaisRouter, "stack=", appPaisRouter?.stack?.length);
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   console.log("[FF] FF_APP_PAIS: router carregado. Stack:", appPaisRouter?.stack?.length);
-} else if (FF_APP_PAIS) {
-  console.warn("[FF] FF_APP_PAIS foi desativado por falta de ENV obrigatórias.");
-  appPaisRouter = null; // desativa se ENV faltar
+} else {
+  appPaisRouter = null; // desativa se flag off ou ENV faltar
 }
 
 if (FF_EDUCA_CAPTURE) {
@@ -402,40 +401,17 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
-app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
-
-// DEBUG HEADERS + APP_PAIS routing
+// ─── APP_PAIS: roteamento via middleware ──────────────────────────────────────
+// Express 5 no Docker/DO App Platform não suporta app.use() condicional dentro
+// de blocos if. Por isso registramos um middleware global que filtra por URL
+// e delega para o router quando necessário.
 app.use((req, res, next) => {
-  res.setHeader("X-Rcvd-Url", req.url || "");
-  res.setHeader("X-Rcvd-OrigUrl", req.originalUrl || "");
-
-  const rawUrl = req.originalUrl || req.url || "";
-  const normalUrl = rawUrl.startsWith("/") ? rawUrl : "/" + rawUrl;
-
-  if (!normalUrl.startsWith("/api/app-pais")) return next();
-
-  // INLINE PING para confirmar que middleware chega até aqui
-  if (normalUrl === "/api/app-pais/ping" && req.method === "GET") {
-    const stackPaths = appPaisRouter?.stack
-      ?.filter((l) => l.route)
-      .map((l) => `${Object.keys(l.route?.methods || {}).join(",").toUpperCase()} ${l.route?.path}`)
-      .slice(0, 5) || [];
-    return res.json({
-      ok: true,
-      msg: "PING INLINE middleware ✅",
-      router: !!appPaisRouter,
-      stackSample: stackPaths,
-    });
-  }
-
-  // Para outras rotas: delegar ao router
   if (!appPaisRouter) return next();
-  req.url = normalUrl;
-  console.log(`[APPPAIS-MW] delegando → ${req.method} ${req.url}`);
+  const url = req.originalUrl || req.url || "";
+  if (!url.startsWith("/api/app-pais")) return next();
+  req.url = url.startsWith("/") ? url : "/" + url;
   appPaisRouter.handle(req, res, next);
 });
-console.log("[FF] FF_APP_PAIS: middleware com inline-ping registrado ✅");
 
 
 // ============================================================================
