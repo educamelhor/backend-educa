@@ -404,13 +404,15 @@ app.get("/api/visitantes-ping", (_req, res) =>
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
 // Rotas app_pais: app.use() SEM prefixo + verificação manual de URL.
+// IMPORTANTE: app.use() sem path strippa o '/' inicial de req.url.
+// Por isso a condição usa req.originalUrl (imutável pelo Express).
 app.use((req, res, next) => {
-  // LOG DIAGNÓSTICO: mostra qual URL o Express vê para requests app-pais
-  if (req.originalUrl?.includes("app-pais") || req.url?.includes("app-pais")) {
-    console.log(`[APPPAIS-MW] ${req.method} url=${req.url} originalUrl=${req.originalUrl}`);
-  }
   if (!appPaisRouter) return next();
-  if (!req.url.startsWith("/api/app-pais")) return next();
+  if (!req.originalUrl.startsWith("/api/app-pais")) return next();
+  // Restaura req.url = originalUrl para que router.handle() consiga
+  // fazer match com os paths completos (/api/app-pais/ping etc.)
+  req.url = req.originalUrl;
+  console.log(`[APPPAIS-MW] ${req.method} ${req.url}`);
   appPaisRouter.handle(req, res, next);
 });
 console.log("[FF] FF_APP_PAIS: middleware URL-check registrado (pós-app, pré-bootstrap) ✅");
