@@ -404,9 +404,11 @@ app.get("/api/visitantes-ping", (_req, res) =>
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
 // Rotas app_pais: app.use() SEM prefixo + verificação manual de URL.
-// Registrado FORA do if(appPaisRouter) porque qualquer app.get() dentro do if
-// não é alcançável neste ambiente (Express 5 + Docker DO).
 app.use((req, res, next) => {
+  // LOG DIAGNÓSTICO: mostra qual URL o Express vê para requests app-pais
+  if (req.originalUrl?.includes("app-pais") || req.url?.includes("app-pais")) {
+    console.log(`[APPPAIS-MW] ${req.method} url=${req.url} originalUrl=${req.originalUrl}`);
+  }
   if (!appPaisRouter) return next();
   if (!req.url.startsWith("/api/app-pais")) return next();
   appPaisRouter.handle(req, res, next);
