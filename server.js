@@ -507,11 +507,19 @@ async function bootstrap() {
 
 
   // ─── APP_PAIS (Express 5 compat) ──────────────────────────────────────────
-  // As rotas em app_pais.js usam paths completos (/api/app-pais/ping etc.).
-  // Montamos SEM prefixo para evitar o bug do Express 5 com app.use(path_com_hifen).
+  // Estratégia dupla:
+  // 1) Rotas críticas registradas DIRETAMENTE em app.get/app.post (funciona sempre)
+  // 2) app.use(appPaisRouter) para as demais rotas (fullpath internamente)
+  console.log("[FF] APP_PAIS router ok?", !!appPaisRouter, "stack:", appPaisRouter?.stack?.length);
+
+  // Ping público (sem auth) — registrado diretamente para garantir 200
+  app.get("/api/app-pais/ping", (_req, res) =>
+    res.json({ ok: true, msg: "APP_PAIS router OK", router_stack: appPaisRouter?.stack?.length })
+  );
+
   if (appPaisRouter) {
     app.use(appPaisRouter);
-    console.log("[FF] FF_APP_PAIS: router montado SEM prefixo (paths completos) ✅");
+    console.log("[FF] FF_APP_PAIS: router montado SEM prefixo ✅");
   }
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
