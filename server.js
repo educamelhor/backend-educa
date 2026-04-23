@@ -508,7 +508,14 @@ async function bootstrap() {
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
 
 
-  if (appPaisRouter) app.use("/api/app-pais", appPaisRouter);
+  // ─── DEBUG CRÍTICO: confirmar montagem do app_pais ─────────────────────────
+  console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter);
+  if (appPaisRouter) {
+    app.use("/api/app-pais", appPaisRouter);
+    console.log("[DEBUG][APP_PAIS] app.use('/api/app-pais') executado ✅");
+  } else {
+    console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
+  }
   if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
   if (deviceRoutes) app.use("/api/app-pais", deviceRoutes);
 
