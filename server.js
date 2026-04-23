@@ -508,16 +508,23 @@ async function bootstrap() {
 
   // ─── DEBUG CRÍTICO: confirmar montagem do app_pais ─────────────────────────
   console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter, "| stack:", appPaisRouter?.stack?.length);
+
+  // TESTE DIRETO: rota inline no app para isolar se o problema é o router ou a infra
+  app.get("/api/app-pais/_test-direct", (_req, res) =>
+    res.json({ ok: true, msg: "Rota DIRETA no app funciona!", stack: appPaisRouter?.stack?.length })
+  );
+
   if (appPaisRouter) {
-    // Express 5 breaking change: app.use(path) faz match EXATO, não prefixo.
-    // Para capturar subpaths como /api/app-pais/ping, usa-se /*path (wildcard).
+    // Tentativa 1: sem prefix (mais compatível com Express 5)
+    app.use("/api/app-pais", appPaisRouter);
+    // Tentativa 2: com wildcard
     app.use("/api/app-pais/*path", appPaisRouter);
-    console.log("[DEBUG][APP_PAIS] app.use('/api/app-pais/*path') executado ✅");
+    console.log("[DEBUG][APP_PAIS] dvojne mount executado ✅");
   } else {
     console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
   }
-  if (responsavelRoutes) app.use("/api/app-pais/*path", responsavelRoutes);
-  if (deviceRoutes) app.use("/api/app-pais/*path", deviceRoutes);
+  if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
+  if (deviceRoutes) app.use("/api/app-pais", deviceRoutes);
 
   if (captureRoutes) app.use("/api/capture", captureRoutes);
 
