@@ -148,16 +148,14 @@ const FF_MONITORAMENTO = ff("FF_MONITORAMENTO", false);
 // Agente EducaDF: pesado (Playwright) — OFF por padrão, ligar explicitamente
 const FF_AGENTE_EDUCADF = ff("FF_AGENTE_EDUCADF", false);
 
-// ✅ DEBUG (DEV): confirma flags efetivas para eliminar dúvida de "rota não montou porque flag estava OFF"
-if (process.env.NODE_ENV !== "production") {
-  console.log("[FF] FLAGS efetivas:", {
-    FF_APP_PAIS,
-    FF_CONFIG_PEDAGOGICA,
-    FF_CONTEUDOS_ADMIN,
-    FF_MONITORAMENTO,
-    FF_AGENTE_EDUCADF,
-  });
-}
+// ✅ DEBUG: confirma flags efetivas (roda em DEV e PROD para facilitar diagnóstico)
+console.log("[FF] FLAGS efetivas:", {
+  FF_APP_PAIS,
+  FF_CONFIG_PEDAGOGICA,
+  FF_CONTEUDOS_ADMIN,
+  FF_MONITORAMENTO,
+  FF_AGENTE_EDUCADF,
+});
 
 if (FF_AGENTE_EDUCADF) {
   agenteEducadfRouter = await safeImportDefault(
@@ -179,14 +177,13 @@ const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
 
 if (FF_APP_PAIS && requireEnvForFeature("FF_APP_PAIS", ["APP_PAIS_JWT_SECRET"])) {
   appPaisRouter = await safeImportDefault("FF_APP_PAIS", "./routes/app_pais.js");
-  responsavelRoutes = await safeImportDefault(
-    "FF_APP_PAIS",
-    "./modules/app-pais/responsavel/responsavel.routes.js"
-  );
-  deviceRoutes = await safeImportDefault(
-    "FF_APP_PAIS",
-    "./modules/app-pais/device/device.routes.js"
-  );
+  if (appPaisRouter) {
+    console.log("[FF] FF_APP_PAIS: router /api/app-pais carregado com sucesso.");
+  } else {
+    console.error("[FF] FF_APP_PAIS: FALHA ao carregar routes/app_pais.js — verifique o arquivo.");
+  }
+  // Nota: responsavel.routes.js e device.routes.js ainda não existem como módulos separados.
+  // Todo o código do App Pais está consolidado em routes/app_pais.js.
 } else if (FF_APP_PAIS) {
   console.warn("[FF] FF_APP_PAIS estava ON, mas foi desativado por falta de ENV obrigatórias.");
 }
