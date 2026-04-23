@@ -401,17 +401,14 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// ─── APP_PAIS: roteamento via middleware ──────────────────────────────────────
-// Express 5 no Docker/DO App Platform não suporta app.use() condicional dentro
-// de blocos if. Por isso registramos um middleware global que filtra por URL
-// e delega para o router quando necessário.
-app.use((req, res, next) => {
-  if (!appPaisRouter) return next();
-  const url = req.originalUrl || req.url || "";
-  if (!url.startsWith("/api/app-pais")) return next();
-  req.url = url.startsWith("/") ? url : "/" + url;
-  appPaisRouter.handle(req, res, next);
-});
+// ─── APP_PAIS: roteamento via app.use(router) direto ──────────────────────────
+// O router já tem paths completos (/api/app-pais/*), então montamos sem prefixo.
+// IMPORTANTE: NÃO usar dentro de if(appPaisRouter) — blocos condicionais impedem
+// o registro de middleware neste ambiente Express 5/Docker/DO.
+if (appPaisRouter) {
+  app.use(appPaisRouter);
+  console.log("[FF] FF_APP_PAIS: router montado via app.use() direto ✅");
+}
 
 
 // ============================================================================
