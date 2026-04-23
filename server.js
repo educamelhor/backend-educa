@@ -402,24 +402,37 @@ app.get("/api/visitantes-ping", (_req, res) =>
 // ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
-// DEBUG HEADERS: mostra qual URL o Express recebe externamente
+// DEBUG HEADERS + APP_PAIS routing
 app.use((req, res, next) => {
   res.setHeader("X-Rcvd-Url", req.url || "");
   res.setHeader("X-Rcvd-OrigUrl", req.originalUrl || "");
 
-  // Normaliza URL: adiciona '/' prefix se o proxy strippar
   const rawUrl = req.originalUrl || req.url || "";
   const normalUrl = rawUrl.startsWith("/") ? rawUrl : "/" + rawUrl;
 
-  console.log(`[ALL-MW] ${req.method} raw=${rawUrl} norm=${normalUrl} router=${!!appPaisRouter}`);
-
-  if (!appPaisRouter) return next();
   if (!normalUrl.startsWith("/api/app-pais")) return next();
+
+  // INLINE PING para confirmar que middleware chega até aqui
+  if (normalUrl === "/api/app-pais/ping" && req.method === "GET") {
+    const stackPaths = appPaisRouter?.stack
+      ?.filter((l) => l.route)
+      .map((l) => `${Object.keys(l.route?.methods || {}).join(",").toUpperCase()} ${l.route?.path}`)
+      .slice(0, 5) || [];
+    return res.json({
+      ok: true,
+      msg: "PING INLINE middleware ✅",
+      router: !!appPaisRouter,
+      stackSample: stackPaths,
+    });
+  }
+
+  // Para outras rotas: delegar ao router
+  if (!appPaisRouter) return next();
   req.url = normalUrl;
-  console.log(`[APPPAIS-MW] delegando → ${req.url}`);
+  console.log(`[APPPAIS-MW] delegando → ${req.method} ${req.url}`);
   appPaisRouter.handle(req, res, next);
 });
-console.log("[FF] FF_APP_PAIS: middleware com URL normalização registrado ✅");
+console.log("[FF] FF_APP_PAIS: middleware com inline-ping registrado ✅");
 
 
 // ============================================================================
