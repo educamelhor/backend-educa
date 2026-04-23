@@ -1756,4 +1756,122 @@ router.post("/device-token", authAppPais, async (req, res) => {
   }
 });
 
+// ============================================================================
+// GET /api/app-pais/registros
+// Retorna registros pedagógicos e disciplinares do aluno para o responsável
+// Querystring: aluno_id, ano (opcional), tipo (pedagogico|disciplinar|all)
+// ============================================================================
+router.get("/registros", authAppPais, async (req, res) => {
+  const db = pool;
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+
+    const aluno_id = Number(req.query?.aluno_id);
+    const ano      = req.query?.ano ? Number(req.query.ano) : null;
+    const tipo     = req.query?.tipo || "all"; // "pedagogico" | "disciplinar" | "all"
+
+    if (!Number.isFinite(aluno_id)) {
+      return res.status(400).json({ message: "aluno_id é obrigatório." });
+    }
+
+    // 1) Valida vínculo ativo
+    const [[vinculo]] = await db.query(
+      `SELECT escola_id
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND aluno_id = ? AND ativo = 1
+       LIMIT 1`,
+      [responsavel_id, aluno_id]
+    );
+
+    if (!vinculo) {
+      return res.status(403).json({ message: "Acesso negado a este estudante." });
+    }
+
+    const escola_id = Number(vinculo.escola_id);
+    const anoFiltro = Number.isFinite(ano) ? ano : null;
+
+    // ── 2) DISCIPLINARES ────────────────────────────────────────────────────
+    let disciplinares = [];
+    if (tipo === "disciplinar" || tipo === "all") {
+      const params = [escola_id, aluno_id];
+      let sql = `
+        SELECT
+          o.id,
+          'disciplinar'                          AS tipo,
+          COALESCE(o.tipo_ocorrencia, 'Disciplinar') AS titulo,
+          DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
+          COALESCE(o.motivo, o.descricao, '')    AS resumo,
+          COALESCE(o.descricao, o.motivo, '')    AS texto_completo,
+          o.status,
+          o.data_ocorrencia
+        FROM ocorrencias_disciplinares o
+        WHERE o.escola_id = ? AND o.aluno_id = ?
+          AND o.status != 'CANCELADA'
+      `;
+      if (anoFiltro) {
+        sql += " AND YEAR(o.data_ocorrencia) = ?";
+        params.push(anoFiltro);
+      }
+      sql += " ORDER BY o.data_ocorrencia DESC LIMIT 100";
+      const [rows] = await db.query(sql, params);
+      disciplinares = rows;
+    }
+
+    // ── 3) PEDAGÓGICOS ──────────────────────────────────────────────────────
+    // Tenta buscar de tabela dedicada (se existir). Fallback silencioso.
+    let pedagogicos = [];
+    if (tipo === "pedagogico" || tipo === "all") {
+      try {
+        const params = [escola_id, aluno_id];
+        let sql = `
+          SELECT
+            rp.id,
+            'pedagogico'                                  AS tipo,
+            COALESCE(rp.titulo, 'Registro Pedagógico')   AS titulo,
+            DATE_FORMAT(rp.data_registro, '%d/%m/%Y')    AS data,
+            COALESCE(rp.resumo, rp.descricao, '')        AS resumo,
+            COALESCE(rp.descricao, rp.resumo, '')        AS texto_completo,
+            rp.data_registro
+          FROM registros_pedagogicos rp
+          WHERE rp.escola_id = ? AND rp.aluno_id = ?
+        `;
+        if (anoFiltro) {
+          sql += " AND YEAR(rp.data_registro) = ?";
+          params.push(anoFiltro);
+        }
+        sql += " ORDER BY rp.data_registro DESC LIMIT 100";
+        const [rows] = await db.query(sql, params);
+        pedagogicos = rows;
+      } catch (e) {
+        // Tabela não existente ainda — retorna vazio sem quebrar
+        console.warn("[APP_PAIS] Tabela registros_pedagogicos não encontrada:", e.code);
+        pedagogicos = [];
+      }
+    }
+
+    // ── 4) Anos disponíveis (para o seletor) ────────────────────────────────
+    const [anosRows] = await db.query(
+      `SELECT DISTINCT YEAR(data_ocorrencia) AS ano
+       FROM ocorrencias_disciplinares
+       WHERE escola_id = ? AND aluno_id = ? AND status != 'CANCELADA'
+       ORDER BY ano DESC`,
+      [escola_id, aluno_id]
+    );
+    const anos = anosRows.map(r => Number(r.ano));
+
+    return res.json({
+      ok: true,
+      aluno_id,
+      escola_id,
+      anos,
+      disciplinares,
+      pedagogicos,
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /registros:", error);
+    return res.status(500).json({ message: "Erro ao carregar registros." });
+  }
+});
+
 export default router;
+
