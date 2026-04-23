@@ -506,7 +506,7 @@ async function bootstrap() {
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
 
 
-  // ─── DEBUG CRÍTICO: confirmar montagem do app_pais ─────────────────────────
+  // ─── DEBUG + MOUNT APP_PAIS (Express 5 compat) ─────────────────────────────
   console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter, "| stack:", appPaisRouter?.stack?.length);
 
   // TESTE DIRETO: rota inline no app para isolar se o problema é o router ou a infra
@@ -515,12 +515,24 @@ async function bootstrap() {
   );
 
   if (appPaisRouter) {
-    // DEBUG: capturar req.url que chega no router para entender o stripping
-    app.use("/api/app-pais", (req, res, next) => {
-      console.log("[DEBUG-URL] app-pais req.url:", req.url, "| originalUrl:", req.originalUrl, "| method:", req.method);
-      next();
-    }, appPaisRouter);
-    console.log("[DEBUG][APP_PAIS] mount com wrapper de debug executado ✅");
+    // Wrapper com stripping MANUAL do prefixo /api/app-pais.
+    // Usa req.originalUrl (imutável) para garantir que o router receba /ping
+    // e não /api/app-pais/ping — workaround para Express 5 + path-to-regexp v8.
+    function mountAppPaisRouter(req, res, next) {
+      const prefix = "/api/app-pais";
+      const stripped = req.originalUrl.split("?")[0]; // sem querystring
+      const newUrl = stripped.startsWith(prefix)
+        ? stripped.slice(prefix.length) || "/"
+        : req.url;
+      const qs = req.originalUrl.includes("?") ? req.originalUrl.slice(req.originalUrl.indexOf("?")) : "";
+      req.url = newUrl + qs;
+      console.log("[DEBUG-WRAPPER] strip:", req.originalUrl, "->", req.url);
+      appPaisRouter(req, res, next);
+    }
+
+    app.use("/api/app-pais", mountAppPaisRouter);
+    app.use("/api/app-pais/*path", mountAppPaisRouter);
+    console.log("[DEBUG][APP_PAIS] mount com stripping manual executado ✅");
   } else {
     console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
   }
