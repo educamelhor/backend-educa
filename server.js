@@ -506,34 +506,15 @@ async function bootstrap() {
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
 
 
-  // ─── DEBUG + MOUNT APP_PAIS (Express 5 compat) ─────────────────────────────
-  console.log("[DEBUG][APP_PAIS] typeof appPaisRouter:", typeof appPaisRouter, "| truthy?", !!appPaisRouter, "| stack:", appPaisRouter?.stack?.length);
-
-  // TESTE DIRETO: rota inline no app para isolar se o problema é o router ou a infra
-  app.get("/api/app-pais/_test-direct", (_req, res) =>
-    res.json({ ok: true, msg: "Rota DIRETA no app funciona!", stack: appPaisRouter?.stack?.length })
-  );
-
+  // ─── APP_PAIS (Express 5 compat) ──────────────────────────────────────────
+  // As rotas em app_pais.js usam paths completos (/api/app-pais/ping etc.).
+  // Montamos SEM prefixo para evitar o bug do Express 5 com app.use(path_com_hifen).
   if (appPaisRouter) {
-    // DIAGNÓSTICO FINAL: responde diretamente para provar se app.use é ativado
-    function mountAppPaisRouter(req, res, _next) {
-      res.json({
-        ok: true,
-        msg: "WRAPPER_REACHED",
-        originalUrl: req.originalUrl,
-        method: req.method,
-        stack: appPaisRouter?.stack?.length,
-      });
-    }
-
-    app.use("/api/app-pais", mountAppPaisRouter);
-    app.use("/api/app-pais/*path", mountAppPaisRouter);
-    console.log("[DEBUG][APP_PAIS] mount DIRETTO executado ✅");
-  } else {
-    console.error("[DEBUG][APP_PAIS] SKIP: appPaisRouter é null/undefined ❌");
+    app.use(appPaisRouter);
+    console.log("[FF] FF_APP_PAIS: router montado SEM prefixo (paths completos) ✅");
   }
-  if (responsavelRoutes) app.use("/api/app-pais", responsavelRoutes);
-  if (deviceRoutes) app.use("/api/app-pais", deviceRoutes);
+  if (responsavelRoutes) app.use(responsavelRoutes);
+  if (deviceRoutes) app.use(deviceRoutes);
 
   if (captureRoutes) app.use("/api/capture", captureRoutes);
 
