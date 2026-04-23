@@ -402,16 +402,24 @@ app.get("/api/visitantes-ping", (_req, res) =>
 // ─── APP_PAIS: registro em nível de módulo ────────────────────────────────────
 app.get("/api/test-fora-if", (_req, res) => res.json({ ok: true, msg: "fora do if - funciona?" }));
 
-// UMA ÚNICA app.use que loga TUDO e redireciona app_pais
+// DEBUG HEADERS: mostra qual URL o Express recebe externamente
 app.use((req, res, next) => {
-  console.log(`[ALL-MW] ${req.method} ${req.originalUrl} router=${!!appPaisRouter}`);
+  res.setHeader("X-Rcvd-Url", req.url || "");
+  res.setHeader("X-Rcvd-OrigUrl", req.originalUrl || "");
+
+  // Normaliza URL: adiciona '/' prefix se o proxy strippar
+  const rawUrl = req.originalUrl || req.url || "";
+  const normalUrl = rawUrl.startsWith("/") ? rawUrl : "/" + rawUrl;
+
+  console.log(`[ALL-MW] ${req.method} raw=${rawUrl} norm=${normalUrl} router=${!!appPaisRouter}`);
+
   if (!appPaisRouter) return next();
-  if (!req.originalUrl.startsWith("/api/app-pais")) return next();
-  req.url = req.originalUrl;
-  console.log(`[APPPAIS-MW] delegando para router`);
+  if (!normalUrl.startsWith("/api/app-pais")) return next();
+  req.url = normalUrl;
+  console.log(`[APPPAIS-MW] delegando → ${req.url}`);
   appPaisRouter.handle(req, res, next);
 });
-console.log("[FF] FF_APP_PAIS: middleware único registrado ✅");
+console.log("[FF] FF_APP_PAIS: middleware com URL normalização registrado ✅");
 
 
 // ============================================================================
