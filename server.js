@@ -517,6 +517,11 @@ async function bootstrap() {
     res.json({ ok: true, msg: "APP_PAIS router OK", router_stack: appPaisRouter?.stack?.length })
   );
 
+  // TESTE: POST direto com path contendo app-pais
+  app.post("/api/app-pais/_test-post", (req, res) =>
+    res.json({ ok: true, msg: "POST direto funcionou!", body: req.body })
+  );
+
   if (appPaisRouter) {
     // Express 5: app.use(path, router) não ativa sub-rotas com hifen no path.
     // Solução: iterar o stack do router e registrar CADA rota diretamente no app.
