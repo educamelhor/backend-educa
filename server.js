@@ -512,10 +512,9 @@ async function bootstrap() {
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
-  if (appPaisRouter) {
-    app.use("/api/app-pais", appPaisRouter);
-    console.log("[FF] FF_APP_PAIS: router montado em /api/app-pais ✅ stack:", appPaisRouter.stack?.length);
-  }
+  console.log("[APP_PAIS] bootstrap: appPaisRouter=", !!appPaisRouter, "appPaisRouterModule=", !!appPaisRouterModule, "stack=", appPaisRouterModule?.stack?.length);
+  app.use("/api/app-pais", appPaisRouterModule);
+  console.log("[APP_PAIS] bootstrap: app.use('/api/app-pais') executado ✅");
 
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
