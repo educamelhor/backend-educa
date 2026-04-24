@@ -401,13 +401,12 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// ─── APP_PAIS: roteamento via app.use(router) direto ──────────────────────────
-// O router já tem paths completos (/api/app-pais/*), então montamos sem prefixo.
-// IMPORTANTE: NÃO usar dentro de if(appPaisRouter) — blocos condicionais impedem
-// o registro de middleware neste ambiente Express 5/Docker/DO.
+// ─── APP_PAIS: roteamento via app.use() com prefixo ───────────────────────────
+// O router usa paths relative (/ping, /me, /alunos etc).
+// Express 5 monta com prefixo e stripa automaticamente.
 if (appPaisRouter) {
-  app.use(appPaisRouter);
-  console.log("[FF] FF_APP_PAIS: router montado via app.use() direto ✅");
+  app.use("/api/app-pais", appPaisRouter);
+  console.log("[FF] FF_APP_PAIS: router montado em /api/app-pais ✅");
 }
 
 

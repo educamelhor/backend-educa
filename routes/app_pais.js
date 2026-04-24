@@ -152,14 +152,14 @@ async function enviarCodigoPorEmail(email, codigo) {
 // ============================================================================
 // PING
 // ============================================================================
-router.get("/api/app-pais/ping", (req, res) => {
+router.get("/ping", (req, res) => {
   return res.json({ ok: true, msg: "APP_PAIS router OK" });
 });
 
 // ============================================================================
 // GET /me
 // ============================================================================
-router.get("/api/app-pais/me", authAppPais, async (req, res) => {
+router.get("/me", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -183,7 +183,7 @@ router.get("/api/app-pais/me", authAppPais, async (req, res) => {
 // ============================================================================
 // GET /alunos (Home)
 // ============================================================================
-router.get("/api/app-pais/alunos", authAppPais, async (req, res) => {
+router.get("/alunos", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -275,7 +275,7 @@ router.get("/api/app-pais/alunos", authAppPais, async (req, res) => {
 // - Bucket privado: App Pais pede URL assinada temporária
 // - Valida vínculo responsaveis_alunos (ativo=1) + escola_id do vínculo
 // ============================================================================
-router.get("/api/app-pais/alunos/:id/foto-url", authAppPais, async (req, res) => {
+router.get("/alunos/:id/foto-url", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
@@ -337,7 +337,7 @@ router.get("/api/app-pais/alunos/:id/foto-url", authAppPais, async (req, res) =>
 // Querystring:
 //   /api/app-pais/boletim?aluno_id=2&ano=2024   (ano opcional)
 // ============================================================================
-router.get("/api/app-pais/boletim", authAppPais, async (req, res) => {
+router.get("/boletim", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
@@ -423,7 +423,7 @@ router.get("/api/app-pais/boletim", authAppPais, async (req, res) => {
 // Querystring:
 //   /api/app-pais/boletim-pdf?aluno_id=2&ano=2025&bimestre=2
 // ============================================================================
-router.get("/api/app-pais/boletim-pdf", authAppPais, async (req, res) => {
+router.get("/boletim-pdf", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
@@ -868,7 +868,7 @@ router.get("/api/app-pais/boletim-pdf", authAppPais, async (req, res) => {
 // Querystring:
 //   /api/app-pais/ranking?aluno_id=2&ano=2025&bimestre=2
 // ============================================================================
-router.get("/api/app-pais/ranking", authAppPais, async (req, res) => {
+router.get("/ranking", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
@@ -1012,7 +1012,7 @@ router.get("/api/app-pais/ranking", authAppPais, async (req, res) => {
 // - Retorna lista de escolas + estudantes onde o responsável logado é MASTER
 // - Usado pelo seletor moderno (multiescola/multiestudante)
 // ============================================================================
-router.get("/api/app-pais/credenciais/contextos", authAppPais, async (req, res) => {
+router.get("/credenciais/contextos", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -1065,7 +1065,7 @@ router.get("/api/app-pais/credenciais/contextos", authAppPais, async (req, res) 
 // ============================================================================
 // POST /solicitar-codigo
 // ============================================================================
-router.post("/api/app-pais/solicitar-codigo", async (req, res) => {
+router.post("/solicitar-codigo", async (req, res) => {
   console.log("[SOLICITAR-CODIGO] Handler chamado! body:", JSON.stringify(req.body ?? null));
   const db = pool;
   const cpf = normalizarCpf(req.body?.cpf);
@@ -1124,7 +1124,7 @@ router.post("/api/app-pais/solicitar-codigo", async (req, res) => {
 // ============================================================================
 // POST /verificar-codigo
 // ============================================================================
-router.post("/api/app-pais/verificar-codigo", async (req, res) => {
+router.post("/verificar-codigo", async (req, res) => {
   const db = pool;
   const cpf = normalizarCpf(req.body?.cpf);
   const codigo = normalizarCodigo(req.body?.codigo);
@@ -1206,7 +1206,7 @@ router.post("/api/app-pais/verificar-codigo", async (req, res) => {
 // - Master digita CPF do terceiro
 // - Se não existir no BD → 404 com orientação (precisa solicitar no app)
 // ============================================================================
-router.get("/api/app-pais/credenciais/buscar", authAppPais, async (req, res) => {
+router.get("/credenciais/buscar", authAppPais, async (req, res) => {
   const db = pool;
   const cpf = normalizarCpf(req.query?.cpf);
 
@@ -1238,7 +1238,7 @@ router.get("/api/app-pais/credenciais/buscar", authAppPais, async (req, res) => 
 // ============================================================================
 // 🆕 PASSO 2.7.3.4 — CREDENCIAL / CONTEXTO (pré-login)
 // ============================================================================
-router.get("/api/app-pais/credencial/contexto", async (req, res) => {
+router.get("/credencial/contexto", async (req, res) => {
   const db = pool;
   const cpf = normalizarCpf(req.query?.cpf);
 
@@ -1284,7 +1284,7 @@ router.get("/api/app-pais/credencial/contexto", async (req, res) => {
 // ============================================================================
 // POST /api/app-pais/credencial/pre-cadastro
 // body: { cpf }
-router.post("/api/app-pais/credencial/pre-cadastro", async (req, res) => {
+router.post("/credencial/pre-cadastro", async (req, res) => {
   const db = pool;
   const cpfNorm = normalizarCpf(req.body?.cpf);
 
@@ -1338,7 +1338,7 @@ router.post("/api/app-pais/credencial/pre-cadastro", async (req, res) => {
 // ============================================================================
 // 🆕 PASSO 2.7.3.4 — CREDENCIAL / SOLICITAR (pré-login)
 // ============================================================================
-router.post("/api/app-pais/credencial/solicitar", async (req, res) => {
+router.post("/credencial/solicitar", async (req, res) => {
   const db = pool;
   const { cpf, nome, email, parentesco, observacao } = req.body;
 
@@ -1439,7 +1439,7 @@ router.post("/api/app-pais/credencial/solicitar", async (req, res) => {
 //   }
 // }
 // ============================================================================
-router.post("/api/app-pais/credenciais/autorizar", authAppPais, async (req, res) => {
+router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
   const db = pool;
 
   const { responsavel_id } = req.appPaisAuth;
@@ -1568,7 +1568,7 @@ router.post("/api/app-pais/credenciais/autorizar", authAppPais, async (req, res)
 // - Segurança: responsável precisa estar vinculado ao aluno (responsaveis_alunos ativo)
 // ============================================================================
 
-router.get("/api/app-pais/conteudos/disciplinas", authAppPais, async (req, res) => {
+router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -1615,7 +1615,7 @@ router.get("/api/app-pais/conteudos/disciplinas", authAppPais, async (req, res) 
   }
 });
 
-router.get("/api/app-pais/conteudos", authAppPais, async (req, res) => {
+router.get("/conteudos", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -1728,7 +1728,7 @@ router.get("/api/app-pais/conteudos", authAppPais, async (req, res) => {
 // - Registra ou atualiza o token do Expo Push Notification (mobile_devices)
 // - Para que possamos testar pelo App (educa-mobile)
 // ============================================================================
-router.post("/api/app-pais/device-token", authAppPais, async (req, res) => {
+router.post("/device-token", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
@@ -1765,7 +1765,7 @@ router.post("/api/app-pais/device-token", authAppPais, async (req, res) => {
 // Retorna registros pedagógicos e disciplinares do aluno para o responsável
 // Querystring: aluno_id, ano (opcional), tipo (pedagogico|disciplinar|all)
 // ============================================================================
-router.get("/api/app-pais/registros", authAppPais, async (req, res) => {
+router.get("/registros", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id } = req.appPaisAuth;
