@@ -401,15 +401,26 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// TESTE DIAGNÓSTICO: rota hardcoded com hífen no path
-app.get("/api/app-pais/ping", (_req, res) => res.json({ ok: true, msg: "HARDCODED app-pais/ping ✅" }));
-app.get("/api/app_pais/ping", (_req, res) => res.json({ ok: true, msg: "HARDCODED app_pais/ping (underscore)" }));
+// TESTE DIAGNÓSTICO: rota hardcoded com hífen no path (fora do if)
+app.get("/api/app-pais/ping", (_req, res) => res.json({ ok: true, msg: "HARDCODED fora-do-if ✅" }));
 
-// ─── APP_PAIS: registro direto via mountToApp ─────────────────────────────────
+// TESTE DIAGNÓSTICO: rota hardcoded DENTRO do if
 if (appPaisRouter) {
+  app.get("/api/app-pais/ping-inside-if", (_req, res) => res.json({ ok: true, msg: "HARDCODED dentro-do-if ✅" }));
   mountAppPaisToApp(app, "/api/app-pais");
   console.log("[FF] FF_APP_PAIS: rotas registradas via mountToApp ✅");
 }
+
+// DEBUG: dump do stack de rotas
+app.get("/__debug-routes", (_req, res) => {
+  const routes = (app._router?.stack ?? [])
+    .filter((l) => l.route)
+    .map((l) => ({
+      m: Object.keys(l.route.methods || {}).filter((k) => l.route.methods[k])[0],
+      p: l.route.path,
+    }));
+  res.json({ total: routes.length, routes });
+});
 
 
 // ============================================================================
