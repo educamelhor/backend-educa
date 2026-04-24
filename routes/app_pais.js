@@ -1149,9 +1149,13 @@ router.post("/solicitar-codigo", async (req, res) => {
       _debug: {
         msg: error?.message,
         code: error?.code,
+        errno: error?.errno,
         sql: error?.sqlMessage,
         type: error?.constructor?.name,
         stack0: String(error?.stack || "").split("\n")[0],
+        smtp_host: process.env.SMTP_HOST || "(não definido)",
+        smtp_port: process.env.SMTP_PORT || "(não definido)",
+        smtp_user: process.env.SMTP_USER ? process.env.SMTP_USER.split("@")[1] : "(não definido)",
       },
     });
   }
