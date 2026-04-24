@@ -1,12 +1,11 @@
-// routes/app_pais.js — v3 (2026-04-24: SMTP fix + correcao routing)
+// routes/app_pais.js — v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
 import pool from "../db.js";
 import { getSignedGetObjectUrl } from "../storage/spacesUpload.js";
 
-const APP_PAIS_VERSION = "v3-smtp-fix-2026-04-24";
+const APP_PAIS_VERSION = "v4-resend-2026-04-24";
 console.log("[APP_PAIS] Módulo carregado:", APP_PAIS_VERSION);
 
 
@@ -142,39 +141,74 @@ async function exigirMasterNoContexto(db, responsavel_id, escola_id, aluno_id) {
   }
 }
 
+// ============================================================================
+// E-MAIL VIA RESEND API (HTTP, sem SMTP — funciona em qualquer cloud)
+// Env vars: RESEND_API_KEY, RESEND_FROM
+// Alternativa: SMTP_HOST/PORT/USER/PASS (nodemailer) — fallback se sem Resend
+// ============================================================================
 async function enviarCodigoPorEmail(email, codigo) {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
+  const RESEND_API_KEY = process.env.RESEND_API_KEY;
+  const RESEND_FROM = process.env.RESEND_FROM || "onboarding@resend.dev";
 
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-    console.error("[APP_PAIS][SMTP] SMTP não configurado:", {
-      SMTP_HOST: !!SMTP_HOST,
-      SMTP_USER: !!SMTP_USER,
-      SMTP_PASS: !!SMTP_PASS,
+  const subject = "Código de acesso - APP Pais EDUCA.MELHOR";
+  const html = `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+      <h2 style="color:#1a56db">EDUCA.MELHOR — APP Pais</h2>
+      <p>Seu código de acesso é:</p>
+      <div style="font-size:2.5rem;font-weight:bold;letter-spacing:8px;color:#111;margin:16px 0">${codigo}</div>
+      <p style="color:#555">Este código expira em <strong>10 minutos</strong>. Não compartilhe com ninguém.</p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+      <p style="font-size:0.75rem;color:#aaa">EDUCA.MELHOR Sistema Educacional</p>
+    </div>
+  `;
+  const text = `Seu código de acesso é: ${codigo}\n\nEste código expira em 10 minutos.`;
+
+  if (RESEND_API_KEY) {
+    // ━━━ PRIORIDADE: Resend HTTP API (não usa SMTP, nunca bloqueado) ━━━━━━━━━━━━━━━━━
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: RESEND_FROM,
+        to: [email],
+        subject,
+        html,
+        text,
+      }),
     });
-    throw new Error("SMTP_NAO_CONFIGURADO");
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error("[APP_PAIS][RESEND] Erro:", resp.status, body);
+      throw new Error(`RESEND_ERROR:${resp.status}:${body}`);
+    }
+
+    const data = await resp.json();
+    console.log("[APP_PAIS][RESEND] E-mail enviado:", data?.id);
+    return;
   }
 
+  // ━━━ FALLBACK: SMTP via nodemailer (pode ser bloqueado em alguns ambientes) ━━━━━
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.error("[APP_PAIS][EMAIL] Nenhum provedor de e-mail configurado (RESEND_API_KEY ou SMTP_HOST).");
+    throw new Error("EMAIL_NAO_CONFIGURADO: defina RESEND_API_KEY no painel do DigitalOcean.");
+  }
+
+  const { default: nodemailer } = await import("nodemailer");
   const transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT || 587),
     secure: Number(SMTP_PORT) === 465,
     auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
-
-  try {
-    const info = await transporter.sendMail({
-      from: `"EDUCA.MELHOR" <${SMTP_USER}>`,
-      to: email,
-      subject: "Código de acesso - APP Pais EDUCA.MELHOR",
-      text: `Seu código de acesso é: ${codigo}\n\nEste código expira em 10 minutos. Não compartilhe com ninguém.`,
-      html: `<p>Seu código de acesso é: <strong style="font-size:1.5em;letter-spacing:4px">${codigo}</strong></p><p>Este código expira em <strong>10 minutos</strong>.</p>`,
-    });
-    console.log("[APP_PAIS][SMTP] E-mail enviado:", info.messageId);
-  } catch (err) {
-    console.error("[APP_PAIS][SMTP] Falha ao enviar e-mail:", { email, host: SMTP_HOST, msg: err?.message });
-    throw err;
-  }
+  const info = await transporter.sendMail({ from: `"EDUCA.MELHOR" <${SMTP_USER}>`, to: email, subject, html, text });
+  console.log("[APP_PAIS][SMTP] E-mail enviado:", info.messageId);
 }
+
 
 // ============================================================================
 // PING
