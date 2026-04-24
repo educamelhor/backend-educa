@@ -1190,6 +1190,8 @@ router.post("/solicitar-codigo", async (req, res) => {
         smtp_host: process.env.SMTP_HOST || "(não definido)",
         smtp_port: process.env.SMTP_PORT || "(não definido)",
         smtp_user: process.env.SMTP_USER ? process.env.SMTP_USER.split("@")[1] : "(não definido)",
+        resend_key_set: !!process.env.RESEND_API_KEY,
+        resend_from: process.env.RESEND_FROM || "(não definido)",
       },
     });
   }
