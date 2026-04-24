@@ -401,8 +401,7 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// ─── APP_PAIS: registrado em bootstrap() junto com todas as outras rotas ───────
-// (ver seção bootstrap() abaixo)
+// ─── APP_PAIS: registrado em bootstrap() (ver função abaixo) ────────────────────
 
 
 // ============================================================================
@@ -512,9 +511,11 @@ async function bootstrap() {
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
-  console.log("[APP_PAIS] bootstrap: appPaisRouter=", !!appPaisRouter, "appPaisRouterModule=", !!appPaisRouterModule, "stack=", appPaisRouterModule?.stack?.length);
+  // IMPORTANTE: montar com appPaisRouterModule (import estático) diretamente,
+  // SEM if-block e SEM a variável `appPaisRouter`. Routes relativas (/ping, /me...)
+  // + app.use(prefix, router) funciona corretamente em Express 5 neste contexto.
   app.use("/api/app-pais", appPaisRouterModule);
-  console.log("[APP_PAIS] bootstrap: app.use('/api/app-pais') executado ✅");
+  console.log("[FF] FF_APP_PAIS: router montado em /api/app-pais ✅ stack:", appPaisRouterModule.stack?.length);
 
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
