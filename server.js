@@ -401,12 +401,12 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
-// ─── APP_PAIS: roteamento via app.use() com prefixo ───────────────────────────
-// O router usa paths relative (/ping, /me, /alunos etc).
-// Express 5 monta com prefixo e stripa automaticamente.
+// ─── APP_PAIS: registro direto via mountToApp ─────────────────────────────────
+// Iteramos o stack do router e registramos cada rota com app.get/app.post
+// diretamente. É o único método confiável neste ambiente Express 5 + Docker/DO.
 if (appPaisRouter) {
-  app.use("/api/app-pais", appPaisRouter);
-  console.log("[FF] FF_APP_PAIS: router montado em /api/app-pais ✅");
+  mountAppPaisToApp(app, "/api/app-pais");
+  console.log("[FF] FF_APP_PAIS: rotas registradas via mountToApp ✅");
 }
 
 

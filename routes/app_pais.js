@@ -1884,7 +1884,7 @@ router.get("/registros", authAppPais, async (req, res) => {
  *
  * @param {import('express').Application} app
  */
-export function mountToApp(app) {
+export function mountToApp(app, prefix = "") {
   let count = 0;
   for (const layer of router.stack ?? []) {
     const route = layer.route;
@@ -1893,11 +1893,12 @@ export function mountToApp(app) {
       if (!active || typeof app[method] !== "function") continue;
       const handlers = route.stack.map((l) => l.handle);
       if (!handlers.length) continue;
-      app[method](route.path, ...handlers);
+      const fullPath = prefix + route.path;
+      app[method](fullPath, ...handlers);
       count++;
     }
   }
-  console.log(`[APP_PAIS] mountToApp: ${count} rotas registradas em app.`);
+  console.log(`[APP_PAIS] mountToApp: ${count} rotas registradas em app com prefix='${prefix}'.`);
 }
 
 export default router;
