@@ -500,6 +500,29 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration questoes_canceladas (não crítico):", migErr.message);
   }
 
+  // [2026-04-24] Tabela de OTP codes do App Pais
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_pais_codigos (
+        id            INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+        responsavel_id INT UNSIGNED   NOT NULL,
+        codigo        VARCHAR(6)      NOT NULL,
+        canal         VARCHAR(10)     NOT NULL DEFAULT 'email',
+        destino       VARCHAR(255)    NOT NULL,
+        expiracao     DATETIME        NOT NULL,
+        usado_em      DATETIME        DEFAULT NULL,
+        criado_em     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_resp_codigo (responsavel_id, codigo),
+        INDEX idx_expiracao   (expiracao)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Codigos OTP de acesso para responsaveis no App Pais'
+    `);
+    console.log("[MIGRATION] Tabela app_pais_codigos garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar app_pais_codigos (não crítico):", migErr.message);
+  }
+
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
   // ============================================================================

@@ -1,13 +1,14 @@
-// routes/app_pais.js — v2 (2026-04-23: paths completos /api/app-pais/*)
+// routes/app_pais.js — v3 (2026-04-24: SMTP fix + correcao routing)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
 import pool from "../db.js";
-import { enviarEmail } from "../services/mailer.js";
 import { getSignedGetObjectUrl } from "../storage/spacesUpload.js";
 
-const APP_PAIS_VERSION = "v2-fullpath-2026-04-23";
+const APP_PAIS_VERSION = "v3-smtp-fix-2026-04-24";
 console.log("[APP_PAIS] Módulo carregado:", APP_PAIS_VERSION);
+
 
 const router = express.Router();
 
@@ -142,11 +143,37 @@ async function exigirMasterNoContexto(db, responsavel_id, escola_id, aluno_id) {
 }
 
 async function enviarCodigoPorEmail(email, codigo) {
-  const subject = "Código de acesso - APP Pais EDUCA.MELHOR";
-  const text = `Seu código é: ${codigo}`;
-  const html = `<strong>${codigo}</strong>`;
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
 
-  await enviarEmail({ to: email, subject, text, html });
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.error("[APP_PAIS][SMTP] SMTP não configurado:", {
+      SMTP_HOST: !!SMTP_HOST,
+      SMTP_USER: !!SMTP_USER,
+      SMTP_PASS: !!SMTP_PASS,
+    });
+    throw new Error("SMTP_NAO_CONFIGURADO");
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT || 587),
+    secure: Number(SMTP_PORT) === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"EDUCA.MELHOR" <${SMTP_USER}>`,
+      to: email,
+      subject: "Código de acesso - APP Pais EDUCA.MELHOR",
+      text: `Seu código de acesso é: ${codigo}\n\nEste código expira em 10 minutos. Não compartilhe com ninguém.`,
+      html: `<p>Seu código de acesso é: <strong style="font-size:1.5em;letter-spacing:4px">${codigo}</strong></p><p>Este código expira em <strong>10 minutos</strong>.</p>`,
+    });
+    console.log("[APP_PAIS][SMTP] E-mail enviado:", info.messageId);
+  } catch (err) {
+    console.error("[APP_PAIS][SMTP] Falha ao enviar e-mail:", { email, host: SMTP_HOST, msg: err?.message });
+    throw err;
+  }
 }
 
 // ============================================================================
