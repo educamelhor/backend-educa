@@ -1894,6 +1894,7 @@ export function mountToApp(app, prefix = "") {
       const handlers = route.stack.map((l) => l.handle);
       if (!handlers.length) continue;
       const fullPath = prefix + route.path;
+      if (count < 6) console.log(`[MOUNTTOAPP] #${count} method="${method}" path="${fullPath}" handlers=${handlers.length}`);
       app[method](fullPath, ...handlers);
       count++;
     }
