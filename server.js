@@ -401,9 +401,11 @@ app.get("/api/visitantes-ping", (_req, res) =>
   })
 );
 
+// TESTE DIAGNÓSTICO: rota hardcoded com hífen no path
+app.get("/api/app-pais/ping", (_req, res) => res.json({ ok: true, msg: "HARDCODED app-pais/ping ✅" }));
+app.get("/api/app_pais/ping", (_req, res) => res.json({ ok: true, msg: "HARDCODED app_pais/ping (underscore)" }));
+
 // ─── APP_PAIS: registro direto via mountToApp ─────────────────────────────────
-// Iteramos o stack do router e registramos cada rota com app.get/app.post
-// diretamente. É o único método confiável neste ambiente Express 5 + Docker/DO.
 if (appPaisRouter) {
   mountAppPaisToApp(app, "/api/app-pais");
   console.log("[FF] FF_APP_PAIS: rotas registradas via mountToApp ✅");
