@@ -218,29 +218,6 @@ router.get("/ping", (req, res) => {
 });
 
 // ============================================================================
-// ENV-CHECK (diagnóstico temporário — REMOVER em produção)
-// ============================================================================
-router.get("/env-check", (req, res) => {
-  const vars = [
-    "RESEND_API_KEY", "RESEND_FROM",
-    "SMTP_HOST", "SMTP_PORT", "SMTP_USER",
-    "NODE_ENV", "FF_APP_PAIS", "APP_PAIS_JWT_SECRET",
-  ];
-  const result = {};
-  for (const v of vars) {
-    const val = process.env[v];
-    result[v] = val === undefined ? "❌ não definido"
-      : val === "" ? "⚠️ vazio"
-      : `✅ definido (${val.length} chars)`;
-  }
-  // Lista todas as vars que começam com RESEND
-  const resendKeys = Object.keys(process.env).filter(k => k.startsWith("RESEND"));
-  result._resend_keys_found = resendKeys;
-  return res.json(result);
-});
-
-
-// ============================================================================
 // GET /me
 // ============================================================================
 router.get("/me", authAppPais, async (req, res) => {
@@ -1201,22 +1178,7 @@ router.post("/solicitar-codigo", async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /solicitar-codigo:", error);
-    return res.status(500).json({
-      message: "Erro ao enviar código.",
-      _debug: {
-        msg: error?.message,
-        code: error?.code,
-        errno: error?.errno,
-        sql: error?.sqlMessage,
-        type: error?.constructor?.name,
-        stack0: String(error?.stack || "").split("\n")[0],
-        smtp_host: process.env.SMTP_HOST || "(não definido)",
-        smtp_port: process.env.SMTP_PORT || "(não definido)",
-        smtp_user: process.env.SMTP_USER ? process.env.SMTP_USER.split("@")[1] : "(não definido)",
-        resend_key_set: !!process.env.RESEND_API_KEY,
-        resend_from: process.env.RESEND_FROM || "(não definido)",
-      },
-    });
+    return res.status(500).json({ ok: false, message: "Erro ao enviar código. Tente novamente." });
   }
 });
 
@@ -1296,7 +1258,7 @@ router.post("/verificar-codigo", async (req, res) => {
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /verificar-codigo:", error);
-    return res.status(500).json({ message: "Erro ao verificar código.", _debug: error?.message || String(error) });
+    return res.status(500).json({ ok: false, message: "Erro ao verificar código. Tente novamente." });
   }
 });
 
