@@ -1144,7 +1144,7 @@ router.post("/solicitar-codigo", async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /solicitar-codigo:", error);
-    return res.status(500).json({ message: "Erro ao enviar código." });
+    return res.status(500).json({ message: "Erro ao enviar código.", _debug: error?.message || String(error) });
   }
 });
 
@@ -1224,7 +1224,7 @@ router.post("/verificar-codigo", async (req, res) => {
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /verificar-codigo:", error);
-    return res.status(500).json({ message: "Erro ao verificar código." });
+    return res.status(500).json({ message: "Erro ao verificar código.", _debug: error?.message || String(error) });
   }
 });
 
