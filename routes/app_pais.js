@@ -1144,7 +1144,16 @@ router.post("/solicitar-codigo", async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /solicitar-codigo:", error);
-    return res.status(500).json({ message: "Erro ao enviar código.", _debug: error?.message || String(error) });
+    return res.status(500).json({
+      message: "Erro ao enviar código.",
+      _debug: {
+        msg: error?.message,
+        code: error?.code,
+        sql: error?.sqlMessage,
+        type: error?.constructor?.name,
+        stack0: String(error?.stack || "").split("\n")[0],
+      },
+    });
   }
 });
 
