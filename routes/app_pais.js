@@ -218,6 +218,29 @@ router.get("/ping", (req, res) => {
 });
 
 // ============================================================================
+// ENV-CHECK (diagnóstico temporário — REMOVER em produção)
+// ============================================================================
+router.get("/env-check", (req, res) => {
+  const vars = [
+    "RESEND_API_KEY", "RESEND_FROM",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER",
+    "NODE_ENV", "FF_APP_PAIS", "APP_PAIS_JWT_SECRET",
+  ];
+  const result = {};
+  for (const v of vars) {
+    const val = process.env[v];
+    result[v] = val === undefined ? "❌ não definido"
+      : val === "" ? "⚠️ vazio"
+      : `✅ definido (${val.length} chars)`;
+  }
+  // Lista todas as vars que começam com RESEND
+  const resendKeys = Object.keys(process.env).filter(k => k.startsWith("RESEND"));
+  result._resend_keys_found = resendKeys;
+  return res.json(result);
+});
+
+
+// ============================================================================
 // GET /me
 // ============================================================================
 router.get("/me", authAppPais, async (req, res) => {
