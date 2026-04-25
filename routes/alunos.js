@@ -1548,9 +1548,12 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
     if (modo === 'telefone') {
       registroFinal = `[FINALIZAÇÃO] Contato realizado via telefone em ${dataStr}.`;
     } else if (modo === 'nao_compareceu') {
-      registroFinal = `[FINALIZAÇÃO] Responsável não compareceu. Registro finalizado em ${dataStr}.`;
+      registroFinal = `[FINALIZAÇÃO] Responsável convocado e não compareceu. Registro finalizado em ${dataStr}.`;
+    } else if (modo === 'nao_convocado') {
+      registroFinal = `[FINALIZAÇÃO] Responsável tomou conhecimento do registro disciplinar através do aplicativo. Registro finalizado em ${dataStr}.`;
     }
     // modo = 'presenca' → data_comparecimento_responsavel já registra
+
 
     // Se modo = 'presenca' → grava data de comparecimento (quando há convocação)
     // Se modo = 'telefone' ou 'nao_compareceu' → NÃO grava data de comparecimento
