@@ -523,6 +523,27 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar app_pais_codigos (não crítico):", migErr.message);
   }
 
+  // [2026-04-25] Rastreabilidade de quem REGISTROU a ocorrência disciplinar
+  try {
+    const [colsReg] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'ocorrencias_disciplinares'
+        AND COLUMN_NAME = 'usuario_registro_id'
+    `);
+    if (colsReg.length === 0) {
+      await pool.query(`
+        ALTER TABLE ocorrencias_disciplinares
+          ADD COLUMN usuario_registro_id INT NULL DEFAULT NULL
+          COMMENT 'ID do usuario que criou o registro (rastreabilidade)'
+      `);
+      console.log("[MIGRATION] Coluna 'usuario_registro_id' adicionada em 'ocorrencias_disciplinares' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration usuario_registro_id (não crítico):", migErr.message);
+  }
+
+
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
   // ============================================================================

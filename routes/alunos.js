@@ -1391,10 +1391,10 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
 
     // Buscar ocorrências do aluno
     const [rows] = await pool.query(
-      `SELECT o.id, 
-              LPAD(o.id, 4, '0') AS registro, 
+      `SELECT o.id,
+              LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
-              o.motivo, 
+              o.motivo,
               r.medida_disciplinar,
               r.tipo_ocorrencia AS tipo,
               r.pontos,
@@ -1404,9 +1404,11 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               o.dias_suspensao,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
               o.status,
-              u.nome AS nome_usuario_finalizacao
+              ur.nome AS nome_usuario_registro,
+              uf.nome AS nome_usuario_finalizacao
        FROM ocorrencias_disciplinares o
-       LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
+       LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
+       LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
        LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`,
@@ -1424,6 +1426,7 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { escola_id } = req.user;
+    const usuarioRegistroId = req.user.usuarioId || req.user.id || req.user.usuario_id;
     const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao } = req.body;
 
     if (!data || !motivo) {
@@ -1431,10 +1434,12 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      `INSERT INTO ocorrencias_disciplinares 
-         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, dias_suspensao) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null, registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null]
+      `INSERT INTO ocorrencias_disciplinares
+         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+          convocar_responsavel, dias_suspensao, usuario_registro_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
+       registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null, usuarioRegistroId]
     );
 
     res.status(201).json({
@@ -1453,6 +1458,7 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
 router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
+    const usuarioRegistroId = req.user.usuarioId || req.user.id || req.user.usuario_id;
     const { data, motivo, tipoOcorrencia, descricao, registroInterno, diasSuspensao, alunos } = req.body;
 
     if (!data || !motivo) {
@@ -1472,15 +1478,17 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
       try {
         await pool.query(
           `INSERT INTO ocorrencias_disciplinares
-             (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, dias_suspensao)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+              convocar_responsavel, dias_suspensao, usuario_registro_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             alunoId, escola_id, data, motivo,
-            tipoOcorrencia || null,
-            descricao      || null,
+            tipoOcorrencia  || null,
+            descricao       || null,
             registroInterno || null,
             convocarResponsavel ? 1 : 0,
-            diasSuspensao  || null,
+            diasSuspensao   || null,
+            usuarioRegistroId,
           ]
         );
         sucesso++;
