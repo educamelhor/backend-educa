@@ -211,17 +211,21 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
         selector = LOGIN.profileSelector.gestao;
     }
 
-    console.log(`[educadf.login] 2/5 Selecionando perfil: ${perfil} (seletor: ${selector})...`);
+    console.log(`[educadf.login] 2/5 Selecionando perfil: ${perfil}...`);
 
-    // Verificar se estamos na tela de seleção de perfil ou já no formulário
-    const hasProfileSelector = await session.exists(selector, 5000);
+    // ★ ESTRATÉGIA PRINCIPAL: Navegar DIRETAMENTE para a URL do perfil.
+    //   Isso BYPASSA o click no card de seleção de perfil, que era bloqueado
+    //   por overlays Angular (ngb-offcanvas-backdrop, backdrop modal, etc.).
+    //   O EDUCADF aceita conexão direta via: /auth/login?id=1 (professor)
+    let perfilKey = perfil;
+    if (perfil === 'secretario' || perfil === 'vice_diretor') perfilKey = 'gestao';
+    if (perfil === 'diretor') perfilKey = 'gestao';
 
-    if (hasProfileSelector) {
-      await session.safeClick(selector, { delay: 2000 });
-      console.log(`[educadf.login] Perfil selecionado via seletor: ${selector}`);
-    } else {
-      console.log('[educadf.login] Tela de seleção de perfil não encontrada ou seletor não bate.');
-    }
+    const directLoginUrl = LOGIN.loginUrl?.[perfilKey] || LOGIN.loginUrl.professor;
+    console.log(`[educadf.login] Navegando direto para URL do perfil: ${directLoginUrl}`);
+    await session.navigateTo(directLoginUrl);
+    await session.delay(1500);
+    await session.screenshot('001_tela_login_perfil');
 
     // ====================================================================
     // PASSO 3: Aceitar banner de cookies "Bem-vindo!" (se presente)
@@ -273,24 +277,40 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
       await session.delay(300);
     }
 
-    // Tenta clicar no botão via texto → seletor CSS → JS direct click (bypassa pointer events)
+    // Tenta clicar no botão via CSS atualizado → fallbacks em cascata
     let submitClicked = false;
     try {
       await session.safeClick(LOGIN.form.submitButton, { delay: 500 });
       submitClicked = true;
+      console.log('[educadf.login] Submit via seletor principal (login-lam-btn-acessar).');
     } catch {
       try {
         await session.safeClick(LOGIN.form.submitButtonAlt, { delay: 300 });
         submitClicked = true;
-      } catch { /* cai no JS click */ }
+        console.log('[educadf.login] Submit via fallback 1 (button[type=submit]).');
+      } catch {
+        try {
+          await session.safeClick(LOGIN.form.submitButtonAlt2, { delay: 300 });
+          submitClicked = true;
+          console.log('[educadf.login] Submit via fallback 2 (btn-success).');
+        } catch { /* cai no JS click */ }
+      }
     }
 
     if (!submitClicked) {
-      // JS click direto: bypassa QUALQUER interceptação de pointer events (offcanvas, modal, backdrop)
+      // JS click direto: bypassa QUALQUER interceptação de pointer events
       console.log('[educadf.login] safeClick falhou — usando JS click direto no botão Acessar...');
-      await page.evaluate(() => {
-        const btn = document.querySelector('button.btn-success[type="submit"], button:not([disabled])');
-        if (btn) btn.click();
+      submitClicked = await page.evaluate(() => {
+        // Tenta botão pela classe nova (mapeada 26/04/2026)
+        const btn =
+          document.querySelector('button.login-lam-btn-acessar') ||
+          document.querySelector('button[type="submit"]') ||
+          document.querySelector('button.btn-success') ||
+          [...document.querySelectorAll('button')].find(b =>
+            b.textContent.trim().toLowerCase().includes('acessar')
+          );
+        if (btn) { btn.click(); return true; }
+        return false;
       });
     }
 

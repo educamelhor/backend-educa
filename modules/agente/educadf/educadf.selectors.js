@@ -30,23 +30,36 @@ export const LOGIN = {
     ],
   },
 
-  // Seleção de perfil (tela inicial)
+  // Seleção de perfil (tela inicial /auth)
+  // IMPORTANTE: Cada perfil tem href próprio — mais robusto que texto
+  // Professor  = /auth/login?id=1
+  // Servidor   = /auth/login?id=2 (ou similar)
+  // Gestão    = /auth/login?id=3 (ou similar)
   profileSelector: {
-    // Cards dos perfis na tela inicial
-    professor: 'text=Professor',
-    servidor:  'text=Servidor',
-    estudante: 'text=Estudante',
-    gestao:    'text=Gestão',
+    professor: 'a.profile-card-hit-area[href*="id=1"]',
+    servidor:  'a.profile-card-hit-area[href*="id=2"]',
+    estudante: 'a.profile-card-hit-area[href*="id=3"]',
+    gestao:    'a.profile-card-hit-area[href*="id=3"]',
+  },
+
+  // URLs DIRETAS de login por perfil (bypass da tela de seleção)
+  // Mais confiável: pula o click no card que pode ser bloqueado por overlays
+  loginUrl: {
+    professor: `${EDUCADF_URL}/auth/login?id=1`,
+    servidor:  `${EDUCADF_URL}/auth/login?id=2`,
+    gestao:    `${EDUCADF_URL}/auth/login?id=3`,
   },
 
   // Formulário de login (após selecionar perfil)
   form: {
-    usernameInput: '#username',
-    passwordInput: '#password-input',
-    rememberCheck: '#auth-remember-check',
-    submitButton:  'button:has-text("Acessar")',
-    // Alternativa mais robusta (seletor CSS)
-    submitButtonAlt: 'button.btn-success',
+    usernameInput:    '#username',
+    passwordInput:    '#password-input',
+    rememberCheck:    '#auth-remember-check',
+    // Botão principal atualizado (mapeado em 26/04/2026)
+    submitButton:     'button.login-lam-btn-acessar',
+    // Fallbacks em ordem de preferência
+    submitButtonAlt:  'button[type="submit"]',
+    submitButtonAlt2: 'button.btn-success',
   },
 
   // Indicadores de estado
