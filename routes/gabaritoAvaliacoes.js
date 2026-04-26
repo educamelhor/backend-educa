@@ -877,7 +877,7 @@ async function recalcularRespostasEmLote(conn, avaliacaoId, escola_id) {
      SET ga.nota = (
        SELECT gr.nota FROM gabarito_respostas gr
        WHERE gr.avaliacao_id = gl.avaliacao_id
-         AND gr.codigo_aluno = ga.codigo_aluno
+         AND gr.codigo_aluno COLLATE utf8mb4_unicode_ci = ga.codigo_aluno COLLATE utf8mb4_unicode_ci
          AND gr.escola_id = ?
        LIMIT 1
      )
