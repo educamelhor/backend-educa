@@ -1377,6 +1377,11 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
     const qrData = bolhasData.qrData || null;
     const avisos = bolhasData.avisos || [];
 
+    // Log de diagnóstico OMR para depuração remota
+    if (bolhasData._debug) {
+      console.log(`[scan-mobile] OMR _debug:`, JSON.stringify(bolhasData._debug));
+    }
+
     // 4. Identificar aluno via QR Code
     let codigoAluno = qrData?.c || null;
     let nomeAluno = null;
