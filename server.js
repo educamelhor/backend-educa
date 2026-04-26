@@ -539,6 +539,8 @@ async function bootstrap() {
       `);
       console.log("[MIGRATION] Coluna 'usuario_registro_id' adicionada em 'ocorrencias_disciplinares' ✅");
     }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration usuario_registro_id (não crítico):", migErr.message);
   }
 
   // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
