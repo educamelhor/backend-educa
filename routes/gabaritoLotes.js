@@ -1308,4 +1308,255 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDUCA-SCAN — Endpoints para o app mobile do professor
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/gabarito-lotes/scan-mobile ────────────────────────────────────
+// Proxy OMR para o app mobile: recebe foto, crop, lê bolhas, compara gabarito
+// Retorna resultado completo (respostas, acertos, nota, confiança)
+router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, res) => {
+  const { escola_id } = req.user;
+  const { avaliacao_id, lote_id, arquivo_id } = req.body;
+
+  if (!avaliacao_id) {
+    return res.status(400).json({ error: "avaliacao_id é obrigatório." });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: "Nenhuma imagem enviada (campo 'file')." });
+  }
+
+  try {
+    const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
+
+    // 1. Health check
+    try {
+      const hResp = await fetch(`${OMR_URL}/health`, { timeout: 5000 });
+      if (!hResp.ok) throw new Error("OMR health check falhou");
+    } catch (omrErr) {
+      console.error(`[scan-mobile] OMR indisponível em ${OMR_URL}:`, omrErr.code || omrErr.message);
+      return res.status(503).json({ error: "Serviço OMR indisponível. Tente novamente em alguns minutos." });
+    }
+
+    // 2. Crop (alinhamento)
+    const formCrop = new FormData();
+    formCrop.append("file", req.file.buffer, { filename: "gabarito_scan.jpg" });
+
+    const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
+      method: "POST",
+      body: formCrop,
+      headers: formCrop.getHeaders(),
+    });
+
+    if (!respCrop.ok) {
+      const errText = await respCrop.text().catch(() => "");
+      console.error(`[scan-mobile] crop falhou: ${respCrop.status} ${errText}`);
+      return res.status(422).json({
+        error: "Não foi possível alinhar o gabarito. Certifique-se de que os 4 cantos estejam visíveis na foto.",
+      });
+    }
+
+    const cropBuffer = Buffer.from(await respCrop.arrayBuffer());
+
+    // 3. Ler bolhas
+    const formBolhas = new FormData();
+    formBolhas.append("file", cropBuffer, { filename: "crop.png" });
+
+    const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
+      method: "POST",
+      body: formBolhas,
+      headers: formBolhas.getHeaders(),
+    });
+
+    if (!respBolhas.ok) {
+      return res.status(422).json({ error: "Falha na leitura das bolhas. Tente novamente com melhor iluminação." });
+    }
+
+    const bolhasData = await respBolhas.json();
+    const respostasAluno = bolhasData.respostas || [];
+    const qrData = bolhasData.qrData || null;
+    const avisos = bolhasData.avisos || [];
+
+    // 4. Identificar aluno via QR Code
+    let codigoAluno = qrData?.c || null;
+    let nomeAluno = null;
+    let turmaId = qrData?.t || null;
+    if (codigoAluno) {
+      const [alunoRows] = await pool.query(
+        "SELECT estudante FROM alunos WHERE codigo = ? AND escola_id = ?",
+        [codigoAluno, escola_id]
+      );
+      if (alunoRows.length > 0) nomeAluno = alunoRows[0].estudante;
+    }
+
+    // 5. Buscar gabarito oficial
+    const [avRows] = await pool.query(
+      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
+       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      [avaliacao_id, escola_id]
+    );
+    if (avRows.length === 0) {
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    const av = avRows[0];
+    const gabOficial = safeJson(av.gabarito_oficial) || [];
+    const numQuestoes = av.num_questoes || gabOficial.length;
+    const notaTotal = Number(av.nota_total) || 10;
+
+    // 6. Comparar respostas
+    let acertos = 0;
+    for (let i = 0; i < numQuestoes; i++) {
+      const resp = respostasAluno[i] || "";
+      const correto = gabOficial[i] || "";
+      if (resp && resp !== "N" && resp === correto) acertos++;
+    }
+
+    const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
+    const nota = parseFloat((acertos * valorQuestao).toFixed(2));
+
+    // 7. Calcular confiança
+    const mediana = bolhasData.mediana || 200;
+    const threshold = bolhasData.threshold || 150;
+    const confianca = Math.min(100, Math.max(0,
+      100 - (avisos.length / Math.max(1, numQuestoes)) * 100
+    ));
+
+    console.log(`[scan-mobile] avaliacao=${avaliacao_id} aluno=${codigoAluno || '?'} acertos=${acertos}/${numQuestoes} nota=${nota}`);
+
+    res.json({
+      respostas: respostasAluno,
+      gabaritoOficial: gabOficial,
+      qrData,
+      nomeAluno: nomeAluno || null,
+      codigoAluno: codigoAluno || null,
+      turmaId,
+      nota,
+      notaTotal,
+      acertos,
+      totalQuestoes: numQuestoes,
+      avisos,
+      confianca: parseFloat(confianca.toFixed(1)),
+      arquivoId: arquivo_id ? Number(arquivo_id) : null,
+      loteId: lote_id ? Number(lote_id) : null,
+    });
+  } catch (err) {
+    console.error("[scan-mobile] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro interno ao processar scan." });
+  }
+});
+
+// ─── POST /api/gabarito-lotes/scan-mobile/confirmar ──────────────────────────
+// Professor confirma o resultado do scan — persiste no BD
+router.post("/scan-mobile/confirmar", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const userId = req.user.id || req.user.userId || req.user.usuario_id;
+  const { avaliacao_id, arquivo_id, lote_id, respostas, codigo_aluno, nome_aluno } = req.body;
+
+  if (!avaliacao_id || !respostas || !Array.isArray(respostas)) {
+    return res.status(400).json({ error: "avaliacao_id e respostas[] são obrigatórios." });
+  }
+
+  try {
+    // Buscar avaliação
+    const [avRows] = await pool.query(
+      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
+       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      [avaliacao_id, escola_id]
+    );
+    if (avRows.length === 0) {
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    const av = avRows[0];
+    const gabOficial = safeJson(av.gabarito_oficial) || [];
+    const numQuestoes = av.num_questoes || gabOficial.length;
+    const notaTotal = Number(av.nota_total) || 10;
+
+    // Comparar
+    const detalhes = [];
+    let acertos = 0;
+    for (let i = 0; i < numQuestoes; i++) {
+      const resp = respostas[i] || "";
+      const correto = gabOficial[i] || "";
+      const acertou = resp && resp !== "N" && resp === correto;
+      if (acertou) acertos++;
+      detalhes.push({ numero: i + 1, resposta: resp, correto, acertou });
+    }
+
+    const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
+    const nota = parseFloat((acertos * valorQuestao).toFixed(2));
+
+    // Acertos por disciplina
+    const discConfig = safeJson(av.disciplinas_config) || [];
+    let acertosPorDisciplina = null;
+    if (discConfig.length > 0) {
+      acertosPorDisciplina = discConfig.map(dc => {
+        const qDisc = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
+        return { nome: dc.nome, disciplina_id: dc.disciplina_id, de: dc.de, ate: dc.ate, total: qDisc.length, acertos: qDisc.filter(d => d.acertou).length };
+      });
+    }
+
+    const codigoFinal = codigo_aluno || `SCAN_${Date.now()}`;
+    const nomeFinal = nome_aluno || `Scan Mobile ${new Date().toLocaleString("pt-BR")}`;
+
+    // Salvar em gabarito_respostas (UPSERT)
+    await pool.query(
+      `INSERT INTO gabarito_respostas
+        (avaliacao_id, escola_id, codigo_aluno, nome_aluno, respostas_aluno,
+         acertos, total_questoes, nota, acertos_por_disciplina, detalhes, origem)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scan_mobile')
+       ON DUPLICATE KEY UPDATE
+         nome_aluno = VALUES(nome_aluno),
+         respostas_aluno = VALUES(respostas_aluno),
+         acertos = VALUES(acertos),
+         total_questoes = VALUES(total_questoes),
+         nota = VALUES(nota),
+         acertos_por_disciplina = VALUES(acertos_por_disciplina),
+         detalhes = VALUES(detalhes),
+         corrigido_em = CURRENT_TIMESTAMP`,
+      [
+        avaliacao_id, escola_id, codigoFinal, nomeFinal,
+        JSON.stringify(respostas), acertos, numQuestoes, nota,
+        acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
+        JSON.stringify(detalhes),
+      ]
+    );
+
+    // Se temos arquivo_id, atualizar o status dele também
+    if (arquivo_id) {
+      await pool.query(
+        `UPDATE gabarito_arquivos SET
+          status = 'corrigido', acertos = ?, nota = ?,
+          respostas_aluno = ?,
+          corrigido_em = CURRENT_TIMESTAMP, corrigido_por = ?
+        WHERE id = ? AND escola_id = ?`,
+        [acertos, nota, JSON.stringify(respostas), userId, arquivo_id, escola_id]
+      );
+    }
+
+    // Se temos lote_id, atualizar contadores
+    if (lote_id) {
+      await pool.query(
+        `UPDATE gabarito_lotes SET
+          total_corrigidos = (SELECT COUNT(*) FROM gabarito_arquivos WHERE lote_id = ? AND status = 'corrigido'),
+          status = CASE
+            WHEN (SELECT COUNT(*) FROM gabarito_arquivos WHERE lote_id = ? AND status != 'corrigido') = 0 THEN 'finalizado'
+            ELSE 'em_correcao'
+          END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+        [lote_id, lote_id, lote_id]
+      );
+    }
+
+    console.log(`[scan-mobile/confirmar] avaliacao=${avaliacao_id} aluno=${codigoFinal} nota=${nota} by user=${userId}`);
+
+    res.json({ ok: true, nota, acertos, totalQuestoes: numQuestoes, notaTotal });
+  } catch (err) {
+    console.error("[scan-mobile/confirmar] Erro:", err);
+    res.status(500).json({ error: "Erro ao salvar resultado do scan." });
+  }
+});
+
 export default router;
