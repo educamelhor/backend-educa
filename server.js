@@ -539,8 +539,28 @@ async function bootstrap() {
       `);
       console.log("[MIGRATION] Coluna 'usuario_registro_id' adicionada em 'ocorrencias_disciplinares' ✅");
     }
+  }
+
+  // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
+  try {
+    // Verifica se 'scan_mobile' já está no ENUM antes de alterar
+    const [[enumRow]] = await pool.query(`
+      SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'gabarito_respostas'
+        AND COLUMN_NAME = 'origem'
+      LIMIT 1
+    `);
+    if (enumRow && !String(enumRow.COLUMN_TYPE).includes('scan_mobile')) {
+      await pool.query(`
+        ALTER TABLE gabarito_respostas
+          MODIFY COLUMN origem ENUM('omr','manual','scan_mobile') DEFAULT 'omr'
+          COMMENT 'Origem: omr=scanner/batch, manual=digitação, scan_mobile=app celular'
+      `);
+      console.log("[MIGRATION] ENUM 'origem' em gabarito_respostas expandido (+ scan_mobile) ✅");
+    }
   } catch (migErr) {
-    console.warn("[MIGRATION] Erro ao aplicar migration usuario_registro_id (não crítico):", migErr.message);
+    console.warn("[MIGRATION] Erro ao expandir ENUM 'origem' (não crítico):", migErr.message);
   }
 
 
