@@ -35,26 +35,68 @@ import { TIMING } from './educadf.selectors.js';
 
 // ============================================================================
 // MAPEAMENTO DE DISCIPLINAS: EDUCA.MELHOR → EDUCADF (Componente)
-// Cada escola pode ter nomes diferentes para o mesmo componente.
-// Adicione mais entradas conforme necessário.
+// Atualizado em: 26/04/2026 — confirmado via screenshots do portal EDUCADF
 // ============================================================================
 const DISCIPLINA_EDUCADF_MAP = {
   // EDUCA.MELHOR nome (uppercase) → EDUCADF Componente (como aparece no dropdown)
-  'GEOMETRIA':     'PARTE DIVERSIFICADA II',
-  'PRATICA ESTUDANTIL': 'PARTE DIVERSIFICADA II',
-  // MATEMÁTICA, PORTUGUÊS, etc. tendem a manter o mesmo nome
-  // Adicione aqui novos mapeamentos conforme descobertos:
+  'PORTUGUES':           'LÍNGUA PORTUGUESA',
+  'PORTUGUÊS':           'LÍNGUA PORTUGUESA',
+  'LINGUA PORTUGUESA':   'LÍNGUA PORTUGUESA',
+  'INGLES':              'LEM/INGLÊS',
+  'INGLÊS':              'LEM/INGLÊS',
+  'LEM INGLES':          'LEM/INGLÊS',
+  'CIENCIAS':            'CIÊNCIAS NATURAIS',
+  'CIÊNCIAS':            'CIÊNCIAS NATURAIS',
+  'ED FISICA':           'EDUCAÇÃO FÍSICA',
+  'ED. FISICA':          'EDUCAÇÃO FÍSICA',
+  'EDUCACAO FISICA':     'EDUCAÇÃO FÍSICA',
+  'EDUCAÇÃO FÍSICA':     'EDUCAÇÃO FÍSICA',
+  'PRATICA ESTUDANTIL':  'PARTE DIVERSIFICADA I',
+  'PRÁTICA ESTUDANTIL':  'PARTE DIVERSIFICADA I',
+  'GEOMETRIA':           'PARTE DIVERSIFICADA II',
+  // Sem correspondente no EDUCA.MELHOR — ignorados pelo agente:
+  // 'ENSINO RELIGIOSO'   → não existe
+  // 'PARTE DIVERSIFICADA III' → não existe
+  // Mantidos iguais (não precisam de mapeamento):
+  // ARTES, GEOGRAFIA, HISTÓRIA, MATEMÁTICA
 };
 
 /**
- * Converte o nome da disciplina do EDUCA.MELHOR para o Componente correspondente no EDUCADF.
- * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Geometria')
- * @returns {string} - Nome no EDUCADF (ex: 'PARTE DIVERSIFICADA II')
+ * Converte o nome da disciplina do EDUCA.MELHOR → Componente EDUCADF.
+ * Normaliza acentos e espaços antes da lookup para maior robustez.
+ * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Português')
+ * @returns {string} - Nome no EDUCADF (ex: 'LÍNGUA PORTUGUESA')
  */
 function mapearDisciplina(disciplina) {
   if (!disciplina) return disciplina;
-  const upper = String(disciplina).trim().toUpperCase();
-  return DISCIPLINA_EDUCADF_MAP[upper] || disciplina;
+  const upper = String(disciplina).trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos para lookup
+    .replace(/\.\s*/g, ' ').replace(/\s+/g, ' ').trim(); // 'ED. FÍSICA' → 'ED FISICA'
+  // Tenta lookup sem acento, mas devolve o valor mapeado COM acento (como no EDUCADF)
+  return DISCIPLINA_EDUCADF_MAP[upper] || DISCIPLINA_EDUCADF_MAP[disciplina.trim().toUpperCase()] || disciplina;
+}
+
+// ============================================================================
+// MAPEAMENTO DE TURMAS: EDUCA.MELHOR → EDUCADF
+// EDUCA.MELHOR: '8º ANO A'  →  EDUCADF: '8º Ano - A'
+// ============================================================================
+
+/**
+ * Converte o nome da turma do EDUCA.MELHOR para o formato do EDUCADF.
+ * Ex: '8º ANO A' → '8º Ano - A' | '6º ANO B' → '6º Ano - B'
+ * @param {string} turma - Nome no EDUCA.MELHOR
+ * @returns {string} - Nome no formato EDUCADF
+ */
+function mapearTurma(turma) {
+  if (!turma) return turma;
+  // Padrão: 'Nº ANO L' ou 'N ANO L' (onde N = número, L = letra)
+  // Converte para: 'Nº Ano - L'
+  const match = String(turma).trim().match(/^(\d+)[°º]?\s*ANO\s+([A-Z])$/i);
+  if (match) {
+    return `${match[1]}º Ano - ${match[2].toUpperCase()}`;
+  }
+  // Se não bater no padrão, devolve o original (ng-select tem fuzzy interno)
+  return turma;
 }
 
 /**
@@ -704,7 +746,9 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // IMPORTANTE: Componente deve usar o nome do EDUCADF (mapeado da disciplina)
     // ══════════════════════════════════════════════════════════════════════
     const componenteEducaDF = mapearDisciplina(plano.disciplina);
-    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} | Componente: ${componenteEducaDF}`);
+    const turmaEducaDF      = mapearTurma(plano.turmas);
+    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
+
 
     // ── Aguarda os ng-selects da página carregarem (até 15s) ────────────
     await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
@@ -719,7 +763,12 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
       if (exists) {
         console.log(`[educadf.pap] Filtro Turma encontrado com placeholder: "${ph}"`);
-        turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+        // Tenta primeiro com formato EDUCADF, depois com original como fallback
+        turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
+        if (!turmaOk) {
+          console.warn(`[educadf.pap] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
+          turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+        }
         if (turmaOk) break;
       }
     }
