@@ -84,7 +84,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const RX = L + CW + GAP;   // right column X
 
     // Font sizes
-    const S = { t: 12, st: 9.5, v: 6.5, h: 9, sh: 8.2, b: 8.2, sm: 5.5, tiny: 7.5 };
+    const S = { t: 11.5, st: 9, v: 6, h: 8, sh: 7.5, b: 7.2, sm: 5, tiny: 6.3 };
 
     // ─── Drawing helpers ───────────────────────────────────────────────────────
     function heading(n, t, x, w) {
@@ -97,7 +97,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     }
     function body(t, x, w, opts = {}) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
-        .text(t, x, doc.y, { width: w, lineGap: 0.8, ...opts });
+        .text(t, x, doc.y, { width: w, lineGap: 0.2, ...opts });
     }
     function fld(l, v, x, w) {
       doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
@@ -106,11 +106,11 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     }
     function blt(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
-        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.6 });
+        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.1 });
     }
     function chk(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#111")
-        .text(`[ ] ${t}`, x, doc.y, { width: w, lineGap: 1.2 });
+        .text(`[ ] ${t}`, x, doc.y, { width: w, lineGap: 0.3 });
     }
     function gap(p) { doc.y += p; }
     function hdivider(x, w) {
