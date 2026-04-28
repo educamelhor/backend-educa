@@ -84,7 +84,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const RX = L + CW + GAP;   // right column X
 
     // Font sizes
-    const S = { t: 12, st: 9.5, v: 6.5, h: 9, sh: 8.2, b: 8.2, sm: 5.5, tiny: 7.5 };
+    const S = { t: 13, st: 10.5, v: 7, h: 10, sh: 9, b: 9.5, sm: 6, tiny: 8.5 };
 
     // ─── Drawing helpers ───────────────────────────────────────────────────────
     function heading(n, t, x, w) {
@@ -276,78 +276,81 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
 
     subH("11.2", "EDUCA.MELHOR — OPERADORA", L, CW);
     body("Trata dados em nome da escola para viabilizar o funcionamento do sistema.", L, CW);
-    gap(2);
+    gap(3);
 
-    heading("12", "MINIMIZAÇÃO DE DADOS — art. 6º, III, LGPD", L, CW); gap(1);
+    heading("12", "MINIMIZAÇÃO DE DADOS — art. 6º, III, LGPD", L, CW); gap(2);
     for (const p of ["imagens poderão ser convertidas em templates biométricos","dados brutos poderão ser descartados após processamento","retenção limitada ao estritamente necessário"])
       blt(p, L, CW);
-    gap(2);
+    gap(3);
 
-    heading("13", "PRAZOS DE RETENÇÃO — art. 16 LGPD", L, CW); gap(1);
+    heading("13", "PRAZOS DE RETENÇÃO — art. 16 LGPD", L, CW); gap(2);
     subH("13.1", "Durante vínculo escolar:", L, CW);
     body("Dados mantidos enquanto o aluno estiver matriculado.", L, CW);
     subH("13.2", "Após desligamento:", L, CW);
     body("Dados biométricos e de imagem serão eliminados ou anonimizados em até 90 (noventa) dias. Logs de auditoria poderão ser mantidos por até 5 (cinco) anos, salvo obrigação legal.", L, CW);
-    gap(2);
+    gap(3);
 
-    heading("14", "SEGURANÇA DA INFORMAÇÃO — art. 46 LGPD", L, CW); gap(1);
+    heading("14", "SEGURANÇA DA INFORMAÇÃO — art. 46 LGPD", L, CW); gap(2);
     for (const p of ["controle de acesso e autenticação forte","logs de auditoria e rastreabilidade","segregação por escola","criptografia em trânsito e repouso","revisão periódica de permissões","monitoramento de segurança contínuo"])
       blt(p, L, CW);
-    gap(2);
+    gap(3);
 
-    heading("15", "INCIDENTES DE SEGURANÇA — art. 48 LGPD", L, CW); gap(1);
+    heading("15", "INCIDENTES DE SEGURANÇA — art. 48 LGPD", L, CW); gap(2);
     body("Em caso de incidente relevante:", L, CW);
     body("1. Investigação imediata e contenção", L, CW);
     body("2. ESCOLA notificada em até 72 (setenta e duas) horas — conforme orientação da ANPD", L, CW);
     body("3. ANPD e titulares comunicados conforme gravidade e art. 48 LGPD", L, CW);
-    gap(2);
+    gap(3);
 
-    heading("16", "COMPARTILHAMENTO DE DADOS — art. 7º, IX, Marco Civil", L, CW); gap(1);
+    heading("16", "COMPARTILHAMENTO DE DADOS — art. 7º, IX, Marco Civil", L, CW); gap(2);
     body("Dados compartilhados apenas com:", L, CW);
     blt("ESCOLA (controladora)", L, CW);
     blt("Fornecedores de infraestrutura tecnológica com cláusulas de sigilo", L, CW);
     blt("Autoridades legais quando exigido por lei", L, CW);
     body("Proibido compartilhamento para fins comerciais.", L, CW);
-    gap(2);
+    gap(3);
 
-    heading("17", "TRANSFERÊNCIA INTERNACIONAL — art. 33 LGPD", L, CW); gap(1);
+    heading("17", "TRANSFERÊNCIA INTERNACIONAL — art. 33 LGPD", L, CW); gap(2);
     body("Caso dados sejam processados em infraestrutura de nuvem fora do Brasil, será exigido nível de proteção equivalente à LGPD (cláusulas padrão ou certificações). O RESPONSÁVEL LEGAL poderá consultar os países de destino junto ao DPO.", L, CW);
-    gap(2);
+    gap(3);
 
-    heading("18", "RIPD — RELATÓRIO DE IMPACTO — art. 38 LGPD", L, CW); gap(1);
+    heading("18", "RIPD — RELATÓRIO DE IMPACTO — art. 38 LGPD", L, CW); gap(2);
     body("Em razão do tratamento de dados biométricos de crianças (alto risco — Resolução ANPD nº 2/2022), é mantido Relatório de Impacto à Proteção de Dados Pessoais, disponível mediante solicitação ao DPO.", L, CW);
+    gap(3);
+
+    heading("19", "DIREITOS DO TITULAR — art. 18 LGPD", L, CW); gap(2);
+    body("O RESPONSÁVEL LEGAL poderá solicitar ao DPO (dpo@sistemaeducamelhor.com.br):", L, CW);
+    for (const p of ["confirmação de tratamento","acesso aos dados","correção de dados incompletos","anonimização ou exclusão quando cabível","informações sobre compartilhamento","portabilidade quando regulamentada"])
+      blt(p, L, CW);
+    body("Resposta em até 15 (quinze) dias úteis — art. 19, §3º, LGPD.", L, CW);
+
+    // ── captura fim da coluna esquerda ANTES de resetar doc.y ──
+    const leftP2 = doc.y;
 
     // ── COLUNA DIREITA P2 ──
     doc.y = c2;
 
-    heading("19", "DIREITOS DO TITULAR — art. 18 LGPD", RX, CW); gap(1);
-    body("O RESPONSÁVEL LEGAL poderá solicitar ao DPO (dpo@sistemaeducamelhor.com.br):", RX, CW);
-    for (const p of ["confirmação de tratamento","acesso aos dados","correção de dados incompletos","anonimização ou exclusão quando cabível","informações sobre compartilhamento","portabilidade quando regulamentada"])
-      blt(p, RX, CW);
-    body("Resposta em até 15 (quinze) dias úteis — art. 19, §3º, LGPD.", RX, CW);
-    gap(2);
-
-    heading("20", "REVOGAÇÃO — art. 8º, §5º, LGPD", RX, CW); gap(1);
+    heading("20", "REVOGAÇÃO — art. 8º, §5º, LGPD", RX, CW); gap(2);
     for (const p of ["A qualquer momento, sem ônus","Não invalida tratamentos anteriores","Pode limitar funcionalidades — será adotado método alternativo","App EDUCA-MOBILE: revogar via DPO ou desinstalação"])
       blt(p, RX, CW);
-    gap(2);
+    gap(3);
 
-    heading("21", "LIMITAÇÃO DE IA — art. 20 LGPD", RX, CW); gap(1);
+    heading("21", "LIMITAÇÃO DE IA — art. 20 LGPD", RX, CW); gap(2);
     body("Dados biométricos não serão usados para treinamento aberto de IA fora do contexto operacional da plataforma. Auditabilidade garantida.", RX, CW);
-    gap(2);
+    gap(3);
 
-    heading("22", "CONSENTIMENTO GRANULAR — art. 7º, IX, Marco Civil", RX, CW); gap(1);
+    heading("22", "CONSENTIMENTO GRANULAR — art. 7º, IX, Marco Civil", RX, CW); gap(2);
     body("Registro eletrônico auditável (data, hora, IP, versão). O RESPONSÁVEL LEGAL manifesta concordância separadamente:", RX, CW);
-    gap(1);
+    gap(2);
     chk("Autorizo captura de FOTOGRAFIA para cadastro escolar.", RX, CW);
     chk("Autorizo uso de IMAGEM no sistema EDUCA.MELHOR (perfil e documentos internos).", RX, CW);
     chk("Autorizo geração de TEMPLATE BIOMÉTRICO para controle de presença.", RX, CW);
     chk("Autorizo uso em SISTEMAS DE SEGURANÇA institucional.", RX, CW);
     chk("Autorizo instalação e uso do app EDUCA-MOBILE (câmera, internet, notificações).", RX, CW);
     chk("Autorizo captura via app EDUCA-CAPTURE por profissional credenciado.", RX, CW);
-    gap(2);
+    gap(3);
 
-    heading("23", "DECLARAÇÕES DO RESPONSÁVEL LEGAL", RX, CW); gap(1);
+    heading("23", "DECLARAÇÕES DO RESPONSÁVEL LEGAL", RX, CW); gap(2);
     body("O RESPONSÁVEL LEGAL declara que:", RX, CW);
     for (const p of [
       "leu integralmente o documento e compreendeu suas disposições",
@@ -357,11 +360,9 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
       "o consentimento foi apresentado de forma destacada, clara e acessível, sem vício de consentimento"
     ]) blt(p, RX, CW);
 
-    const leftP2  = doc.y;
-
-    // ── ASSINATURA (full-width) ──
+    // ── captura fim da coluna direita e posiciona assinatura abaixo de AMBAS ──
     const rightP2 = doc.y;
-    doc.y = Math.max(leftP2, rightP2) + 6;
+    doc.y = Math.max(leftP2, rightP2) + 8;
 
     doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#0a4a7a").lineWidth(0.6).stroke();
     gap(4);
