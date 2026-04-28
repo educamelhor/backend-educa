@@ -84,7 +84,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const RX = L + CW + GAP;   // right column X
 
     // Font sizes
-    const S = { t: 11.5, st: 9, v: 6, h: 8, sh: 7.5, b: 7.2, sm: 5, tiny: 6.3 };
+    const S = { t: 12, st: 9.5, v: 6.5, h: 9, sh: 8.2, b: 8.2, sm: 5.5, tiny: 7.5 };
 
     // ─── Drawing helpers ───────────────────────────────────────────────────────
     function heading(n, t, x, w) {
@@ -97,7 +97,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     }
     function body(t, x, w, opts = {}) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
-        .text(t, x, doc.y, { width: w, lineGap: 0.2, ...opts });
+        .text(t, x, doc.y, { width: w, lineGap: 0.8, ...opts });
     }
     function fld(l, v, x, w) {
       doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
@@ -106,11 +106,11 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     }
     function blt(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
-        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.1 });
+        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.6 });
     }
     function chk(t, x, w) {
       doc.font("Helvetica").fontSize(S.b).fillColor("#111")
-        .text(`[ ] ${t}`, x, doc.y, { width: w, lineGap: 0.3 });
+        .text(`[ ] ${t}`, x, doc.y, { width: w, lineGap: 1.2 });
     }
     function gap(p) { doc.y += p; }
     function hdivider(x, w) {
@@ -179,7 +179,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     doc.font("Helvetica-Bold").fontSize(S.tiny).fillColor("#7a5700")
       .text("1.4  ENCARREGADO DE DADOS (DPO) — Art. 41 LGPD: ", L, dpoY + 1.5, { width: PW, continued: true });
     doc.font("Helvetica").fillColor("#2d2d2d")
-      .text("dpo@educamelhor.com.br  |  Responsável pelo tratamento de dados — acessível para exercício de direitos e esclarecimentos.");
+      .text("dpo@sistemaeducamelhor.com.br  |  Responsável pelo tratamento de dados — acessível para exercício de direitos e esclarecimentos.");
     gap(2);
 
     doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#c0d8f0").lineWidth(0.5).stroke();
@@ -321,7 +321,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     doc.y = c2;
 
     heading("19", "DIREITOS DO TITULAR — art. 18 LGPD", RX, CW); gap(1);
-    body("O RESPONSÁVEL LEGAL poderá solicitar ao DPO (dpo@educamelhor.com.br):", RX, CW);
+    body("O RESPONSÁVEL LEGAL poderá solicitar ao DPO (dpo@sistemaeducamelhor.com.br):", RX, CW);
     for (const p of ["confirmação de tratamento","acesso aos dados","correção de dados incompletos","anonimização ou exclusão quando cabível","informações sobre compartilhamento","portabilidade quando regulamentada"])
       blt(p, RX, CW);
     body("Resposta em até 15 (quinze) dias úteis — art. 19, §3º, LGPD.", RX, CW);
@@ -396,7 +396,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
 
     // Rodapé P2
     doc.fontSize(S.sm).font("Helvetica").fillColor("#aaa")
-      .text("EDUCA.MELHOR · Versão 3.0 · LGPD · ECA · Marco Civil da Internet · Página 2/2  |  dpo@educamelhor.com.br", L, 841.89 - 16, { width: PW, align: "center" });
+      .text("EDUCA.MELHOR · Versão 3.0 · LGPD · ECA · Marco Civil da Internet · Página 2/2  |  dpo@sistemaeducamelhor.com.br", L, 841.89 - 16, { width: PW, align: "center" });
 
     doc.end();
   } catch (err) {
