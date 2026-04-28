@@ -368,30 +368,35 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     heading("24", "ASSINATURA", L, PW); gap(1);
     doc.font("Helvetica").fontSize(S.b).fillColor("#333")
       .text(hoje(), L, doc.y, { width: PW, align: "right" });
-    gap(7);
+    gap(10);
 
-    // Assinaturas lado a lado
-    const sigW = (PW - GAP) / 2;
-    const sigR = L + sigW + GAP;
-    const sigTop = doc.y;
+    // ── Responsável Legal — centralizado ──
+    const sigCW = PW * 0.60;
+    const sigCX = L + (PW - sigCW) / 2;
 
-    // Responsável
-    doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a").text("RESPONSÁVEL LEGAL", L, sigTop, { width: sigW });
+    doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+      .text("RESPONSÁVEL LEGAL", sigCX, doc.y, { width: sigCW, align: "center" });
     gap(3);
-    fld("Nome", resp.nome, L, sigW);
-    gap(8);
+    doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
+      .text("Nome: ", sigCX, doc.y, { width: sigCW, continued: true });
+    doc.font("Helvetica").fillColor("#111").text(resp.nome || "—");
+    gap(12);
     doc.font("Helvetica").fontSize(S.b).fillColor("#555")
-      .text("Assinatura: ___________________________________", L, doc.y, { width: sigW });
+      .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
+    gap(14);
 
-    // Escola
-    doc.y = sigTop;
-    doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a").text("ESCOLA", sigR, sigTop, { width: sigW });
+    // ── Escola — centralizado abaixo ──
+    doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+      .text("ESCOLA", sigCX, doc.y, { width: sigCW, align: "center" });
     gap(3);
-    fld("Representante", diretor?.nome || "—", sigR, sigW);
+    doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
+      .text("Representante: ", sigCX, doc.y, { width: sigCW, continued: true });
+    doc.font("Helvetica").fillColor("#111").text(diretor?.nome || "—");
     doc.font("Helvetica").fontSize(S.b).fillColor("#555")
-      .text("Cargo: Diretor(a) Pedagógico(a)", sigR, doc.y, { width: sigW });
-    gap(5);
-    doc.text("Assinatura: ___________________________________", sigR, doc.y, { width: sigW });
+      .text("Cargo: Diretor(a) Pedagógico(a)", sigCX, doc.y, { width: sigCW, align: "center" });
+    gap(12);
+    doc.font("Helvetica").fontSize(S.b).fillColor("#555")
+      .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
 
     // Rodapé P2
     doc.fontSize(S.sm).font("Helvetica").fillColor("#aaa")
