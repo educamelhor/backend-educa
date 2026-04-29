@@ -292,12 +292,13 @@ router.post('/:id/exportar-notas', async (req, res) => {
       });
     }
 
-    if (!plano.agente_exportado_em) {
-      return res.status(422).json({
-        ok: false,
-        error: 'A estrutura ainda não foi exportada (Etapa 1). Execute a Etapa 1 primeiro.',
-      });
-    }
+    // TODO:REVERTER — Gate Etapa 1 desativado temporariamente (professores fazendo exportação manual)
+    // if (!plano.agente_exportado_em) {
+    //   return res.status(422).json({
+    //     ok: false,
+    //     error: 'A estrutura ainda não foi exportada (Etapa 1). Execute a Etapa 1 primeiro.',
+    //   });
+    // }
 
     // ── 2. Busca item bimestral ───────────────────────────────────────────
     const [itens] = await db.query(
