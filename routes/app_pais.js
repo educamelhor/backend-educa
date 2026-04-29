@@ -211,11 +211,94 @@ async function enviarCodigoPorEmail(email, codigo) {
 
 
 // ============================================================================
+// STARTUP MIGRATIONS — executadas automaticamente no boot do servidor
+// Falham silenciosamente em ambiente local sem credenciais de BD.
+// ============================================================================
+async function runStartupMigrations() {
+  // 1. CREATE TABLE consentimentos_log (audit log jurídico imutável)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS consentimentos_log (
+      id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      responsavel_id  INT NOT NULL,
+      aluno_id        INT NOT NULL,
+      escola_id       INT NOT NULL,
+      responsavel_nome  VARCHAR(255) NOT NULL,
+      responsavel_cpf   VARCHAR(11)  NOT NULL,
+      aluno_nome        VARCHAR(255) NOT NULL,
+      acao          ENUM('CONCEDER','REVOGAR') NOT NULL DEFAULT 'CONCEDER',
+      canal         ENUM('FISICO','DIGITAL_APP','DIGITAL_WEB') NOT NULL,
+      versao_termo  VARCHAR(20) NOT NULL DEFAULT '3.0',
+      ip_address    VARCHAR(45)  NULL,
+      user_agent    TEXT         NULL,
+      device_id     VARCHAR(255) NULL,
+      plataforma    VARCHAR(50)  NULL,
+      chk_fotografia_cadastro    TINYINT(1) NOT NULL DEFAULT 0,
+      chk_imagem_sistema         TINYINT(1) NOT NULL DEFAULT 0,
+      chk_template_biometrico    TINYINT(1) NOT NULL DEFAULT 0,
+      chk_sistemas_seguranca     TINYINT(1) NOT NULL DEFAULT 0,
+      chk_app_educa_mobile       TINYINT(1) NOT NULL DEFAULT 0,
+      chk_captura_educa_capture  TINYINT(1) NOT NULL DEFAULT 0,
+      confirmado_por_usuario_id  INT          NULL,
+      confirmado_por_nome        VARCHAR(255) NULL,
+      confirmado_por_ip          VARCHAR(45)  NULL,
+      criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_responsavel (responsavel_id),
+      INDEX idx_aluno       (aluno_id),
+      INDEX idx_escola      (escola_id),
+      INDEX idx_criado_em   (criado_em)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      COMMENT='Audit log jurídico de consentimentos LGPD — IMUTÁVEL'
+  `);
+
+  // 2. Novos campos em responsaveis_alunos (cada ALTER separado para tolerar falha individual)
+  const alterColumns = [
+    `ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_canal
+       ENUM('FISICO','DIGITAL_APP','DIGITAL_WEB') NULL DEFAULT NULL
+       COMMENT 'Canal pelo qual o consentimento foi obtido'
+       AFTER consentimento_imagem_por`,
+    `ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_versao_termo
+       VARCHAR(20) NULL DEFAULT NULL
+       COMMENT 'Versão do termo aceito (ex: 3.0)'
+       AFTER consentimento_canal`,
+    `ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_log_id
+       BIGINT UNSIGNED NULL DEFAULT NULL
+       COMMENT 'Referência ao registro mais recente em consentimentos_log'
+       AFTER consentimento_versao_termo`,
+  ];
+
+  for (const sql of alterColumns) {
+    try {
+      await pool.query(sql);
+    } catch (e) {
+      // Ignora "Duplicate column name" — coluna já existe
+      if (!e.message?.includes("Duplicate column")) {
+        console.warn("[APP_PAIS][MIGRATION] ALTER ignorado:", e.message);
+      }
+    }
+  }
+
+  // 3. Retrocompatibilidade: marca registros físicos legados
+  await pool.query(`
+    UPDATE responsaveis_alunos
+    SET consentimento_canal = 'FISICO', consentimento_versao_termo = '3.0'
+    WHERE consentimento_imagem = 1 AND consentimento_canal IS NULL
+  `);
+
+  console.log("[APP_PAIS][MIGRATION] consentimentos_log ✅ — responsaveis_alunos atualizado ✅");
+}
+
+runStartupMigrations().catch(err =>
+  console.warn("[APP_PAIS][MIGRATION] Erro (não crítico):", err.message)
+);
+
+
+// ============================================================================
 // PING
 // ============================================================================
 router.get("/ping", (req, res) => {
   return res.json({ ok: true, msg: "APP_PAIS router OK" });
 });
+
 
 // ============================================================================
 // GET /me
