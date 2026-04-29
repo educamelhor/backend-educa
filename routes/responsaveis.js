@@ -168,7 +168,8 @@ router.get("/:id/alunos", async (req, res) => {
   }
 });
 
-// REGISTRAR CONSENTIMENTO DE USO DE IMAGEM E DADOS BIOMÉTRICOS
+// REGISTRAR CONSENTIMENTO DE USO DE IMAGEM E DADOS BIOMÉTRICOS (CANAL FÍSICO)
+// Chamado pela escola ao confirmar que o responsável assinou o termo impresso.
 router.post("/:id/consentimento-imagem", async (req, res) => {
   try {
     const { escola_id, usuario_id } = req.user;
@@ -179,27 +180,100 @@ router.post("/:id/consentimento-imagem", async (req, res) => {
       return res.status(400).json({ error: "Informe pelo menos um aluno para registrar o consentimento." });
     }
 
-    const placeholders = aluno_ids.map(() => "?").join(", ");
-    const params = [responsavelId, escola_id, ...aluno_ids.map(Number)];
-
-    await pool.query(
-      `UPDATE responsaveis_alunos
-       SET consentimento_imagem = 1,
-           consentimento_imagem_em = NOW(),
-           consentimento_imagem_por = ?
-       WHERE responsavel_id = ?
-         AND escola_id = ?
-         AND aluno_id IN (${placeholders})
-         AND ativo = 1`,
-      [usuario_id || null, ...params]
+    // ── Captura dados do responsável (snapshot para o log imutável) ──
+    const [[resp]] = await pool.query(
+      "SELECT nome, cpf FROM responsaveis WHERE id = ? LIMIT 1",
+      [responsavelId]
     );
+    if (!resp) {
+      return res.status(404).json({ error: "Responsável não encontrado." });
+    }
 
-    res.json({ message: "Consentimento registrado com sucesso.", aluno_ids });
+    // ── Captura nome do funcionário que confirmou ──
+    const [[confirmanteRow]] = await pool.query(
+      "SELECT nome FROM usuarios WHERE id = ? LIMIT 1",
+      [usuario_id || null]
+    ).catch(() => [[null]]);
+    const confirmanteName = confirmanteRow?.nome || null;
+
+    // ── IP e user-agent do funcionário ──
+    const ipAddress   = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null;
+    const userAgentStr = req.headers["user-agent"] || null;
+
+    const alunoIdsNum = aluno_ids.map(Number);
+
+    // ── Busca nomes dos alunos para snapshot ──
+    const [alunosRows] = await pool.query(
+      `SELECT id, estudante FROM alunos WHERE id IN (${alunoIdsNum.map(() => "?").join(",")})`,
+      alunoIdsNum
+    );
+    const alunoNomeMap = new Map(alunosRows.map(a => [a.id, a.estudante]));
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // 1. UPDATE em responsaveis_alunos (flag operacional)
+      const placeholders = alunoIdsNum.map(() => "?").join(", ");
+      await conn.query(
+        `UPDATE responsaveis_alunos
+         SET consentimento_imagem        = 1,
+             consentimento_imagem_em     = NOW(),
+             consentimento_imagem_por    = ?,
+             consentimento_canal         = 'FISICO',
+             consentimento_versao_termo  = '3.0'
+         WHERE responsavel_id = ?
+           AND escola_id      = ?
+           AND aluno_id IN (${placeholders})
+           AND ativo = 1`,
+        [usuario_id || null, responsavelId, escola_id, ...alunoIdsNum]
+      );
+
+      // 2. INSERT no log imutável (um registro por aluno)
+      for (const alunoId of alunoIdsNum) {
+        const alunoNome = alunoNomeMap.get(alunoId) || "—";
+
+        const [logResult] = await conn.query(
+          `INSERT INTO consentimentos_log (
+            responsavel_id, aluno_id, escola_id,
+            responsavel_nome, responsavel_cpf, aluno_nome,
+            acao, canal, versao_termo,
+            ip_address, user_agent, plataforma,
+            chk_fotografia_cadastro, chk_imagem_sistema, chk_template_biometrico,
+            chk_sistemas_seguranca, chk_app_educa_mobile, chk_captura_educa_capture,
+            confirmado_por_usuario_id, confirmado_por_nome, confirmado_por_ip
+          ) VALUES (?, ?, ?, ?, ?, ?, 'CONCEDER', 'FISICO', '3.0', ?, ?, 'fisico', 1, 1, 1, 1, 1, 1, ?, ?, ?)`,
+          [
+            responsavelId, alunoId, escola_id,
+            resp.nome, resp.cpf || "", alunoNome,
+            ipAddress, userAgentStr,
+            usuario_id || null, confirmanteName, ipAddress
+          ]
+        );
+
+        // 3. Atualiza referência ao log na tabela operacional
+        await conn.query(
+          `UPDATE responsaveis_alunos
+           SET consentimento_log_id = ?
+           WHERE responsavel_id = ? AND escola_id = ? AND aluno_id = ? AND ativo = 1`,
+          [logResult.insertId, responsavelId, escola_id, alunoId]
+        );
+      }
+
+      await conn.commit();
+      res.json({ message: "Consentimento registrado com sucesso.", aluno_ids });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   } catch (err) {
     console.error("Erro ao registrar consentimento:", err);
     res.status(500).json({ error: "Erro ao registrar consentimento." });
   }
 });
+
 
 // BUSCAR ALUNOS PARA O SELECT DE VÍNCULO
 router.get("/buscar-alunos", async (req, res) => {

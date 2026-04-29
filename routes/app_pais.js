@@ -234,12 +234,215 @@ router.get("/me", authAppPais, async (req, res) => {
       return res.status(404).json({ message: "Responsável não encontrado." });
     }
 
-    return res.json({ ok: true, responsavel: rows[0] });
+    // Verifica se há algum aluno vinculado SEM consentimento
+    const [[{ pendente }]] = await db.query(
+      `SELECT COUNT(*) AS pendente
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND ativo = 1 AND consentimento_imagem = 0`,
+      [responsavel_id]
+    );
+
+    return res.json({
+      ok: true,
+      responsavel: rows[0],
+      consentimento_pendente: pendente > 0,
+    });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /me:", error);
     return res.status(500).json({ message: "Erro ao carregar sessão." });
   }
 });
+
+// ============================================================================
+// GET /consentimento
+// Retorna status de consentimento por aluno vinculado ao responsável logado.
+// ============================================================================
+router.get("/consentimento", authAppPais, async (req, res) => {
+  const db = pool;
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+
+    const [alunos] = await db.query(
+      `SELECT
+         ra.aluno_id,
+         a.estudante                       AS aluno_nome,
+         ra.consentimento_imagem           AS consentimento_imagem,
+         ra.consentimento_canal            AS canal,
+         ra.consentimento_imagem_em        AS em,
+         ra.consentimento_versao_termo     AS versao_termo
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       WHERE ra.responsavel_id = ? AND ra.ativo = 1
+       ORDER BY a.estudante ASC`,
+      [responsavel_id]
+    );
+
+    const consentimento_pendente = alunos.some(a => !a.consentimento_imagem);
+
+    return res.json({
+      ok: true,
+      consentimento_pendente,
+      alunos: alunos.map(a => ({
+        aluno_id:           a.aluno_id,
+        nome:               a.aluno_nome,
+        consentimento_imagem: !!a.consentimento_imagem,
+        canal:              a.canal || null,
+        em:                 a.em || null,
+        versao_termo:       a.versao_termo || null,
+      })),
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /consentimento:", error);
+    return res.status(500).json({ message: "Erro ao carregar status de consentimento." });
+  }
+});
+
+// ============================================================================
+// POST /consentimento/confirmar
+// Registra consentimento DIGITAL do responsável para um ou mais alunos.
+// Faz INSERT no log imutável + UPDATE na flag operacional.
+// Não sobrescreve consentimento físico já existente.
+// ============================================================================
+router.post("/consentimento/confirmar", authAppPais, async (req, res) => {
+  const db = pool;
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+
+    const {
+      aluno_ids,
+      checkboxes = {},
+      versao_termo = "3.0",
+      device_id   = null,
+      plataforma  = null,
+    } = req.body;
+
+    if (!Array.isArray(aluno_ids) || aluno_ids.length === 0) {
+      return res.status(400).json({ ok: false, message: "aluno_ids é obrigatório." });
+    }
+
+    // Todos os 6 checkboxes obrigatórios
+    const requiredBoxes = [
+      "fotografia_cadastro",
+      "imagem_sistema",
+      "template_biometrico",
+      "sistemas_seguranca",
+      "app_educa_mobile",
+      "captura_educa_capture",
+    ];
+    const faltando = requiredBoxes.filter(k => !checkboxes[k]);
+    if (faltando.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        message: `Todos os 6 checkboxes são obrigatórios. Faltando: ${faltando.join(", ")}`,
+      });
+    }
+
+    // Snapshot do responsável
+    const [[resp]] = await db.query(
+      "SELECT nome, cpf FROM responsaveis WHERE id = ? LIMIT 1",
+      [responsavel_id]
+    );
+    if (!resp) {
+      return res.status(404).json({ ok: false, message: "Responsável não encontrado." });
+    }
+
+    // IP e user-agent do app
+    const ipAddress    = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null;
+    const userAgentStr = req.headers["user-agent"] || null;
+
+    const alunoIdsNum = aluno_ids.map(Number);
+
+    // Valida vínculo ativo + busca nomes + verifica se já tem consentimento
+    const [vinculos] = await db.query(
+      `SELECT ra.aluno_id, ra.escola_id, ra.consentimento_imagem, a.estudante AS aluno_nome
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       WHERE ra.responsavel_id = ?
+         AND ra.aluno_id IN (${alunoIdsNum.map(() => "?").join(",")})
+         AND ra.ativo = 1`,
+      [responsavel_id, ...alunoIdsNum]
+    );
+
+    if (vinculos.length === 0) {
+      return res.status(403).json({ ok: false, message: "Nenhum vínculo ativo encontrado." });
+    }
+
+    // Filtra apenas os que ainda não têm consentimento (não sobrescreve canal físico)
+    const pendentes = vinculos.filter(v => !v.consentimento_imagem);
+
+    if (pendentes.length === 0) {
+      return res.json({ ok: true, message: "Consentimento já registrado para todos os alunos.", registrados: 0 });
+    }
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      const registrados = [];
+
+      for (const vinculo of pendentes) {
+        const { aluno_id: alunoId, escola_id: escolaId, aluno_nome: alunoNome } = vinculo;
+
+        // INSERT no log imutável
+        const [logResult] = await conn.query(
+          `INSERT INTO consentimentos_log (
+            responsavel_id, aluno_id, escola_id,
+            responsavel_nome, responsavel_cpf, aluno_nome,
+            acao, canal, versao_termo,
+            ip_address, user_agent, device_id, plataforma,
+            chk_fotografia_cadastro, chk_imagem_sistema, chk_template_biometrico,
+            chk_sistemas_seguranca, chk_app_educa_mobile, chk_captura_educa_capture
+          ) VALUES (?, ?, ?, ?, ?, ?, 'CONCEDER', 'DIGITAL_APP', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            responsavel_id, alunoId, escolaId,
+            resp.nome, resp.cpf || "", alunoNome,
+            versao_termo,
+            ipAddress, userAgentStr, device_id, plataforma,
+            checkboxes.fotografia_cadastro   ? 1 : 0,
+            checkboxes.imagem_sistema        ? 1 : 0,
+            checkboxes.template_biometrico   ? 1 : 0,
+            checkboxes.sistemas_seguranca    ? 1 : 0,
+            checkboxes.app_educa_mobile      ? 1 : 0,
+            checkboxes.captura_educa_capture ? 1 : 0,
+          ]
+        );
+
+        // UPDATE flag operacional
+        await conn.query(
+          `UPDATE responsaveis_alunos
+           SET consentimento_imagem        = 1,
+               consentimento_imagem_em     = NOW(),
+               consentimento_imagem_por    = NULL,
+               consentimento_canal         = 'DIGITAL_APP',
+               consentimento_versao_termo  = ?,
+               consentimento_log_id        = ?
+           WHERE responsavel_id = ? AND escola_id = ? AND aluno_id = ? AND ativo = 1`,
+          [versao_termo, logResult.insertId, responsavel_id, escolaId, alunoId]
+        );
+
+        registrados.push(alunoId);
+      }
+
+      await conn.commit();
+
+      return res.json({
+        ok: true,
+        message: "Consentimento digital registrado com sucesso.",
+        registrados: registrados.length,
+        aluno_ids: registrados,
+      });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /consentimento/confirmar:", error);
+    return res.status(500).json({ ok: false, message: "Erro ao registrar consentimento digital." });
+  }
+});
+
 
 // ============================================================================
 // GET /alunos (Home)
