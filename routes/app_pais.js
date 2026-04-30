@@ -264,6 +264,11 @@ async function runStartupMigrations() {
        BIGINT UNSIGNED NULL DEFAULT NULL
        COMMENT 'Referência ao registro mais recente em consentimentos_log'
        AFTER consentimento_versao_termo`,
+    // Audit: timestamp de quando o responsável abriu o documento (LGPD click-through evidence)
+    `ALTER TABLE consentimentos_log ADD COLUMN termo_lido_em
+       DATETIME NULL DEFAULT NULL
+       COMMENT 'Timestamp de quando o responsável abriu o termo para leitura (audit LGPD)'
+       AFTER plataforma`,
   ];
 
   for (const sql of alterColumns) {
@@ -393,10 +398,11 @@ router.post("/consentimento/confirmar", authAppPais, async (req, res) => {
 
     const {
       aluno_ids,
-      checkboxes = {},
-      versao_termo = "3.0",
-      device_id   = null,
-      plataforma  = null,
+      checkboxes    = {},
+      versao_termo  = "3.0",
+      device_id     = null,
+      plataforma    = null,
+      termo_lido_em = null, // ISO timestamp de quando o responsável abriu o termo
     } = req.body;
 
     if (!Array.isArray(aluno_ids) || aluno_ids.length === 0) {
@@ -472,15 +478,16 @@ router.post("/consentimento/confirmar", authAppPais, async (req, res) => {
             responsavel_id, aluno_id, escola_id,
             responsavel_nome, responsavel_cpf, aluno_nome,
             acao, canal, versao_termo,
-            ip_address, user_agent, device_id, plataforma,
+            ip_address, user_agent, device_id, plataforma, termo_lido_em,
             chk_fotografia_cadastro, chk_imagem_sistema, chk_template_biometrico,
             chk_sistemas_seguranca, chk_app_educa_mobile, chk_captura_educa_capture
-          ) VALUES (?, ?, ?, ?, ?, ?, 'CONCEDER', 'DIGITAL_APP', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, 'CONCEDER', 'DIGITAL_APP', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             responsavel_id, alunoId, escolaId,
             resp.nome, resp.cpf || "", alunoNome,
             versao_termo,
             ipAddress, userAgentStr, device_id, plataforma,
+            termo_lido_em ? new Date(termo_lido_em) : null,
             checkboxes.fotografia_cadastro   ? 1 : 0,
             checkboxes.imagem_sistema        ? 1 : 0,
             checkboxes.template_biometrico   ? 1 : 0,
