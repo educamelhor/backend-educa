@@ -168,9 +168,9 @@ if (FF_AGENTE_EDUCADF) {
 }
 
 // ✅ NOVAS FLAGS (conforme mapa PROD aprovado)
-const FF_GABARITOS = ff("FF_GABARITOS", DEFAULT_ON_DEV);
-const FF_GABARITOS_GENERATOR = ff("FF_GABARITOS_GENERATOR", DEFAULT_ON_DEV);
-const FF_QUESTOES = ff("FF_QUESTOES", DEFAULT_ON_DEV);
+const FF_GABARITOS = ff("FF_GABARITOS", true);           // ✅ pronto para produção
+const FF_GABARITOS_GENERATOR = ff("FF_GABARITOS_GENERATOR", true); // ✅ pronto para produção
+const FF_QUESTOES = ff("FF_QUESTOES", true);             // ✅ pronto para produção (Banco de Questões + Gemini Vision)
 
 // ✅ Cargas Horárias é CADASTRO BÁSICO (core operacional), independente do solver Urania
 const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
