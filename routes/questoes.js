@@ -9,6 +9,8 @@ import {
   statsQuestoes,
   duplicarQuestao,
   historicoQuestao,
+  extrairQuestaoImagem,
+  uploadImagem,
 } from "../controllers/questoesController.js";
 
 const router = express.Router();
@@ -35,5 +37,9 @@ router.get("/:id/historico",  verificarEscola, historicoQuestao);
 
 // ── Parsing de texto/PDF (legado) ─────────────────────────────────────────
 router.post("/por-texto", verificarEscola, criarQuestoesPorTexto);
+
+// ── Gemini Vision — extração de questão por imagem ─────────────────────────
+// uploadImagem (multer) processa o multipart ANTES de verificarEscola
+router.post("/extrair-imagem", uploadImagem, verificarEscola, extrairQuestaoImagem);
 
 export default router;

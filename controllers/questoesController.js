@@ -4,6 +4,29 @@
 import pool from "../db.js";
 import * as Questao from "../models/questaoModel.js";
 import { parsePdfFile } from "../utils/pdfParser.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import multer from "multer";
+
+// ─── Gemini Vision — instância lazy (só cria se GEMINI_API_KEY estiver definida) ──
+let _gemini = null;
+function getGemini() {
+  if (!_gemini) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error("GEMINI_API_KEY não configurada no ambiente.");
+    _gemini = new GoogleGenerativeAI(key);
+  }
+  return _gemini;
+}
+
+// ─── Multer — memória (sem gravar em disco) ──────────────────────────────────
+export const uploadImagem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter(_, file, cb) {
+    cb(null, /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype));
+  },
+}).single("imagem");
+
 
 // ─── Campos completos para SELECT ───────────────────────────────────────────
 const CAMPOS = `
@@ -386,5 +409,109 @@ export async function criarQuestoesPorTexto(req, res) {
   } catch (err) {
     console.error("Erro em criarQuestoesPorTexto:", err);
     return res.status(500).json({ error: "Falha ao criar questões a partir do texto" });
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9) POST /questoes/extrair-imagem — Gemini Vision OCR + estruturação
+//    Recebe: multipart/form-data { imagem: File }
+//    Retorna: { enunciado, fonte, alternativas: [{letra, texto}], gabarito, confianca }
+// ─────────────────────────────────────────────────────────────────────────────
+export async function extrairQuestaoImagem(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: "Nenhuma imagem enviada." });
+    }
+
+    const genAI = getGemini();
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    // Converte buffer para formato inline que a API Gemini aceita
+    const imagePart = {
+      inlineData: {
+        data: req.file.buffer.toString("base64"),
+        mimeType: req.file.mimetype,
+      },
+    };
+
+    const prompt = `Você é um assistente especializado em extrair questões educacionais de imagens.
+
+Analise a imagem e extraia a questão presente nela. Retorne APENAS um JSON válido, sem markdown, sem explicações, no formato exato abaixo:
+
+{
+  "enunciado": "texto completo do enunciado/pergunta",
+  "fonte": "instituição ou prova de origem (ex: ENEM 2022, ISE Sta. Cecília-SP), deixe vazio se não houver",
+  "alternativas": [
+    { "letra": "A", "texto": "texto da alternativa A" },
+    { "letra": "B", "texto": "texto da alternativa B" },
+    { "letra": "C", "texto": "texto da alternativa C" },
+    { "letra": "D", "texto": "texto da alternativa D" },
+    { "letra": "E", "texto": "texto da alternativa E" }
+  ],
+  "gabarito": "letra da alternativa correta, ou null se não identificada",
+  "tipo": "objetiva",
+  "confianca": "alta|media|baixa"
+}
+
+Regras:
+- Inclua apenas as alternativas presentes na imagem (pode ser 2, 3, 4 ou 5)
+- Use letras maiúsculas: A, B, C, D, E
+- Se a alternativa usar a) b) c) minúsculo, converta para A, B, C maiúsculo
+- Preserve o texto exato, incluindo formatações como colchetes, fórmulas simples, etc.
+- Se houver número da questão no início (ex: "03. (ISE...)", NÃO inclua no enunciado
+- O gabarito geralmente é indicado por marcação, grifo ou asterisco na imagem. Se não houver, retorne null.
+- confianca: "alta" se o texto está claro, "media" se parcialmente legível, "baixa" se muito ruim`;
+
+    const result = await model.generateContent([prompt, imagePart]);
+    const rawText = result.response.text().trim();
+
+    // Remove blocos de código markdown se o modelo os incluir
+    const jsonText = rawText
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+
+    let dados;
+    try {
+      dados = JSON.parse(jsonText);
+    } catch {
+      console.error("[extrairQuestaoImagem] Gemini retornou texto não-JSON:", rawText);
+      return res.status(422).json({
+        ok: false,
+        message: "O modelo não conseguiu estruturar a questão. Tente com uma imagem mais nítida.",
+        raw: rawText,
+      });
+    }
+
+    // Normaliza letras maiúsculas e garante estrutura
+    if (Array.isArray(dados.alternativas)) {
+      dados.alternativas = dados.alternativas.map((a) => ({
+        letra: String(a.letra || "").toUpperCase(),
+        texto: String(a.texto || "").trim(),
+      }));
+    }
+    if (dados.gabarito) {
+      dados.gabarito = String(dados.gabarito).toUpperCase().trim();
+    }
+
+    console.log(
+      `[extrairQuestaoImagem] OK — ${dados.alternativas?.length || 0} alternativas` +
+      ` | gabarito: ${dados.gabarito || "N/A"} | confiança: ${dados.confianca}`
+    );
+
+    return res.json({ ok: true, ...dados });
+  } catch (err) {
+    console.error("[extrairQuestaoImagem] Erro:", err.message);
+
+    if (err.message?.includes("GEMINI_API_KEY")) {
+      return res.status(503).json({ ok: false, message: err.message });
+    }
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao processar imagem com Gemini.",
+      detail: err.message,
+    });
   }
 }
