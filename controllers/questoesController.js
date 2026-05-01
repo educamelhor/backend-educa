@@ -316,9 +316,9 @@ export async function excluirQuestao(req, res) {
   const isGestor = ['diretor', 'coordenador', 'admin', 'militar'].includes(perfil);
 
   try {
-    // Verifica se a questão existe e obtém seu autor
+    // Verifica se a questão existe — inclui escola_id NULL (questões legadas)
     const [[questao]] = await pool.query(
-      'SELECT id, professor_id FROM questoes WHERE id = ? AND escola_id = ?',
+      'SELECT id, professor_id FROM questoes WHERE id = ? AND (escola_id = ? OR escola_id IS NULL)',
       [id, escola_id]
     );
     if (!questao)
@@ -331,12 +331,14 @@ export async function excluirQuestao(req, res) {
 
     let result;
     if (hard) {
-      // Hard delete: apenas gestor OU o próprio autor
-      [result] = await pool.query('DELETE FROM questoes WHERE id = ? AND escola_id = ?', [id, escola_id]);
+      [result] = await pool.query(
+        'DELETE FROM questoes WHERE id = ? AND (escola_id = ? OR escola_id IS NULL)',
+        [id, escola_id]
+      );
       await registrarHistorico(id, 'excluiu_definitivo', professor_id);
     } else {
       [result] = await pool.query(
-        "UPDATE questoes SET status = 'arquivada', atualizada_em = NOW() WHERE id = ? AND escola_id = ?",
+        "UPDATE questoes SET status = 'arquivada', atualizada_em = NOW() WHERE id = ? AND (escola_id = ? OR escola_id IS NULL)",
         [id, escola_id]
       );
       await registrarHistorico(id, 'arquivou', professor_id);
