@@ -27,6 +27,21 @@ export const uploadImagem = multer({
   },
 }).single("imagem");
 
+// ─── Helper — Audit trail em questoes_historico ────────────────────────────
+// Não crítico: erros aqui não interrompem o fluxo principal
+async function registrarHistorico(questao_id, acao, usuario_id, prova_id = null) {
+  try {
+    await pool.query(
+      `INSERT IGNORE INTO questoes_historico
+         (questao_id, usuario_id, acao, prova_id, criado_em)
+       VALUES (?, ?, ?, ?, NOW())`,
+      [questao_id, usuario_id || null, acao, prova_id || null]
+    );
+  } catch {
+    // Silencioso — tabela pode não existir em ambientes legados
+  }
+}
+
 
 // ─── Campos completos para SELECT ───────────────────────────────────────────
 const CAMPOS = `
