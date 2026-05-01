@@ -11,6 +11,13 @@ import {
   historicoQuestao,
   extrairQuestaoImagem,
   uploadImagem,
+  // ── Banco Global ────────────────────────────────────────────────────────────
+  publicarQuestao,
+  buscarBancoGlobal,
+  getQuestaoGlobal,
+  registrarUsoGlobal,
+  getBancoEscola,
+  statsGlobal,
 } from "../controllers/questoesController.js";
 
 const router = express.Router();
@@ -21,8 +28,15 @@ function verificarEscola(req, res, next) {
   next();
 }
 
-// ── Estatísticas do banco ──────────────────────────────────────────────────
+// ── Estatísticas do banco da escola ──────────────────────────────────────────
 router.get("/stats", verificarEscola, statsQuestoes);
+
+// ── Banco Global — rotas estáticas ANTES dos dinâmicos (:id) ─────────────────
+router.get("/global/stats",        verificarEscola, statsGlobal);
+router.get("/global/banco-escola", verificarEscola, getBancoEscola);
+router.get("/global",              verificarEscola, buscarBancoGlobal);
+router.get("/global/:id",          verificarEscola, getQuestaoGlobal);
+router.post("/global/:id/usar",    verificarEscola, registrarUsoGlobal);
 
 // ── CRUD principal ─────────────────────────────────────────────────────────
 router.get("/",       verificarEscola, listarQuestoes);
@@ -30,6 +44,9 @@ router.get("/:id",    verificarEscola, obterQuestao);
 router.post("/",      verificarEscola, criarQuestao);
 router.put("/:id",    verificarEscola, atualizarQuestao);
 router.delete("/:id", verificarEscola, excluirQuestao);  // ?hard=1 para hard delete
+
+// ── Publicar no Banco Global ──────────────────────────────────────────────────
+router.post("/:id/publicar",  verificarEscola, publicarQuestao);
 
 // ── Sprint 5: Duplicar + Histórico ────────────────────────────────────────
 router.post("/:id/duplicar",  verificarEscola, duplicarQuestao);

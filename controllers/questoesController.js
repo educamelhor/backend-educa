@@ -193,26 +193,30 @@ export async function criarQuestao(req, res) {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
     imagem_base64, alternativas_json, correta,
-    texto_apoio, fonte, explicacao, tags,
-    compartilhada = 0, status = 'ativa', ano,
+    texto_apoio, fonte, explicacao, tags, temas,
+    compartilhada = 0, status = 'ativa',
   } = req.body;
+
+  // Gabarito por conteúdo — invariante à permutação de alternativas
+  const correta_texto = resolverTextoCorreta(alternativas_json, correta);
 
   try {
     const [result] = await pool.query(
       `INSERT INTO questoes (
         conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta,
-        texto_apoio, fonte, explicacao, tags, compartilhada, status,
+        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta, correta_texto,
+        texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
         escola_id, professor_id, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
       [
         conteudo_bruto  || null, latex_formatado  || null,
         tipo            || 'objetiva', nivel || 'medio',
         serie           || null, bimestre || null,
         disciplina      || null, habilidade_bncc || null,
-        imagem_base64   || null, alternativas_json || null, correta || null,
+        imagem_base64   || null, alternativas_json || null, correta || null, correta_texto,
         texto_apoio     || null, fonte || null, explicacao || null,
         tags            || '',
+        temas           ? (typeof temas === 'string' ? temas : JSON.stringify(temas)) : null,
         compartilhada ? 1 : 0,
         ['rascunho','ativa','arquivada'].includes(status) ? status : 'ativa',
         escola_id, uid || null,
@@ -237,17 +241,20 @@ export async function atualizarQuestao(req, res) {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
     imagem_base64, alternativas_json, correta,
-    texto_apoio, fonte, explicacao, tags,
+    texto_apoio, fonte, explicacao, tags, temas,
     compartilhada, status,
   } = req.body;
+
+  // Gabarito por conteúdo — invariante à permutação de alternativas
+  const correta_texto = resolverTextoCorreta(alternativas_json, correta);
 
   try {
     const [result] = await pool.query(
       `UPDATE questoes SET
         conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?,
         serie = ?, bimestre = ?, disciplina = ?, habilidade_bncc = ?,
-        imagem_base64 = ?, alternativas_json = ?, correta = ?,
-        texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?,
+        imagem_base64 = ?, alternativas_json = ?, correta = ?, correta_texto = ?,
+        texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?, temas = ?,
         compartilhada = ?, status = ?, atualizada_em = NOW()
        WHERE id = ? AND escola_id = ?`,
       [
@@ -262,10 +269,12 @@ export async function atualizarQuestao(req, res) {
         imagem_base64     || null,
         alternativas_json || null,
         correta           || null,
+        correta_texto,
         texto_apoio       || null,
         fonte             || null,
         explicacao        || null,
         tags              || "",
+        temas ? (typeof temas === 'string' ? temas : JSON.stringify(temas)) : null,
         compartilhada ? 1 : 0,
         ["rascunho","ativa","arquivada"].includes(status) ? status : "ativa",
         id, escola_id,
@@ -414,10 +423,340 @@ export async function criarQuestoesPorTexto(req, res) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9) POST /questoes/extrair-imagem — Gemini Vision OCR + estruturação
-//    Recebe: multipart/form-data { imagem: File }
-//    Retorna: { enunciado, fonte, alternativas: [{letra, texto}], gabarito, confianca }
+// HELPER — Resolve o TEXTO da alternativa correta a partir de alternativas_json
+// Usado para gabarito por conteúdo (invariante à permutação de alternativas)
 // ─────────────────────────────────────────────────────────────────────────────
+function resolverTextoCorreta(alternativas_json, correta) {
+  if (!alternativas_json || !correta) return null;
+  try {
+    const alts =
+      typeof alternativas_json === "string"
+        ? JSON.parse(alternativas_json)
+        : alternativas_json;
+    if (!Array.isArray(alts)) return null;
+    const alt = alts.find(
+      (a) =>
+        String(a.letra || a.letter || "").toUpperCase() ===
+        String(correta).toUpperCase()
+    );
+    return alt ? String(alt.texto || alt.text || alt.conteudo || "").trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10) POST /questoes/:id/publicar — Publica questão no Banco Global
+//     Cria registro em questoes_banco_global e marca a questão local.
+//     Qualquer escola poderá buscar e usar essa questão.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function publicarQuestao(req, res) {
+  const { id } = req.params;
+  const { escola_id, professor_id } = req.user;
+  try {
+    // Busca a questão local
+    const [[q]] = await pool.query(
+      `SELECT * FROM questoes WHERE id = ? AND escola_id = ?`,
+      [id, escola_id]
+    );
+    if (!q) return res.status(404).json({ message: "Questão não encontrada." });
+
+    // Garante que campos obrigatórios estão preenchidos
+    if (!q.conteudo_bruto?.trim()) {
+      return res.status(400).json({ message: "O enunciado é obrigatório para publicar." });
+    }
+    if (!q.disciplina) {
+      return res.status(400).json({ message: "A disciplina é obrigatória para publicar." });
+    }
+
+    // Resolve texto da alternativa correta (ponto 1 do usuário)
+    const correta_texto = resolverTextoCorreta(q.alternativas_json, q.correta);
+
+    // Evita duplicatas: verifica se já foi publicada
+    if (q.publicada_globalmente && q.global_id) {
+      // Atualiza a entrada existente (sync)
+      await pool.query(
+        `UPDATE questoes_banco_global SET
+           conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?, serie = ?,
+           disciplina = ?, habilidade_bncc = ?, temas = ?,
+           alternativas_json = ?, correta = ?, correta_texto = ?,
+           texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?,
+           atualizada_em = NOW()
+         WHERE id = ?`,
+        [
+          q.conteudo_bruto, q.latex_formatado, q.tipo, q.nivel, q.serie,
+          q.disciplina, q.habilidade_bncc,
+          q.temas || null,
+          q.alternativas_json, q.correta, correta_texto,
+          q.texto_apoio, q.fonte, q.explicacao, q.tags,
+          q.global_id,
+        ]
+      );
+      const codigo = `EMQG-${String(q.global_id).padStart(5, "0")}`;
+      return res.json({
+        message: "Questão republicada no Banco Global com sucesso.",
+        global_id: q.global_id,
+        codigo,
+      });
+    }
+
+    // Insere no banco global
+    const [ins] = await pool.query(
+      `INSERT INTO questoes_banco_global (
+         conteudo_bruto, latex_formatado, tipo, nivel, serie,
+         disciplina, habilidade_bncc, temas,
+         alternativas_json, correta, correta_texto,
+         texto_apoio, fonte, explicacao, tags,
+         escola_id_origem, professor_id_origem, uso_count, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'publicada')`,
+      [
+        q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva",
+        q.nivel || "medio", q.serie || null,
+        q.disciplina, q.habilidade_bncc || null,
+        q.temas || null,
+        q.alternativas_json || null, q.correta || null, correta_texto,
+        q.texto_apoio || null, q.fonte || null, q.explicacao || null,
+        q.tags || null,
+        escola_id, professor_id || null,
+      ]
+    );
+    const globalId = ins.insertId;
+    const codigo = `EMQG-${String(globalId).padStart(5, "0")}`;
+
+    // Marca a questão local como publicada
+    await pool.query(
+      `UPDATE questoes SET
+         publicada_globalmente = 1, global_id = ?, correta_texto = ?, atualizada_em = NOW()
+       WHERE id = ?`,
+      [globalId, correta_texto, id]
+    );
+
+    console.log(`[BancoGlobal] Questão ${id} publicada → global_id=${globalId} (${codigo})`);
+    res.status(201).json({
+      message: "Questão publicada no Banco Global com sucesso!",
+      global_id: globalId,
+      codigo,
+    });
+  } catch (err) {
+    console.error("[publicarQuestao] Erro:", err);
+    res.status(500).json({ message: "Erro ao publicar questão.", detail: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11) GET /questoes/global — Busca no Banco Global (todas as escolas)
+//     Filtros: disciplina, nivel, serie, busca (texto), temas, ordenar
+//     Acesso: qualquer escola autenticada
+// ─────────────────────────────────────────────────────────────────────────────
+export async function buscarBancoGlobal(req, res) {
+  const {
+    disciplina, nivel, serie, busca, tema,
+    page = 1, limit = 30, ordenar = "mais_usadas",
+  } = req.query;
+
+  const conds = ["g.status = 'publicada'"];
+  const params = [];
+
+  if (disciplina) { conds.push("g.disciplina = ?");    params.push(disciplina); }
+  if (nivel)      { conds.push("g.nivel = ?");         params.push(nivel); }
+  if (serie)      { conds.push("g.serie = ?");         params.push(serie); }
+  if (tema)       { conds.push("JSON_SEARCH(g.temas, 'one', ?) IS NOT NULL"); params.push(tema); }
+  if (busca) {
+    conds.push("(g.conteudo_bruto LIKE ? OR g.tags LIKE ? OR g.habilidade_bncc LIKE ?)");
+    params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`);
+  }
+
+  const where = conds.join(" AND ");
+  const ordemMap = {
+    mais_usadas: "g.uso_count DESC, g.id DESC",
+    recentes:    "g.publicada_em DESC",
+    disciplina:  "g.disciplina ASC, g.uso_count DESC",
+  };
+  const orderBy = ordemMap[ordenar] || ordemMap.mais_usadas;
+  const offset = (Number(page) - 1) * Number(limit);
+
+  try {
+    const [questoes] = await pool.query(
+      `SELECT
+         g.id,
+         CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
+         g.conteudo_bruto, g.tipo, g.nivel, g.serie,
+         g.disciplina, g.habilidade_bncc, g.temas,
+         g.alternativas_json, g.correta, g.correta_texto,
+         g.fonte, g.tags, g.uso_count,
+         g.escola_id_origem, g.professor_id_origem,
+         g.publicada_em
+       FROM questoes_banco_global g
+       WHERE ${where}
+       ORDER BY ${orderBy}
+       LIMIT ? OFFSET ?`,
+      [...params, Number(limit), offset]
+    );
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM questoes_banco_global g WHERE ${where}`,
+      params
+    );
+
+    res.json({
+      questoes,
+      pagination: {
+        total, page: Number(page),
+        limit: Number(limit),
+        pages: Math.ceil(total / Number(limit)),
+      },
+    });
+  } catch (err) {
+    console.error("[buscarBancoGlobal] Erro:", err);
+    res.status(500).json({ message: "Erro ao buscar banco global." });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12) GET /questoes/global/:id — Detalhe de uma questão do banco global
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getQuestaoGlobal(req, res) {
+  const { id } = req.params;
+  try {
+    const [[q]] = await pool.query(
+      `SELECT *, CONCAT('EMQG-', LPAD(id, 5, '0')) AS codigo
+       FROM questoes_banco_global WHERE id = ? AND status = 'publicada'`,
+      [id]
+    );
+    if (!q) return res.status(404).json({ message: "Questão não encontrada no banco global." });
+    res.json(q);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar questão." });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13) POST /questoes/global/:id/usar — Registra uso de questão global
+//     - Cria entrada em questoes_uso_escola (banco da escola)
+//     - Incrementa uso_count na questão global (ranking)
+//     - Retorna dados completos da questão para importar na prova
+// ─────────────────────────────────────────────────────────────────────────────
+export async function registrarUsoGlobal(req, res) {
+  const { id } = req.params;
+  const { escola_id, professor_id } = req.user;
+  const { contexto = "prova", contexto_id = null } = req.body;
+
+  try {
+    const [[q]] = await pool.query(
+      `SELECT *, CONCAT('EMQG-', LPAD(id, 5, '0')) AS codigo
+       FROM questoes_banco_global WHERE id = ? AND status = 'publicada'`,
+      [id]
+    );
+    if (!q) return res.status(404).json({ message: "Questão não encontrada no banco global." });
+
+    // Registra o uso
+    await pool.query(
+      `INSERT INTO questoes_uso_escola
+         (questao_global_id, escola_id, professor_id, contexto, contexto_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, escola_id, professor_id || null, contexto, contexto_id]
+    );
+
+    // Incrementa ranking global
+    await pool.query(
+      `UPDATE questoes_banco_global SET uso_count = uso_count + 1 WHERE id = ?`,
+      [id]
+    );
+
+    console.log(`[BancoGlobal] Questão global #${id} usada por escola=${escola_id} (${contexto})`);
+    res.json({ message: "Uso registrado.", questao: q });
+  } catch (err) {
+    console.error("[registrarUsoGlobal] Erro:", err);
+    res.status(500).json({ message: "Erro ao registrar uso." });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14) GET /questoes/global/banco-escola — Banco específico da escola
+//     Retorna questões do banco global que a escola já usou (deduplicado)
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getBancoEscola(req, res) {
+  const { escola_id } = req.user;
+  const { disciplina, nivel, busca, page = 1, limit = 30 } = req.query;
+
+  const conds = ["u.escola_id = ?", "g.status = 'publicada'"];
+  const params = [escola_id];
+
+  if (disciplina) { conds.push("g.disciplina = ?"); params.push(disciplina); }
+  if (nivel)      { conds.push("g.nivel = ?");      params.push(nivel); }
+  if (busca) {
+    conds.push("(g.conteudo_bruto LIKE ? OR g.tags LIKE ?)");
+    params.push(`%${busca}%`, `%${busca}%`);
+  }
+
+  const where = conds.join(" AND ");
+  const offset = (Number(page) - 1) * Number(limit);
+
+  try {
+    const [questoes] = await pool.query(
+      `SELECT
+         g.id,
+         CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
+         g.conteudo_bruto, g.tipo, g.nivel, g.serie,
+         g.disciplina, g.habilidade_bncc, g.temas,
+         g.alternativas_json, g.correta, g.correta_texto,
+         g.fonte, g.tags, g.uso_count,
+         COUNT(u.id) AS vezes_usada_escola,
+         MAX(u.usado_em) AS ultimo_uso
+       FROM questoes_uso_escola u
+       JOIN questoes_banco_global g ON g.id = u.questao_global_id
+       WHERE ${where}
+       GROUP BY g.id
+       ORDER BY vezes_usada_escola DESC, ultimo_uso DESC
+       LIMIT ? OFFSET ?`,
+      [...params, Number(limit), offset]
+    );
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(DISTINCT u.questao_global_id) AS total
+       FROM questoes_uso_escola u
+       JOIN questoes_banco_global g ON g.id = u.questao_global_id
+       WHERE ${where}`,
+      params
+    );
+
+    res.json({
+      questoes,
+      pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
+    });
+  } catch (err) {
+    console.error("[getBancoEscola] Erro:", err);
+    res.status(500).json({ message: "Erro ao buscar banco da escola." });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15) GET /questoes/global/stats — Estatísticas do banco global
+// ─────────────────────────────────────────────────────────────────────────────
+export async function statsGlobal(req, res) {
+  try {
+    const [[totais]] = await pool.query(
+      `SELECT COUNT(*) AS total, SUM(uso_count) AS total_usos FROM questoes_banco_global WHERE status='publicada'`
+    );
+    const [porDisciplina] = await pool.query(
+      `SELECT disciplina, COUNT(*) AS total, SUM(uso_count) AS usos
+       FROM questoes_banco_global WHERE status='publicada' AND disciplina IS NOT NULL
+       GROUP BY disciplina ORDER BY total DESC LIMIT 15`
+    );
+    const [maisUsadas] = await pool.query(
+      `SELECT id, CONCAT('EMQG-', LPAD(id, 5, '0')) AS codigo,
+              conteudo_bruto, disciplina, nivel, uso_count
+       FROM questoes_banco_global WHERE status='publicada' AND uso_count > 0
+       ORDER BY uso_count DESC LIMIT 10`
+    );
+    res.json({ totais, porDisciplina, maisUsadas });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar stats globais." });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16) POST /questoes/extrair-imagem — Gemini Vision OCR + estruturação
 export async function extrairQuestaoImagem(req, res) {
   try {
     if (!req.file) {

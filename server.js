@@ -565,6 +565,114 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao expandir ENUM 'origem' (não crítico):", migErr.message);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // [2026-05-01] Banco Global de Questões — correta_texto + temas + tabelas
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // 1) Colunas novas em questoes: correta_texto (gabarito por conteúdo) + temas (JSON)
+  try {
+    const [colsQ] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes'
+        AND COLUMN_NAME IN ('correta_texto','temas','global_id','publicada_globalmente')
+    `);
+    const existentes = new Set(colsQ.map((c) => c.COLUMN_NAME));
+    const addCols = [];
+    if (!existentes.has("correta_texto"))
+      addCols.push(`ADD COLUMN correta_texto TEXT DEFAULT NULL
+        COMMENT 'Texto da alternativa correta — usado para gabarito por conteúdo em permutações'`);
+    if (!existentes.has("temas"))
+      addCols.push(`ADD COLUMN temas JSON DEFAULT NULL
+        COMMENT 'Temas/conteúdos da questão: ex. ["Biologia Celular","Metabolismo"]'`);
+    if (!existentes.has("global_id"))
+      addCols.push(`ADD COLUMN global_id INT DEFAULT NULL
+        COMMENT 'ID em questoes_banco_global se a questão foi publicada'`);
+    if (!existentes.has("publicada_globalmente"))
+      addCols.push(`ADD COLUMN publicada_globalmente TINYINT(1) NOT NULL DEFAULT 0
+        COMMENT '1 = questão publicada no banco global'`);
+    if (addCols.length > 0)
+      await pool.query(`ALTER TABLE questoes ${addCols.join(", ")}`);
+    console.log("[MIGRATION] Colunas do banco global em questoes garantidas ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao alterar tabela questoes (não crítico):", migErr.message);
+  }
+
+  // 2) Tabela questoes_banco_global (banco público multi-escola)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS questoes_banco_global (
+        id                  INT          NOT NULL AUTO_INCREMENT,
+        conteudo_bruto      TEXT         NOT NULL
+          COMMENT 'Enunciado da questão',
+        latex_formatado     TEXT         DEFAULT NULL,
+        tipo                VARCHAR(20)  NOT NULL DEFAULT 'objetiva',
+        nivel               VARCHAR(20)  NOT NULL DEFAULT 'medio',
+        serie               VARCHAR(50)  DEFAULT NULL,
+        disciplina          VARCHAR(100) DEFAULT NULL,
+        habilidade_bncc     VARCHAR(100) DEFAULT NULL,
+        temas               JSON         DEFAULT NULL
+          COMMENT 'Array de temas: ["Célula","DNA"]',
+        alternativas_json   JSON         DEFAULT NULL
+          COMMENT '[{letra, texto}] — ordem original',
+        correta             VARCHAR(5)   DEFAULT NULL
+          COMMENT 'Letra da alternativa correta (Versão A)',
+        correta_texto       TEXT         DEFAULT NULL
+          COMMENT 'Texto da alternativa correta — invariante à permutação',
+        texto_apoio         TEXT         DEFAULT NULL,
+        fonte               VARCHAR(255) DEFAULT NULL,
+        explicacao          TEXT         DEFAULT NULL,
+        tags                TEXT         DEFAULT NULL,
+        escola_id_origem    INT          DEFAULT NULL
+          COMMENT 'Escola que publicou',
+        professor_id_origem INT          DEFAULT NULL
+          COMMENT 'Professor que publicou',
+        uso_count           INT          NOT NULL DEFAULT 0
+          COMMENT 'Total de usos em qualquer escola do sistema',
+        status              ENUM('publicada','revisao','removida') NOT NULL DEFAULT 'publicada',
+        publicada_em        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizada_em       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+          ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_disciplina  (disciplina),
+        INDEX idx_nivel       (nivel),
+        INDEX idx_uso         (uso_count),
+        INDEX idx_status      (status),
+        INDEX idx_escola_orig (escola_id_origem)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Banco Global EDUCA.MELHOR — questoes publicadas acessíveis por todas as escolas'
+    `);
+    console.log("[MIGRATION] Tabela questoes_banco_global garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar questoes_banco_global (não crítico):", migErr.message);
+  }
+
+  // 3) Tabela questoes_uso_escola (banco específico por escola + ranking global)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS questoes_uso_escola (
+        id                INT      NOT NULL AUTO_INCREMENT,
+        questao_global_id INT      NOT NULL
+          COMMENT 'FK questoes_banco_global.id',
+        escola_id         INT      NOT NULL,
+        professor_id      INT      DEFAULT NULL,
+        contexto          VARCHAR(50) DEFAULT NULL
+          COMMENT 'prova | exercicio | atividade',
+        contexto_id       INT      DEFAULT NULL
+          COMMENT 'ID da prova/atividade que usou a questão',
+        usado_em          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola          (escola_id),
+        INDEX idx_questao         (questao_global_id),
+        INDEX idx_escola_questao  (escola_id, questao_global_id),
+        INDEX idx_professor       (professor_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Rastreamento de uso: escola×questao — gera banco específico por escola'
+    `);
+    console.log("[MIGRATION] Tabela questoes_uso_escola garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar questoes_uso_escola (não crítico):", migErr.message);
+  }
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
