@@ -269,6 +269,13 @@ async function runStartupMigrations() {
        DATETIME NULL DEFAULT NULL
        COMMENT 'Timestamp de quando o responsável abriu o termo para leitura (audit LGPD)'
        AFTER plataforma`,
+    // Termos de Uso + Política de Privacidade: aceite no 1º acesso ao app
+    `ALTER TABLE responsaveis ADD COLUMN termos_aceitos_em
+       DATETIME NULL DEFAULT NULL
+       COMMENT 'Timestamp do aceite dos Termos de Uso e Política de Privacidade no EDUCA-Mobile'`,
+    `ALTER TABLE responsaveis ADD COLUMN termos_versao
+       VARCHAR(10) NULL DEFAULT NULL
+       COMMENT 'Versão dos Termos de Uso aceita pelo responsável'`,
   ];
 
   for (const sql of alterColumns) {
@@ -333,11 +340,33 @@ router.get("/me", authAppPais, async (req, res) => {
     return res.json({
       ok: true,
       responsavel: rows[0],
+      termos_pendentes: !rows[0].termos_aceitos_em, // Termos de Uso + Política de Privacidade
       consentimento_pendente: pendente > 0,
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /me:", error);
     return res.status(500).json({ message: "Erro ao carregar sessão." });
+  }
+});
+
+// ============================================================================
+// POST /termos/aceitar — Registra aceite dos Termos de Uso + Política de Privacidade
+// ============================================================================
+router.post("/termos/aceitar", authAppPais, async (req, res) => {
+  const { responsavel_id } = req.appPaisAuth;
+  const VERSAO_TERMOS = "1.0";
+  try {
+    await pool.query(
+      `UPDATE responsaveis
+       SET termos_aceitos_em = NOW(), termos_versao = ?
+       WHERE id = ?`,
+      [VERSAO_TERMOS, responsavel_id]
+    );
+    console.log(`[APP_PAIS] Termos v${VERSAO_TERMOS} aceitos pelo responsavel_id=${responsavel_id}`);
+    return res.json({ ok: true, versao: VERSAO_TERMOS });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /termos/aceitar:", error);
+    return res.status(500).json({ message: "Erro ao registrar aceite dos termos." });
   }
 });
 
