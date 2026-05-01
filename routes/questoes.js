@@ -18,6 +18,7 @@ import {
   registrarUsoGlobal,
   getBancoEscola,
   statsGlobal,
+  excluirQuestaoGlobal,
 } from "../controllers/questoesController.js";
 
 const router = express.Router();
@@ -37,6 +38,7 @@ router.get("/global/banco-escola", verificarEscola, getBancoEscola);
 router.get("/global",              verificarEscola, buscarBancoGlobal);
 router.get("/global/:id",          verificarEscola, getQuestaoGlobal);
 router.post("/global/:id/usar",    verificarEscola, registrarUsoGlobal);
+router.delete("/global/:id",       verificarEscola, excluirQuestaoGlobal); // ?hard=1 para exclusão permanente
 
 // ── CRUD principal ─────────────────────────────────────────────────────────
 router.get("/",       verificarEscola, listarQuestoes);

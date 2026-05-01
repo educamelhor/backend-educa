@@ -791,6 +791,52 @@ export async function statsGlobal(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 16) DELETE /questoes/global/:id — Remove questão do Banco Global
+//     - Soft delete por padrão (status = 'removida')
+//     - Hard delete via ?hard=1
+//     - Cópias na tabela `questoes` (escola) NÃO são afetadas
+//     - Apenas o autor (professor_id_origem) ou gestor pode excluir
+// ─────────────────────────────────────────────────────────────────────────────
+export async function excluirQuestaoGlobal(req, res) {
+  const { id } = req.params;
+  const { professor_id, perfil } = req.user;
+  const hard = req.query.hard === '1';
+  const isGestor = ['diretor', 'coordenador', 'admin', 'militar'].includes(perfil);
+
+  try {
+    const [[q]] = await pool.query(
+      'SELECT id, professor_id_origem FROM questoes_banco_global WHERE id = ? AND status = ?',
+      [id, 'publicada']
+    );
+    if (!q) return res.status(404).json({ message: 'Questão não encontrada no banco global.' });
+
+    // Apenas o autor original ou gestor pode remover do banco global
+    const isAutor = professor_id && Number(q.professor_id_origem) === Number(professor_id);
+    if (!isAutor && !isGestor)
+      return res.status(403).json({ message: 'Apenas o autor da questão pode removê-la do banco global.' });
+
+    if (hard) {
+      await pool.query('DELETE FROM questoes_banco_global WHERE id = ?', [id]);
+    } else {
+      await pool.query(
+        "UPDATE questoes_banco_global SET status = 'removida', atualizada_em = NOW() WHERE id = ?",
+        [id]
+      );
+      // Desmarca a questão local como publicada (se existir cópia na escola do autor)
+      await pool.query(
+        'UPDATE questoes SET publicada_globalmente = 0, global_id = NULL WHERE global_id = ?',
+        [id]
+      );
+    }
+
+    res.status(204).end();
+  } catch (err) {
+    console.error('[excluirQuestaoGlobal] Erro:', err);
+    res.status(500).json({ message: 'Erro ao remover questão do banco global.' });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 16) POST /questoes/extrair-imagem — Gemini Vision OCR + estruturação
 export async function extrairQuestaoImagem(req, res) {
   try {
