@@ -425,10 +425,7 @@ export async function extrairQuestaoImagem(req, res) {
     }
 
     const genAI = getGemini();
-    const model = genAI.getGenerativeModel(
-      { model: "gemini-1.5-flash" },
-      { apiVersion: "v1" }   // v0.24 usa v1beta por padrão; gemini-1.5-flash requer v1
-    );
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // Converte buffer para formato inline que a API Gemini aceita
     const imagePart = {
