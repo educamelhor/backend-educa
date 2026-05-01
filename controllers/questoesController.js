@@ -311,12 +311,29 @@ export async function atualizarQuestao(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function excluirQuestao(req, res) {
   const { id } = req.params;
-  const { escola_id, professor_id } = req.user;
+  const { escola_id, professor_id, perfil } = req.user;
   const hard = req.query.hard === '1';
+  const isGestor = ['diretor', 'coordenador', 'admin', 'militar'].includes(perfil);
+
   try {
+    // Verifica se a questão existe e obtém seu autor
+    const [[questao]] = await pool.query(
+      'SELECT id, professor_id FROM questoes WHERE id = ? AND escola_id = ?',
+      [id, escola_id]
+    );
+    if (!questao)
+      return res.status(404).json({ message: 'Questão não encontrada.' });
+
+    // RBAC: apenas o autor ou gestores (diretor/coord/admin) podem arquivar/excluir
+    const isAutor = professor_id && Number(questao.professor_id) === Number(professor_id);
+    if (!isAutor && !isGestor)
+      return res.status(403).json({ message: 'Apenas o autor da questão pode arquivá-la ou excluí-la.' });
+
     let result;
     if (hard) {
+      // Hard delete: apenas gestor OU o próprio autor
       [result] = await pool.query('DELETE FROM questoes WHERE id = ? AND escola_id = ?', [id, escola_id]);
+      await registrarHistorico(id, 'excluiu_definitivo', professor_id);
     } else {
       [result] = await pool.query(
         "UPDATE questoes SET status = 'arquivada', atualizada_em = NOW() WHERE id = ? AND escola_id = ?",
@@ -324,6 +341,7 @@ export async function excluirQuestao(req, res) {
       );
       await registrarHistorico(id, 'arquivou', professor_id);
     }
+
     if (result.affectedRows === 0)
       return res.status(404).json({ message: 'Questão não encontrada.' });
     res.status(204).end();
