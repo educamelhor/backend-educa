@@ -1457,7 +1457,16 @@ router.post("/solicitar-codigo", async (req, res) => {
     return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
+  // ── DEMO ACCOUNT (Apple App Store Review) ──────────────────────────────────
+  // CPF 00000000191 bypassa envio de SMS — código fixo 000000
+  if (cpf === '00000000191') {
+    console.log('[APP_PAIS][DEMO] Conta de revisão Apple — bypass SMS');
+    return res.json({ ok: true });
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   try {
+
     const [rows] = await db.query(
       "SELECT id, email, status_global FROM responsaveis WHERE cpf = ? LIMIT 1",
       [cpf]
@@ -1515,6 +1524,26 @@ router.post("/verificar-codigo", async (req, res) => {
   if (!cpf || !codigo) {
     return res.status(400).json({ message: "CPF e código são obrigatórios." });
   }
+
+  // ── DEMO ACCOUNT (Apple App Store Review) ──────────────────────────────────
+  // CPF 00000000191 + OTP 000000 → token de demonstração sem acesso a dados reais
+  if (cpf === '00000000191' && codigo === '000000') {
+    console.log('[APP_PAIS][DEMO] Bypass de revisão Apple — gerando token demo');
+    const demoResponsavel = {
+      id: 0,
+      nome: 'Revisão Apple',
+      cpf: '00000000191',
+      email: 'demo@sistemaeducamelhor.com.br',
+    };
+    const token = gerarTokenSessaoResponsavel(demoResponsavel);
+    return res.json({
+      ok: true,
+      token,
+      expires_in: APP_PAIS_JWT_EXPIRES_IN_SECONDS,
+      responsavel: demoResponsavel,
+    });
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
   try {
     const [[responsavel]] = await db.query(
