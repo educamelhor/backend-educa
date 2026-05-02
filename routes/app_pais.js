@@ -1526,22 +1526,28 @@ router.post("/verificar-codigo", async (req, res) => {
   }
 
   // ── DEMO ACCOUNT (Apple App Store Review) ──────────────────────────────────
-  // CPF 00000000191 + OTP 000000 → token de demonstração sem acesso a dados reais
+  // CPF 00000000191 + OTP 000000 → token de demonstração com dados reais no banco
   if (cpf === '00000000191' && codigo === '000000') {
-    console.log('[APP_PAIS][DEMO] Bypass de revisão Apple — gerando token demo');
-    const demoResponsavel = {
-      id: 0,
-      nome: 'Revisão Apple',
-      cpf: '00000000191',
-      email: 'demo@sistemaeducamelhor.com.br',
-    };
-    const token = gerarTokenSessaoResponsavel(demoResponsavel);
-    return res.json({
-      ok: true,
-      token,
-      expires_in: APP_PAIS_JWT_EXPIRES_IN_SECONDS,
-      responsavel: demoResponsavel,
-    });
+    console.log('[APP_PAIS][DEMO] Bypass de revisão Apple — buscando responsável demo no banco');
+    try {
+      const [[demoResp]] = await db.query(
+        "SELECT id, nome, cpf, email FROM responsaveis WHERE cpf = '00000000191' LIMIT 1"
+      );
+      if (!demoResp) {
+        console.error('[APP_PAIS][DEMO] Responsável demo não encontrado no banco!');
+        return res.status(500).json({ message: "Conta demo não configurada." });
+      }
+      const token = gerarTokenSessaoResponsavel(demoResp);
+      return res.json({
+        ok: true,
+        token,
+        expires_in: APP_PAIS_JWT_EXPIRES_IN_SECONDS,
+        responsavel: demoResp,
+      });
+    } catch (err) {
+      console.error('[APP_PAIS][DEMO] Erro ao buscar responsável demo:', err.message);
+      return res.status(500).json({ message: "Erro na conta demo." });
+    }
   }
   // ────────────────────────────────────────────────────────────────────────────
 
