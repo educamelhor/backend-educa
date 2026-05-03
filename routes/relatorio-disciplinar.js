@@ -537,7 +537,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       }
 
       const descH = descricaoText
-        ? Math.max(12, doc.font("Helvetica").fontSize(6.5).heightOfString(descricaoText, { width: PW - 16 }) + 6)
+        ? Math.max(18, doc.font("Helvetica-Oblique").fontSize(8.5).heightOfString(descricaoText, { width: PW - 16 }) + 8)
         : 0;
 
       // Linha principal do registro
@@ -568,8 +568,8 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       if (descricaoText) {
         const descY = doc.y;
         doc.rect(L, descY, PW, descH).fill("#eef2f7");
-        doc.font("Helvetica-Oblique").fontSize(6.5).fillColor("#555")
-          .text(descricaoText, L + 10, descY + 3, { width: PW - 16, lineGap: 1 });
+        doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
+          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
         doc.y = descY + descH;
       }
     });
@@ -958,7 +958,7 @@ router.get("/:alunoId", async (req, res) => {
       }
 
       const descH = descricaoText
-        ? Math.max(12, doc.font("Helvetica").fontSize(6.5).heightOfString(descricaoText, { width: PW - 16 }) + 6)
+        ? Math.max(18, doc.font("Helvetica-Oblique").fontSize(8.5).heightOfString(descricaoText, { width: PW - 16 }) + 8)
         : 0;
       const totalRowH = TR + descH;
 
@@ -999,12 +999,10 @@ router.get("/:alunoId", async (req, res) => {
       // Sublinha com a Descricao da ocorrencia
       if (descricaoText) {
         const descY = doc.y;
-        // Fundo levemente diferente para a descricao
         const descBg = i % 2 === 0 ? "#eef2f7" : "#f5f7fa";
         doc.rect(L, descY, PW, descH).fill(descBg);
-
-        doc.font("Helvetica-Oblique").fontSize(6.5).fillColor("#555")
-          .text(descricaoText, L + 10, descY + 3, { width: PW - 16, lineGap: 1 });
+        doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
+          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
         doc.y = descY + descH;
       }
     });
