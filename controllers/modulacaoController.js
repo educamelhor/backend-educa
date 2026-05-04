@@ -83,9 +83,12 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
   }
 
   try {
-    // 1) Turmas do turno (apenas da escola do usuário)
+    // 1) Turmas do turno do ano letivo vigente (apenas da escola do usuário)
     const [turmas] = await pool.query(
-      "SELECT id, nome, turno FROM turmas WHERE turno = ? AND escola_id = ? ORDER BY nome",
+      `SELECT id, nome, turno, ano
+        FROM turmas
+       WHERE turno = ? AND escola_id = ? AND ano = YEAR(CURDATE())
+       ORDER BY nome`,
       [turno, escola_id]
     );
 
@@ -111,13 +114,14 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
           h.aulas,
           p.nome AS professor_nome,
           d.nome AS disciplina_nome,
-          t.turno AS turno
+          t.turno  AS turno
         FROM modulacao h
         JOIN professores p ON p.id = h.professor_id
         JOIN disciplinas d ON d.id = h.disciplina_id
         JOIN turmas t      ON t.id = h.turma_id
         WHERE h.escola_id = ?
           AND h.turma_id IN (${placeholders})
+          AND t.ano = YEAR(CURDATE())
         `,
         paramsComTurma
       );
