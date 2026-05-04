@@ -147,4 +147,78 @@ router.post("/definir", verificarEscola, async (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// POST /api/cargas-horarias/definir-lote
+// Body:
+// {
+//   turma_ids: number[],   // uma ou mais turmas
+//   itens:     number[]    // disciplina_ids (mesmo conjunto para todas as turmas)
+// }
+// Regras:
+// - Usa req.user.escola_id (ignora escola_id do body).
+// - Apaga cargas anteriores de TODAS as turma_ids informadas.
+// - Insere o mesmo conjunto de disciplinas em todas elas.
+// ----------------------------------------------------------------------------
+router.post("/definir-lote", verificarEscola, async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { turma_ids, itens } = req.body;
+    const { escola_id } = req.user;
+
+    if (!Array.isArray(turma_ids) || turma_ids.length === 0 || !Array.isArray(itens)) {
+      return res.status(400).json({ message: "turma_ids e itens são obrigatórios." });
+    }
+
+    await conn.beginTransaction();
+
+    // Remove cargas anteriores de todas as turmas selecionadas
+    const phTurmas = turma_ids.map(() => "?").join(",");
+    await conn.query(
+      `DELETE FROM turma_cargas WHERE turma_id IN (${phTurmas}) AND escola_id = ?`,
+      [...turma_ids, escola_id]
+    );
+
+    if (itens.length > 0) {
+      // Busca disciplinas e suas cargas
+      const phDiscs = itens.map(() => "?").join(",");
+      const [disciplinas] = await conn.query(
+        `SELECT id, (carga + 0) AS carga
+           FROM disciplinas
+          WHERE escola_id = ?
+            AND id IN (${phDiscs})`,
+        [escola_id, ...itens]
+      );
+
+      // Monta matriz turma × disciplina
+      const valores = [];
+      for (const turma_id of turma_ids) {
+        for (const d of disciplinas) {
+          valores.push([escola_id, Number(turma_id), d.id, Number(d.carga) || 0]);
+        }
+      }
+
+      if (valores.length > 0) {
+        await conn.query(
+          "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, carga) VALUES ?",
+          [valores]
+        );
+      }
+    }
+
+    await conn.commit();
+    return res.status(200).json({
+      ok: true,
+      turmas_atualizadas: turma_ids.length,
+      message: `Cargas definidas para ${turma_ids.length} turma(s) com sucesso.`,
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch {}
+    console.error("Erro ao definir cargas em lote:", err);
+    return res.status(500).json({ message: "Não foi possível salvar as cargas em lote." });
+  } finally {
+    try { conn.release(); } catch {}
+  }
+});
+
 export default router;
+
