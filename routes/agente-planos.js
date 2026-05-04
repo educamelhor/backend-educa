@@ -232,6 +232,17 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       );
     } catch { /* auditoria não é crítica */ }
 
+    // ── JA_EXISTE: retorna 409 com errorCode para o frontend distinguir ───────
+    if (!resultado.ok && resultado.errorCode === 'JA_EXISTE') {
+      return res.status(409).json({
+        ok: false,
+        errorCode: 'JA_EXISTE',
+        message: resultado.message,
+        error: resultado.message,
+        durationMs: resultado.durationMs,
+      });
+    }
+
     return res.status(resultado.ok ? 200 : 502).json({
       ok: resultado.ok,
       message: resultado.message,

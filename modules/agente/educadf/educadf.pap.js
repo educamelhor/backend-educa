@@ -1032,9 +1032,53 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(500);
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 7: Clicar em "+ Criar procedimento avaliativo"
+    // PASSO 7: Verificar duplicata + Clicar em "+ Criar procedimento avaliativo"
+    //
+    // IMPORTANTE: A verificação de duplicata deve acontecer ANTES de abrir
+    // o modal de criação, com a aba de procedimentos visível e o modal fechado,
+    // para que os <th> da tabela sejam leíveis sem interferência do overlay.
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 7/7 Clicando em "+ Criar procedimento avaliativo"...');
+
+    // Declara nomeAtividade antecipadamente para usar na verificação
+    const nomeAtividade = item.atividade || 'Avaliação Bimestral';
+
+    // ── Passo 7.1: Lê os procedimentos já cadastrados na tabela do EDUCADF ──
+    console.log(`[educadf.pap] 7.1/8 Verificando se "${nomeAtividade}" já existe na tabela...`);
+
+    const _normNome = (s) => String(s)
+      .toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+
+    const _nomeAlvo = _normNome(nomeAtividade);
+
+    const _procedimentosExistentes = await page.evaluate(() => {
+      // Lê todos os <th> visíveis na aba de Registro de Procedimentos Avaliativos.
+      // O modal está fechado neste momento — leitura limpa dos cabeçalhos.
+      const headers = [...document.querySelectorAll('th, td.column-header')];
+      return headers
+        .map(h => (h.textContent || '').trim())
+        .filter(t => t.length > 1 && t.length < 200);
+    });
+
+    console.log(`[educadf.pap] Procedimentos na tabela: ${JSON.stringify(_procedimentosExistentes.slice(0, 10))}`);
+
+    if (_procedimentosExistentes.some(nome => _normNome(nome) === _nomeAlvo)) {
+      console.warn(`[educadf.pap] ⚠️  "${nomeAtividade}" já existe no EDUCADF — cancelando para evitar duplicata.`);
+      await session.screenshot('pap_ja_existe');
+      return {
+        ok: false,
+        errorCode: 'JA_EXISTE',
+        message: `O procedimento "${nomeAtividade}" já está cadastrado no EDUCADF para ${plano.turmas} · ${plano.bimestre}. Nenhuma duplicata foi criada.`,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+
+    console.log(`[educadf.pap] ✅ "${nomeAtividade}" não encontrado — prosseguindo com a criação.`);
+
+    // ── Passo 7.2: Clicar em "+ Criar procedimento avaliativo" ───────────
+    console.log('[educadf.pap] 7.2/8 Clicando em "+ Criar procedimento avaliativo"...');
 
     const textosBotaoCriar = [
       'Criar procedimento avaliativo',
@@ -1102,8 +1146,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // O ngb-modal-window (aria-modal=true) bloqueia TODOS os clicks do Playwright
     // (click, triple-click, fill, pressSequentially). A única solução é usar
     // page.evaluate() com manipulação DOM nativa que ignora pointer-events.
-
-    const nomeAtividade = item.atividade || 'Avaliação Bimestral';
 
     // Helper: dispara os eventos que Angular precisa para marcar o campo como válido
     const dispatchAngularOk = async (selector) => {
