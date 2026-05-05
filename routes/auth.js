@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import pool from "../db.js";
 import nodemailer from "nodemailer";
 import { randomInt, createHash, randomBytes } from "crypto";
+import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
 
 import multer from "multer";
 import fs from "fs";
@@ -109,7 +110,16 @@ async function carregarRbac(usuarioId, escolaId) {
     return { perfis: [], permissoes: [] };
   }
 
-  // 1) Perfis do usuário na escola
+  // 0) Perfil base do usuario (coluna usuarios.perfil) → permissoes estáticas da matriz
+  const [[usuarioBase]] = await pool.query(
+    "SELECT perfil FROM usuarios WHERE id = ? LIMIT 1",
+    [uid]
+  ).catch(() => [[null]]);
+
+  const perfilBase = usuarioBase?.perfil || null;
+  const permsMatriz = perfilBase ? getPermissoesPorPerfil(perfilBase) : [];
+
+  // 1) Perfis do usuário na escola (tabelas RBAC dinâmicas)
   const [rowsPerfis] = await pool.query(
     `
     SELECT DISTINCT p.codigo
@@ -125,7 +135,7 @@ async function carregarRbac(usuarioId, escolaId) {
 
   const perfis = (rowsPerfis || []).map((r) => r.codigo).filter(Boolean);
 
-  // 2) Permissões vindas dos perfis
+  // 2) Permissões vindas dos perfis dinâmicos do banco
   const [rowsPermsBase] = await pool.query(
     `
     SELECT DISTINCT perm.chave
@@ -141,9 +151,13 @@ async function carregarRbac(usuarioId, escolaId) {
     [uid, eid]
   );
 
-  let permissoes = new Set((rowsPermsBase || []).map((r) => r.chave).filter(Boolean));
+  // Mescla: matriz estática (perfilBase) + permissões dinâmicas do banco
+  let permissoes = new Set([
+    ...permsMatriz,
+    ...(rowsPermsBase || []).map((r) => r.chave).filter(Boolean),
+  ]);
 
-  // 3) Overrides por usuário (nega tem prioridade)
+  // 3) Overrides por usuário (nega tem prioridade máxima)
   const [rowsOverrides] = await pool.query(
     `
     SELECT perm.chave, upm.permitido
