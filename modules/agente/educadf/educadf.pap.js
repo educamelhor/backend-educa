@@ -1049,8 +1049,45 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_06_procedimentos_avaliativos');
 
-    // ── O bimestre já está correto pois clicamos num evento do bimestre certo no calendário ─
-    // Apenas remove o offcanvas backdrop que pode bloquear interações
+    await removerBackdrops(page);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 6b: Clicar no botão do bimestre correto
+    // Na aba "Registro de Procedimentos Avaliativos" há botões explícitos:
+    // [1º Bimestre] [2º Bimestre] [3º Bimestre] [4º Bimestre]
+    // Clicar aqui garante 100% que estamos no bimestre correto,
+    // independentemente de qual evento do calendário foi clicado.
+    // ══════════════════════════════════════════════════════════════════════
+    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
+    if (bimNumPAP) {
+      console.log(`[educadf.pap] 6b/7 Selecionando ${bimNumPAP}º Bimestre na aba...`);
+      const btnBimClicado = await page.evaluate((num) => {
+        // Busca botões que contenham o número do bimestre
+        // Aceita: "1º Bimestre", "1o Bimestre", "1 Bimestre", "Bimestre 1"
+        const norm = (s) => String(s)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
+        const botoes = [...document.querySelectorAll('button, a.btn, .nav-link, li.nav-item a')];
+        const btn = botoes.find(b => norm(b.textContent || '').includes(alvo));
+        if (btn) {
+          btn.scrollIntoView({ block: 'center' });
+          btn.click();
+          return btn.textContent?.trim();
+        }
+        return null;
+      }, bimNumPAP);
+
+      if (btnBimClicado) {
+        console.log(`[educadf.pap] ✅ Bimestre selecionado: "${btnBimClicado}"`);
+        await session.delay(1000);
+        await session.screenshot('pap_06b_bimestre_selecionado');
+      } else {
+        console.warn(`[educadf.pap] ⚠️  Botão "${bimNumPAP}º Bimestre" não encontrado — continuando assim mesmo.`);
+      }
+    }
+
     await removerBackdrops(page);
     await session.delay(500);
 
@@ -1672,6 +1709,41 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     await session.delay(TIMING.navigationDelay);
     await removerBackdrops(page);
     await session.screenshot('notas_06_procedimentos');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 6b: Clicar no botão do bimestre correto
+    // Botões: [1º Bimestre] [2º Bimestre] [3º Bimestre] [4º Bimestre]
+    // Garante 100% que as notas vão para o bimestre correto.
+    // ══════════════════════════════════════════════════════════════════════
+    const bimNumNotas = String(plano.bimestre || '').replace(/\D/g, '');
+    if (bimNumNotas) {
+      console.log(`[educadf.notas] 6b/7 Selecionando ${bimNumNotas}º Bimestre na aba...`);
+      const btnBimClicadoN = await page.evaluate((num) => {
+        const norm = (s) => String(s)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
+        const botoes = [...document.querySelectorAll('button, a.btn, .nav-link, li.nav-item a')];
+        const btn = botoes.find(b => norm(b.textContent || '').includes(alvo));
+        if (btn) {
+          btn.scrollIntoView({ block: 'center' });
+          btn.click();
+          return btn.textContent?.trim();
+        }
+        return null;
+      }, bimNumNotas);
+
+      if (btnBimClicadoN) {
+        console.log(`[educadf.notas] ✅ Bimestre selecionado: "${btnBimClicadoN}"`);
+        await session.delay(1000);
+        await session.screenshot('notas_06b_bimestre_selecionado');
+      } else {
+        console.warn(`[educadf.notas] ⚠️  Botão "${bimNumNotas}º Bimestre" não encontrado — continuando assim mesmo.`);
+      }
+    }
+
+    await removerBackdrops(page);
 
     // ════════════════════════════════════════════════════════════════════
     // PASSO 7 — INSERIR NOTAS NA COLUNA "Prova Bimestral"
