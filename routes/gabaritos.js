@@ -210,6 +210,93 @@ router.get("/resultados/resumo", verificarEscola, async (req, res) => {
   }
 });
 
+// ─── PATCH /api/gabaritos/respostas/:id/nota ──────────────────────────────────
+// Edição manual de nota por coordenador/direção
+// Atualiza nota + acertos proporcionais + justificativa
+router.patch("/respostas/:id/nota", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const { id } = req.params;
+  const { nota, justificativa } = req.body;
+
+  if (nota === undefined || nota === null || isNaN(Number(nota))) {
+    return res.status(400).json({ error: "nota é obrigatória e deve ser numérica." });
+  }
+
+  const notaNum = parseFloat(Number(nota).toFixed(2));
+
+  try {
+    // Buscar registro + avaliação para validar limites
+    const [[row]] = await pool.query(
+      `SELECT r.id, r.total_questoes, a.nota_total
+       FROM gabarito_respostas r
+       JOIN gabarito_avaliacoes a ON a.id = r.avaliacao_id
+       WHERE r.id = ? AND r.escola_id = ?`,
+      [id, escola_id]
+    );
+    if (!row) {
+      return res.status(404).json({ error: "Resultado não encontrado." });
+    }
+    if (notaNum < 0 || notaNum > Number(row.nota_total)) {
+      return res.status(400).json({ error: `Nota deve estar entre 0 e ${row.nota_total}.` });
+    }
+
+    // Recalcular acertos proporcionalmente
+    const acertosEst = Math.round((notaNum / Number(row.nota_total)) * Number(row.total_questoes));
+
+    await pool.query(
+      `UPDATE gabarito_respostas
+       SET nota = ?, acertos = ?, nota_manual = 1, nota_manual_justificativa = ?, corrigido_em = NOW()
+       WHERE id = ? AND escola_id = ?`,
+      [notaNum, acertosEst, justificativa || null, id, escola_id]
+    );
+
+    res.json({ ok: true, nota: notaNum, acertos: acertosEst });
+  } catch (err) {
+    console.error("Erro ao editar nota:", err);
+    res.status(500).json({ error: "Erro ao salvar nota manual." });
+  }
+});
+
+// ─── GET /api/gabaritos/respostas/:id/arquivo-gabarito ────────────────────────
+// Retorna o arquivo_id do gabarito escaneado de um aluno para renderização
+// Busca via codigo_aluno + avaliacao_id na tabela gabarito_arquivos
+router.get("/respostas/:id/arquivo-gabarito", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const { id } = req.params;
+
+  try {
+    // Buscar resposta para obter codigo_aluno + avaliacao_id
+    const [[resp]] = await pool.query(
+      `SELECT r.codigo_aluno, r.avaliacao_id
+       FROM gabarito_respostas r
+       WHERE r.id = ? AND r.escola_id = ?`,
+      [id, escola_id]
+    );
+    if (!resp) {
+      return res.status(404).json({ error: "Resultado não encontrado." });
+    }
+
+    // Buscar arquivo correspondente
+    const [[arq]] = await pool.query(
+      `SELECT a.id AS arquivo_id, a.arquivo_nome
+       FROM gabarito_arquivos a
+       JOIN gabarito_lotes l ON l.id = a.lote_id
+       WHERE l.avaliacao_id = ? AND a.escola_id = ? AND a.codigo_aluno = ?
+       LIMIT 1`,
+      [resp.avaliacao_id, escola_id, resp.codigo_aluno]
+    );
+
+    if (!arq) {
+      return res.status(404).json({ error: "Arquivo de gabarito não encontrado para este aluno." });
+    }
+
+    res.json({ arquivo_id: arq.arquivo_id, arquivo_nome: arq.arquivo_nome });
+  } catch (err) {
+    console.error("Erro ao buscar arquivo de gabarito:", err);
+    res.status(500).json({ error: "Erro ao buscar arquivo." });
+  }
+});
+
 // ─── GET /api/gabaritos/nome-unicos ──────────────────────────────────────────
 // Compat: lista nomes únicos da tabela legada
 router.get("/nome-unicos", verificarEscola, async (req, res) => {

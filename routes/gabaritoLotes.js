@@ -339,6 +339,7 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
 // Vincula um corretor (professor ou outro usuário) ao lote (turma)
 // Aceita professor_id (tabela professores) — busca nome em professores
 // Se o professor_id não for encontrado na tabela professores, tenta em usuarios
+// BLOQUEADO se a avaliação já teve notas importadas (status = notas_importadas)
 router.put("/:id/vincular-professor", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
   const loteId = req.params.id;
@@ -349,6 +350,26 @@ router.put("/:id/vincular-professor", verificarEscola, async (req, res) => {
   }
 
   try {
+    // Verificar se a avaliação vinculada já teve notas importadas
+    const [[loteRow]] = await pool.query(
+      `SELECT l.id, a.status AS avaliacao_status, a.id AS avaliacao_id
+       FROM gabarito_lotes l
+       JOIN gabarito_avaliacoes a ON a.id = l.avaliacao_id
+       WHERE l.id = ? AND l.escola_id = ?`,
+      [loteId, escola_id]
+    );
+
+    if (!loteRow) {
+      return res.status(404).json({ error: "Lote não encontrado." });
+    }
+
+    if (loteRow.avaliacao_status === "notas_importadas") {
+      return res.status(409).json({
+        error: "Não é possível vincular um corretor após a importação das notas. As notas desta avaliação já foram enviadas ao diário dos professores.",
+        codigo: "NOTAS_JA_IMPORTADAS",
+      });
+    }
+
     const [result] = await pool.query(
       "UPDATE gabarito_lotes SET professor_id = ? WHERE id = ? AND escola_id = ?",
       [professor_id, loteId, escola_id]
