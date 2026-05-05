@@ -1556,11 +1556,22 @@ router.post("/confirmar-cadastro", async (req, res) => {
     );
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
 
+    // ── DEMO BYPASS ──────────────────────────────────────────────────────────
+    // Conta demo para revisao Apple/Google: aceita codigo fixo sem consultar banco.
+    const DEMO_EMAILS_CONFIRMAR = ["demo@educamelhor.com.br"];
+    const DEMO_CODE_CONFIRMAR   = "123456";
+    if (DEMO_EMAILS_CONFIRMAR.includes(String(email || "").toLowerCase().trim()) &&
+        String(codigo || "").trim() === DEMO_CODE_CONFIRMAR) {
+      console.log(`[AUTH] Demo bypass /confirmar-cadastro: email=${email}`);
+      return res.json({ sucesso: true });
+    }
+    // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
+
     const [[otp]] = await pool.query(
       "SELECT * FROM otp_codes WHERE usuario_id=? AND codigo=? AND expira_em > NOW()",
       [usuario.id, codigo]
     );
-    if (!otp) return res.status(400).json({ message: "Código inválido ou expirado." });
+    if (!otp) return res.status(400).json({ message: "C\u00f3digo inv\u00e1lido ou expirado." });
 
     await pool.query("DELETE FROM otp_codes WHERE id = ?", [otp.id]);
     res.json({ sucesso: true });
