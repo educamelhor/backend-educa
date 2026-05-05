@@ -21,6 +21,7 @@ export const RBAC_MATRIX = Object.freeze({
     "professores:criar",
     "professores:editar",
     "professores:inativar",
+    "capture_devices.gerenciar",   // EDUCA-CAPTURE: gerir dispositivos da escola
   ],
 
   // Gestão pedagógica (pode aprovar/reabrir dependendo da sua regra)
