@@ -681,16 +681,29 @@ router.post("/confirmar", async (req, res) => {
       return res.status(400).json({ message: "Usuário e código são obrigatórios." });
     }
 
-    const [[otp]] = await pool.query(
-      "SELECT id, usuario_id FROM otp_codes WHERE usuario_id = ? AND codigo = ? AND expira_em > NOW()",
-      [usuarioId, codigo]
-    );
+    // ── DEMO BYPASS ──────────────────────────────────────────────────────────
+    // Conta demo para revisão Apple/Google Store.
+    // usuarioId=99999 + codigo=123456 → aceito diretamente, sem consultar banco.
+    const DEMO_USUARIO_ID = 99999;
+    const DEMO_CODE = "123456";
+    const isDemoLogin = Number(usuarioId) === DEMO_USUARIO_ID &&
+                        String(codigo || "").trim() === DEMO_CODE;
 
-    if (!otp) {
-      return res.status(400).json({ message: "Código inválido ou expirado." });
+    if (!isDemoLogin) {
+      const [[otp]] = await pool.query(
+        "SELECT id, usuario_id FROM otp_codes WHERE usuario_id = ? AND codigo = ? AND expira_em > NOW()",
+        [usuarioId, codigo]
+      );
+
+      if (!otp) {
+        return res.status(400).json({ message: "Código inválido ou expirado." });
+      }
+
+      await pool.query("DELETE FROM otp_codes WHERE id = ?", [otp.id]);
+    } else {
+      console.log(`[AUTH] Demo bypass /confirmar: usuarioId=${usuarioId}`);
     }
-
-    await pool.query("DELETE FROM otp_codes WHERE id = ?", [otp.id]);
+    // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
 
     // 1) Carrega o usuário base (linha atual)
     const [[usuarioBase]] = await pool.query(
