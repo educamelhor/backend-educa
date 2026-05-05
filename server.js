@@ -393,6 +393,71 @@ app.get("/api/health", (_req, res) =>
   })
 );
 
+// ============================================================================
+// EDUCA-CAPTURE — Páginas públicas (sem autenticação)
+// Usadas como Support URL e Privacy Policy URL no App Store Connect
+// ============================================================================
+app.get("/capture/privacidade", (_req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Política de Privacidade — EDUCA-CAPTURE</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:800px;margin:0 auto;padding:24px 16px;color:#1a1a1a;line-height:1.7}
+    h1{color:#2D6CDF;font-size:1.6rem;border-bottom:2px solid #2D6CDF;padding-bottom:8px}
+    h2{color:#1a4a9f;font-size:1.1rem;margin-top:28px}
+    .badge{background:#2D6CDF;color:#fff;padding:4px 10px;border-radius:20px;font-size:.8rem;font-weight:600}
+    footer{margin-top:48px;font-size:.85rem;color:#666;border-top:1px solid #ddd;padding-top:16px}
+  </style>
+</head>
+<body>
+  <p><span class="badge">EDUCA-CAPTURE</span></p>
+  <h1>Política de Privacidade</h1>
+  <p><strong>Última atualização:</strong> Maio de 2026</p>
+
+  <h2>1. O que é o EDUCA-CAPTURE?</h2>
+  <p>O EDUCA-CAPTURE é um aplicativo exclusivo do ecossistema <strong>EDUCA.MELHOR</strong> destinado exclusivamente a funcionários autorizados de instituições de ensino (gestores, secretários e coordenadores). Sua única finalidade é capturar e transmitir fotos de alunos <strong>diretamente para a plataforma EDUCA.MELHOR</strong>, sem armazenar nenhuma imagem no dispositivo.</p>
+
+  <h2>2. Dados Coletados</h2>
+  <ul>
+    <li><strong>Fotos dos alunos:</strong> capturadas pela câmera do dispositivo e enviadas imediatamente ao servidor da escola. <em>Nenhuma foto é salva no aparelho.</em></li>
+    <li><strong>Identificador do dispositivo (Device UID):</strong> gerado para autenticação do aparelho na escola. Não contém dados pessoais.</li>
+    <li><strong>Logs de auditoria:</strong> data/hora e ID do aluno fotografado, para rastreabilidade conforme a LGPD.</li>
+  </ul>
+
+  <h2>3. Finalidade do Tratamento</h2>
+  <p>Os dados são tratados exclusivamente para identificação visual dos alunos na plataforma da escola (lista de chamada, boletins e comunicados aos responsáveis), conforme consentimento coletado pela instituição de ensino.</p>
+
+  <h2>4. Compartilhamento de Dados</h2>
+  <p>Os dados <strong>não são compartilhados com terceiros</strong>. As fotos são armazenadas nos servidores da EDUCA.MELHOR (DigitalOcean Spaces — infraestrutura no Brasil) e acessíveis apenas pela escola contratante.</p>
+
+  <h2>5. Retenção e Exclusão</h2>
+  <p>As fotos permanecem enquanto o aluno estiver ativo na escola. Ao solicitar exclusão à instituição de ensino ou através de <a href="https://sistemaeducamelhor.com.br/excluir-conta">sistemaeducamelhor.com.br/excluir-conta</a>, os dados são removidos permanentemente.</p>
+
+  <h2>6. Segurança</h2>
+  <p>O aplicativo utiliza autenticação de dispositivo por token criptografado (Device Token), aprovação obrigatória pelo gestor da escola e comunicação exclusiva via HTTPS.</p>
+
+  <h2>7. Direitos do Titular (LGPD)</h2>
+  <p>Responsáveis legais pelos alunos podem solicitar acesso, correção ou exclusão dos dados fotográficos diretamente à instituição de ensino ou pelo e-mail <a href="mailto:privacidade@educamelhor.com.br">privacidade@educamelhor.com.br</a>.</p>
+
+  <h2>8. Contato</h2>
+  <p>EDUCA.MELHOR — Tecnologia Educacional<br/>
+  E-mail: <a href="mailto:suporte@educamelhor.com.br">suporte@educamelhor.com.br</a><br/>
+  Site: <a href="https://sistemaeducamelhor.com.br">sistemaeducamelhor.com.br</a></p>
+
+  <footer>© 2026 EDUCA.MELHOR — Todos os direitos reservados. Este aplicativo é distribuído exclusivamente para instituições de ensino cadastradas.</footer>
+</body>
+</html>`);
+});
+
+// Suporte EDUCA-CAPTURE (redirect para a página de privacidade com contato)
+app.get("/capture/suporte", (_req, res) => {
+  res.redirect(301, "/capture/privacidade");
+});
+
 
 app.get("/api/visitantes-ping", (_req, res) =>
   res.json({
