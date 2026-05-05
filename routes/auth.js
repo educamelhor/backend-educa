@@ -1323,6 +1323,25 @@ router.post("/enviar-codigo", async (req, res) => {
     );
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
 
+    // ── DEMO BYPASS ──────────────────────────────────────────────────────────
+    // Conta de demonstração para revisão da Apple/Google:
+    // Usa código fixo 123456, sem envio de e-mail (e-mail não existe).
+    // O revisor usa o código informado nas Review Notes da App Store.
+    const DEMO_EMAILS = ["demo@educamelhor.com.br"];
+    const isDemoAccount = DEMO_EMAILS.includes(String(email || "").toLowerCase().trim());
+
+    if (isDemoAccount) {
+      const DEMO_CODE = "123456";
+      await pool.query("DELETE FROM otp_codes WHERE usuario_id = ?", [usuario.id]);
+      await pool.query(
+        "INSERT INTO otp_codes (usuario_id, codigo, expira_em) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR))",
+        [usuario.id, DEMO_CODE]
+      );
+      console.log(`[AUTH] Demo account OTP bypass: email=${email}, code=${DEMO_CODE}`);
+      return res.json({ sucesso: true, _demo: true });
+    }
+    // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
+
     const codigo = String(randomInt(100000, 999999));
 
     // 🔁 Regra: reenviar invalida códigos anteriores (para este usuário)
@@ -1341,6 +1360,7 @@ router.post("/enviar-codigo", async (req, res) => {
     res.status(500).json({ message: "Erro no servidor." });
   }
 });
+
 
 
 /**
