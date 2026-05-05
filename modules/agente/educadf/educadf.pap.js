@@ -905,12 +905,32 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     let eventoClicado = false;
 
-    // Tentativa 1: turma + componente + bimestre
+    // Helper: normaliza texto do evento para comparação de bimestre
+    // Remove acentos e ordinais especiais (º → o, ° → o) para comparação robusta
+    const normBim = (s) => String(s)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+      .replace(/\u00ba/g, 'o')  // º → o
+      .replace(/\u00b0/g, 'o')  // ° → o
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+
+    // Testa se o texto do evento contém o número do bimestre correto
+    // Aceita: "1º BIMESTRE", "1o BIMESTRE", "BIMESTRE 1", "1 BIMESTRE"
+    const eventoBimCorreto = (txt) => {
+      if (!bimestreNum) return true;
+      const n = normBim(txt);
+      return n.includes(`${bimestreNum}O BIMESTRE`) ||
+             n.includes(`BIMESTRE ${bimestreNum}`) ||
+             n.includes(`${bimestreNum} BIMESTRE`);
+    };
+
+    // Tentativa 1: turma + componente + bimestre correto (normalizado)
     for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
       const ev  = fcEventos.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
       if (!eventoOkTurmaComp(txt)) continue;
-      if (bimestreNum && !txt.includes(`${bimestreNum}º BIMESTRE`)) continue;
+      if (!eventoBimCorreto(txt)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
         await ev.click({ timeout: 10000 });
@@ -921,8 +941,29 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
 
-    // Tentativa 2: turma + componente (qualquer bimestre)
+    // Tentativa 2: turma + bimestre correto (componente pode ter nome diferente no EDUCADF)
     if (!eventoClicado) {
+      console.warn('[educadf.pap] ⚠️  Tentativa turma+bimestre (sem componente)...');
+      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
+        const ev  = fcEventos.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!eventoOkSoTurma(txt)) continue;
+        if (!eventoBimCorreto(txt)) continue;
+        try {
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await ev.click({ timeout: 10000 });
+          eventoClicado = true;
+          console.log(`[educadf.pap] ✅ Evento [turma+bimestre] clicado: "${txt.substring(0, 80)}"`);
+        } catch (err) {
+          console.warn(`[educadf.pap] Clique evento [${i}] t2 falhou: ${err.message}`);
+        }
+      }
+    }
+
+    // Tentativa 3 (ÚLTIMO RECURSO): turma+comp sem filtro de bimestre
+    // ATENÇÃO: pode selecionar bimestre errado — apenas se as anteriores falharam
+    if (!eventoClicado) {
+      console.warn('[educadf.pap] ⚠️  ÚLTIMO RECURSO: turma+comp sem filtro de bimestre...');
       for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
         const ev  = fcEventos.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
@@ -931,25 +972,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await ev.click({ timeout: 10000 });
           eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado: "${txt.substring(0, 80)}"`);
-        } catch (err) {
-          console.warn(`[educadf.pap] Clique evento [${i}] t2 falhou: ${err.message}`);
-        }
-      }
-    }
-
-    // Tentativa 3: só turma (componente não selecionado ou nome diferente)
-    if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Tentativa com turma apenas (componente não bateu)...');
-      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
-        const ev  = fcEventos.nth(i);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!eventoOkSoTurma(txt)) continue;
-        try {
-          await ev.scrollIntoViewIfNeeded().catch(() => {});
-          await ev.click({ timeout: 10000 });
-          eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento [só turma] clicado: "${txt.substring(0, 80)}"`);
+          console.warn(`[educadf.pap] ⚠️  Evento [turma+comp SEM bimestre] clicado: "${txt.substring(0, 80)}"`);
         } catch (err) {
           console.warn(`[educadf.pap] Clique evento [${i}] t3 falhou: ${err.message}`);
         }
@@ -1565,31 +1588,51 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     const okTurmaComp  = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c)); };
     const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
 
+    // Helper: normaliza bimestre — remove ordinais especiais (º/°), acentos
+    const normBimN = (s) => String(s)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+      .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+    const evtBimOk = (txt) => {
+      if (!bimNum) return true;
+      const n = normBimN(txt);
+      return n.includes(`${bimNum}O BIMESTRE`) ||
+             n.includes(`BIMESTRE ${bimNum}`) ||
+             n.includes(`${bimNum} BIMESTRE`);
+    };
+
     let eventoClicado = false;
-    // Tentativa 1: turma + comp + bimestre
+    // Tentativa 1: turma + comp + bimestre correto (normalizado)
     for (let i = 0; i < total && !eventoClicado; i++) {
       const ev  = fcEvs.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
       if (!okTurmaComp(txt)) continue;
-      if (bimNum && !txt.includes(`${bimNum}º BIMESTRE`)) continue;
-      try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
+      if (!evtBimOk(txt)) continue;
+      try { await ev.click({ timeout: 10000 }); eventoClicado = true;
+            console.log(`[educadf.notas] ✅ Evento [turma+comp+bim] clicado: "${txt.substring(0,80)}"`); } catch {}
     }
-    // Tentativa 2: turma + comp
+    // Tentativa 2: turma + bimestre correto (componente pode ter nome diferente)
     if (!eventoClicado) {
-      for (let i = 0; i < total && !eventoClicado; i++) {
-        const ev  = fcEvs.nth(i);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!okTurmaComp(txt)) continue;
-        try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
-      }
-    }
-    // Tentativa 3: só turma
-    if (!eventoClicado) {
+      console.warn('[educadf.notas] ⚠️  Tentativa turma+bimestre...');
       for (let i = 0; i < total && !eventoClicado; i++) {
         const ev  = fcEvs.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
         if (!okSoTurma(txt)) continue;
-        try { await ev.click({ timeout: 10000 }); eventoClicado = true; } catch {}
+        if (!evtBimOk(txt)) continue;
+        try { await ev.click({ timeout: 10000 }); eventoClicado = true;
+              console.log(`[educadf.notas] ✅ Evento [turma+bim] clicado: "${txt.substring(0,80)}"`); } catch {}
+      }
+    }
+    // Tentativa 3 (ÚLTIMO RECURSO): turma+comp sem filtro de bimestre
+    if (!eventoClicado) {
+      console.warn('[educadf.notas] ⚠️  ÚLTIMO RECURSO: turma+comp sem bimestre...');
+      for (let i = 0; i < total && !eventoClicado; i++) {
+        const ev  = fcEvs.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!okTurmaComp(txt)) continue;
+        try { await ev.click({ timeout: 10000 }); eventoClicado = true;
+              console.warn(`[educadf.notas] ⚠️  Evento [turma+comp SEM bim] clicado: "${txt.substring(0,80)}"`); } catch {}
       }
     }
     if (!eventoClicado) throw new Error(`Nenhum evento clicável para Turma="${plano.turmas}".`);
