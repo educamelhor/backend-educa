@@ -1052,24 +1052,29 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await removerBackdrops(page);
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 6b: Clicar no botão do bimestre correto
+    // PASSO 6b: Clicar no botão do bimestre correto (com retry)
     // Na aba "Registro de Procedimentos Avaliativos" há botões explícitos:
     // [1º Bimestre] [2º Bimestre] [3º Bimestre] [4º Bimestre]
-    // Clicar aqui garante 100% que estamos no bimestre correto,
-    // independentemente de qual evento do calendário foi clicado.
+    // OBRIGATÓRIO: falha explícita se não encontrar — nunca continua com bimestre errado.
     // ══════════════════════════════════════════════════════════════════════
     const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
-    if (bimNumPAP) {
-      console.log(`[educadf.pap] 6b/7 Selecionando ${bimNumPAP}º Bimestre na aba...`);
-      const btnBimClicado = await page.evaluate((num) => {
-        // Busca botões que contenham o número do bimestre
-        // Aceita: "1º Bimestre", "1o Bimestre", "1 Bimestre", "Bimestre 1"
+    if (!bimNumPAP) {
+      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}". Verifique o cadastro do plano.`, durationMs: 0 };
+    }
+
+    console.log(`[educadf.pap] 6b/7 Selecionando ${bimNumPAP}º Bimestre na aba (até 3 tentativas)...`);
+    let btnBimClicadoPAP = null;
+    for (let _t = 1; _t <= 3; _t++) {
+      btnBimClicadoPAP = await page.evaluate((num) => {
         const norm = (s) => String(s)
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
         const alvo = `${num}O BIMESTRE`;
-        const botoes = [...document.querySelectorAll('button, a.btn, .nav-link, li.nav-item a')];
+        // Seletor ampliado: inclui [role=tab] e variações de classe do EDUCADF
+        const botoes = [...document.querySelectorAll(
+          'button, a.btn, .nav-link, li.nav-item a, [role="tab"], [class*="bimestre"], [class*="tab-item"]'
+        )];
         const btn = botoes.find(b => norm(b.textContent || '').includes(alvo));
         if (btn) {
           btn.scrollIntoView({ block: 'center' });
@@ -1078,14 +1083,24 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }
         return null;
       }, bimNumPAP);
+      if (btnBimClicadoPAP) break;
+      console.warn(`[educadf.pap] ⚠️  Tentativa ${_t}/3: botão "${bimNumPAP}º Bimestre" não encontrado. Aguardando 2s...`);
+      await session.delay(2000);
+    }
 
-      if (btnBimClicado) {
-        console.log(`[educadf.pap] ✅ Bimestre selecionado: "${btnBimClicado}"`);
-        await session.delay(1000);
-        await session.screenshot('pap_06b_bimestre_selecionado');
-      } else {
-        console.warn(`[educadf.pap] ⚠️  Botão "${bimNumPAP}º Bimestre" não encontrado — continuando assim mesmo.`);
-      }
+    if (btnBimClicadoPAP) {
+      console.log(`[educadf.pap] ✅ Bimestre selecionado: "${btnBimClicadoPAP}"`);
+      await session.delay(2000); // aguarda React re-renderizar a aba
+      await session.screenshot('pap_06b_bimestre_selecionado');
+    } else {
+      // FALHA CRÍTICA — nunca continua com bimestre errado
+      console.error(`[educadf.pap] ❌ FALHA CRÍTICA: botão "${bimNumPAP}º Bimestre" não encontrado após 3 tentativas.`);
+      await session.screenshot('pap_06b_bimestre_FALHA');
+      return {
+        ok: false,
+        message: `Não foi possível selecionar o ${bimNumPAP}º Bimestre no EDUCADF após 3 tentativas. Verifique se a aba de procedimentos está carregada corretamente.`,
+        durationMs: 0,
+      };
     }
 
     await removerBackdrops(page);
@@ -1711,20 +1726,28 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     await session.screenshot('notas_06_procedimentos');
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 6b: Clicar no botão do bimestre correto
+    // PASSO 6b: Clicar no botão do bimestre correto (com retry)
     // Botões: [1º Bimestre] [2º Bimestre] [3º Bimestre] [4º Bimestre]
-    // Garante 100% que as notas vão para o bimestre correto.
+    // OBRIGATÓRIO: falha explícita se não encontrar — nunca continua com bimestre errado.
     // ══════════════════════════════════════════════════════════════════════
     const bimNumNotas = String(plano.bimestre || '').replace(/\D/g, '');
-    if (bimNumNotas) {
-      console.log(`[educadf.notas] 6b/7 Selecionando ${bimNumNotas}º Bimestre na aba...`);
-      const btnBimClicadoN = await page.evaluate((num) => {
+    if (!bimNumNotas) {
+      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}". Verifique o cadastro do plano.`, durationMs: 0 };
+    }
+
+    console.log(`[educadf.notas] 6b/7 Selecionando ${bimNumNotas}º Bimestre na aba (até 3 tentativas)...`);
+    let btnBimClicadoN = null;
+    for (let _t = 1; _t <= 3; _t++) {
+      btnBimClicadoN = await page.evaluate((num) => {
         const norm = (s) => String(s)
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
         const alvo = `${num}O BIMESTRE`;
-        const botoes = [...document.querySelectorAll('button, a.btn, .nav-link, li.nav-item a')];
+        // Seletor ampliado: inclui [role=tab] e variações de classe do EDUCADF
+        const botoes = [...document.querySelectorAll(
+          'button, a.btn, .nav-link, li.nav-item a, [role="tab"], [class*="bimestre"], [class*="tab-item"]'
+        )];
         const btn = botoes.find(b => norm(b.textContent || '').includes(alvo));
         if (btn) {
           btn.scrollIntoView({ block: 'center' });
@@ -1733,14 +1756,24 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         }
         return null;
       }, bimNumNotas);
+      if (btnBimClicadoN) break;
+      console.warn(`[educadf.notas] ⚠️  Tentativa ${_t}/3: botão "${bimNumNotas}º Bimestre" não encontrado. Aguardando 2s...`);
+      await session.delay(2000);
+    }
 
-      if (btnBimClicadoN) {
-        console.log(`[educadf.notas] ✅ Bimestre selecionado: "${btnBimClicadoN}"`);
-        await session.delay(1000);
-        await session.screenshot('notas_06b_bimestre_selecionado');
-      } else {
-        console.warn(`[educadf.notas] ⚠️  Botão "${bimNumNotas}º Bimestre" não encontrado — continuando assim mesmo.`);
-      }
+    if (btnBimClicadoN) {
+      console.log(`[educadf.notas] ✅ Bimestre selecionado: "${btnBimClicadoN}"`);
+      await session.delay(2000); // aguarda React re-renderizar a aba
+      await session.screenshot('notas_06b_bimestre_selecionado');
+    } else {
+      // FALHA CRÍTICA — nunca continua com bimestre errado
+      console.error(`[educadf.notas] ❌ FALHA CRÍTICA: botão "${bimNumNotas}º Bimestre" não encontrado após 3 tentativas.`);
+      await session.screenshot('notas_06b_bimestre_FALHA');
+      return {
+        ok: false,
+        message: `Não foi possível selecionar o ${bimNumNotas}º Bimestre no EDUCADF após 3 tentativas. Verifique se a aba de procedimentos está carregada corretamente.`,
+        durationMs: 0,
+      };
     }
 
     await removerBackdrops(page);
