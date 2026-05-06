@@ -113,6 +113,12 @@ pool
       // Busca Ativa — rastreabilidade de edição
       "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_por INT NULL AFTER registrado_por",
       "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_em DATETIME NULL AFTER editado_por",
+      // Agente EDUCA — lock de execução concorrente
+      "ALTER TABLE planos_avaliacao ADD COLUMN agente_executando_desde DATETIME NULL",
+      // Agente EDUCA — resultado da exportação de estrutura (CRIADO | JA_EXISTIA)
+      "ALTER TABLE planos_avaliacao ADD COLUMN agente_exportado_resultado VARCHAR(32) NULL",
+      // Agente EDUCA — resultado da exportação de notas (CRIADO | FALHOU)
+      "ALTER TABLE planos_avaliacao ADD COLUMN agente_notas_resultado_json TEXT NULL",
     ];
     for (const sql of migrations) {
       try {

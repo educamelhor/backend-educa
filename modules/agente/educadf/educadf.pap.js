@@ -960,33 +960,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
 
-    // Tentativa 3 (ÚLTIMO RECURSO): turma+comp sem filtro de bimestre
-    // ATENÇÃO: pode selecionar bimestre errado — apenas se as anteriores falharam
+    // [FIX] Tentativa 3 removida — nunca clica sem confirmar bimestre correto.
     if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  ÚLTIMO RECURSO: turma+comp sem filtro de bimestre...');
-      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
-        const ev  = fcEventos.nth(i);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!eventoOkTurmaComp(txt)) continue;
-        try {
-          await ev.scrollIntoViewIfNeeded().catch(() => {});
-          await ev.click({ timeout: 10000 });
-          eventoClicado = true;
-          console.warn(`[educadf.pap] ⚠️  Evento [turma+comp SEM bimestre] clicado: "${txt.substring(0, 80)}"`);
-        } catch (err) {
-          console.warn(`[educadf.pap] Clique evento [${i}] t3 falhou: ${err.message}`);
-        }
-      }
-    }
-
-    if (!eventoClicado) {
-      // Diagnóstico dos primeiros eventos
-      console.error(`[educadf.pap] ❌ Nenhum evento da turma "${plano.turmas}" clicável após 3 tentativas.`);
+      const bimStr = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
+      console.error(`[educadf.pap] ❌ Evento de "${plano.turmas}" não encontrado para ${bimStr}.`);
       for (let i = 0; i < Math.min(totalFcEventos, 6); i++) {
         const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
         console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
       }
-      throw new Error(`Nenhum evento clicável encontrado para Turma="${plano.turmas}" no calendário.`);
+      throw new Error(`Evento não encontrado para "${plano.turmas}" no ${bimStr}. Verifique se o calendário do EDUCADF exibe este bimestre.`);
     }
 
     // Aguarda o diário carregar (exibe abas no topo)
@@ -1676,18 +1658,11 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
               console.log(`[educadf.notas] ✅ Evento [turma+bim] clicado: "${txt.substring(0,80)}"`); } catch {}
       }
     }
-    // Tentativa 3 (ÚLTIMO RECURSO): turma+comp sem filtro de bimestre
+    // [FIX] Tentativa 3 removida — nunca clica sem confirmar bimestre correto.
     if (!eventoClicado) {
-      console.warn('[educadf.notas] ⚠️  ÚLTIMO RECURSO: turma+comp sem bimestre...');
-      for (let i = 0; i < total && !eventoClicado; i++) {
-        const ev  = fcEvs.nth(i);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!okTurmaComp(txt)) continue;
-        try { await ev.click({ timeout: 10000 }); eventoClicado = true;
-              console.warn(`[educadf.notas] ⚠️  Evento [turma+comp SEM bim] clicado: "${txt.substring(0,80)}"`); } catch {}
-      }
+      const bimStrN = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
+      throw new Error(`Evento não encontrado para "${plano.turmas}" no ${bimStrN}. Verifique se o calendário do EDUCADF exibe este bimestre.`);
     }
-    if (!eventoClicado) throw new Error(`Nenhum evento clicável para Turma="${plano.turmas}".`);
 
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('notas_05_diario');
