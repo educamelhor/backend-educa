@@ -31,6 +31,347 @@ function hoje() {
   return `Planaltina, ${d.getDate()} de ${m[d.getMonth()]} de ${d.getFullYear()}`;
 }
 
+// ─── Rota em LOTE: todos os termos de uma turma ──────────────────────────────
+// GET /turma/:turmaId
+// Gera um único PDF com todos os termos (responsável × aluno) da turma.
+
+router.get("/turma/:turmaId", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { turmaId } = req.params;
+
+    const [[escola]] = await pool.query(
+      "SELECT id, nome, apelido, endereco, cidade, estado, cnpj FROM escolas WHERE id = ?",
+      [escola_id]
+    );
+    const [[diretor]] = await pool.query(
+      `SELECT u.nome FROM usuarios u WHERE u.escola_id = ? AND u.perfil = 'diretor' LIMIT 1`,
+      [escola_id]
+    );
+    const [alunos] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante, a.data_nascimento, t.nome AS turma
+       FROM alunos a
+       JOIN turmas t ON t.id = a.turma_id
+       WHERE a.turma_id = ? AND a.escola_id = ?
+       ORDER BY a.estudante`,
+      [turmaId, escola_id]
+    );
+
+    if (!alunos.length) {
+      return res.status(404).json({ error: "Nenhum aluno encontrado nesta turma." });
+    }
+
+    // Busca responsáveis de cada aluno
+    const pares = []; // [{resp, aluno}]
+    for (const aluno of alunos) {
+      const [resps] = await pool.query(
+        `SELECT r.id, r.nome, r.cpf, r.email, r.telefone_celular
+         FROM responsaveis r
+         JOIN responsaveis_alunos ra ON ra.responsavel_id = r.id
+         WHERE ra.aluno_id = ?`,
+        [aluno.id]
+      );
+      if (resps.length > 0) {
+        for (const resp of resps) pares.push({ resp, aluno });
+      } else {
+        // Aluno sem responsável: gera termo com dados em branco
+        pares.push({ resp: null, aluno });
+      }
+    }
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 32, bottom: 0, left: 26, right: 26 },
+    });
+
+    const nomeTurma = alunos[0]?.turma || `Turma ${turmaId}`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Termos_${nomeTurma.replace(/\s/g,"_")}.pdf"`);
+    doc.pipe(res);
+
+    // ─── Constantes de layout (idênticas à rota individual) ──────────────────
+    const L  = 26;
+    const PW = 595.28 - 52;
+    const GAP = 14;
+    const CW = (PW - GAP) / 2;
+    const RX = L + CW + GAP;
+    const S = { t: 12.5, st: 10, v: 7, h: 9.5, sh: 8.8, b: 9.0, sm: 6, tiny: 7.8 };
+
+    function heading(n, t, x, w) {
+      doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+        .text(`${n} — ${t}`, x, doc.y, { width: w, lineGap: 0.1 });
+    }
+    function subH(n, t, x, w) {
+      doc.font("Helvetica-Bold").fontSize(S.sh).fillColor("#1a1a2e")
+        .text(`${n} ${t}`, x, doc.y, { width: w, lineGap: 0.1 });
+    }
+    function body(t, x, w, opts = {}) {
+      doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
+        .text(t, x, doc.y, { width: w, lineGap: 0.7, ...opts });
+    }
+    function fld(l, v, x, w) {
+      doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
+        .text(`${l}: `, x, doc.y, { width: w, continued: true });
+      doc.font("Helvetica").fillColor("#111").text(v || "—");
+    }
+    function blt(t, x, w) {
+      doc.font("Helvetica").fontSize(S.b).fillColor("#2d2d2d")
+        .text(` •  ${t}`, x, doc.y, { width: w, lineGap: 0.6 });
+    }
+    function chk(t, x, w) {
+      doc.font("Helvetica").fontSize(S.b).fillColor("#111")
+        .text(`[ ] ${t}`, x, doc.y, { width: w, lineGap: 1.0 });
+    }
+    function gap(p) { doc.y += p; }
+
+    // ─── Gera um termo completo (2 páginas) para um par resp+aluno ───────────
+    function gerarTermo(resp, aluno, primeiroTermo) {
+      if (!primeiroTermo) {
+        doc.addPage({ size: "A4", margins: { top: 32, bottom: 0, left: 26, right: 26 } });
+      }
+
+      // ── PÁGINA 1 ──
+      doc.rect(L - 2, doc.y - 4, PW + 4, 32).fill("#0a4a7a");
+      doc.font("Helvetica-Bold").fontSize(S.t).fillColor("#ffffff")
+        .text("TERMO DE CONSENTIMENTO ESPECÍFICO", L, doc.y - 1, { width: PW, align: "center", lineGap: 0.2 });
+      doc.font("Helvetica-Bold").fontSize(S.st).fillColor("#d0e8ff")
+        .text("PARA USO DE IMAGEM, FOTOGRAFIA E DADOS BIOMÉTRICOS DE ALUNO(A)", L, doc.y, { width: PW, align: "center" });
+      gap(3);
+      doc.font("Helvetica").fontSize(S.v).fillColor("#999")
+        .text(`Versão: 3.0   |   Emitido em: ${new Date().toLocaleDateString("pt-BR")}   |   Base Legal: LGPD · ECA · Marco Civil · Código Civil`, L, doc.y, { width: PW, align: "center" });
+      gap(4);
+
+      doc.rect(L - 2, doc.y, PW + 4, 8.5).fill("#e8f0fb");
+      doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+        .text("1 — IDENTIFICAÇÃO DAS PARTES", L, doc.y + 1, { width: PW });
+      gap(10);
+
+      const idColW = (PW - GAP * 2) / 3;
+      const idX2 = L + idColW + GAP;
+      const idX3 = idX2 + idColW + GAP;
+      const idTop = doc.y;
+
+      subH("1.1", "INSTITUIÇÃO DE ENSINO", L, idColW);
+      fld("Razão Social", escola?.nome || "—", L, idColW);
+      if (escola?.cnpj) fld("CNPJ", escola.cnpj, L, idColW);
+      const addr = [escola?.endereco, escola?.cidade, escola?.estado].filter(Boolean).join(", ") || "—";
+      fld("Endereço", addr, L, idColW);
+      body("Denominada ESCOLA.", L, idColW);
+
+      doc.y = idTop;
+      subH("1.2", "RESPONSÁVEL LEGAL", idX2, idColW);
+      fld("Nome", resp?.nome || "—", idX2, idColW);
+      fld("CPF", fmtCpf(resp?.cpf), idX2, idColW);
+      if (resp?.telefone_celular) fld("Telefone", resp.telefone_celular, idX2, idColW);
+      if (resp?.email) fld("E-mail", resp.email, idX2, idColW);
+      body("Denominado RESPONSÁVEL LEGAL.", idX2, idColW);
+
+      doc.y = idTop;
+      subH("1.3", "ALUNO(A)", idX3, idColW);
+      fld("Nome", aluno.estudante, idX3, idColW);
+      fld("Nasc.", fmtDate(aluno.data_nascimento), idX3, idColW);
+      fld("RE", aluno.codigo || "—", idX3, idColW);
+      fld("Turma", aluno.turma || "—", idX3, idColW);
+      body("Denominado ALUNO(A).", idX3, idColW);
+
+      gap(3);
+      const dpoY = doc.y;
+      doc.rect(L - 2, dpoY, PW + 4, 8).fill("#fff3cd");
+      doc.font("Helvetica-Bold").fontSize(S.tiny).fillColor("#7a5700")
+        .text("1.4  ENCARREGADO DE DADOS (DPO) — Art. 41 LGPD: ", L, dpoY + 1.5, { width: PW, continued: true });
+      doc.font("Helvetica").fillColor("#2d2d2d")
+        .text("dpo@sistemaeducamelhor.com.br  |  Responsável pelo tratamento de dados — acessível para exercício de direitos e esclarecimentos.");
+      gap(2);
+      doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#c0d8f0").lineWidth(0.5).stroke();
+      gap(3);
+
+      const c1 = doc.y;
+
+      // Coluna esquerda P1
+      doc.y = c1;
+      heading("2", "BASE LEGAL E FUNDAMENTAÇÃO", L, CW); gap(1);
+      body("O tratamento de dados biométricos (dados sensíveis, art. 5º, II, LGPD) fundamenta-se no:", L, CW);
+      for (const b of ["Art. 11, I, LGPD: consentimento específico e destacado (cláusulas 3, 5)","Art. 11, II, 'f', LGPD: tutela da segurança dos titulares (controle de acesso)","ECA (Lei 8.069/1990): princípio do melhor interesse da criança","Marco Civil da Internet (Lei 12.965/2014): arts. 7º e 45","Código Civil: art. 20 (direito de imagem), art. 17 (personalidade)","Princípios constitucionais: dignidade, privacidade e imagem (CF, art. 5º, X)"])
+        blt(b, L, CW);
+      body("O tratamento observará, em todas as hipóteses, o princípio do MELHOR INTERESSE DA CRIANÇA E DO ADOLESCENTE.", L, CW);
+      gap(2);
+      heading("3", "OBJETO DO CONSENTIMENTO", L, CW); gap(1);
+      body("Este termo autoriza, de forma específica, informada e destacada:", L, CW);
+      subH("3.1", "Imagem facial do(a) aluno(a)", L, CW);
+      subH("3.2", "Dados biométricos derivados (padrões, templates, embeddings faciais)", L, CW);
+      subH("3.3", "AUTORIZAÇÃO PARA FOTOGRAFAR — art. 79 ECA + CF art. 5º, X", L, CW);
+      body("O RESPONSÁVEL LEGAL autoriza expressamente o registro fotográfico do(a) ALUNO(A) para fins exclusivamente institucionais, realizado por profissional credenciado nas dependências da escola.", L, CW);
+      subH("3.4", "DIREITO DE IMAGEM — art. 20 Cód. Civil + art. 17 ECA", L, CW);
+      body("Autoriza uso da imagem exclusivamente para: perfil no EDUCA.MELHOR (acesso restrito), documentos internos e confirmação de identidade nos apps EDUCA-MOBILE e EDUCA-CAPTURE. Vedado uso público, em redes sociais ou publicidade sem novo consentimento.", L, CW);
+      gap(2);
+      heading("4", "PRINCÍPIOS DE TRATAMENTO — art. 6º LGPD", L, CW); gap(1);
+      for (const p of ["finalidade","adequação","necessidade","transparência","segurança","prevenção","não discriminação","responsabilização e prestação de contas"])
+        blt(p, L, CW);
+      gap(2);
+      heading("5", "FINALIDADES AUTORIZADAS", L, CW); gap(1);
+      body("Uso proporcional, limitado e adequado. Uso exclusivo para:", L, CW);
+      for (const [n, f] of [["5.1","Identificação institucional do aluno"],["5.2","Cadastro escolar"],["5.3","Controle de presença"],["5.4","Segurança institucional"],["5.5","Conferência de identidade em atividades escolares"],["5.6","Prevenção de fraudes de identidade"],["5.7","Registro de eventos administrativos"]])
+        subH(n, f, L, CW);
+
+      // Coluna direita P1
+      doc.y = c1;
+      heading("6", "FINALIDADES EXPRESSAMENTE PROIBIDAS", RX, CW); gap(1);
+      body("É expressamente vedado utilizar os dados para:", RX, CW);
+      for (const p of ["publicidade ou marketing","venda ou cessão de dados","perfilhamento comercial","vigilância comportamental abusiva","discriminação automatizada","treinamento irrestrito de IA","análise psicológica automatizada","ranking de alunos por biometria"])
+        blt(p, RX, CW);
+      gap(2);
+      heading("7", "ALTERNATIVA SEM BIOMETRIA — art. 11, §2º, LGPD", RX, CW); gap(1);
+      body("Existe alternativa sem reconhecimento facial (identificação manual, cartão escolar, chamada manual). O RESPONSÁVEL LEGAL pode optar a qualquer momento. A recusa NÃO implicará qualquer prejuízo acadêmico, disciplinar ou administrativo ao(à) ALUNO(A).", RX, CW);
+      gap(2);
+      heading("8", "LIMITAÇÃO DE DECISÕES AUTOMATIZADAS — art. 20 LGPD", RX, CW); gap(1);
+      body("Nenhuma decisão pedagógica, disciplinar ou administrativa será tomada exclusivamente com base em processamento automatizado. Sempre será garantida revisão humana qualificada.", RX, CW);
+      gap(2);
+      heading("9", "RISCO DE FALSO POSITIVO/NEGATIVO", RX, CW); gap(1);
+      subH("9.1", "Falso positivo:", RX, CW);
+      body("Identificação incorreta de uma pessoa como outra.", RX, CW);
+      subH("9.2", "Falso negativo:", RX, CW);
+      body("Falha em reconhecer pessoa cadastrada. Resultados serão revisados com validação humana.", RX, CW);
+      gap(2);
+      heading("10", "SISTEMAS ENVOLVIDOS", RX, CW); gap(1);
+      for (const [n, f] of [["10.1","Plataforma EDUCA.MELHOR"],["10.2","EDUCA-CAPTURE — app de captura de imagem"],["10.3","EDUCA-MOBILE — app para responsáveis"],["10.4","Módulos de monitoramento institucional"],["10.5","Infraestrutura de processamento e armazenamento seguro"]])
+        subH(n, f, RX, CW);
+      body("Mudanças substanciais nos sistemas implicarão notificação ao RESPONSÁVEL LEGAL e renovação do consentimento quando necessário.", RX, CW);
+      gap(2);
+      heading("11", "PAPÉIS NO TRATAMENTO — arts. 5º, VI e VII, LGPD", RX, CW); gap(1);
+      subH("11.1", "ESCOLA — CONTROLADORA", RX, CW);
+      body("Define finalidades e uso institucional dos dados.", RX, CW);
+      subH("11.2", "EDUCA.MELHOR — OPERADORA", RX, CW);
+      body("Trata dados em nome da escola para viabilizar o funcionamento do sistema.", RX, CW);
+
+      doc.fontSize(S.sm).font("Helvetica").fillColor("#aaa")
+        .text("EDUCA.MELHOR · Versão 3.0 · LGPD · ECA · Marco Civil da Internet · Página 1/2", L, 841.89 - 16, { width: PW, align: "center" });
+
+      // ── PÁGINA 2 ──
+      doc.addPage({ size: "A4", margins: { top: 32, bottom: 0, left: 26, right: 26 } });
+      const c2 = doc.y;
+
+      // Coluna esquerda P2
+      doc.y = c2;
+      heading("12", "MINIMIZAÇÃO DE DADOS — art. 6º, III, LGPD", L, CW); gap(1);
+      for (const p of ["imagens poderão ser convertidas em templates biométricos","dados brutos poderão ser descartados após processamento","retenção limitada ao estritamente necessário"])
+        blt(p, L, CW);
+      gap(2);
+      heading("13", "PRAZOS DE RETENÇÃO — art. 16 LGPD", L, CW); gap(1);
+      subH("13.1", "Durante vínculo escolar:", L, CW);
+      body("Dados mantidos enquanto o aluno estiver matriculado.", L, CW);
+      subH("13.2", "Após desligamento:", L, CW);
+      body("Dados biométricos e de imagem serão eliminados ou anonimizados em até 90 (noventa) dias. Logs de auditoria poderão ser mantidos por até 5 (cinco) anos, salvo obrigação legal.", L, CW);
+      gap(2);
+      heading("14", "SEGURANÇA DA INFORMAÇÃO — art. 46 LGPD", L, CW); gap(1);
+      for (const p of ["controle de acesso e autenticação forte","logs de auditoria e rastreabilidade","segregação por escola","criptografia em trânsito e repouso","revisão periódica de permissões","monitoramento de segurança contínuo"])
+        blt(p, L, CW);
+      gap(2);
+      heading("15", "INCIDENTES DE SEGURANÇA — art. 48 LGPD", L, CW); gap(1);
+      body("Em caso de incidente relevante:", L, CW);
+      body("1. Investigação imediata e contenção", L, CW);
+      body("2. ESCOLA notificada em até 72 (setenta e duas) horas — conforme orientação da ANPD", L, CW);
+      body("3. ANPD e titulares comunicados conforme gravidade e art. 48 LGPD", L, CW);
+      gap(2);
+      heading("16", "COMPARTILHAMENTO DE DADOS — art. 7º, IX, Marco Civil", L, CW); gap(1);
+      body("Dados compartilhados apenas com:", L, CW);
+      blt("ESCOLA (controladora)", L, CW);
+      blt("Fornecedores de infraestrutura tecnológica com cláusulas de sigilo", L, CW);
+      blt("Autoridades legais quando exigido por lei", L, CW);
+      body("Proibido compartilhamento para fins comerciais.", L, CW);
+      gap(2);
+      heading("17", "TRANSFERÊNCIA INTERNACIONAL — art. 33 LGPD", L, CW); gap(1);
+      body("Caso dados sejam processados em infraestrutura de nuvem fora do Brasil, será exigido nível de proteção equivalente à LGPD (cláusulas padrão ou certificações). O RESPONSÁVEL LEGAL poderá consultar os países de destino junto ao DPO.", L, CW);
+      gap(2);
+      heading("18", "RIPD — RELATÓRIO DE IMPACTO — art. 38 LGPD", L, CW); gap(1);
+      body("Em razão do tratamento de dados biométricos de crianças (alto risco — Resolução ANPD nº 2/2022), é mantido Relatório de Impacto à Proteção de Dados Pessoais, disponível mediante solicitação ao DPO.", L, CW);
+      const leftP2 = doc.y;
+
+      // Coluna direita P2
+      doc.y = c2;
+      heading("19", "DIREITOS DO TITULAR — art. 18 LGPD", RX, CW); gap(1);
+      body("O RESPONSÁVEL LEGAL poderá solicitar ao DPO (dpo@sistemaeducamelhor.com.br):", RX, CW);
+      for (const p of ["confirmação de tratamento","acesso aos dados","correção de dados incompletos","anonimização ou exclusão quando cabível","informações sobre compartilhamento","portabilidade quando regulamentada"])
+        blt(p, RX, CW);
+      body("Resposta em até 15 (quinze) dias úteis — art. 19, §3º, LGPD.", RX, CW);
+      gap(2);
+      heading("20", "REVOGAÇÃO — art. 8º, §5º, LGPD", RX, CW); gap(1);
+      for (const p of ["A qualquer momento, sem ônus","Não invalida tratamentos anteriores","Pode limitar funcionalidades — será adotado método alternativo","App EDUCA-MOBILE: revogar via DPO ou desinstalação"])
+        blt(p, RX, CW);
+      gap(2);
+      heading("21", "LIMITAÇÃO DE IA — art. 20 LGPD", RX, CW); gap(1);
+      body("Dados biométricos não serão usados para treinamento aberto de IA fora do contexto operacional da plataforma. Auditabilidade garantida.", RX, CW);
+      gap(2);
+      heading("22", "CONSENTIMENTO GRANULAR — art. 7º, IX, Marco Civil", RX, CW); gap(1);
+      body("Registro eletrônico auditável (data, hora, IP, versão). O RESPONSÁVEL LEGAL manifesta concordância separadamente:", RX, CW);
+      gap(1);
+      chk("Autorizo captura de FOTOGRAFIA para cadastro escolar.", RX, CW);
+      chk("Autorizo uso de IMAGEM no sistema EDUCA.MELHOR (perfil e documentos internos).", RX, CW);
+      chk("Autorizo geração de TEMPLATE BIOMÉTRICO para controle de presença.", RX, CW);
+      chk("Autorizo uso em SISTEMAS DE SEGURANÇA institucional.", RX, CW);
+      chk("Autorizo instalação e uso do app EDUCA-MOBILE (câmera, internet, notificações).", RX, CW);
+      chk("Autorizo captura via app EDUCA-CAPTURE por profissional credenciado.", RX, CW);
+      gap(2);
+      heading("23", "DECLARAÇÕES DO RESPONSÁVEL LEGAL", RX, CW); gap(1);
+      body("O RESPONSÁVEL LEGAL declara que:", RX, CW);
+      for (const p of [
+        "leu integralmente o documento e compreendeu suas disposições",
+        "teve oportunidade de esclarecer dúvidas com o DPO",
+        "é guardião legal, pai/mãe detentor(a) do poder familiar ou tutor(a) legalmente constituído(a)",
+        "apresentou ou disponibilizou documento comprobatório de sua condição quando solicitado",
+        "o consentimento foi apresentado de forma destacada, clara e acessível, sem vício de consentimento"
+      ]) blt(p, RX, CW);
+
+      const rightP2 = doc.y;
+      doc.y = Math.max(leftP2, rightP2) + 8;
+
+      doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#0a4a7a").lineWidth(0.6).stroke();
+      gap(4);
+      heading("24", "ASSINATURA", L, PW); gap(1);
+      doc.font("Helvetica").fontSize(S.b).fillColor("#333")
+        .text(hoje(), L, doc.y, { width: PW, align: "right" });
+      gap(10);
+
+      const sigCW = PW * 0.60;
+      const sigCX = L + (PW - sigCW) / 2;
+      doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+        .text("RESPONSÁVEL LEGAL", sigCX, doc.y, { width: sigCW, align: "center" });
+      gap(3);
+      doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
+        .text("Nome: ", sigCX, doc.y, { width: sigCW, continued: true });
+      doc.font("Helvetica").fillColor("#111").text(resp?.nome || "—");
+      gap(12);
+      doc.font("Helvetica").fontSize(S.b).fillColor("#555")
+        .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
+      gap(14);
+
+      doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
+        .text("ESCOLA", sigCX, doc.y, { width: sigCW, align: "center" });
+      gap(3);
+      doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
+        .text("Representante: ", sigCX, doc.y, { width: sigCW, continued: true });
+      doc.font("Helvetica").fillColor("#111").text(diretor?.nome || "—");
+      doc.font("Helvetica").fontSize(S.b).fillColor("#555")
+        .text("Cargo: Diretor(a) Pedagógico(a)", sigCX, doc.y, { width: sigCW, align: "center" });
+      gap(12);
+      doc.font("Helvetica").fontSize(S.b).fillColor("#555")
+        .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
+
+      doc.fontSize(S.sm).font("Helvetica").fillColor("#aaa")
+        .text("EDUCA.MELHOR · Versão 3.0 · LGPD · ECA · Marco Civil da Internet · Página 2/2  |  dpo@sistemaeducamelhor.com.br", L, 841.89 - 16, { width: PW, align: "center" });
+    }
+
+    // ─── Gera todos os termos ─────────────────────────────────────────────────
+    for (let i = 0; i < pares.length; i++) {
+      gerarTermo(pares[i].resp, pares[i].aluno, i === 0);
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error("[termo-consentimento/turma] Erro:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Erro ao gerar PDF em lote." });
+  }
+});
+
 // ─── Rota principal ───────────────────────────────────────────────────────────
 
 router.get("/:responsavelId/:alunoId", async (req, res) => {
