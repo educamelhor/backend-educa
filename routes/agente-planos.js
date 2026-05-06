@@ -198,14 +198,21 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
         const resultVal = resultado.errorCode === 'JA_EXISTE' ? 'JA_EXISTIA' : 'CRIADO';
 
         if (sucesso) {
+          // UPDATE primário: sempre funciona (colunas garantidas)
           await db.query(
             `UPDATE planos_avaliacao
-                SET agente_exportado_em       = NOW(),
-                    agente_exportado_resultado = ?,
-                    agente_executando_desde    = NULL
+                SET agente_exportado_em    = NOW(),
+                    agente_executando_desde = NULL
               WHERE id = ?`,
+            [planoId]
+          ).catch(e => console.warn('[agente-planos] UPDATE estrutura (base):', e.message));
+
+          // UPDATE secundário: tenta gravar resultado (coluna pode não existir ainda)
+          db.query(
+            `UPDATE planos_avaliacao SET agente_exportado_resultado = ? WHERE id = ?`,
             [resultVal, planoId]
-          ).catch(e => console.warn('[agente-planos] UPDATE estrutura:', e.message));
+          ).catch(() => {/* coluna agente_exportado_resultado ainda não existe — ignorar */});
+
           console.log(`[agente-planos] ✅ Estrutura plano=${planoId} (${resultVal})`);
         } else {
           await clearLock(db, planoId);
@@ -359,29 +366,27 @@ router.post('/:id/exportar-notas', async (req, res) => {
         );
 
         if (resultado.ok) {
+          // UPDATE primário: sempre funciona
+          await db.query(
+            `UPDATE planos_avaliacao
+                SET agente_notas_exportadas_em = NOW(),
+                    agente_executando_desde      = NULL
+              WHERE id = ?`,
+            [planoId]
+          ).catch(e => console.warn('[agente-planos] UPDATE notas (base):', e.message));
+
+          // UPDATE secundário: tenta gravar JSON de resultado
           const statsJson = JSON.stringify({
             totalPreenchidos:     resultado.totalPreenchidos,
             totalErros:           resultado.totalErros,
             alunosNaoEncontrados: resultado.alunosNaoEncontrados || [],
             alunosDesabilitados:  resultado.alunosDesabilitados  || [],
           });
-          await db.query(
-            `UPDATE planos_avaliacao
-                SET agente_notas_exportadas_em  = NOW(),
-                    agente_notas_resultado_json  = ?,
-                    agente_executando_desde       = NULL
-              WHERE id = ?`,
+          db.query(
+            `UPDATE planos_avaliacao SET agente_notas_resultado_json = ? WHERE id = ?`,
             [statsJson, planoId]
-          ).catch(async (e) => {
-            // Coluna pode não existir ainda — cria e tenta novamente
-            if (e.message?.includes('Unknown column')) {
-              await db.query(
-                `ALTER TABLE planos_avaliacao
-                   ADD COLUMN agente_notas_exportadas_em DATETIME DEFAULT NULL`
-              ).catch(() => {});
-            }
-            await clearLock(db, planoId);
-          });
+          ).catch(() => {/* coluna agente_notas_resultado_json pode não existir ainda */});
+
           console.log(`[agente-planos] ✅ Notas plano=${planoId} (${resultado.totalPreenchidos} alunos, ${resultado.totalErros} erros)`);
         } else {
           await clearLock(db, planoId);
