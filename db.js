@@ -119,6 +119,8 @@ pool
       "ALTER TABLE planos_avaliacao ADD COLUMN agente_exportado_resultado VARCHAR(32) NULL",
       // Agente EDUCA — resultado da exportação de notas (CRIADO | FALHOU)
       "ALTER TABLE planos_avaliacao ADD COLUMN agente_notas_resultado_json TEXT NULL",
+      // Agente EDUCA — mensagem do último erro (exibida ao professor)
+      "ALTER TABLE planos_avaliacao ADD COLUMN agente_ultimo_erro VARCHAR(500) NULL",
     ];
     for (const sql of migrations) {
       try {

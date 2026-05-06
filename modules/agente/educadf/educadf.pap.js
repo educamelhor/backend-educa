@@ -122,16 +122,61 @@ function nomesCorrespondem(nomeA, nomeB) {
 }
 
 // ============================================================================
-// HELPER: Remove backdrops que bloqueiam cliques (mesmo padrão do Python)
+// HELPER: Remove backdrops e fecha modais SweetAlert2 do EDUCADF que bloqueiam cliques
 // ============================================================================
 async function removerBackdrops(page) {
   await page.evaluate(() => {
+    // Backdrops Angular
     document.querySelectorAll('ngb-offcanvas-backdrop, .offcanvas-backdrop, .modal-backdrop')
       .forEach(el => el.remove());
     document.body.classList.remove('modal-open', 'offcanvas-open');
     document.body.style.overflow = 'auto';
+
+    // SweetAlert2 — fecha qualquer popup do EDUCADF clicando no botão de confirmação
+    const swalConfirm = document.querySelector(
+      '.swal2-container button.swal2-confirm, .swal2-container .swal2-actions button:first-child'
+    );
+    if (swalConfirm) {
+      console.log('[educadf.pap] removerBackdrops: fechando swal2 via confirm button');
+      swalConfirm.click();
+    } else {
+      // Se não tem botão confirm, tenta fechar pelo overlay ou qualquer botão
+      const swalAny = document.querySelector('.swal2-container .swal2-close, .swal2-container button');
+      if (swalAny) swalAny.click();
+    }
   }).catch(() => {});
+  // Aguarda swal2 sumir do DOM
+  await page.waitForSelector('.swal2-container', { state: 'hidden', timeout: 5000 }).catch(() => {});
 }
+
+// ============================================================================
+// HELPER: Aguarda elmLoader sumir + fecha swal2 antes de prosseguir
+// Chame antes de qualquer clique crítico após carregamentos de página
+// ============================================================================
+async function aguardarSemOverlay(page, descricao = '') {
+  const label = descricao ? ` [${descricao}]` : '';
+
+  // 1. Aguarda elmLoader (spinner de carregamento do EDUCADF) desaparecer
+  await page.waitForSelector('#elmLoader, [id="elmLoader"]', { state: 'hidden', timeout: 20000 })
+    .catch(() => console.warn(`[educadf.pap] aguardarSemOverlay${label}: elmLoader timeout (pode não existir)` ));
+
+  // 2. Verifica e fecha swal2
+  const swalPresente = await page.evaluate(() => {
+    const container = document.querySelector('.swal2-container');
+    if (!container) return false;
+    const style = window.getComputedStyle(container);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }).catch(() => false);
+
+  if (swalPresente) {
+    console.log(`[educadf.pap] aguardarSemOverlay${label}: swal2 detectado — fechando...`);
+    await removerBackdrops(page);
+    await page.waitForTimeout(800);
+  }
+
+  await page.waitForTimeout(500);
+}
+
 
 // ============================================================================
 // HELPER: Seleciona opção em ng-select do Angular pelo placeholder e valor
@@ -933,6 +978,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       if (!eventoBimCorreto(txt)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
+        await aguardarSemOverlay(page, 'pre-click-evento-t1');
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
         console.log(`[educadf.pap] ✅ Evento [turma+comp+bimestre] clicado: "${txt.substring(0, 80)}"`);
@@ -951,6 +997,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         if (!eventoBimCorreto(txt)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await aguardarSemOverlay(page, 'pre-click-evento-t2');
           await ev.click({ timeout: 10000 });
           eventoClicado = true;
           console.log(`[educadf.pap] ✅ Evento [turma+bimestre] clicado: "${txt.substring(0, 80)}"`);
@@ -992,12 +1039,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     ];
 
     let abaClicada = false;
+    // Aguarda overlays antes de tentar clicar na aba (swal2 pode ter aparecido ao abrir o diário)
+    await aguardarSemOverlay(page, 'pre-aba-procedimentos');
     for (const texto of textosProcedimento) {
       try {
         const loc = page.locator(`a:has-text('${texto}'), [role="tab"]:has-text('${texto}')`).first();
         if (await loc.count() > 0) {
           console.log(`[educadf.pap] Aba encontrada: "${texto}"`);
           await loc.scrollIntoViewIfNeeded().catch(() => {});
+          await aguardarSemOverlay(page, `pre-click-aba-${texto.substring(0, 20)}`);
           await loc.click({ timeout: 15000 });
           abaClicada = true;
           break;

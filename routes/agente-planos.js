@@ -202,7 +202,8 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
           await db.query(
             `UPDATE planos_avaliacao
                 SET agente_exportado_em    = NOW(),
-                    agente_executando_desde = NULL
+                    agente_executando_desde = NULL,
+                    agente_ultimo_erro      = NULL
               WHERE id = ?`,
             [planoId]
           ).catch(e => console.warn('[agente-planos] UPDATE estrutura (base):', e.message));
@@ -215,8 +216,16 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
 
           console.log(`[agente-planos] ✅ Estrutura plano=${planoId} (${resultVal})`);
         } else {
-          await clearLock(db, planoId);
-          console.warn(`[agente-planos] ❌ Estrutura plano=${planoId}: ${resultado.message}`);
+          const erroMsg = (resultado.message || 'Erro desconhecido no agente').substring(0, 500);
+          // Grava mensagem de erro para exibição ao usuário
+          await db.query(
+            `UPDATE planos_avaliacao SET agente_executando_desde = NULL, agente_ultimo_erro = ? WHERE id = ?`,
+            [erroMsg, planoId]
+          ).catch(async () => {
+            // Coluna pode não existir ainda — tenta só limpar lock
+            await clearLock(db, planoId);
+          });
+          console.warn(`[agente-planos] ❌ Estrutura plano=${planoId}: ${erroMsg}`);
         }
 
         // Auditoria
@@ -370,7 +379,8 @@ router.post('/:id/exportar-notas', async (req, res) => {
           await db.query(
             `UPDATE planos_avaliacao
                 SET agente_notas_exportadas_em = NOW(),
-                    agente_executando_desde      = NULL
+                    agente_executando_desde      = NULL,
+                    agente_ultimo_erro           = NULL
               WHERE id = ?`,
             [planoId]
           ).catch(e => console.warn('[agente-planos] UPDATE notas (base):', e.message));
@@ -389,8 +399,12 @@ router.post('/:id/exportar-notas', async (req, res) => {
 
           console.log(`[agente-planos] ✅ Notas plano=${planoId} (${resultado.totalPreenchidos} alunos, ${resultado.totalErros} erros)`);
         } else {
-          await clearLock(db, planoId);
-          console.warn(`[agente-planos] ❌ Notas plano=${planoId}: ${resultado.message}`);
+          const erroMsg = (resultado.message || 'Erro desconhecido no agente').substring(0, 500);
+          await db.query(
+            `UPDATE planos_avaliacao SET agente_executando_desde = NULL, agente_ultimo_erro = ? WHERE id = ?`,
+            [erroMsg, planoId]
+          ).catch(async () => { await clearLock(db, planoId); });
+          console.warn(`[agente-planos] ❌ Notas plano=${planoId}: ${erroMsg}`);
         }
 
       } catch (err) {
