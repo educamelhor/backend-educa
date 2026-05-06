@@ -225,11 +225,13 @@ router.get("/busca-ativa", async (req, res) => {
         fba.*,
         a.estudante AS aluno_nome,
         t.nome AS turma_nome,
-        u.nome AS registrado_por_nome
+        u1.nome AS registrado_por_nome,
+        u2.nome AS editado_por_nome
       FROM frequencia_busca_ativa fba
       LEFT JOIN alunos a ON fba.aluno_id = a.id
       LEFT JOIN turmas t ON fba.turma_id = t.id
-      LEFT JOIN usuarios u ON fba.registrado_por = u.id
+      LEFT JOIN usuarios u1 ON fba.registrado_por = u1.id
+      LEFT JOIN usuarios u2 ON fba.editado_por = u2.id
       WHERE fba.escola_id = ?
     `;
     const params = [escola_id];
@@ -285,6 +287,44 @@ router.post("/busca-ativa", async (req, res) => {
     res.status(201).json({ id: result.insertId, message: "Contato registrado" });
   } catch (err) {
     console.error("[FREQUENCIA] Erro ao registrar busca ativa:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+// PUT /api/frequencia/busca-ativa/:id
+// Edita um registro existente e registra rastreabilidade de quem editou
+router.put("/busca-ativa/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data_contato, meio_contato, resultado, observacao } = req.body;
+    const escola_id = req.escola_id;
+
+    if (!meio_contato || !resultado) {
+      return res.status(400).json({ error: "Campos obrigatórios: meio_contato, resultado" });
+    }
+
+    // Garante que o registro pertence a esta escola
+    const [[registro]] = await req.db.query(
+      "SELECT id FROM frequencia_busca_ativa WHERE id = ? AND escola_id = ? LIMIT 1",
+      [id, escola_id]
+    );
+    if (!registro) {
+      return res.status(404).json({ error: "Registro não encontrado" });
+    }
+
+    const editado_por = req.user?.usuario_id ?? req.user?.usuarioId ?? null;
+
+    await req.db.query(
+      `UPDATE frequencia_busca_ativa
+       SET data_contato = ?, meio_contato = ?, resultado = ?, observacao = ?,
+           editado_por = ?, editado_em = NOW()
+       WHERE id = ? AND escola_id = ?`,
+      [data_contato, meio_contato, resultado, observacao || null, editado_por, id, escola_id]
+    );
+
+    res.json({ message: "Contato atualizado com sucesso" });
+  } catch (err) {
+    console.error("[FREQUENCIA] Erro ao editar busca ativa:", err.message);
     res.status(500).json({ error: "Erro interno" });
   }
 });

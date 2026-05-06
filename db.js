@@ -101,12 +101,27 @@ const pool = mysql.createPool({
   ...(ssl ? { ssl } : {}),
 });
 
-// Probe de conexão ao subir
+// Probe de conexão + auto-migrations
 pool
   .getConnection()
-  .then((conn) => {
+  .then(async (conn) => {
     console.log("[DB] connection OK ✅");
     conn.release();
+
+    // ── Auto-migrations (idempotentes — falha silenciosa se já existir) ──
+    const migrations = [
+      // Busca Ativa — rastreabilidade de edição
+      "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_por INT NULL AFTER registrado_por",
+      "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_em DATETIME NULL AFTER editado_por",
+    ];
+    for (const sql of migrations) {
+      try {
+        await pool.query(sql);
+        console.log("[DB] migration OK:", sql.slice(0, 60));
+      } catch {
+        // coluna já existe — ignorar
+      }
+    }
   })
   .catch((err) => {
     console.error("[DB] connection FAIL ❌", {
