@@ -1356,90 +1356,66 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     ];
 
     // ── PASSO 10a: Clicar no botão do bimestre alvo ──────────────────────
-    // SELETORES ESPECÍFICOS PRIMEIRO — .nav-link antes de genéricos.
-    // Após clicar, VERIFICA que a mudança realmente ocorreu.
+    // IMPORTANTE: Playwright .click() adiciona .active via Bootstrap JS mas
+    // NÃO dispara o handler Angular. Usar el.click() nativo via page.evaluate.
     let botaoBimestreClicado = false;
 
-    // Tenta até 3 vezes com estratégias progressivas
     for (let tentativa = 1; tentativa <= 3 && !botaoBimestreClicado; tentativa++) {
       console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3 — buscando botão "${textosAlvo[0]}"...`);
 
-      // Estratégia 1 (tentativa 1): Playwright com seletores ESPECÍFICOS para tabs
-      if (tentativa <= 2) {
-        const seletoresTab = [
-          '.nav-link',           // Bootstrap tab links (mais específico)
-          'li.nav-item a',       // Links dentro de nav-items
-          'li.nav-item button',  // Botões dentro de nav-items
-          '[role="tab"]',        // Tabs ARIA
-          'a',                   // Fallback genérico
-          'button',              // Fallback genérico
-        ];
-        for (const sel of seletoresTab) {
-          if (botaoBimestreClicado) break;
-          for (const texto of textosAlvo) {
-            if (botaoBimestreClicado) break;
-            try {
-              const loc = page.locator(sel).filter({ hasText: texto }).first();
-              if ((await loc.count().catch(() => 0)) === 0) continue;
-              await loc.scrollIntoViewIfNeeded().catch(() => {});
-              await loc.click({ timeout: 5000 });
-              botaoBimestreClicado = true;
-              console.log(`[educadf.pap] ✅ 10a — Botão "${texto}" clicado via "${sel}"`);
-            } catch (e) {
-              // silencia — tenta próximo seletor
-            }
-          }
-        }
-      }
+      // ESTRATÉGIA ÚNICA: JavaScript el.click() — funciona com Angular
+      const resultado = await page.evaluate((num) => {
+        const norm = (s) => String(s)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
 
-      // Estratégia 2 (tentativa 2+): JS puro com dispatch completo de eventos
-      if (!botaoBimestreClicado || tentativa >= 2) {
-        const jsClicou = await page.evaluate((num) => {
-          const norm = (s) => String(s)
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-          const alvo = `${num}O BIMESTRE`;
-          // Busca APENAS dentro de elementos de navegação (nav, tabs)
-          const navEls = [...document.querySelectorAll('.nav-link, .nav-item a, .nav-item button, [role="tab"]')];
-          const el = navEls.find(e => norm(e.textContent || '').includes(alvo)
-            && !norm(e.textContent || '').includes('ARTES')  // exclui eventos do calendário
-            && (e.textContent || '').trim().length < 30);    // tabs têm texto curto
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center' });
-          el.focus();
-          // Dispatch completo — necessário para Angular detectar
-          ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(ev => {
-            const opts = { bubbles: true, cancelable: true, composed: true };
-            el.dispatchEvent(ev.includes('pointer')
-              ? new PointerEvent(ev, { ...opts, pointerId: 1 })
-              : new MouseEvent(ev, opts));
+        // Busca tabs de bimestre (texto curto, dentro de nav)
+        const candidatos = [...document.querySelectorAll('.nav-link, .nav-item a, .nav-item button, [role="tab"]')]
+          .filter(el => {
+            const txt = norm(el.textContent || '');
+            return txt.includes('BIMESTRE') && txt.length < 40;
           });
-          return (el.textContent || '').trim();
-        }, bimNumPAP).catch(() => null);
 
-        if (jsClicou) {
-          botaoBimestreClicado = true;
-          console.log(`[educadf.pap] ✅ 10a — JS clicou: "${jsClicou}"`);
-        }
+        if (!candidatos.length) return { ok: false, motivo: 'nenhum tab de bimestre encontrado' };
+
+        // Log de todos os tabs para diagnóstico
+        const tabsInfo = candidatos.map(el => ({
+          txt: (el.textContent || '').trim(),
+          tag: el.tagName,
+          classes: el.className,
+        }));
+
+        // Encontra o tab do bimestre alvo
+        const tabAlvo = candidatos.find(el => norm(el.textContent || '').includes(alvo));
+        if (!tabAlvo) return { ok: false, motivo: `tab '${num}o Bimestre' não encontrado`, tabs: tabsInfo };
+
+        // Scroll + focus + click NATIVO (dispara Angular zone)
+        tabAlvo.scrollIntoView({ block: 'center' });
+        tabAlvo.focus();
+        tabAlvo.click(); // ← click() nativo do DOM — Angular detecta!
+
+        return {
+          ok: true,
+          txt: (tabAlvo.textContent || '').trim(),
+          tag: tabAlvo.tagName,
+          tabs: tabsInfo,
+        };
+      }, bimNumPAP).catch(e => ({ ok: false, motivo: e.message }));
+
+      console.log(`[educadf.pap] 10a resultado: ${JSON.stringify(resultado)}`);
+
+      if (resultado.ok) {
+        botaoBimestreClicado = true;
+        console.log(`[educadf.pap] ✅ 10a — "${resultado.txt}" clicado via el.click() nativo`);
       }
+
+      // Aguarda Angular processar o clique
+      await session.delay(3000);
 
       if (!botaoBimestreClicado) {
-        await session.delay(3000);
-        continue;
-      }
-
-      // VERIFICAÇÃO PÓS-CLIQUE: confere se realmente mudou
-      await session.delay(2000);
-      const verify = await verificarBimestreAtivo(page, bimNumPAP);
-      console.log(`[educadf.pap] Verificação tentativa ${tentativa}: ${JSON.stringify(verify)}`);
-
-      if (verify.bimestreCorretoAtivo) {
-        console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO na tentativa ${tentativa}.`);
-        break; // Sucesso real!
-      } else {
-        console.warn(`[educadf.pap] ⚠️  Clique não mudou bimestre. Retentando com JS...`);
-        botaoBimestreClicado = false; // Força retry com próxima estratégia
+        console.warn(`[educadf.pap] ⚠️  Tentativa ${tentativa} falhou. Retentando...`);
       }
     }
 
@@ -1447,15 +1423,14 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       await session.screenshot('pap_bimestre_FALHA');
       return {
         ok: false,
-        message: `Botão "${bimNumPAP}º Bimestre" não foi ativado após 3 tentativas. ` +
-                 `O portal pode estar lento ou em manutenção.`,
+        message: `Botão "${bimNumPAP}º Bimestre" não encontrado após 3 tentativas.`,
         durationMs: Date.now() - startedAt,
       };
     }
 
-    // ── PASSO 10b: Screenshot + prossegue ──────────────────────────────────
+    // ── PASSO 10b: Screenshot de confirmação ─────────────────────────────
     await session.screenshot('pap_06b_bimestre_selecionado');
-    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre clicado e verificado. Prosseguindo...`);
+    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre clicado. Prosseguindo...`);
     await removerBackdrops(page);
 
     // Aguarda Angular processar o clique na aba
