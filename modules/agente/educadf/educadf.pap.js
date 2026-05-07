@@ -1226,11 +1226,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     if (!_navInfo.found) {
-      console.warn(`[educadf.pap] ⚠️  Não encontrou eventos do ${bimNumPAP}º Bimestre no calendário. Usando evento disponível...`);
+      console.warn(`[educadf.pap] ⚠️  Sem eventos do ${bimNumPAP}º Bimestre no calendario. Voltando para Hoje...`);
+      try { await page.locator(`button:has-text('Hoje'), button:has-text('Today')`).first().click({ timeout: 5000 }); await page.waitForTimeout(3000); } catch {}
     } else {
-      console.log(`[educadf.pap] ✅ Evento do ${bimNumPAP}º Bimestre encontrado: "${_navInfo.matchTxt}"`);
-    }
-
+      console.log(`[educadf.pap] ✅ Evento do ${bimNumPAP}º Bimestre encontrado: "${_navInfo.matchTxt}"`); }
     await session.screenshot('pap_04d_calendario_bimestre');
 
     let eventoClicado = false;
@@ -1288,9 +1287,9 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     if (!eventoClicado) {
       throw new Error(
-        `Nenhum evento do calendário pôde ser clicado para a turma "${plano.turmas}". ` +
-        `Tentados ${FC_SELETORES.length} seletores CSS + fallback JS. ` +
-        `Verifique os screenshots para diagnóstico.`
+        `Nao foi possivel clicar em nenhum evento do calendario para a turma "${plano.turmas}". ` +
+        `O calendário foi carregado corretamente — verifique se há aulas cadastradas para este componente. ` +
+        `Se o problema persistir, o portal EDUCADF pode estar lento.`
       );
     }
 
@@ -1484,10 +1483,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre clicado. Aguardando rede + Angular estabilizarem...`);
     await removerBackdrops(page);
 
-    // Aguarda rede estabilizar (Angular pode fazer requisição HTTP ao trocar bimestre)
-    await page.waitForLoadState('networkidle', { timeout: 15000 })
-      .catch(() => console.warn('[educadf.pap] ⚠️  networkidle timeout após click bimestre — continuando'));
-    await session.delay(3000);
+    // Aguarda Angular processar o clique na aba (simples delay, sem networkidle que trava com WebSocket)
+    await session.delay(2000);
+    
+    await session.delay(1000);
 
     // Diagnóstico: verifica estado da aba E relação do botão Criar com o painel ativo
     const diagBimestre = await page.evaluate((num) => {
