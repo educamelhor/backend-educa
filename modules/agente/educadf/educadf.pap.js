@@ -1125,11 +1125,30 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     if (!eventoClicado) {
       const bimStr = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
       console.error(`[educadf.pap] ❌ Evento de "${plano.turmas}" não encontrado para ${bimStr}.`);
-      for (let i = 0; i < Math.min(totalFcEventos, 6); i++) {
+
+      // Coleta os bimestres realmente presentes nos eventos do calendário
+      const bimestresPresentes = new Set();
+      for (let i = 0; i < Math.min(totalFcEventos, 10); i++) {
         const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
+        const n   = normBim(txt);
         console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
+        // Detecta bimestre no texto do evento (ex: "2O BIMESTRE", "BIMESTRE 2")
+        const match = n.match(/(\d)\s*O\s*BIMESTRE|BIMESTRE\s*(\d)/);
+        if (match) bimestresPresentes.add(match[1] || match[2]);
       }
-      throw new Error(`Evento não encontrado para "${plano.turmas}" no ${bimStr}. Verifique se o calendário do EDUCADF exibe este bimestre.`);
+
+      const disponiveis = [...bimestresPresentes].sort().map(n => `${n}º Bimestre`).join(', ');
+      const detalhe = disponiveis
+        ? `O calendário EDUCADF exibe apenas: ${disponiveis}.`
+        : 'Nenhum evento visível no calendário EDUCADF.';
+
+      throw Object.assign(
+        new Error(
+          `O calendário EDUCADF não possui eventos do ${bimStr} para a turma "${plano.turmas}". ` +
+          `${detalhe} Verifique se o bimestre correto está selecionado no plano ou se o período letivo está aberto no EDUCADF.`
+        ),
+        { errorCode: 'BIMESTRE_INDISPONIVEL' }
+      );
     }
 
     // Aguarda o diário carregar (exibe abas no topo)
@@ -1826,7 +1845,30 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // [FIX] Tentativa 3 removida — nunca clica sem confirmar bimestre correto.
     if (!eventoClicado) {
       const bimStrN = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
-      throw new Error(`Evento não encontrado para "${plano.turmas}" no ${bimStrN}. Verifique se o calendário do EDUCADF exibe este bimestre.`);
+
+      // Coleta os bimestres realmente presentes nos eventos do calendário
+      const bimestresN = new Set();
+      for (let i = 0; i < Math.min(total, 10); i++) {
+        const txt = (await evs.nth(i).textContent().catch(() => '')) || '';
+        const n   = String(txt).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const match = n.match(/(\d)\s*O\s*BIMESTRE|BIMESTRE\s*(\d)/);
+        if (match) bimestresN.add(match[1] || match[2]);
+      }
+
+      const disponiveisN = [...bimestresN].sort().map(n => `${n}º Bimestre`).join(', ');
+      const detalheN = disponiveisN
+        ? `O calendário EDUCADF exibe apenas: ${disponiveisN}.`
+        : 'Nenhum evento visível no calendário EDUCADF.';
+
+      throw Object.assign(
+        new Error(
+          `O calendário EDUCADF não possui eventos do ${bimStrN} para a turma "${plano.turmas}". ` +
+          `${detalheN} Verifique se o bimestre correto está selecionado no plano ou se o período letivo está aberto no EDUCADF.`
+        ),
+        { errorCode: 'BIMESTRE_INDISPONIVEL' }
+      );
     }
 
     await session.delay(TIMING.navigationDelay);
