@@ -1136,6 +1136,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.screenshot('pap_06_procedimentos_avaliativos');
 
 
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 10: Selecionar o bimestre correto na aba de Procedimentos
+    // ══════════════════════════════════════════════════════════════════════
+    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
+    if (!bimNumPAP) {
+      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}".`, durationMs: 0 };
+    }
+    console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
+
     // Aguarda os tabs de bimestre aparecerem
     await page.waitForSelector(
       `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`,
