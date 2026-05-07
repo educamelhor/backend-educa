@@ -1264,6 +1264,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       abaClicada = true;
     }
     await session.delay(TIMING.navigationDelay);
+    // Aguarda a aba de Procedimentos Avaliativos terminar de renderizar
+    // O EDUCADF Angular pode levar vários segundos para carregar o conteúdo da aba
+    await page.waitForLoadState('domcontentloaded', { timeout: 15000 })
+      .catch(() => console.warn('[educadf.pap] ⚠️  waitForLoadState timeout após aba procedimentos'));
+    await session.delay(2000); // extra buffer para o Angular renderizar os tabs de bimestre
     await session.screenshot('pap_06_procedimentos_avaliativos');
 
 
@@ -1280,11 +1285,22 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
     console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
 
-    // Aguarda os botões de bimestre renderizarem (até 10s)
-    await page.waitForSelector(
-      `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`,
-      { timeout: 10000 }
-    ).catch(() => console.warn('[educadf.pap] ⚠️  Timeout aguardando tabs de bimestre'));
+    // Aguarda os botões de bimestre renderizarem — timeout GENEROSO (30s) pois portal é lento
+    const bimSelector = `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`;
+    const bimEncontrado = await page.waitForSelector(bimSelector, { timeout: 30000 })
+      .then(() => true)
+      .catch(() => {
+        console.warn('[educadf.pap] ⚠️  Timeout 30s aguardando tabs de bimestre — tentando assim mesmo...');
+        return false;
+      });
+
+    if (!bimEncontrado) {
+      // Última chance: aguarda mais 10s antes de desistir
+      await session.delay(10000);
+      const totalBimBtns = await page.locator('button, a').filter({ hasText: /bimestre/i }).count();
+      console.log(`[educadf.pap] Após +10s: ${totalBimBtns} botões com texto 'bimestre' encontrados.`);
+    }
+
     await removerBackdrops(page);
     await session.delay(800);
 
@@ -1294,11 +1310,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       `${bimNumPAP}o Bimestre`,
     ];
 
-    // ── PASSO 10a: Clicar no botão do bimestre alvo (até 3 tentativas) ──────
+    // ── PASSO 10a: Clicar no botão do bimestre alvo (até 4 tentativas) ──────
     // Usa busca ampla: qualquer button/a/[role=tab] cujo texto contém o bimestre alvo
     let botaoBimestreClicado = false;
-    for (let tentativa = 1; tentativa <= 3 && !botaoBimestreClicado; tentativa++) {
-      console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3 — buscando botão "${textosAlvo[0]}"...`);
+    for (let tentativa = 1; tentativa <= 4 && !botaoBimestreClicado; tentativa++) {
+      console.log(`[educadf.pap] 10a Tentativa ${tentativa}/4 — buscando botão "${textosAlvo[0]}"...`);
 
       // Estratégia 1: Playwright filter (mais confiável)
       const seletoresTab = [
@@ -1351,8 +1367,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }
       }
 
-      if (!botaoBimestreClicado && tentativa < 3) {
-        await session.delay(1500);
+      if (!botaoBimestreClicado && tentativa < 4) {
+        await session.delay(3000); // aguarda Angular renderizar — portal EDUCADF é lento
       }
     }
 
@@ -1360,8 +1376,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       await session.screenshot('pap_bimestre_FALHA');
       return {
         ok: false,
-        message: `Botão "${bimNumPAP}º Bimestre" não encontrado na aba de Procedimentos Avaliativos. ` +
-                 `Verifique se a aba carregou corretamente.`,
+        message: `Botão "${bimNumPAP}º Bimestre" não encontrado na aba de Procedimentos Avaliativos após 4 tentativas. ` +
+                 `Verifique se a aba carregou corretamente. O portal pode estar lento ou em manutenção.`,
         durationMs: Date.now() - startedAt,
       };
     }

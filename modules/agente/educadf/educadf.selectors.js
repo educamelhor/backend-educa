@@ -149,5 +149,6 @@ export const TIMING = {
   postLoginDelay: 5000,
 
   // Delay para navegação SPA (Angular route change)
-  navigationDelay: 3000,
+  // O portal EDUCADF é lento por natureza — 5s é o mínimo seguro após cliques de aba
+  navigationDelay: 5000,
 };
