@@ -957,6 +957,64 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     );
     await page.waitForTimeout(1000);
 
+    // ── Unidade Escolar (OBRIGATÓRIO se campo existir): seleciona a escola ──
+    // Campo adicionado pelo EDUCADF em 2026 — sem ele, turmas não carregam.
+    // Busca por '04 DE PLANALTINA' (termo único) em vez do nome completo,
+    // pois a listbox tem vários 'CENTRO DE ENSINO FUNDAMENTAL...'.
+    const placeholdersUnidade = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
+    for (const ph of placeholdersUnidade) {
+      const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
+      if ((await ngUnidade.count()) === 0) continue;
+      console.log(`[educadf.pap] Filtro Unidade Escolar encontrado: "${ph}"`);
+
+      // Termo de busca ÚNICO — identifica a escola sem ambiguidade
+      const termoBusca = plano.escolaBusca || '04 DE PLANALTINA';
+      // Nome completo para validação do match
+      const nomeEsperado = plano.escolaNome || 'CENTRO DE ENSINO FUNDAMENTAL 04 DE PLANALTINA';
+
+      await ngUnidade.click();
+      await page.waitForTimeout(500);
+      const inputUE = ngUnidade.locator("input[type='text']").first();
+      if ((await inputUE.count()) > 0) {
+        await inputUE.fill(termoBusca);
+      } else {
+        await page.keyboard.type(termoBusca, { delay: 30 });
+      }
+      await page.waitForTimeout(1500);
+
+      // Seleciona a primeira opção que contém o termo
+      const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
+      const countUE = await opcoesUE.count();
+      let unidadeOk = false;
+      const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const targetUE = normUE(nomeEsperado);
+      for (let i = 0; i < countUE; i++) {
+        const txt = (await opcoesUE.nth(i).textContent()) || '';
+        if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+          await opcoesUE.nth(i).click();
+          unidadeOk = true;
+          console.log(`[educadf.pap] ✅ Unidade Escolar selecionada: "${txt.trim().substring(0, 60)}"`);
+          break;
+        }
+      }
+
+      if (!unidadeOk && countUE > 0) {
+        // Fallback: clica na primeira opção disponível (provavelmente é a certa)
+        await opcoesUE.first().click();
+        const txtFb = (await opcoesUE.first().textContent().catch(() => '')) || '';
+        console.warn(`[educadf.pap] ⚠️  Match exato não encontrado. Selecionou: "${txtFb.trim().substring(0, 60)}"`);
+        unidadeOk = true;
+      }
+
+      if (!unidadeOk) {
+        await page.keyboard.press('Escape');
+        console.warn('[educadf.pap] ⚠️  Nenhuma opção de Unidade Escolar — tentando continuar...');
+      }
+
+      await page.waitForTimeout(1500); // aguarda turmas carregarem após selecionar escola
+      break;
+    }
+
     // ── Turma (OBRIGATÓRIO): sem turma não prosseguir ─────────────────
     const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
     let turmaOk = false;
@@ -1843,6 +1901,46 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       console.warn('[educadf.notas] ng-select não apareceu em 15s — tentando assim mesmo...')
     );
     await page.waitForTimeout(1000);
+
+    // ── Unidade Escolar (OBRIGATÓRIO se campo existir) ──────────────────
+    const placeholdersUnidadeN = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
+    for (const ph of placeholdersUnidadeN) {
+      const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
+      if ((await ngUnidade.count()) === 0) continue;
+      console.log(`[educadf.notas] Filtro Unidade Escolar encontrado: "${ph}"`);
+      const termoBusca = plano.escolaBusca || '04 DE PLANALTINA';
+      const nomeEsperado = plano.escolaNome || 'CENTRO DE ENSINO FUNDAMENTAL 04 DE PLANALTINA';
+      await ngUnidade.click();
+      await page.waitForTimeout(500);
+      const inputUE = ngUnidade.locator("input[type='text']").first();
+      if ((await inputUE.count()) > 0) {
+        await inputUE.fill(termoBusca);
+      } else {
+        await page.keyboard.type(termoBusca, { delay: 30 });
+      }
+      await page.waitForTimeout(1500);
+      const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
+      const countUE = await opcoesUE.count();
+      let unidadeOk = false;
+      const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const targetUE = normUE(nomeEsperado);
+      for (let i = 0; i < countUE; i++) {
+        const txt = (await opcoesUE.nth(i).textContent()) || '';
+        if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+          await opcoesUE.nth(i).click();
+          unidadeOk = true;
+          console.log(`[educadf.notas] ✅ Unidade Escolar selecionada`);
+          break;
+        }
+      }
+      if (!unidadeOk && countUE > 0) {
+        await opcoesUE.first().click();
+        unidadeOk = true;
+      }
+      if (!unidadeOk) await page.keyboard.press('Escape');
+      await page.waitForTimeout(1500);
+      break;
+    }
 
     // ── Turma (OBRIGATÓRIO) — múltiplos placeholders alternativos ──────────
     const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
