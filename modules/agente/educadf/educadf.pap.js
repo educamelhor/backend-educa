@@ -177,6 +177,83 @@ async function aguardarSemOverlay(page, descricao = '') {
   await page.waitForTimeout(500);
 }
 
+// ============================================================================
+// HELPER: Detecta erros do próprio portal EDUCADF (servidor fora do ar,
+// erro interno, swal2 de falha, páginas de erro HTTP, etc)
+// Retorna { erro: true, mensagem: string } ou { erro: false }
+// ============================================================================
+async function detectarErroPortalEducaDF(page) {
+  // Padrões de mensagem de erro do EDUCADF (case-insensitive)
+  const PADROES_ERRO_PORTAL = [
+    'houve um erro interno',
+    'erro interno ao acessar',
+    'serviço indisponível',
+    'servico indisponivel',
+    'servidor indisponível',
+    'falha ao carregar',
+    'ocorreu um erro',
+    'sistema indisponível',
+    'não foi possível carregar',
+    '500 internal server',
+    '503 service',
+    'gateway timeout',
+    'bad gateway',
+  ];
+
+  try {
+    const resultado = await page.evaluate((padroes) => {
+      // 1. Verifica swal2 visível com mensagem de erro
+      const swalContainer = document.querySelector('.swal2-container');
+      if (swalContainer) {
+        const style = window.getComputedStyle(swalContainer);
+        const visivel = style.display !== 'none' && style.visibility !== 'hidden';
+        if (visivel) {
+          const swalText = (swalContainer.textContent || '').toLowerCase();
+          const erroEncontrado = padroes.some(p => swalText.includes(p));
+          if (erroEncontrado) {
+            return {
+              erro: true,
+              fonte: 'swal2',
+              mensagem: (swalContainer.querySelector('.swal2-content, .swal2-html-container, p')?.textContent || swalText).trim().substring(0, 200),
+            };
+          }
+        }
+      }
+
+      // 2. Verifica body/page inteira por mensagens de erro (páginas de erro HTTP)
+      const bodyText = (document.body?.textContent || '').toLowerCase();
+      const erroNoBody = padroes.some(p => bodyText.includes(p));
+      if (erroNoBody) {
+        // Tenta extrair a mensagem mais relevante
+        const h1 = document.querySelector('h1, h2')?.textContent?.trim() || '';
+        const p  = document.querySelector('p')?.textContent?.trim() || '';
+        return {
+          erro: true,
+          fonte: 'body',
+          mensagem: (h1 || p || 'Erro detectado na página do EDUCADF').substring(0, 200),
+        };
+      }
+
+      // 3. Verifica se a URL mudou para página de erro
+      const url = window.location.href.toLowerCase();
+      if (url.includes('/error') || url.includes('/500') || url.includes('/503') || url.includes('/manutencao')) {
+        return { erro: true, fonte: 'url', mensagem: `Página de erro detectada: ${window.location.pathname}` };
+      }
+
+      return { erro: false };
+    }, PADROES_ERRO_PORTAL);
+
+    if (resultado.erro) {
+      console.error(`[educadf.pap] 🛑 PORTAL EDUCADF COM ERRO (fonte: ${resultado.fonte}): "${resultado.mensagem}"`);
+      // Tenta fechar o swal2 de erro antes de retornar
+      await removerBackdrops(page);
+    }
+    return resultado;
+  } catch (e) {
+    console.warn('[educadf.pap] detectarErroPortalEducaDF falhou:', e.message);
+    return { erro: false };
+  }
+}
 
 // ============================================================================
 // HELPER: Seleciona opção em ng-select do Angular pelo placeholder e valor
@@ -795,6 +872,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
 
 
+    // ── Verifica se o portal EDUCADF está com erro após navegar ───────────
+    const erroPortal = await detectarErroPortalEducaDF(page);
+    if (erroPortal.erro) {
+      throw Object.assign(
+        new Error(`EDUCADF está apresentando problemas técnicos. Tente novamente em alguns minutos. Detalhe: ${erroPortal.mensagem}`),
+        { errorCode: 'PORTAL_INDISPONIVEL' }
+      );
+    }
+
     // ── Aguarda os ng-selects da página carregarem (até 15s) ────────────
     await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
       console.warn('[educadf.pap] ng-select não apareceu em 15s — tentando assim mesmo...')
@@ -818,8 +904,32 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
     if (!turmaOk) {
-      // Turma é crítica — sem ela o evento errado pode ser clicado
-      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a página carregou corretamente.`);
+      // Antes de assumir que a turma não existe, verifica se o portal está com erro
+      // ("NO ITEMS FOUND" no dropdown é sintoma de portal fora do ar, não de turma inexistente)
+      const erroPortalTurma = await detectarErroPortalEducaDF(page);
+      if (erroPortalTurma.erro) {
+        throw Object.assign(
+          new Error(`EDUCADF está apresentando problemas técnicos (filtro de turma não carregou). Tente novamente em alguns minutos.`),
+          { errorCode: 'PORTAL_INDISPONIVEL' }
+        );
+      }
+      // Verifica se o dropdown retornou explicitamente "no items found" (portal com dados vazios)
+      const dropdownVazio = await page.evaluate(() => {
+        const opts = [...document.querySelectorAll('.ng-dropdown-panel .ng-option')];
+        if (opts.length === 0) return false;
+        const txt = opts.map(o => (o.textContent || '').trim().toLowerCase()).join(' ');
+        return txt.includes('no items found') || txt.includes('nenhum item') || txt.includes('sem resultados');
+      }).catch(() => false);
+
+      if (dropdownVazio) {
+        throw Object.assign(
+          new Error('EDUCADF não carregou as turmas disponíveis (dropdown vazio). O portal pode estar com instabilidade. Tente novamente em alguns minutos.'),
+          { errorCode: 'PORTAL_INDISPONIVEL' }
+        );
+      }
+
+      // Realmente não encontrou a turma
+      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
     }
     await page.waitForTimeout(800);
 
@@ -1506,7 +1616,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       message: `Erro durante a exportação: ${err.message}`,
       screenshotPath: errorScreenshot,
       durationMs: Date.now() - startedAt,
-      errorCode: 'PAP_EXPORT_ERROR',
+      // Propaga o errorCode específico (ex: PORTAL_INDISPONIVEL) se foi definido na throw
+      errorCode: err.errorCode || 'PAP_EXPORT_ERROR',
     };
   }
 }
@@ -2175,7 +2286,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       ok: false,
       message: `Erro durante exportação de notas: ${err.message}`,
       durationMs: Date.now() - startedAt,
-      errorCode: 'NOTAS_EXPORT_ERROR',
+      errorCode: err.errorCode || 'NOTAS_EXPORT_ERROR',
     };
   }
 }
