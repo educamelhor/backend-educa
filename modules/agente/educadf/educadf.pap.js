@@ -1504,7 +1504,22 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     console.log(`[educadf.pap] ✅ "${nomeAtividade}" não encontrado — prosseguindo com a criação.`);
 
-    // ── Passo 7.2: Clicar em "+ Criar procedimento avaliativo" ───────────
+    // ── Passo 7.2: Captura network + Screenshot + Clicar "Criar procedimento" ──
+    // Intercepta requisições POST para descobrir qual bimestre é enviado na API
+    const _apiRequests = [];
+    const _reqHandler = (req) => {
+      if (req.method() === 'POST' || req.method() === 'PUT') {
+        const url = req.url();
+        const body = req.postData() || '';
+        if (url.includes('procedimento') || url.includes('instrumento') || url.includes('avaliativ')) {
+          _apiRequests.push({ url, body: body.substring(0, 500) });
+        }
+      }
+    };
+    page.on('request', _reqHandler);
+
+    // Screenshot ANTES de clicar Criar — mostra qual bimestre está ativo
+    await session.screenshot('pap_PRE_CRIAR_bimestre_ativo');
     console.log('[educadf.pap] 7.2/8 Clicando em "+ Criar procedimento avaliativo"...');
 
     const textosBotaoCriar = [
@@ -1721,6 +1736,14 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const ok = !modalAindaAberto || alertSucesso;
 
     console.log(`[educadf.pap] Resultado: modalFechado=${!modalAindaAberto}, alertSucesso=${alertSucesso}`);
+
+    // Log das requisicoes capturadas pela interceptacao de rede
+    page.off('request', _reqHandler);
+    if (_apiRequests.length > 0) {
+      console.log(`[educadf.pap] 🔍 API requests capturadas (${_apiRequests.length}): ${JSON.stringify(_apiRequests)}`);
+    } else {
+      console.log('[educadf.pap] 🔍 Nenhuma requisicao POST de procedimento capturada (pode ser GraphQL ou WebSocket).');
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 8: Workaround Robustez — Re-editar para forçar a confirmação da data
