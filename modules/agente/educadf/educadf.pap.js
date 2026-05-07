@@ -1168,6 +1168,12 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
 
+    // Extrai número do bimestre alvo (ex: '1' para '1º Bimestre')
+
+    const bimNumPAP = String(plano.bimestre || '').replace(/\\D/g, '');
+
+
+
     // Navega o calendário até encontrar eventos do bimestre alvo (máx 8 meses)
     console.log(`[educadf.pap] 8/16 Navegando calendário para encontrar eventos do ${bimNumPAP}º Bimestre...`);
 
@@ -1346,7 +1352,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // O agente precisa clicar no botão do bimestre ALVO (ex: 1º Bimestre).
     // O clique Playwright funciona — o problema era a verificação CSS.
     // ══════════════════════════════════════════════════════════════════════
-    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
+    // bimNumPAP declarado antes (linha ~1173, antes da navegacao do calendario)
     if (!bimNumPAP) {
       return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}".`, durationMs: 0 };
     }
