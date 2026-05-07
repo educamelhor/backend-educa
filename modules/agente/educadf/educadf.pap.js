@@ -365,7 +365,19 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
   }
 
   console.warn(`[educadf.pap] ❌ ng-select "${placeholder}" → "${valor}" não encontrado`);
-  console.warn(`[educadf.pap]   Opções vistas: ${[...seen].join(' | ')}`);
+  const vistoStr = [...seen].join(' | ') || '(sem opções)';
+  console.warn(`[educadf.pap]   Opções vistas: ${vistoStr}`);
+
+  // Se o dropdown só mostrou "No items found" = portal sem dados (instabilidade, não ausencia de turma)
+  const semDados = [...seen].length === 0 || [...seen].every(
+    s => s === '' || s.toLowerCase().includes('no items found') ||
+         s.toLowerCase().includes('no items') || s.toLowerCase().includes('nenhum item')
+  );
+  if (semDados) {
+    console.warn('[educadf.pap] 🛑 Dropdown retornou "NO ITEMS FOUND" — possível instabilidade do portal EDUCADF');
+    await page.evaluate(() => { window.__educaDFSemDados = true; }).catch(() => {});
+  }
+
   await page.keyboard.press('Escape');
   return false;
 }
@@ -858,8 +870,20 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     console.log('[educadf.pap] 2/7 Navegando direto para Diário de Classe → Calendário...');
     await session.navigateTo('https://educadf.se.df.gov.br/diario_classe/modulos/calendario');
     await session.delay(TIMING.navigationDelay);
+
+    // ── ANTES de removerBackdrops: captura erro visível no portal (modal de erro, HTTP 5xx etc) ──
+    // Após removerBackdrops o modal é dismissado e a detecção falha
+    const erroPortalDetectado = await detectarErroPortalEducaDF(page);
     await removerBackdrops(page);
     await session.screenshot('pap_02_calendario');
+
+    // Lança imediatamente se o portal indicou erro ao carregar o calendário
+    if (erroPortalDetectado.erro) {
+      throw Object.assign(
+        new Error(`EDUCADF está apresentando problemas técnicos: ${erroPortalDetectado.mensagem}. Tente novamente em alguns minutos.`),
+        { errorCode: 'PORTAL_INDISPONIVEL' }
+      );
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 4: Filtros laterais
@@ -871,15 +895,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const turmaEducaDF      = mapearTurma(plano.turmas);
     console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
 
-
-    // ── Verifica se o portal EDUCADF está com erro após navegar ───────────
-    const erroPortal = await detectarErroPortalEducaDF(page);
-    if (erroPortal.erro) {
-      throw Object.assign(
-        new Error(`EDUCADF está apresentando problemas técnicos. Tente novamente em alguns minutos. Detalhe: ${erroPortal.mensagem}`),
-        { errorCode: 'PORTAL_INDISPONIVEL' }
-      );
-    }
 
     // ── Aguarda os ng-selects da página carregarem (até 15s) ────────────
     await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
@@ -904,32 +919,21 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
     if (!turmaOk) {
-      // Antes de assumir que a turma não existe, verifica se o portal está com erro
-      // ("NO ITEMS FOUND" no dropdown é sintoma de portal fora do ar, não de turma inexistente)
-      const erroPortalTurma = await detectarErroPortalEducaDF(page);
-      if (erroPortalTurma.erro) {
-        throw Object.assign(
-          new Error(`EDUCADF está apresentando problemas técnicos (filtro de turma não carregou). Tente novamente em alguns minutos.`),
-          { errorCode: 'PORTAL_INDISPONIVEL' }
-        );
-      }
-      // Verifica se o dropdown retornou explicitamente "no items found" (portal com dados vazios)
-      const dropdownVazio = await page.evaluate(() => {
-        const opts = [...document.querySelectorAll('.ng-dropdown-panel .ng-option')];
-        if (opts.length === 0) return false;
-        const txt = opts.map(o => (o.textContent || '').trim().toLowerCase()).join(' ');
-        return txt.includes('no items found') || txt.includes('nenhum item') || txt.includes('sem resultados');
-      }).catch(() => false);
+      // Verifica as duas causas possíveis para turma não encontrada:
+      // A) Portal mostrou erro antes de carregar (erroPortalDetectado, capturado antes de removerBackdrops)
+      // B) Dropdown só mostrou "NO ITEMS FOUND" = portal sem dados (marcado em window.__educaDFSemDados)
+      const semDadosPortal = await page.evaluate(() => !!window.__educaDFSemDados).catch(() => false);
 
-      if (dropdownVazio) {
+      if (erroPortalDetectado?.erro || semDadosPortal) {
+        const detalhe = erroPortalDetectado?.mensagem || 'dropdown retornou sem dados';
         throw Object.assign(
-          new Error('EDUCADF não carregou as turmas disponíveis (dropdown vazio). O portal pode estar com instabilidade. Tente novamente em alguns minutos.'),
+          new Error(`EDUCADF não carregou as turmas disponíveis (${detalhe}). O portal está com instabilidade. Tente novamente em alguns minutos.`),
           { errorCode: 'PORTAL_INDISPONIVEL' }
         );
       }
 
-      // Realmente não encontrou a turma
-      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
+      // Realmente não encontrou a turma (portal estava ok, turma não existe no EDUCADF)
+      throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
     }
     await page.waitForTimeout(800);
 
