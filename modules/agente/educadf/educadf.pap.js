@@ -1018,105 +1018,170 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // Após Filtrar, aguarda os eventos do calendário renderizarem (Angular async)
-    // O Angular pode levar vários segundos para chamar a API e renderizar os cards.
+    // Após Filtrar, aguarda os eventos do calendário renderizarem.
+    // O EDUCADF usa FullCalendar com elementos div/a misturados.
+    // Seletor amplo cobre todas as variações de classes fc-* do FullCalendar.
     // ══════════════════════════════════════════════════════════════════════
-    const fcEventSelector = 'a.fc-event, .fc-event a, .fc-daygrid-event';
-    console.log('[educadf.pap] Aguardando eventos renderizarem no calendário (até 20s)...');
-    try {
-      await page.waitForSelector(fcEventSelector, { timeout: 20000 });
-      console.log('[educadf.pap] ✅ Eventos detectados no calendário.');
 
-    } catch {
-      // Nenhum evento apareceu — tenta navegar ao mês atual e aguarda mais
-      console.warn('[educadf.pap] ⚠️  Nenhum evento após 20s. Tentando clicar em "Hoje" para forçar mês atual...');
+    // Seletor ultra-amplo: cobre FullCalendar 3, 4, 5 e variações do EDUCADF
+    const FC_SELETORES = [
+      '.fc-event',
+      'a.fc-event',
+      'div.fc-event',
+      '.fc-daygrid-event',
+      '.fc-timegrid-event',
+      '.fc-h-event',
+      '.fc-v-event',
+      '[class*="fc-event"]',
+      '.fc-content',
+      '.fc-day-grid-event',
+      '.fc-time-grid-event',
+    ];
+    const fcEventSelector = FC_SELETORES.join(', ');
+
+    console.log('[educadf.pap] Aguardando eventos renderizarem no calendário (até 25s)...');
+
+    // Aguarda qualquer seletor fc aparecer
+    let eventosDetectados = false;
+    for (let tentFc = 1; tentFc <= 3 && !eventosDetectados; tentFc++) {
       try {
-        await page.locator("button:has-text('Hoje'), button:has-text('Today')").first().click({ timeout: 5000 });
-        await page.waitForSelector(fcEventSelector, { timeout: 15000 });
-        console.log('[educadf.pap] ✅ Eventos detectados após navegar para mês atual.');
+        await page.waitForSelector(fcEventSelector, { timeout: 10000 });
+        eventosDetectados = true;
+        console.log('[educadf.pap] ✅ Eventos detectados no calendário.');
       } catch {
-        console.warn('[educadf.pap] ⚠️  Nenhum evento encontrado mesmo após navegar para mês atual.');
+        if (tentFc === 1) {
+          // Na 1ª falha: tenta clicar "Hoje" para forçar renderização do mês atual
+          console.warn('[educadf.pap] ⚠️  Nenhum evento após 10s. Clicando em "Hoje"...');
+          try {
+            await page.locator("button:has-text('Hoje'), button:has-text('Today')").first()
+              .click({ timeout: 4000 });
+            await page.waitForTimeout(2000);
+          } catch {}
+        } else if (tentFc === 2) {
+          // Na 2ª falha: scroll para cima (eventos podem estar fora do viewport)
+          console.warn('[educadf.pap] ⚠️  Ainda sem eventos. Tentando scroll...');
+          await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+          await page.waitForTimeout(2000);
+        }
       }
     }
+
+    // Diagnóstico amplo via JS: conta TODOS os elementos com classe fc-event*
+    const diagFC = await page.evaluate((seletores) => {
+      const resultados = {};
+      let totalGlobal = 0;
+      for (const sel of seletores) {
+        try {
+          const els = [...document.querySelectorAll(sel)];
+          resultados[sel] = els.length;
+          totalGlobal += els.length;
+        } catch { resultados[sel] = -1; }
+      }
+      // Fallback: busca qualquer elemento com class contendo "fc-event"
+      const byClass = [...document.querySelectorAll('*')].filter(el => {
+        const cls = el.className || '';
+        return typeof cls === 'string' && cls.includes('fc-event');
+      });
+      resultados['byClass[fc-event]'] = byClass.length;
+      // Amostras de texto dos primeiros elementos encontrados
+      const amostras = byClass.slice(0, 4).map(el => ({
+        tag: el.tagName,
+        cls: el.className.substring(0, 60),
+        txt: (el.textContent || '').trim().substring(0, 60),
+      }));
+      return { totalGlobal, resultados, amostras };
+    }, FC_SELETORES);
+
+    console.log(`[educadf.pap] Diagnóstico FC: total=${diagFC.totalGlobal} | por selector: ${JSON.stringify(diagFC.resultados)}`);
+    if (diagFC.amostras.length) {
+      console.log(`[educadf.pap] Amostras: ${JSON.stringify(diagFC.amostras)}`);
+    }
+
     await session.screenshot('pap_04b_pos_filtrar');
 
-    // Diagnóstico: log dos eventos encontrados (não bloqueia o fluxo)
-    const normStr = (s) => String(s)
-      .toUpperCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^A-Z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ').trim();
+    // Total real de eventos encontrados (usando abordagem mais ampla)
+    const totalEventosReais = diagFC.totalGlobal > 0
+      ? diagFC.totalGlobal
+      : (await page.evaluate(() =>
+          [...document.querySelectorAll('*')].filter(el =>
+            typeof el.className === 'string' && el.className.includes('fc-event')
+          ).length
+        ).catch(() => 0));
 
-    const turmaNorm   = normStr(plano.turmas);
-    const compNorm    = normStr(componenteEducaDF);
-    const bimestreNum = String(plano.bimestre || '').replace(/[^\d]/g, '');
-    const turmaTkns   = turmaNorm.split(' ').filter(t => t.length > 0);
-    const compTkns    = compNorm.split(' ').filter(t => t.length > 2);
-
-    const diagnostico = await page.evaluate((tkns) => {
-      const eventos = [...document.querySelectorAll('a.fc-event, .fc-event a, .fc-daygrid-event')];
-      if (eventos.length === 0) return { total: 0, confirmado: false, amostras: [] };
-      const norm = (s) => String(s).toUpperCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      const confirmado = eventos.some(ev => tkns.every(t => norm(ev.textContent || '').includes(t)));
-      const amostras   = eventos.slice(0, 4).map(ev => (ev.textContent || '').trim().substring(0, 70));
-      return { total: eventos.length, confirmado, amostras };
-    }, turmaTkns);
-
-    console.log(`[educadf.pap] Diagnóstico pós-Filtrar: ${JSON.stringify(diagnostico)}`);
-
-    // Se há eventos mas a turma não foi confirmada nos textos — AVISO, não erro.
-    // O calendário já foi filtrado pelo dropdown; prosseguimos.
-    if (diagnostico.total === 0) {
+    if (totalEventosReais === 0) {
       throw new Error(
         `Nenhum evento encontrado no calendário EDUCADF após aplicar os filtros para a turma "${plano.turmas}". ` +
-        `Verifique se a turma possui aulas cadastradas no calendário EDUCADF e se os filtros foram aplicados corretamente.`
+        `Turma filtrada corretamente, mas o calendário não retornou aulas. ` +
+        `Verifique se existem aulas cadastradas para essa turma no EDUCADF.`
       );
     }
-    if (!diagnostico.confirmado) {
-      console.warn(`[educadf.pap] ⚠️  Turma "${plano.turmas}" não detectada nos textos dos eventos, mas há ${diagnostico.total} evento(s) visíveis. Prosseguindo com clique.`);
-    } else {
-      console.log(`[educadf.pap] ✅ Turma "${plano.turmas}" confirmada no calendário (${diagnostico.total} eventos).`);
-    }
+
+    console.log(`[educadf.pap] ✅ ${totalEventosReais} evento(s) no calendário. Prosseguindo para clique...`);
 
 
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 5: Clicar num evento do calendário (fc-event)
-    // Turma é o critério determinante (confirmado acima).
-    // Componente é bônus — se não bater, ainda clica em evento da turma.
-    // ══════════════════════════════════════════════════════════════════════
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 8: Clicar em QUALQUER evento do calendário para abrir o diário.
-    // O evento serve apenas para acessar as abas internas.
-    // O bimestre é selecionado na ABA INTERNA no passo 10.
+    // O evento serve apenas como ponto de entrada. O bimestre será selecionado
+    // na ABA INTERNA no passo 10.
     // ══════════════════════════════════════════════════════════════════════
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
 
-    const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
-    const totalFcEventos = await fcEventos.count();
-    console.log(`[educadf.pap] 8/16 Eventos visíveis: ${totalFcEventos}. Clicando no primeiro...`);
-
     let eventoClicado = false;
-    for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
-      const ev  = fcEventos.nth(i);
-      const txt = (await ev.textContent().catch(() => '')) || '';
+
+    // Tentativa 1: seletores Playwright (fc-event em todas as variações)
+    for (const sel of FC_SELETORES) {
+      if (eventoClicado) break;
       try {
-        await ev.scrollIntoViewIfNeeded().catch(() => {});
+        const fcEvLoc = page.locator(sel).first();
+        const cnt = await fcEvLoc.count().catch(() => 0);
+        if (cnt === 0) continue;
+        console.log(`[educadf.pap] 8/16 Tentando clicar via Playwright: "${sel}" (${cnt} elementos)...`);
+        const txt = (await fcEvLoc.textContent().catch(() => '')) || '';
+        await fcEvLoc.scrollIntoViewIfNeeded().catch(() => {});
         await aguardarSemOverlay(page, 'pre-click-evento');
-        await ev.click({ timeout: 10000 });
+        await fcEvLoc.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento clicado: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento clicado via "${sel}": "${txt.substring(0, 80)}"`);
       } catch (err) {
-        console.warn(`[educadf.pap] Evento [${i}] falhou: ${err.message}`);
+        console.warn(`[educadf.pap]   Seletor "${sel}" falhou: ${err.message?.substring(0, 80)}`);
+      }
+    }
+
+    // Tentativa 2: fallback JS — encontra e clica no primeiro elemento com classe fc-event
+    if (!eventoClicado) {
+      console.warn('[educadf.pap] ⚠️  Playwright falhou em todos os seletores. Tentando JS dispatchEvent...');
+      const jsResult = await page.evaluate(() => {
+        const candidatos = [...document.querySelectorAll('*')].filter(el => {
+          const cls = el.className || '';
+          return typeof cls === 'string' && cls.includes('fc-event') && el.offsetParent !== null;
+        });
+        if (!candidatos.length) return { ok: false, motivo: 'nenhum elemento fc-event visível' };
+        const el = candidatos[0];
+        el.scrollIntoView({ block: 'center' });
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return {
+          ok: true,
+          tag: el.tagName,
+          cls: el.className.substring(0, 60),
+          txt: (el.textContent || '').trim().substring(0, 60),
+        };
+      }).catch(e => ({ ok: false, motivo: e.message }));
+
+      if (jsResult.ok) {
+        eventoClicado = true;
+        console.log(`[educadf.pap] ✅ Evento clicado via JS: <${jsResult.tag}> "${jsResult.txt}"`);
+        await page.waitForTimeout(1000);
+      } else {
+        console.error(`[educadf.pap] ❌ JS fallback falhou: ${jsResult.motivo}`);
       }
     }
 
     if (!eventoClicado) {
       throw new Error(
-        `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
-        `Verifique se o filtro foi aplicado e se existem eventos visíveis.`
+        `Nenhum evento do calendário pôde ser clicado para a turma "${plano.turmas}". ` +
+        `Tentados ${FC_SELETORES.length} seletores CSS + fallback JS. ` +
+        `Verifique os screenshots para diagnóstico.`
       );
     }
 
