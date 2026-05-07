@@ -1057,10 +1057,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // Componente é bônus — se não bater, ainda clica em evento da turma.
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 5/7 Clicando num evento do calendário para abrir o diário...');
-
-    await session.delay(2000);
-    await removerBackdrops(page);
-    await session.screenshot('pap_04c_calendario');
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 8: Navegar o calendário até encontrar evento do bimestre correto
+    // CRÍTICO: o bimestre do diário é determinado pelo EVENTO clicado, não
+    // pela aba interna. Clicar em evento de maio (2º Bim) abre o diário no
+    // 2º Bimestre — "Criar procedimento" sempre cria no bimestre do evento.
+    // Solução: navegar o calendário para o mês do bimestre alvo antes de clicar.
+    // ══════════════════════════════════════════════════════════════════════
 
     const eventoOkTurmaComp = (txt) => {
       const n = normStr(txt);
@@ -1071,79 +1074,102 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       return turmaTkns.every(t => n.includes(t));
     };
 
+    const normBimEv = (s) => String(s)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+      .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+    const alvoBimEv = `${bimestreNum}O BIMESTRE`;
+
+    // Verifica se algum evento visível pertence ao bimestre alvo
+    const temEventoBimAlvo = async () => {
+      const evs = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
+      const tot = await evs.count().catch(() => 0);
+      for (let i = 0; i < Math.min(tot, 15); i++) {
+        const txt = (await evs.nth(i).textContent().catch(() => '')) || '';
+        if (normBimEv(txt).includes(alvoBimEv)) return true;
+      }
+      return false;
+    };
+
+    // Se os eventos visíveis não são do bimestre alvo, navega o calendário
+    if (bimestreNum && !(await temEventoBimAlvo())) {
+      console.warn(`[educadf.pap] ⚠️  Eventos visíveis não são do ${bimestreNum}º Bimestre. Navegando calendário...`);
+
+      // Bimestres menores = ir para meses anteriores (←), maiores = (→)
+      const mesAtualStr = await page.locator('.fc-toolbar-title, .fc-toolbar h2').first().textContent().catch(() => '') || '';
+      const mesAtualNum = new Date().getMonth() + 1; // mês atual real como fallback
+      // 1º Bim (fev-abr) < mês atual maio → vai para trás
+      // 3º/4º Bim (ago-dez) > maio → vai para frente
+      const irParaTras = Number(bimestreNum) < 3;
+      const btnNav = irParaTras
+        ? page.locator('.fc-prev-button, button[aria-label*="prev"], button[title*="prev"], button[class*="prev"]').first()
+        : page.locator('.fc-next-button, button[aria-label*="next"], button[title*="next"], button[class*="next"]').first();
+
+      for (let nav = 0; nav < 6; nav++) {
+        try { await btnNav.click({ timeout: 5000 }); } catch { break; }
+        await page.waitForSelector('a.fc-event, .fc-event a, .fc-daygrid-event', { timeout: 10000 }).catch(() => {});
+        await session.delay(1500);
+        if (await temEventoBimAlvo()) {
+          console.log(`[educadf.pap] ✅ Encontrou eventos do ${bimestreNum}º Bimestre após ${nav + 1} navegação(ões).`);
+          break;
+        }
+        console.warn(`[educadf.pap] Navegação ${nav + 1}/6: ainda sem eventos do ${bimestreNum}º Bimestre.`);
+      }
+      await session.screenshot('pap_04c_calendario_bimestre');
+    }
+
+    // Agora clica em um evento do bimestre correto (ou qualquer um como fallback)
     const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
     const totalFcEventos = await fcEventos.count();
     console.log(`[educadf.pap] Eventos no calendário: ${totalFcEventos}`);
 
     let eventoClicado = false;
 
-    // ══ PASSO 8 do fluxo: clicar em QUALQUER evento da turma ══════════════
-    // O bimestre NÃO é verificado aqui — o calendário já está filtrado pela
-    // turma. O bimestre correto será selecionado DENTRO do diário (passo 10).
-    // ════════════════════════════════════════════════════════════════════════
-
-    // Tentativa 1: turma + componente (qualquer bimestre)
+    // Tentativa 1: evento do bimestre correto + turma + componente
     for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
       const ev  = fcEventos.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
-      if (!eventoOkTurmaComp(txt)) continue;
+      if (bimestreNum && !normBimEv(txt).includes(alvoBimEv)) continue;
+      if (!eventoOkTurmaComp(txt) && !eventoOkSoTurma(txt)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
         await aguardarSemOverlay(page, 'pre-click-evento-t1');
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento [bim+turma] clicado: "${txt.substring(0, 80)}"`);
       } catch (err) {
         console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
       }
     }
 
-    // Tentativa 2: só turma (componente pode ter nome diferente no EDUCADF)
-    if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Tentativa só turma (sem filtro de componente)...');
-      for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
-        const ev  = fcEventos.nth(i);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!eventoOkSoTurma(txt)) continue;
-        try {
-          await ev.scrollIntoViewIfNeeded().catch(() => {});
-          await aguardarSemOverlay(page, 'pre-click-evento-t2');
-          await ev.click({ timeout: 10000 });
-          eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento [só turma] clicado: "${txt.substring(0, 80)}"`);
-        } catch (err) {
-          console.warn(`[educadf.pap] Clique evento [${i}] t2 falhou: ${err.message}`);
-        }
-      }
-    }
-
-    // Tentativa 3: primeiro evento visível (calendário já filtrado por turma)
+    // Tentativa 2: primeiro evento visível (fallback)
     if (!eventoClicado && totalFcEventos > 0) {
-      console.warn('[educadf.pap] ⚠️  Tentativa: primeiro evento visível (calendário já filtrado)...');
+      console.warn('[educadf.pap] ⚠️  Fallback: clicando primeiro evento visível...');
       try {
         const ev  = fcEventos.nth(0);
         const txt = (await ev.textContent().catch(() => '')) || '';
         await ev.scrollIntoViewIfNeeded().catch(() => {});
-        await aguardarSemOverlay(page, 'pre-click-evento-t3');
+        await aguardarSemOverlay(page, 'pre-click-evento-fallback');
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento [fallback-primeiro] clicado: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento [fallback] clicado: "${txt.substring(0, 80)}"`);
       } catch (err) {
-        console.warn(`[educadf.pap] Clique evento fallback falhou: ${err.message}`);
+        console.warn(`[educadf.pap] Clique fallback falhou: ${err.message}`);
       }
     }
 
     if (!eventoClicado) {
-      // Log eventos encontrados para diagnóstico
       for (let i = 0; i < Math.min(totalFcEventos, 5); i++) {
         const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
         console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
       }
       throw new Error(
         `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
-        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis no calendário.`
+        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis.`
       );
     }
+
 
     // Aguarda o diário carregar (exibe abas no topo)
     await session.delay(TIMING.navigationDelay);
