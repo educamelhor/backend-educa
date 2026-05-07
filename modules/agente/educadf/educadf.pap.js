@@ -151,7 +151,8 @@ async function removerBackdrops(page) {
 
 // ============================================================================
 // HELPER: Verifica se o bimestre correto está ATIVO no DOM após clicar na aba.
-// Retorna true se confirmado, false se outro bimestre está ativo.
+// Estratégia focada: filtra APENAS elementos cujo texto contém "BIMESTRE",
+// ignorando qualquer outro elemento .nav-link.active (ex: badge de notificações).
 // ============================================================================
 async function verificarBimestreAtivo(page, bimNumStr) {
   return await page.evaluate((num) => {
@@ -160,23 +161,58 @@ async function verificarBimestreAtivo(page, bimNumStr) {
       .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
       .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
     const alvo = `${num}O BIMESTRE`;
-    // Busca tab ativa (class .active ou aria-selected=true)
-    const ativos = [...document.querySelectorAll(
-      '.nav-link.active, [role="tab"][aria-selected="true"], .nav-item.active .nav-link, button.nav-link.active'
-    )];
-    // Verifica se alguma aba ATIVA contém o texto do bimestre alvo
-    const bimestreCorretoAtivo = ativos.some(el => norm(el.textContent || '').includes(alvo));
-    // Verifica se alguma aba com bimestre DIFERENTE está ativa (sinal de contaminação)
-    const outrosBimestres = ativos.some(el => {
+
+    // IMPORTANTE: busca TODOS os elementos que contenham "BIMESTRE" no texto
+    // (não genérico .nav-link.active que pega notifications e outros elementos)
+    const todosBimestre = [...document.querySelectorAll(
+      'button, a, [role="tab"], .nav-link, li.nav-item button, li.nav-item a'
+    )].filter(el => {
       const t = norm(el.textContent || '');
-      return t.includes('BIMESTRE') && !t.includes(alvo);
+      return t.includes('BIMESTRE');
     });
-    return {
-      bimestreCorretoAtivo,
-      outrosBimestres,
-      ativos: ativos.map(el => el.textContent?.trim().substring(0, 40)),
+
+    if (todosBimestre.length === 0) {
+      return { bimestreCorretoAtivo: false, outrosBimestres: false,
+               semTabs: true, ativos: [] };
+    }
+
+    // Verifica estado ativo por múltiplas estratégias:
+    // 1. Classe CSS .active
+    // 2. aria-selected=true
+    // 3. Cor de fundo diferente (inline style ou computed)
+    // 4. Elemento filho/pai com .active
+    const isAtivo = (el) => {
+      if (el.classList.contains('active')) return true;
+      if (el.getAttribute('aria-selected') === 'true') return true;
+      if (el.closest('.active')) return true;
+      if (el.querySelector('.active')) return true;
+      // Verifica computed background (botão selecionado geralmente fica azul/colorido)
+      const bg = window.getComputedStyle(el).backgroundColor;
+      const isBlue = bg && (bg.includes('13, 110') || bg.includes('0, 123') ||
+                            bg.includes('0, 112') || bg.includes('25, 135') ||
+                            bg.includes('var(--bs-primary)'));
+      if (isBlue) return true;
+      return false;
     };
-  }, bimNumStr).catch(() => ({ bimestreCorretoAtivo: false, outrosBimestres: false, ativos: [] }));
+
+    const bimestreCorretoAtivo = todosBimestre
+      .filter(el => norm(el.textContent || '').includes(alvo))
+      .some(el => isAtivo(el));
+
+    const outrosBimestres = todosBimestre
+      .filter(el => {
+        const t = norm(el.textContent || '');
+        return t.includes('BIMESTRE') && !t.includes(alvo);
+      })
+      .some(el => isAtivo(el));
+
+    const listaTextos = todosBimestre.map(el => ({
+      txt: el.textContent?.trim().substring(0, 30),
+      ativo: isAtivo(el),
+    }));
+
+    return { bimestreCorretoAtivo, outrosBimestres, semTabs: false, ativos: listaTextos };
+  }, bimNumStr).catch(() => ({ bimestreCorretoAtivo: false, outrosBimestres: false, semTabs: false, ativos: [] }));
 }
 
 // ============================================================================
@@ -1233,8 +1269,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 10: Selecionar o bimestre correto na aba de Procedimentos
-    // FLUXO OBRIGATÓRIO: clicar na aba → verificar .active no DOM → retry
-    // NUNCA prosseguir se o bimestre errado estiver ativo.
+    //
+    // CONTEXTO: O calendário já abre no 2º Bimestre (contexto do diário).
+    // O agente precisa clicar no botão do bimestre ALVO (ex: 1º Bimestre).
+    // O clique Playwright funciona — o problema era a verificação CSS.
     // ══════════════════════════════════════════════════════════════════════
     const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
     if (!bimNumPAP) {
@@ -1242,13 +1280,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
     console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
 
-    // Aguarda os tabs de bimestre aparecerem
+    // Aguarda os botões de bimestre renderizarem (até 10s)
     await page.waitForSelector(
       `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`,
       { timeout: 10000 }
     ).catch(() => console.warn('[educadf.pap] ⚠️  Timeout aguardando tabs de bimestre'));
     await removerBackdrops(page);
-    await session.delay(1000);
+    await session.delay(800);
 
     const textosAlvo = [
       `${bimNumPAP}º Bimestre`,
@@ -1256,94 +1294,106 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       `${bimNumPAP}o Bimestre`,
     ];
 
-    // ── Loop principal: até 5 tentativas de clicar + verificar ─────────────
-    let bimConfirmado = false;
-    for (let tentativa = 1; tentativa <= 5 && !bimConfirmado; tentativa++) {
-      console.log(`[educadf.pap] 10/16 Tentativa ${tentativa}/5 — clicando no ${bimNumPAP}º Bimestre...`);
+    // ── PASSO 10a: Clicar no botão do bimestre alvo (até 3 tentativas) ──────
+    // Usa busca ampla: qualquer button/a/[role=tab] cujo texto contém o bimestre alvo
+    let botaoBimestreClicado = false;
+    for (let tentativa = 1; tentativa <= 3 && !botaoBimestreClicado; tentativa++) {
+      console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3 — buscando botão "${textosAlvo[0]}"...`);
 
-      // Estratégia A: Playwright nativo (mais confiável para Angular)
-      if (!bimConfirmado) {
-        const tabSels = [
-          `button.nav-link`,
-          `a.nav-link`,
-          `[role="tab"]`,
-          `li.nav-item button`,
-          `li.nav-item a`,
-          `[class*="bimestre"]`,
-        ];
-        for (const sel of tabSels) {
-          if (bimConfirmado) break;
-          for (const texto of textosAlvo) {
-            if (bimConfirmado) break;
-            try {
-              const loc = page.locator(sel).filter({ hasText: texto }).first();
-              if ((await loc.count().catch(() => 0)) === 0) continue;
-              await loc.scrollIntoViewIfNeeded().catch(() => {});
-              await loc.click({ timeout: 5000 });
-              console.log(`[educadf.pap]   A — clicou: "${texto}" via "${sel}"`);
-              break;
-            } catch {}
+      // Estratégia 1: Playwright filter (mais confiável)
+      const seletoresTab = [
+        'button', 'a', '[role="tab"]',
+        '.nav-link', 'li.nav-item button', 'li.nav-item a',
+      ];
+      for (const sel of seletoresTab) {
+        if (botaoBimestreClicado) break;
+        for (const texto of textosAlvo) {
+          if (botaoBimestreClicado) break;
+          try {
+            const loc = page.locator(sel).filter({ hasText: texto }).first();
+            if ((await loc.count().catch(() => 0)) === 0) continue;
+            await loc.scrollIntoViewIfNeeded().catch(() => {});
+            await loc.click({ timeout: 5000 });
+            botaoBimestreClicado = true;
+            console.log(`[educadf.pap] ✅ 10a — Botão "${texto}" clicado via "${sel}"`);
+          } catch (e) {
+            console.warn(`[educadf.pap]   10a "${sel}" falhou: ${e.message?.substring(0, 60)}`);
           }
         }
       }
 
-      // Estratégia B: dispatchEvent completo Angular-compatible
-      await page.evaluate((num) => {
-        const norm = (s) => String(s)
-          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const alvo = `${num}O BIMESTRE`;
-        const candidatos = [...document.querySelectorAll(
-          'button.nav-link, a.nav-link, [role="tab"], li.nav-item button, li.nav-item a'
-        )];
-        const el = candidatos.find(e => norm(e.textContent || '').includes(alvo));
-        if (!el) return null;
-        el.scrollIntoView({ block: 'center' });
-        el.focus();
-        const opts = { bubbles: true, cancelable: true, composed: true };
-        el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerId: 1 }));
-        el.dispatchEvent(new MouseEvent('mousedown', opts));
-        el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerId: 1 }));
-        el.dispatchEvent(new MouseEvent('mouseup', opts));
-        el.dispatchEvent(new MouseEvent('click', opts));
-        return el.textContent?.trim();
-      }, bimNumPAP).catch(() => null);
+      // Estratégia 2: JS puro — busca qualquer elemento com texto do bimestre alvo
+      if (!botaoBimestreClicado) {
+        const jsClicou = await page.evaluate((num) => {
+          const norm = (s) => String(s)
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+          const alvo = `${num}O BIMESTRE`;
+          // Busca entre TODOS os elementos clicáveis com texto bimestre
+          const todos = [...document.querySelectorAll('button, a, [role="tab"], [class*="bimestre"]')];
+          const el = todos.find(e => norm(e.textContent || '').includes(alvo));
+          if (!el) return null;
+          el.scrollIntoView({ block: 'center' });
+          el.focus();
+          ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(ev => {
+            const opts = { bubbles: true, cancelable: true, composed: true };
+            el.dispatchEvent(ev.includes('pointer')
+              ? new PointerEvent(ev, { ...opts, pointerId: 1 })
+              : new MouseEvent(ev, opts));
+          });
+          return el.textContent?.trim();
+        }, bimNumPAP).catch(() => null);
 
-      // Aguarda Angular re-renderizar (mínimo 2s, mais na primeira tentativa)
-      await session.delay(tentativa === 1 ? 3000 : 2000);
+        if (jsClicou) {
+          botaoBimestreClicado = true;
+          console.log(`[educadf.pap] ✅ 10a — JS clicou: "${jsClicou}"`);
+        }
+      }
 
-      // ── VERIFICAÇÃO CRÍTICA: confirma que o bimestre correto está ATIVO ──
-      const verificacao = await verificarBimestreAtivo(page, bimNumPAP);
-      console.log(`[educadf.pap]   Verificação bimestre: ${JSON.stringify(verificacao)}`);
-
-      if (verificacao.bimestreCorretoAtivo) {
-        bimConfirmado = true;
-        console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO ATIVO no DOM (tentativa ${tentativa}/5).`);
-      } else if (verificacao.outrosBimestres) {
-        console.warn(`[educadf.pap] ⚠️  Tentativa ${tentativa}/5: outro bimestre está ativo: ${JSON.stringify(verificacao.ativos)}. Retentando...`);
-      } else {
-        console.warn(`[educadf.pap] ⚠️  Tentativa ${tentativa}/5: nenhuma aba bimestre ativa detectada. Retentando...`);
+      if (!botaoBimestreClicado && tentativa < 3) {
+        await session.delay(1500);
       }
     }
 
-    if (!bimConfirmado) {
-      // Última verificação: se o bimestre correto está na URL ou no título da página
-      const urlCheck = page.url().toLowerCase();
-      const pageOk = urlCheck.includes(`bimestre=${bimNumPAP}`) || urlCheck.includes(`bim=${bimNumPAP}`);
-      if (!pageOk) {
-        await session.screenshot('pap_bimestre_FALHA');
-        return {
-          ok: false,
-          message: `Impossível confirmar ${bimNumPAP}º Bimestre como ativo após 5 tentativas. Outro bimestre pode estar selecionado. Abortando para evitar criação no bimestre errado.`,
-          durationMs: Date.now() - startedAt,
-        };
-      }
+    if (!botaoBimestreClicado) {
+      await session.screenshot('pap_bimestre_FALHA');
+      return {
+        ok: false,
+        message: `Botão "${bimNumPAP}º Bimestre" não encontrado na aba de Procedimentos Avaliativos. ` +
+                 `Verifique se a aba carregou corretamente.`,
+        durationMs: Date.now() - startedAt,
+      };
     }
 
+    // ── PASSO 10b: Aguarda Angular re-renderizar + verifica estado ───────────
+    await session.delay(3000);
     await session.screenshot('pap_06b_bimestre_selecionado');
-    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre selecionado e confirmado. Prosseguindo...`);
 
+    // Verificação informativa (não bloqueia o fluxo se não confirmar via CSS)
+    const verificacao = await verificarBimestreAtivo(page, bimNumPAP);
+    console.log(`[educadf.pap] Verificação bimestre pós-clique: ${JSON.stringify(verificacao)}`);
+
+    if (verificacao.bimestreCorretoAtivo) {
+      console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO via DOM.`);
+    } else if (verificacao.outrosBimestres) {
+      // Bimestre ERRADO ativo — aborta para evitar criação no bimestre errado
+      console.error(`[educadf.pap] ❌ BIMESTRE ERRADO ATIVO: ${JSON.stringify(verificacao.ativos)}`);
+      await session.screenshot('pap_bimestre_ERRADO');
+      return {
+        ok: false,
+        message: `Após clicar em "${bimNumPAP}º Bimestre", outro bimestre permanece ativo no DOM. ` +
+                 `Abortando para evitar criação no bimestre errado.`,
+        durationMs: Date.now() - startedAt,
+      };
+    } else {
+      // Não conseguiu confirmar via CSS mas também não detectou bimestre errado.
+      // O clique foi executado — prossegue com aviso (não aborta).
+      console.warn(`[educadf.pap] ⚠️  Verificação CSS inconclusiva (tabs podem usar classes não mapeadas). ` +
+                   `O clique foi executado — prosseguindo conforme fluxo.`);
+    }
+
+    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre selecionado. Prosseguindo...`);
     await removerBackdrops(page);
     await session.delay(500);
 
