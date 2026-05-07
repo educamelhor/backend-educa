@@ -1,4 +1,4 @@
-// modules/agente/educadf/educadf.pap.js
+﻿// modules/agente/educadf/educadf.pap.js
 // ============================================================================
 // AGENTE EDUCADF — EXPORTAR PLANO DE AVALIAÇÃO PEDAGÓGICA (PAP)
 // ============================================================================
@@ -1414,70 +1414,46 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
                    `O clique foi executado — prosseguindo conforme fluxo.`);
     }
 
-    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre selecionado. Estabilizando estado Angular...`);
+    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre clicado. Aguardando rede + Angular estabilizarem...`);
     await removerBackdrops(page);
 
-    // ── ESTABILIZAÇÃO ANGULAR DO BIMESTRE ────────────────────────────────────
-    // PROBLEMA IDENTIFICADO: mesmo com o tab visualmente ativo, o Angular pode
-    // não ter propagado o estado interno antes do clique em "Criar procedimento".
-    // SOLUÇÃO: segundo clique no tab + delay longo + verificação de conteúdo.
-    // ─────────────────────────────────────────────────────────────────────────
+    // Aguarda rede estabilizar (Angular pode fazer requisição HTTP ao trocar bimestre)
+    await page.waitForLoadState('networkidle', { timeout: 15000 })
+      .catch(() => console.warn('[educadf.pap] ⚠️  networkidle timeout após click bimestre — continuando'));
+    await session.delay(3000);
 
-    // 1) Segundo clique no tab — garante que o Angular processa o (click) binding
-    await page.evaluate((num) => {
+    // Diagnóstico: verifica estado da aba E relação do botão Criar com o painel ativo
+    const diagBimestre = await page.evaluate((num) => {
       const norm = (s) => String(s)
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
         .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
       const alvo = `${num}O BIMESTRE`;
-      const el = [...document.querySelectorAll('button, a, [role="tab"]')]
-        .find(e => norm(e.textContent || '').includes(alvo));
-      if (el) {
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
-        console.log('[pap-js] Segundo clique no tab bimestre disparado.');
-      }
-    }, bimNumPAP).catch(() => {});
 
-    // 2) Aguarda Angular estabilizar (8s) — tempo suficiente para re-renderizar
-    //    a aba de Procedimentos com o conteúdo do bimestre correto
-    console.log(`[educadf.pap] ⏳ Aguardando Angular estabilizar estado do ${bimNumPAP}º Bimestre (8s)...`);
-    await session.delay(8000);
-
-    // 3) Verifica se o conteúdo da aba mudou para o bimestre correto
-    //    Indicador: o botão "+ Criar procedimento avaliativo" deve estar visível
-    //    E os headers da tabela NÃO devem ser dia da semana (dom., seg., ter., ...)
-    const tabEstabilizada = await page.evaluate((num) => {
-      // Botão "Criar procedimento avaliativo" deve estar presente
-      const btnCriar = [...document.querySelectorAll('button')].find(b =>
-        (b.textContent || '').toLowerCase().includes('criar procedimento')
+      const bimTabs = [...document.querySelectorAll('button, a, [role="tab"]')]
+        .filter(el => norm(el.textContent || '').includes('BIMESTRE'));
+      const tabAtiva = bimTabs.find(el =>
+        el.classList.contains('active') ||
+        el.getAttribute('aria-selected') === 'true' ||
+        !!el.closest('.active')
       );
-      if (!btnCriar) return { ok: false, motivo: 'botão Criar não encontrado' };
 
-      // Verificar que os headers não são dia-da-semana (o que indicaria conteúdo errado)
-      const headers = [...document.querySelectorAll('th')].map(h =>
-        (h.textContent || '').trim().toLowerCase()
-      );
-      const diasSemana = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
-      const estaComCalendario = diasSemana.some(d => headers.includes(d));
+      const btnCriar = [...document.querySelectorAll('button')]
+        .find(b => (b.textContent || '').toLowerCase().includes('criar procedimento'));
+      const painelAtivo = document.querySelector('.tab-pane.active, [role="tabpanel"][aria-hidden="false"]');
+      const btnDentroDoTab = painelAtivo ? painelAtivo.contains(btnCriar) : null;
 
       return {
-        ok: true,
-        btnCriarVisivel: btnCriar.offsetParent !== null,
-        estaComCalendario,
-        headers: headers.slice(0, 6),
+        tabAtivaTexto: tabAtiva ? tabAtiva.textContent?.trim() : null,
+        bimestreCorreto: tabAtiva ? norm(tabAtiva.textContent || '').includes(alvo) : false,
+        btnCriarExiste: !!btnCriar,
+        btnDentroDoTab,
+        bimTabsTextos: bimTabs.map(el => el.textContent?.trim().substring(0, 20)),
       };
-    }, bimNumPAP).catch(e => ({ ok: false, motivo: e.message }));
+    }, bimNumPAP).catch(e => ({ erro: e.message }));
 
-    console.log(`[educadf.pap] Tab estabilizada: ${JSON.stringify(tabEstabilizada)}`);
-
-    if (tabEstabilizada.ok && tabEstabilizada.estaComCalendario) {
-      // Aba ainda mostra conteúdo do calendário — clicar novamente e aguardar mais
-      console.warn(`[educadf.pap] ⚠️  Aba ainda com conteúdo do calendário. Terceiro clique + 5s extra...`);
-      await page.locator('button, a, [role="tab"]')
-        .filter({ hasText: new RegExp(`${bimNumPAP}.*bimestre`, 'i') })
-        .first().click({ timeout: 5000 }).catch(() => {});
-      await session.delay(5000);
-    }
+    console.log(`[educadf.pap] Diagnóstico bimestre pré-criar: ${JSON.stringify(diagBimestre)}`);
+    await session.screenshot('pap_06b_pre_criar');
 
     await removerBackdrops(page);
     await session.delay(500);
