@@ -1,4 +1,4 @@
-﻿// modules/agente/educadf/educadf.pap.js
+// modules/agente/educadf/educadf.pap.js
 // ============================================================================
 // AGENTE EDUCADF — EXPORTAR PLANO DE AVALIAÇÃO PEDAGÓGICA (PAP)
 // ============================================================================
@@ -1486,13 +1486,50 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO. Prosseguindo...`);
     await removerBackdrops(page);
-
-    // Aguarda Angular processar o clique na aba
     await session.delay(2000);
-    
-    await session.delay(1000);
 
-    await session.delay(500);
+    // ── PASSO 10c: Re-clicar em "Registro de Procedimentos Avaliativos" ─────
+    // MOTIVO: Ao clicar no botão de bimestre, o EDUCADF Angular recarrega o
+    // diário e volta para a aba padrão (Registro de Aula ou Frequência).
+    // Sem este passo, o "Criar procedimento avaliativo" é executado no contexto
+    // da aba errada, criando no bimestre do calendário (2º) em vez do selecionado (1º).
+    console.log(`[educadf.pap] 10c Re-selecionando aba "Registro de Procedimentos Avaliativos"...`);
+    let abaReClicada = false;
+
+    // Estratégia 1: Playwright locator
+    for (const sel of ['a', '[role="tab"]', '.nav-link', 'button']) {
+      if (abaReClicada) break;
+      try {
+        const loc = page.locator(sel).filter({ hasText: /procedimento/i }).first();
+        if ((await loc.count()) > 0) {
+          await loc.click({ timeout: 8000 });
+          abaReClicada = true;
+          console.log(`[educadf.pap] ✅ 10c Aba "Procedimentos Avaliativos" re-clicada via "${sel}"`);
+        }
+      } catch (e) { /* tenta próximo */ }
+    }
+
+    // Estratégia 2: JavaScript el.click()
+    if (!abaReClicada) {
+      abaReClicada = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+          const t = l.textContent?.toLowerCase() || '';
+          return t.includes('procedimento') && t.includes('avaliativo');
+        });
+        if (el) { el.scrollIntoView(); el.click(); return true; }
+        return false;
+      });
+      if (abaReClicada) console.log('[educadf.pap] ✅ 10c Aba re-clicada via JS');
+    }
+
+    if (!abaReClicada) {
+      console.warn('[educadf.pap] ⚠️ 10c Não conseguiu re-clicar na aba Procedimentos');
+    }
+
+    // Aguarda a aba de Procedimentos renderizar completamente
+    await session.delay(3000);
+    await session.screenshot('pap_06c_procedimentos_reaberta');
+    await removerBackdrops(page);
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 7: Verificar duplicata + Clicar em "+ Criar procedimento avaliativo"
