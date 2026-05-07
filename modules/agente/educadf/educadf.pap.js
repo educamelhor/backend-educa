@@ -1158,12 +1158,74 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 8: Clicar em QUALQUER evento do calendário para abrir o diário.
-    // O evento serve apenas como ponto de entrada. O bimestre será selecionado
-    // na ABA INTERNA no passo 10.
+    // PASSO 8: Navegar calendário para o bimestre correto e clicar evento.
+    // DIAGNÓSTICO CONFIRMADO: EDUCADF usa WebSocket — o contexto de bimestre
+    // é determinado pelo EVENTO CLICADO no calendário, não pela aba visual.
+    // Tab-switching é puramente visual e não altera o contexto WebSocket.
+    // SOLUÇÃO: Navegar o calendário até encontrar eventos do bimestre alvo
+    // e clicar um deles — o diário já abrirá no contexto bimestre correto.
     // ══════════════════════════════════════════════════════════════════════
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
+
+    // Navega o calendário até encontrar eventos do bimestre alvo (máx 8 meses)
+    console.log(`[educadf.pap] 8/16 Navegando calendário para encontrar eventos do ${bimNumPAP}º Bimestre...`);
+
+    const _encontrarEventoBimestre = async (bimNum) => {
+      // Verifica se há eventos no calendário atual que pertencem ao bimestre alvo.
+      // Os eventos do EDUCADF têm texto como "1º BIMESTRE 8º Ano - A ARTES" ou "2° Bimestre...".
+      return await page.evaluate((num) => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
+        const eventos = [...document.querySelectorAll('[class*="fc-event"]:not(.external-event)')]
+          .filter(el => el.offsetParent !== null);
+        const match = eventos.find(el => norm(el.textContent || '').includes(alvo));
+        const amostra = eventos.slice(0, 2).map(el => (el.textContent || '').trim().substring(0, 60));
+        return { found: !!match, total: eventos.length, amostra, matchTxt: match ? (match.textContent || '').trim().substring(0, 60) : null };
+      }, bimNum);
+    };
+
+    let _navInfo = await _encontrarEventoBimestre(bimNumPAP);
+    console.log(`[educadf.pap] Vista inicial: ${JSON.stringify(_navInfo)}`);
+
+    if (!_navInfo.found && _navInfo.total > 0) {
+      // Eventos existem mas são de outro bimestre — navegar para o bimestre correto.
+      // Bimestres anteriores ao atual: navegar PARA TRÁS (prev)
+      // Bimestres posteriores: navegar PARA FRENTE (next)
+      // No calendário DF 2026: 1°Bim=Fev-Abr, 2°Bim=Mai-Jul, 3°Bim=Ago-Out, 4°Bim=Nov-Dez
+      const _primeiroEvTxt = (_navInfo.amostra[0] || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\u00ba/g, 'O').replace(/\u00b0/g, 'O');
+      const _bimAtualNum = _primeiroEvTxt.includes('1O BIMESTRE') ? 1
+        : _primeiroEvTxt.includes('2O BIMESTRE') ? 2
+        : _primeiroEvTxt.includes('3O BIMESTRE') ? 3
+        : _primeiroEvTxt.includes('4O BIMESTRE') ? 4 : 2;
+      const _navegarPrev = bimNumPAP < _bimAtualNum;
+      const _btnNav = _navegarPrev ? 'button.fc-prev-button, button[aria-label="prev"], .fc-prev-button, button[title="Mês anterior"], button[title="Anterior"]'
+                                   : 'button.fc-next-button, button[aria-label="next"], .fc-next-button, button[title="Próximo mês"], button[title="Próximo"]';
+      const _dir = _navegarPrev ? 'ANTERIOR' : 'PRÓXIMO';
+      console.log(`[educadf.pap] Bimestre atual no calendário: ${_bimAtualNum}. Navegando ${_dir} para encontrar ${bimNumPAP}º Bimestre...`);
+
+      for (let _nav = 0; _nav < 8 && !_navInfo.found; _nav++) {
+        try {
+          await page.locator(_btnNav).first().click({ timeout: 5000 });
+          await page.waitForTimeout(2500);
+          _navInfo = await _encontrarEventoBimestre(bimNumPAP);
+          console.log(`[educadf.pap] Nav ${_nav + 1}: ${JSON.stringify(_navInfo)}`);
+        } catch (navErr) {
+          console.warn(`[educadf.pap] Erro navegando calendário: ${navErr.message?.substring(0, 60)}`);
+          break;
+        }
+      }
+    }
+
+    if (!_navInfo.found) {
+      console.warn(`[educadf.pap] ⚠️  Não encontrou eventos do ${bimNumPAP}º Bimestre no calendário. Usando evento disponível...`);
+    } else {
+      console.log(`[educadf.pap] ✅ Evento do ${bimNumPAP}º Bimestre encontrado: "${_navInfo.matchTxt}"`);
+    }
+
+    await session.screenshot('pap_04d_calendario_bimestre');
 
     let eventoClicado = false;
 
@@ -1186,33 +1248,32 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
 
-    // Tentativa 2: fallback JS — exclui external-event (legenda) explicitamente
+    // Tentativa 2: JS — prioriza evento do bimestre correto, exclui external-event
     if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Playwright falhou. Tentando JS (excluindo legenda external-event)...');
-      const jsResult = await page.evaluate(() => {
-        // CRÍTICO: filtra external-event (legenda: Data Futura, Pendente, etc.)
+      console.warn('[educadf.pap] ⚠️  Playwright falhou. Tentando JS (priorizando bimestre alvo)...');
+      const jsResult = await page.evaluate((num) => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
         const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
           const cls = el.className || '';
           return typeof cls === 'string'
             && cls.includes('fc-event')
-            && !cls.includes('external-event') // exclui legenda
+            && !cls.includes('external-event')
             && el.offsetParent !== null;
         });
-        if (!candidatos.length) return { ok: false, motivo: 'nenhum evento fc-event real (sem external-event) visível' };
-        const el = candidatos[0];
+        if (!candidatos.length) return { ok: false, motivo: 'nenhum evento real visível' };
+        // Prioriza evento que contém o bimestre alvo no texto
+        const el = candidatos.find(e => norm(e.textContent || '').includes(alvo)) || candidatos[0];
         el.scrollIntoView({ block: 'center' });
         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return {
-          ok: true,
-          tag: el.tagName,
-          cls: el.className.substring(0, 60),
-          txt: (el.textContent || '').trim().substring(0, 60),
-        };
-      }).catch(e => ({ ok: false, motivo: e.message }));
+        return { ok: true, txt: (el.textContent || '').trim().substring(0, 80) };
+      }, bimNumPAP).catch(e => ({ ok: false, motivo: e.message }));
 
       if (jsResult.ok) {
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento real clicado via JS: <${jsResult.tag}> "${jsResult.txt}"`);
+        console.log(`[educadf.pap] ✅ Evento clicado via JS: "${jsResult.txt}"`);
         await page.waitForTimeout(1000);
       } else {
         console.error(`[educadf.pap] ❌ JS fallback falhou: ${jsResult.motivo}`);
