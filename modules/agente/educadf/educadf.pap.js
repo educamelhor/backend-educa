@@ -1271,11 +1271,39 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.screenshot('pap_05_diario_aula');
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 10 (ANTES do Procedimentos): Selecionar bimestre correto
-    //
-    // ORDEM CRÍTICA: Selecionar bimestre PRIMEIRO, DEPOIS clicar na aba
-    // Procedimentos Avaliativos. Se fizer ao contrário, o EDUCADF Angular
-    // reseta a aba ao trocar bimestre e o 'Criar' fica no contexto errado.
+    // PASSO 9: Clicar na aba "Registro de Procedimentos Avaliativos"
+    // (botões de bimestre SÓ aparecem DENTRO desta aba)
+    // ══════════════════════════════════════════════════════════════════════
+    console.log('[educadf.pap] 9/16 Clicando na aba "Registro de Procedimentos Avaliativos"...');
+    await removerBackdrops(page);
+    await aguardarSemOverlay(page, 'pre-aba-procedimentos');
+
+    // mouse.click(x,y) para garantir que Angular processe o clique
+    const abaProcCoords = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+        const t = (l.textContent || '').toLowerCase();
+        return t.includes('procedimento') && t.includes('avaliativo');
+      });
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: el.textContent?.trim() };
+    });
+
+    if (abaProcCoords) {
+      await page.mouse.click(abaProcCoords.x, abaProcCoords.y);
+      console.log(`[educadf.pap] ✅ Aba clicada via mouse.click: "${(abaProcCoords.txt || '').substring(0, 45)}"`);
+    } else {
+      console.warn('[educadf.pap] ⚠️ Aba Procedimentos não encontrada');
+    }
+
+    await session.delay(TIMING.navigationDelay);
+    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    await session.delay(2000);
+    await session.screenshot('pap_06_procedimentos_avaliativos');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 10: Selecionar o bimestre correto (dentro de Procedimentos)
     // ══════════════════════════════════════════════════════════════════════
     const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
     if (!bimNumPAP) {
@@ -1283,145 +1311,89 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
     console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
 
-    // Aguarda os botões de bimestre renderizarem
     const bimSelector = `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`;
     await page.waitForSelector(bimSelector, { timeout: 30000 })
-      .catch(() => console.warn('[educadf.pap] ⚠️  Timeout 30s aguardando tabs de bimestre'));
+      .catch(() => console.warn('[educadf.pap] ⚠️ Timeout aguardando tabs de bimestre'));
     await removerBackdrops(page);
     await session.delay(800);
 
-    const textosAlvo = [
-      `${bimNumPAP}º Bimestre`,
-      `${bimNumPAP}° Bimestre`,
-      `${bimNumPAP}o Bimestre`,
-    ];
-
     let botaoBimestreClicado = false;
     for (let tentativa = 1; tentativa <= 3 && !botaoBimestreClicado; tentativa++) {
-      console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3 — buscando "${textosAlvo[0]}"...`);
+      console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3...`);
 
-      // Encontra coordenadas do tab e clica via mouse.click(x,y)
       const tabInfo = await page.evaluate((num) => {
-        const norm = (s) => String(s)
-          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const alvo = `${num}O BIMESTRE`;
-        const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, .nav-item button, [role="tab"]')]
-          .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
-        if (!tabs.length) return null;
-        const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
-        if (!tabAlvo) return { error: 'não encontrado', tabs: tabs.map(t => t.textContent?.trim()) };
-        tabAlvo.scrollIntoView({ block: 'center' });
-        const rect = tabAlvo.getBoundingClientRect();
-        const activeAntes = tabs.find(t => t.classList.contains('active'));
-        return {
-          x: rect.x + rect.width / 2, y: rect.y + rect.height / 2,
-          txt: tabAlvo.textContent?.trim(),
-          activeAntes: activeAntes ? activeAntes.textContent?.trim() : null,
-        };
-      }, bimNumPAP);
-
-      if (!tabInfo || tabInfo.error) {
-        console.warn(`[educadf.pap] 10a tab não encontrado: ${JSON.stringify(tabInfo)}`);
-        await session.delay(3000);
-        continue;
-      }
-
-      console.log(`[educadf.pap] 10a Tab "${tabInfo.txt}" em (${tabInfo.x.toFixed(0)}, ${tabInfo.y.toFixed(0)}). Ativo antes: "${tabInfo.activeAntes}"`);
-      await page.mouse.click(tabInfo.x, tabInfo.y);
-      console.log(`[educadf.pap] 10a mouse.click executado`);
-      await session.delay(3000);
-
-      // Verifica se mudou
-      const verificacao = await page.evaluate((num) => {
         const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
         const alvo = `${num}O BIMESTRE`;
-        const tabs = [...document.querySelectorAll('.nav-link')]
+        const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
           .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
-        return tabs.map(t => ({
-          txt: (t.textContent || '').trim(),
-          isAlvo: norm(t.textContent || '').includes(alvo),
-          temActive: t.classList.contains('active'),
-          bg: window.getComputedStyle(t).backgroundColor,
-        }));
+        if (!tabs.length) return null;
+        const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+        if (!tabAlvo) return { error: 'não encontrado' };
+        tabAlvo.scrollIntoView({ block: 'center' });
+        const rect = tabAlvo.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
       }, bimNumPAP);
-      console.log(`[educadf.pap] 10a PÓS-clique: ${JSON.stringify(verificacao)}`);
 
-      const alvoAtivo = verificacao.find(t => t.isAlvo && t.temActive);
-      const outroAtivo = verificacao.find(t => !t.isAlvo && t.temActive);
-      if (alvoAtivo && !outroAtivo) {
+      if (!tabInfo || tabInfo.error) { await session.delay(3000); continue; }
+
+      console.log(`[educadf.pap] 10a Tab "${tabInfo.txt}" em (${tabInfo.x.toFixed(0)}, ${tabInfo.y.toFixed(0)})`);
+      await page.mouse.click(tabInfo.x, tabInfo.y);
+      await session.delay(3000);
+
+      // Verifica se mudou
+      const check = await page.evaluate((num) => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+        const tabs = [...document.querySelectorAll('.nav-link')]
+          .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+        return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+      }, bimNumPAP);
+      console.log(`[educadf.pap] 10a PÓS-clique: ${JSON.stringify(check)}`);
+
+      const alvoOk = check.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
+      const outroOk = check.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
+      if (alvoOk && !outroOk) {
         botaoBimestreClicado = true;
-        console.log(`[educadf.pap] ✅ 10a "${alvoAtivo.txt}" CONFIRMADO (tentativa ${tentativa})`);
-      } else {
-        console.warn(`[educadf.pap] ❌ 10a Bimestre não mudou. Retentando...`);
+        console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO`);
       }
     }
-
-    await session.screenshot('pap_06b_bimestre_selecionado');
 
     if (!botaoBimestreClicado) {
-      return {
-        ok: false,
-        message: `Não foi possível selecionar o ${bimNumPAP}º Bimestre. Abortando.`,
-        durationMs: Date.now() - startedAt,
-      };
+      return { ok: false, message: `Não foi possível selecionar ${bimNumPAP}º Bimestre. Abortando.`, durationMs: Date.now() - startedAt };
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 9 (DEPOIS do bimestre): Clicar na aba "Procedimentos Avaliativos"
+    // PASSO 10c: Re-clicar "Procedimentos Avaliativos" via mouse.click(x,y)
     //
-    // Agora que o bimestre correto está selecionado, abrimos a aba de
-    // procedimentos. O conteúdo já virá no contexto do bimestre certo.
+    // MOTIVO: Ao trocar bimestre, o EDUCADF recarrega o diário e sai da aba
+    // Procedimentos. Precisamos re-entrar usando mouse.click (que funciona).
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 9/16 Clicando na aba "Registro de Procedimentos Avaliativos"...');
-    await removerBackdrops(page);
-    const textosProcedimento = [
-      'Registro de Procedimentos Avaliativos',
-      'Registro de Procedimento Avaliativos',
-      'Registro de Procedimento Avaliativo',
-      'Procedimentos Avaliativos',
-    ];
-    let abaClicada = false;
-    await aguardarSemOverlay(page, 'pre-aba-procedimentos');
-    for (const texto of textosProcedimento) {
-      try {
-        const loc = page.locator(`a:has-text('${texto}'), [role="tab"]:has-text('${texto}')`).first();
-        if (await loc.count() > 0) {
-          await loc.scrollIntoViewIfNeeded().catch(() => {});
-          await aguardarSemOverlay(page, 'pre-click-aba');
-          await loc.click({ timeout: 15000 });
-          abaClicada = true;
-          console.log(`[educadf.pap] ✅ Aba clicada: "${texto}"`);
-          break;
-        }
-      } catch (err) {
-        console.warn(`[educadf.pap] Aba "${texto}" falhou: ${err.message}`);
-      }
-    }
-    if (!abaClicada) {
-      await page.evaluate(() => {
-        const el = [...document.querySelectorAll('a,[role="tab"]')].find(l => {
-          const t = l.textContent?.toLowerCase() || '';
-          return t.includes('procedimento') && t.includes('avaliativo');
-        });
-        if (el) { el.scrollIntoView(); el.click(); }
+    console.log('[educadf.pap] 10c Re-clicando "Procedimentos Avaliativos" via mouse.click...');
+    await session.delay(2000);
+
+    const reClickCoords = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+        const t = (l.textContent || '').toLowerCase();
+        return t.includes('procedimento') && t.includes('avaliativo');
       });
-      abaClicada = true;
-    }
-    await session.delay(TIMING.navigationDelay);
-    await page.waitForLoadState('domcontentloaded', { timeout: 15000 })
-      .catch(() => console.warn('[educadf.pap] ⚠️  waitForLoadState timeout'));
-    await session.delay(3000);
-    await session.screenshot('pap_06_procedimentos_avaliativos');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    });
 
-    //
-    // IMPORTANTE: A verificação de duplicata deve acontecer ANTES de abrir
-    // o modal de criação, com a aba de procedimentos visível e o modal fechado,
-    // para que os <th> da tabela sejam leíveis sem interferência do overlay.
-    // ══════════════════════════════════════════════════════════════════════
+    if (reClickCoords) {
+      await page.mouse.click(reClickCoords.x, reClickCoords.y);
+      console.log(`[educadf.pap] ✅ 10c Aba re-clicada via mouse.click`);
+    } else {
+      console.warn('[educadf.pap] ⚠️ 10c Aba Procedimentos não encontrada');
+    }
+
+    await session.delay(3000);
+    await session.screenshot('pap_06c_procedimentos_reaberta');
+    await removerBackdrops(page);
 
     // Declara nomeAtividade antecipadamente para usar na verificação
     const nomeAtividade = item.atividade || 'Avaliação Bimestral';
