@@ -1055,25 +1055,27 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // Após Filtrar, aguarda os eventos do calendário renderizarem.
-    // O EDUCADF usa FullCalendar com elementos div/a misturados.
-    // Seletor amplo cobre todas as variações de classes fc-* do FullCalendar.
+    // CRÍTICO: O EDUCADF tem itens de LEGENDA com classe 'external-event fc-event'
+    // ('Data Futura', 'Pendente', etc.) que NÃO são eventos reais do calendário.
+    // Clicar neles não abre o diário. Devemos EXCLUIR external-event.
     // ══════════════════════════════════════════════════════════════════════
 
-    // Seletor ultra-amplo: cobre FullCalendar 3, 4, 5 e variações do EDUCADF
+    // Seletores que buscam eventos DENTRO do grid do calendário
+    // e EXCLUEM itens de legenda (external-event)
     const FC_SELETORES = [
-      '.fc-event',
-      'a.fc-event',
-      'div.fc-event',
       '.fc-daygrid-event',
+      '.fc-daygrid-event-harness .fc-event',
+      '.fc-daygrid-body .fc-event',
+      '.fc-view .fc-event',
+      '.fc-scroller .fc-event',
+      '.fc-view-harness .fc-event',
+      'td.fc-daygrid-day .fc-event',
       '.fc-timegrid-event',
-      '.fc-h-event',
-      '.fc-v-event',
-      '[class*="fc-event"]',
-      '.fc-content',
       '.fc-day-grid-event',
       '.fc-time-grid-event',
     ];
-    const fcEventSelector = FC_SELETORES.join(', ');
+    // Seletor para waitForSelector — exclui external-event da legenda
+    const fcEventSelector = '.fc-event:not(.external-event), .fc-daygrid-event, .fc-timegrid-event';
 
     console.log('[educadf.pap] Aguardando eventos renderizarem no calendário (até 25s)...');
 
@@ -1184,15 +1186,19 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
     }
 
-    // Tentativa 2: fallback JS — encontra e clica no primeiro elemento com classe fc-event
+    // Tentativa 2: fallback JS — exclui external-event (legenda) explicitamente
     if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Playwright falhou em todos os seletores. Tentando JS dispatchEvent...');
+      console.warn('[educadf.pap] ⚠️  Playwright falhou. Tentando JS (excluindo legenda external-event)...');
       const jsResult = await page.evaluate(() => {
-        const candidatos = [...document.querySelectorAll('*')].filter(el => {
+        // CRÍTICO: filtra external-event (legenda: Data Futura, Pendente, etc.)
+        const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
           const cls = el.className || '';
-          return typeof cls === 'string' && cls.includes('fc-event') && el.offsetParent !== null;
+          return typeof cls === 'string'
+            && cls.includes('fc-event')
+            && !cls.includes('external-event') // exclui legenda
+            && el.offsetParent !== null;
         });
-        if (!candidatos.length) return { ok: false, motivo: 'nenhum elemento fc-event visível' };
+        if (!candidatos.length) return { ok: false, motivo: 'nenhum evento fc-event real (sem external-event) visível' };
         const el = candidatos[0];
         el.scrollIntoView({ block: 'center' });
         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -1206,7 +1212,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
       if (jsResult.ok) {
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento clicado via JS: <${jsResult.tag}> "${jsResult.txt}"`);
+        console.log(`[educadf.pap] ✅ Evento real clicado via JS: <${jsResult.tag}> "${jsResult.txt}"`);
         await page.waitForTimeout(1000);
       } else {
         console.error(`[educadf.pap] ❌ JS fallback falhou: ${jsResult.motivo}`);
