@@ -1064,90 +1064,71 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     let eventoClicado = false;
 
-    // Helper: normaliza texto do evento para comparação de bimestre
-    // Remove acentos e ordinais especiais (º → o, ° → o) para comparação robusta
-    const normBim = (s) => String(s)
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
-      .replace(/\u00ba/g, 'o')  // º → o
-      .replace(/\u00b0/g, 'o')  // ° → o
-      .toUpperCase()
-      .replace(/[^A-Z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ').trim();
+    // ══ PASSO 8 do fluxo: clicar em QUALQUER evento da turma ══════════════
+    // O bimestre NÃO é verificado aqui — o calendário já está filtrado pela
+    // turma. O bimestre correto será selecionado DENTRO do diário (passo 10).
+    // ════════════════════════════════════════════════════════════════════════
 
-    // Testa se o texto do evento contém o número do bimestre correto
-    // Aceita: "1º BIMESTRE", "1o BIMESTRE", "BIMESTRE 1", "1 BIMESTRE"
-    const eventoBimCorreto = (txt) => {
-      if (!bimestreNum) return true;
-      const n = normBim(txt);
-      return n.includes(`${bimestreNum}O BIMESTRE`) ||
-             n.includes(`BIMESTRE ${bimestreNum}`) ||
-             n.includes(`${bimestreNum} BIMESTRE`);
-    };
-
-    // Tentativa 1: turma + componente + bimestre correto (normalizado)
+    // Tentativa 1: turma + componente (qualquer bimestre)
     for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
       const ev  = fcEventos.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
       if (!eventoOkTurmaComp(txt)) continue;
-      if (!eventoBimCorreto(txt)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
         await aguardarSemOverlay(page, 'pre-click-evento-t1');
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento [turma+comp+bimestre] clicado: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado: "${txt.substring(0, 80)}"`);
       } catch (err) {
         console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
       }
     }
 
-    // Tentativa 2: turma + bimestre correto (componente pode ter nome diferente no EDUCADF)
+    // Tentativa 2: só turma (componente pode ter nome diferente no EDUCADF)
     if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Tentativa turma+bimestre (sem componente)...');
+      console.warn('[educadf.pap] ⚠️  Tentativa só turma (sem filtro de componente)...');
       for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
         const ev  = fcEventos.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
         if (!eventoOkSoTurma(txt)) continue;
-        if (!eventoBimCorreto(txt)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await aguardarSemOverlay(page, 'pre-click-evento-t2');
           await ev.click({ timeout: 10000 });
           eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento [turma+bimestre] clicado: "${txt.substring(0, 80)}"`);
+          console.log(`[educadf.pap] ✅ Evento [só turma] clicado: "${txt.substring(0, 80)}"`);
         } catch (err) {
           console.warn(`[educadf.pap] Clique evento [${i}] t2 falhou: ${err.message}`);
         }
       }
     }
 
-    // [FIX] Tentativa 3 removida — nunca clica sem confirmar bimestre correto.
-    if (!eventoClicado) {
-      const bimStr = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
-      console.error(`[educadf.pap] ❌ Evento de "${plano.turmas}" não encontrado para ${bimStr}.`);
-
-      // Coleta os bimestres realmente presentes nos eventos do calendário
-      const bimestresPresentes = new Set();
-      for (let i = 0; i < Math.min(totalFcEventos, 10); i++) {
-        const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
-        const n   = normBim(txt);
-        console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
-        // Detecta bimestre no texto do evento (ex: "2O BIMESTRE", "BIMESTRE 2")
-        const match = n.match(/(\d)\s*O\s*BIMESTRE|BIMESTRE\s*(\d)/);
-        if (match) bimestresPresentes.add(match[1] || match[2]);
+    // Tentativa 3: primeiro evento visível (calendário já filtrado por turma)
+    if (!eventoClicado && totalFcEventos > 0) {
+      console.warn('[educadf.pap] ⚠️  Tentativa: primeiro evento visível (calendário já filtrado)...');
+      try {
+        const ev  = fcEventos.nth(0);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        await ev.scrollIntoViewIfNeeded().catch(() => {});
+        await aguardarSemOverlay(page, 'pre-click-evento-t3');
+        await ev.click({ timeout: 10000 });
+        eventoClicado = true;
+        console.log(`[educadf.pap] ✅ Evento [fallback-primeiro] clicado: "${txt.substring(0, 80)}"`);
+      } catch (err) {
+        console.warn(`[educadf.pap] Clique evento fallback falhou: ${err.message}`);
       }
+    }
 
-      const disponiveis = [...bimestresPresentes].sort().map(n => `${n}º Bimestre`).join(', ');
-      const detalhe = disponiveis
-        ? `O calendário EDUCADF exibe apenas: ${disponiveis}.`
-        : 'Nenhum evento visível no calendário EDUCADF.';
-
-      throw Object.assign(
-        new Error(
-          `O calendário EDUCADF não possui eventos do ${bimStr} para a turma "${plano.turmas}". ` +
-          `${detalhe} Verifique se o bimestre correto está selecionado no plano ou se o período letivo está aberto no EDUCADF.`
-        ),
-        { errorCode: 'BIMESTRE_INDISPONIVEL' }
+    if (!eventoClicado) {
+      // Log eventos encontrados para diagnóstico
+      for (let i = 0; i < Math.min(totalFcEventos, 5); i++) {
+        const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
+        console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
+      }
+      throw new Error(
+        `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
+        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis no calendário.`
       );
     }
 
@@ -1821,53 +1802,54 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     };
 
     let eventoClicado = false;
-    // Tentativa 1: turma + comp + bimestre correto (normalizado)
+
+    // ══ PASSO 8 do fluxo: clicar em QUALQUER evento da turma ══════════════
+    // O bimestre NÃO é verificado aqui — o calendário já está filtrado pela
+    // turma. O bimestre correto será selecionado DENTRO do diário (passo 10).
+    // ════════════════════════════════════════════════════════════════════════
+
+    // Tentativa 1: turma + componente (qualquer bimestre)
     for (let i = 0; i < total && !eventoClicado; i++) {
       const ev  = fcEvs.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
       if (!okTurmaComp(txt)) continue;
-      if (!evtBimOk(txt)) continue;
-      try { await ev.click({ timeout: 10000 }); eventoClicado = true;
-            console.log(`[educadf.notas] ✅ Evento [turma+comp+bim] clicado: "${txt.substring(0,80)}"`); } catch {}
+      try {
+        await ev.scrollIntoViewIfNeeded().catch(() => {});
+        await ev.click({ timeout: 10000 }); eventoClicado = true;
+        console.log(`[educadf.notas] ✅ Evento [turma+comp] clicado: "${txt.substring(0,80)}"`);
+      } catch {}
     }
-    // Tentativa 2: turma + bimestre correto (componente pode ter nome diferente)
+    // Tentativa 2: só turma (componente pode ter nome diferente)
     if (!eventoClicado) {
-      console.warn('[educadf.notas] ⚠️  Tentativa turma+bimestre...');
+      console.warn('[educadf.notas] ⚠️  Tentativa só turma...');
       for (let i = 0; i < total && !eventoClicado; i++) {
         const ev  = fcEvs.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
         if (!okSoTurma(txt)) continue;
-        if (!evtBimOk(txt)) continue;
-        try { await ev.click({ timeout: 10000 }); eventoClicado = true;
-              console.log(`[educadf.notas] ✅ Evento [turma+bim] clicado: "${txt.substring(0,80)}"`); } catch {}
+        try {
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await ev.click({ timeout: 10000 }); eventoClicado = true;
+          console.log(`[educadf.notas] ✅ Evento [só turma] clicado: "${txt.substring(0,80)}"`);
+        } catch {}
       }
     }
-    // [FIX] Tentativa 3 removida — nunca clica sem confirmar bimestre correto.
-    if (!eventoClicado) {
-      const bimStrN = `${String(plano.bimestre || '').replace(/\D/g, '')}º Bimestre`;
-
-      // Coleta os bimestres realmente presentes nos eventos do calendário
-      const bimestresN = new Set();
-      for (let i = 0; i < Math.min(total, 10); i++) {
-        const txt = (await evs.nth(i).textContent().catch(() => '')) || '';
-        const n   = String(txt).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const match = n.match(/(\d)\s*O\s*BIMESTRE|BIMESTRE\s*(\d)/);
-        if (match) bimestresN.add(match[1] || match[2]);
+    // Tentativa 3: primeiro evento visível (calendário já filtrado por turma)
+    if (!eventoClicado && total > 0) {
+      console.warn('[educadf.notas] ⚠️  Tentativa: primeiro evento visível...');
+      try {
+        const ev  = fcEvs.nth(0);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        await ev.scrollIntoViewIfNeeded().catch(() => {});
+        await ev.click({ timeout: 10000 }); eventoClicado = true;
+        console.log(`[educadf.notas] ✅ Evento [fallback-primeiro] clicado: "${txt.substring(0,80)}"`);
+      } catch (err) {
+        console.warn(`[educadf.notas] Clique fallback falhou: ${err.message}`);
       }
-
-      const disponiveisN = [...bimestresN].sort().map(n => `${n}º Bimestre`).join(', ');
-      const detalheN = disponiveisN
-        ? `O calendário EDUCADF exibe apenas: ${disponiveisN}.`
-        : 'Nenhum evento visível no calendário EDUCADF.';
-
-      throw Object.assign(
-        new Error(
-          `O calendário EDUCADF não possui eventos do ${bimStrN} para a turma "${plano.turmas}". ` +
-          `${detalheN} Verifique se o bimestre correto está selecionado no plano ou se o período letivo está aberto no EDUCADF.`
-        ),
-        { errorCode: 'BIMESTRE_INDISPONIVEL' }
+    }
+    if (!eventoClicado) {
+      throw new Error(
+        `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
+        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis.`
       );
     }
 
