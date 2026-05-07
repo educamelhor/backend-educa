@@ -1056,297 +1056,193 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // Turma é o critério determinante (confirmado acima).
     // Componente é bônus — se não bater, ainda clica em evento da turma.
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 5/7 Clicando num evento do calendário para abrir o diário...');
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 8: Navegar o calendário até encontrar evento do bimestre correto
-    // CRÍTICO: o bimestre do diário é determinado pelo EVENTO clicado, não
-    // pela aba interna. Clicar em evento de maio (2º Bim) abre o diário no
-    // 2º Bimestre — "Criar procedimento" sempre cria no bimestre do evento.
-    // Solução: navegar o calendário para o mês do bimestre alvo antes de clicar.
+    // PASSO 8: Clicar em QUALQUER evento do calendário para abrir o diário.
+    // O evento serve apenas para acessar as abas internas.
+    // O bimestre é selecionado na ABA INTERNA no passo 10.
     // ══════════════════════════════════════════════════════════════════════
+    await removerBackdrops(page);
+    await session.screenshot('pap_04c_calendario');
 
-    const eventoOkTurmaComp = (txt) => {
-      const n = normStr(txt);
-      return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c));
-    };
-    const eventoOkSoTurma = (txt) => {
-      const n = normStr(txt);
-      return turmaTkns.every(t => n.includes(t));
-    };
-
-    const normBimEv = (s) => String(s)
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-      .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-
-    const alvoBimEv = `${bimestreNum}O BIMESTRE`;
-
-    // Verifica se algum evento visível pertence ao bimestre alvo
-    const temEventoBimAlvo = async () => {
-      const evs = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
-      const tot = await evs.count().catch(() => 0);
-      for (let i = 0; i < Math.min(tot, 15); i++) {
-        const txt = (await evs.nth(i).textContent().catch(() => '')) || '';
-        if (normBimEv(txt).includes(alvoBimEv)) return true;
-      }
-      return false;
-    };
-
-    // Se os eventos visíveis não são do bimestre alvo, navega o calendário
-    if (bimestreNum && !(await temEventoBimAlvo())) {
-      console.warn(`[educadf.pap] ⚠️  Eventos visíveis não são do ${bimestreNum}º Bimestre. Navegando calendário...`);
-
-      // Bimestres menores = ir para meses anteriores (←), maiores = (→)
-      const mesAtualStr = await page.locator('.fc-toolbar-title, .fc-toolbar h2').first().textContent().catch(() => '') || '';
-      const mesAtualNum = new Date().getMonth() + 1; // mês atual real como fallback
-      // 1º Bim (fev-abr) < mês atual maio → vai para trás
-      // 3º/4º Bim (ago-dez) > maio → vai para frente
-      const irParaTras = Number(bimestreNum) < 3;
-      const btnNav = irParaTras
-        ? page.locator('.fc-prev-button, button[aria-label*="prev"], button[title*="prev"], button[class*="prev"]').first()
-        : page.locator('.fc-next-button, button[aria-label*="next"], button[title*="next"], button[class*="next"]').first();
-
-      for (let nav = 0; nav < 6; nav++) {
-        try { await btnNav.click({ timeout: 5000 }); } catch { break; }
-        await page.waitForSelector('a.fc-event, .fc-event a, .fc-daygrid-event', { timeout: 10000 }).catch(() => {});
-        await session.delay(1500);
-        if (await temEventoBimAlvo()) {
-          console.log(`[educadf.pap] ✅ Encontrou eventos do ${bimestreNum}º Bimestre após ${nav + 1} navegação(ões).`);
-          break;
-        }
-        console.warn(`[educadf.pap] Navegação ${nav + 1}/6: ainda sem eventos do ${bimestreNum}º Bimestre.`);
-      }
-      await session.screenshot('pap_04c_calendario_bimestre');
-    }
-
-    // Agora clica em um evento do bimestre correto (ou qualquer um como fallback)
     const fcEventos = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
     const totalFcEventos = await fcEventos.count();
-    console.log(`[educadf.pap] Eventos no calendário: ${totalFcEventos}`);
+    console.log(`[educadf.pap] 8/16 Eventos visíveis: ${totalFcEventos}. Clicando no primeiro...`);
 
     let eventoClicado = false;
-
-    // Tentativa 1: evento do bimestre correto + turma + componente
     for (let i = 0; i < totalFcEventos && !eventoClicado; i++) {
       const ev  = fcEventos.nth(i);
       const txt = (await ev.textContent().catch(() => '')) || '';
-      if (bimestreNum && !normBimEv(txt).includes(alvoBimEv)) continue;
-      if (!eventoOkTurmaComp(txt) && !eventoOkSoTurma(txt)) continue;
       try {
         await ev.scrollIntoViewIfNeeded().catch(() => {});
-        await aguardarSemOverlay(page, 'pre-click-evento-t1');
+        await aguardarSemOverlay(page, 'pre-click-evento');
         await ev.click({ timeout: 10000 });
         eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento [bim+turma] clicado: "${txt.substring(0, 80)}"`);
+        console.log(`[educadf.pap] ✅ Evento clicado: "${txt.substring(0, 80)}"`);
       } catch (err) {
-        console.warn(`[educadf.pap] Clique evento [${i}] falhou: ${err.message}`);
-      }
-    }
-
-    // Tentativa 2: primeiro evento visível (fallback)
-    if (!eventoClicado && totalFcEventos > 0) {
-      console.warn('[educadf.pap] ⚠️  Fallback: clicando primeiro evento visível...');
-      try {
-        const ev  = fcEventos.nth(0);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        await ev.scrollIntoViewIfNeeded().catch(() => {});
-        await aguardarSemOverlay(page, 'pre-click-evento-fallback');
-        await ev.click({ timeout: 10000 });
-        eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento [fallback] clicado: "${txt.substring(0, 80)}"`);
-      } catch (err) {
-        console.warn(`[educadf.pap] Clique fallback falhou: ${err.message}`);
+        console.warn(`[educadf.pap] Evento [${i}] falhou: ${err.message}`);
       }
     }
 
     if (!eventoClicado) {
-      for (let i = 0; i < Math.min(totalFcEventos, 5); i++) {
-        const txt = (await fcEventos.nth(i).textContent().catch(() => '')) || '';
-        console.warn(`  Evento[${i}]: "${txt.substring(0, 80)}"`);
-      }
       throw new Error(
         `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
-        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis.`
+        `Verifique se o filtro foi aplicado e se existem eventos visíveis.`
       );
     }
-
 
     // Aguarda o diário carregar (exibe abas no topo)
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_05_diario_aula');
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 6: Clicar na aba "Registro de Procedimentos Avaliativos"
-    // A aba aparece no menu horizontal após entrar no diário de aula
+    // PASSO 9: Clicar na aba "Registro de Procedimentos Avaliativos"
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 6/7 Clicando na aba "Registro de Procedimentos Avaliativos"...');
-
+    console.log('[educadf.pap] 9/16 Clicando na aba "Registro de Procedimentos Avaliativos"...');
     await removerBackdrops(page);
-
     const textosProcedimento = [
       'Registro de Procedimentos Avaliativos',
       'Registro de Procedimento Avaliativos',
       'Registro de Procedimento Avaliativo',
       'Procedimentos Avaliativos',
-      'Procedimento Avaliativo',
     ];
-
     let abaClicada = false;
-    // Aguarda overlays antes de tentar clicar na aba (swal2 pode ter aparecido ao abrir o diário)
     await aguardarSemOverlay(page, 'pre-aba-procedimentos');
     for (const texto of textosProcedimento) {
       try {
         const loc = page.locator(`a:has-text('${texto}'), [role="tab"]:has-text('${texto}')`).first();
         if (await loc.count() > 0) {
-          console.log(`[educadf.pap] Aba encontrada: "${texto}"`);
           await loc.scrollIntoViewIfNeeded().catch(() => {});
-          await aguardarSemOverlay(page, `pre-click-aba-${texto.substring(0, 20)}`);
+          await aguardarSemOverlay(page, `pre-click-aba`);
           await loc.click({ timeout: 15000 });
           abaClicada = true;
+          console.log(`[educadf.pap] ✅ Aba clicada: "${texto}"`);
           break;
         }
       } catch (err) {
         console.warn(`[educadf.pap] Aba "${texto}" falhou: ${err.message}`);
       }
     }
-
-    // Fallback JS
     if (!abaClicada) {
-      const jsClicked = await page.evaluate(() => {
-        const links = [...document.querySelectorAll('a, [role="tab"]')];
-        const el = links.find(l => {
-          const txt = l.textContent?.toLowerCase() || '';
-          return txt.includes('procedimento') && txt.includes('avaliativo');
+      await page.evaluate(() => {
+        const el = [...document.querySelectorAll('a,[role="tab"]')].find(l => {
+          const t = l.textContent?.toLowerCase() || '';
+          return t.includes('procedimento') && t.includes('avaliativo');
         });
-        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return el.textContent?.trim(); }
-        return null;
+        if (el) { el.scrollIntoView(); el.click(); }
       });
-      if (jsClicked) {
-        console.log(`[educadf.pap] Aba clicada via JS: "${jsClicked}"`);
-        abaClicada = true;
-      }
+      abaClicada = true;
     }
-
-    if (!abaClicada) {
-      throw new Error('Aba "Registro de Procedimentos Avaliativos" não encontrada. Verifique se o evento do calendário foi clicado corretamente.');
-    }
-
     await session.delay(TIMING.navigationDelay);
     await session.screenshot('pap_06_procedimentos_avaliativos');
 
+
+    // Aguarda os tabs de bimestre aparecerem
+    await page.waitForSelector(
+      `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`,
+      { timeout: 10000 }
+    ).catch(() => console.warn('[educadf.pap] ⚠️  Timeout aguardando tabs de bimestre'));
     await removerBackdrops(page);
+    await session.delay(800);
 
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 6b: Clicar no botão do bimestre correto (com retry)
-    // CRÍTICO: usar clique nativo do Playwright — btn.click() via JS não
-    // dispara os event handlers do Angular, causando seleção silenciosa falsa.
-    // ══════════════════════════════════════════════════════════════════════
-    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
-    if (!bimNumPAP) {
-      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}". Verifique o cadastro do plano.`, durationMs: 0 };
-    }
+    let bimSelecionado = false;
 
-    console.log(`[educadf.pap] 6b/7 Selecionando ${bimNumPAP}º Bimestre na aba (até 5 tentativas)...`);
-
-    // Variações de texto que o EDUCADF pode usar para o bimestre
-    const bimVariacoes = [
+    // ── Estratégia 1: Playwright nativo com todos os seletores de tab ──────
+    const tabSels = [
+      `button.nav-link`,
+      `a.nav-link`,
+      `[role="tab"]`,
+      `li.nav-item button`,
+      `li.nav-item a`,
+      `[class*="bimestre"]`,
+    ];
+    const textosAlvo = [
       `${bimNumPAP}º Bimestre`,
       `${bimNumPAP}° Bimestre`,
       `${bimNumPAP}o Bimestre`,
-      `${bimNumPAP}º BIMESTRE`,
-      `${bimNumPAP}° BIMESTRE`,
     ];
-
-    // Seletor ampliado para tabs de bimestre (compatível com Angular Material e Bootstrap)
-    const tabSelector = [
-      'button.nav-link',
-      'a.nav-link',
-      '[role="tab"]',
-      'li.nav-item button',
-      'li.nav-item a',
-      '[class*="bimestre"]',
-      '[class*="tab-item"]',
-    ].join(', ');
-
-    let btnBimClicadoPAP = null;
-
-    for (let _t = 1; _t <= 5 && !btnBimClicadoPAP; _t++) {
-      for (const variacao of bimVariacoes) {
+    for (const sel of tabSels) {
+      if (bimSelecionado) break;
+      for (const texto of textosAlvo) {
+        if (bimSelecionado) break;
         try {
-          // Playwright locator com filtragem por texto — dispara eventos Angular corretamente
-          const loc = page.locator(tabSelector).filter({ hasText: variacao }).first();
-          const cnt = await loc.count().catch(() => 0);
-          if (cnt === 0) continue;
-
+          const loc = page.locator(sel).filter({ hasText: texto }).first();
+          if ((await loc.count().catch(() => 0)) === 0) continue;
           await loc.scrollIntoViewIfNeeded().catch(() => {});
-          await loc.click({ timeout: 8000, force: false });
-          btnBimClicadoPAP = variacao;
-          console.log(`[educadf.pap] ✅ Tab bimestre clicado: "${variacao}" (Playwright nativo)`);
-          break;
-        } catch (e) {
-          console.warn(`[educadf.pap] Tentativa "${variacao}" falhou: ${e.message?.substring(0, 80)}`);
-        }
+          await loc.click({ timeout: 5000 });
+          bimSelecionado = true;
+          console.log(`[educadf.pap] ✅ E1 — Tab bimestre clicado: "${texto}" via "${sel}"`);
+        } catch {}
       }
+    }
 
-      if (!btnBimClicadoPAP) {
-        console.warn(`[educadf.pap] ⚠️  Tentativa ${_t}/5: bimestre não clicado. Aguardando 2s...`);
+    // ── Estratégia 2: dispatchEvent completo (Angular/Zone.js) ─────────────
+    if (!bimSelecionado) {
+      console.warn('[educadf.pap] ⚠️  E2 — Tentando dispatchEvent Angular-compatible...');
+      const resultado = await page.evaluate((num) => {
+        const norm = (s) => String(s)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+          .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const alvo = `${num}O BIMESTRE`;
+        const candidatos = [...document.querySelectorAll('button, a, [role="tab"]')];
+        const el = candidatos.find(e => norm(e.textContent || '').includes(alvo));
+        if (!el) return null;
+        el.scrollIntoView({ block: 'center' });
+        el.focus();
+        const opts = { bubbles: true, cancelable: true, composed: true };
+        el.dispatchEvent(new PointerEvent('pointerover', opts));
+        el.dispatchEvent(new PointerEvent('pointerenter', opts));
+        el.dispatchEvent(new MouseEvent('mouseover', opts));
+        el.dispatchEvent(new MouseEvent('mouseenter', opts));
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent('mouseup', opts));
+        el.dispatchEvent(new MouseEvent('click', opts));
+        return el.textContent?.trim() || 'CLICKED';
+      }, bimNumPAP);
+      if (resultado) {
+        bimSelecionado = true;
+        console.log(`[educadf.pap] ✅ E2 — dispatchEvent OK: "${resultado}"`);
         await session.delay(2000);
       }
     }
 
-    if (!btnBimClicadoPAP) {
-      console.error(`[educadf.pap] ❌ FALHA CRÍTICA: tab "${bimNumPAP}º Bimestre" não encontrado após 5 tentativas.`);
-      await session.screenshot('pap_06b_bimestre_FALHA');
+    // ── Estratégia 3: indexação posicional ─────────────────────────────────
+    if (!bimSelecionado) {
+      console.warn('[educadf.pap] ⚠️  E3 — Tentando por índice posicional...');
+      const allBimBtns = page.locator('button, a, [role="tab"]').filter({ hasText: /bimestre/i });
+      const total = await allBimBtns.count().catch(() => 0);
+      for (let i = 0; i < total; i++) {
+        const txt = (await allBimBtns.nth(i).textContent().catch(() => '')) || '';
+        const normTxt = txt.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/[\u00ba\u00b0]/g, 'o').toUpperCase();
+        if (!normTxt.includes(`${bimNumPAP}O BIMESTRE`) && !normTxt.includes(`${bimNumPAP} BIMESTRE`)) continue;
+        try {
+          await allBimBtns.nth(i).scrollIntoViewIfNeeded().catch(() => {});
+          await allBimBtns.nth(i).click({ timeout: 5000, force: true });
+          bimSelecionado = true;
+          console.log(`[educadf.pap] ✅ E3 — Tab [${i}] clicado: "${txt.trim()}"`);
+          break;
+        } catch (e) {
+          console.warn(`[educadf.pap] E3 idx ${i} falhou: ${e.message?.substring(0, 60)}`);
+        }
+      }
+    }
+
+    if (!bimSelecionado) {
+      await session.screenshot('pap_bimestre_FALHA');
       return {
         ok: false,
-        message: `Não foi possível selecionar o ${bimNumPAP}º Bimestre no EDUCADF. Verifique se a aba de procedimentos está carregada.`,
+        message: `Não foi possível selecionar o ${bimNumPAP}º Bimestre na aba de Procedimentos Avaliativos após 3 estratégias de clique.`,
         durationMs: 0,
       };
     }
 
-    // Aguarda Angular re-renderizar o conteúdo da aba selecionada
-    await session.delay(2500);
+    // Aguarda Angular re-renderizar a aba selecionada
+    await session.delay(3000);
     await session.screenshot('pap_06b_bimestre_selecionado');
-
-    // Verificação: confirma que o bimestre correto está realmente ativo
-    const bimAtivoTexto = await page.evaluate((num) => {
-      const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-        .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      const alvo = `${num}O BIMESTRE`;
-      // Procura o tab/botão com classe "active" ou aria-selected="true"
-      const tabs = [...document.querySelectorAll('button, a, [role="tab"]')];
-      const ativo = tabs.find(t => {
-        const isAtivo = t.classList.contains('active') ||
-                        t.getAttribute('aria-selected') === 'true' ||
-                        t.classList.contains('active-tab');
-        return isAtivo && norm(t.textContent || '').includes(alvo);
-      });
-      // Fallback: se não encontrar ativo, tenta pelo texto apenas
-      if (!ativo) {
-        const qualquer = tabs.find(t => norm(t.textContent || '').includes(alvo));
-        return qualquer ? `ENCONTRADO-SEM-ACTIVE: ${qualquer.textContent?.trim()}` : 'NAO-ENCONTRADO';
-      }
-      return ativo.textContent?.trim() || 'ATIVO-SEM-TEXTO';
-    }, bimNumPAP);
-
-    console.log(`[educadf.pap] Verificação de aba ativa: "${bimAtivoTexto}"`);
-
-    if (bimAtivoTexto.startsWith('ENCONTRADO-SEM-ACTIVE')) {
-      // Tab foi clicado mas o indicador "active" não apareceu — tenta clicar de novo
-      console.warn('[educadf.pap] ⚠️  Tab clicado mas não aparece como ativo. Tentando clique adicional...');
-      for (const variacao of bimVariacoes) {
-        try {
-          const loc = page.locator(tabSelector).filter({ hasText: variacao }).first();
-          if ((await loc.count().catch(() => 0)) === 0) continue;
-          await loc.click({ timeout: 8000, force: true }); // force: ignora sobreposições
-          await session.delay(2000);
-          break;
-        } catch {}
-      }
-      await session.screenshot('pap_06b_bimestre_reclick');
-    }
-
+    console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre selecionado. Prosseguindo...`);
 
     await removerBackdrops(page);
     await session.delay(500);
