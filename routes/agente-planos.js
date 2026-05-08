@@ -162,6 +162,18 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
+    // Fallback de data: se data_inicio é null, gera data padrão baseada no bimestre
+    // 1º Bim → 15/mar, 2º Bim → 15/mai, 3º Bim → 15/ago, 4º Bim → 15/nov
+    let dataItem = itemBimestral.data_inicio;
+    if (!dataItem) {
+      const bimN = String(plano.bimestre || '').replace(/\D/g, '');
+      const anoPlano = plano.ano || new Date().getFullYear();
+      const BIM_MONTH_MAP = { '1': '03', '2': '05', '3': '08', '4': '11' };
+      const mesFallback = BIM_MONTH_MAP[bimN] || '03';
+      dataItem = `${anoPlano}-${mesFallback}-15`;
+      console.log(`[agente-planos] data_inicio null → fallback: ${dataItem}`);
+    }
+
     const dadosPlano = {
       turmas:      plano.turmas,
       disciplina:  plano.disciplina,
@@ -171,8 +183,8 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       item: {
         atividade:      itemBimestral.atividade,
         tipo_avaliacao: itemBimestral.tipo_avaliacao,
-        data_inicio:    itemBimestral.data_inicio,
-        data:           itemBimestral.data_inicio,
+        data_inicio:    dataItem,
+        data:           dataItem,
         descricao:      itemBimestral.descricao,
         nota_total:     itemBimestral.nota_total,
       },
