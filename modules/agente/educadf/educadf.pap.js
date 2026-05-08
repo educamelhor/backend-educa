@@ -1205,9 +1205,99 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
 
     // ══════════════════════════════════════════════════════════════════════
+    // PASSO 7.5: NAVEGAR O CALENDÁRIO PARA UM MÊS DO BIMESTRE CORRETO
+    //
+    // CAUSA RAIZ (confirmada 07/05/2026): O EDUCADF Angular usa a DATA do
+    // evento clicado para determinar em qual bimestre o procedimento será
+    // criado. A aba visual "1º Bimestre" é apenas filtro, não contexto de
+    // criação. Se o calendário mostra maio (2º bim) e clicamos num evento
+    // de maio, o procedimento vai para o 2º bimestre — MESMO com "1º Bim"
+    // selecionado na aba.
+    //
+    // Solução: navegar o FullCalendar para um mês do bimestre correto
+    // ANTES de clicar no evento, usando o botão "prev" (<) do FullCalendar.
+    //
+    // Mapeamento bimestre → mês-alvo:
+    //   1º Bim = março (mês 3)
+    //   2º Bim = maio  (mês 5)
+    //   3º Bim = agosto (mês 8)
+    //   4º Bim = outubro (mês 10)
+    // ══════════════════════════════════════════════════════════════════════
+    const BIM_TARGET_MONTH = { '1': 3, '2': 5, '3': 8, '4': 10 };
+    const mesAlvo = BIM_TARGET_MONTH[bimNumPAP] || null;
+
+    if (mesAlvo) {
+      console.log(`[educadf.pap] 7.5/16 Navegando calendário para mês ${mesAlvo} (bimestre ${bimNumPAP}º)...`);
+
+      // Descobre o mês atualmente exibido no calendário
+      for (let navTent = 0; navTent < 12; navTent++) {
+        const mesAtualFC = await page.evaluate(() => {
+          // O FullCalendar exibe o mês no toolbar title (ex: "maio de 2026", "março de 2026")
+          const titleEl = document.querySelector('.fc-toolbar-title, .fc-center h2, .fc-toolbar h2');
+          if (!titleEl) return null;
+          const txt = (titleEl.textContent || '').toLowerCase().trim();
+          // Extrai o mês por nome
+          const meses = {
+            'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
+            'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8,
+            'setembro': 9, 'outubro': 10, 'novembro': 11, 'dezembro': 12,
+          };
+          for (const [nome, num] of Object.entries(meses)) {
+            if (txt.includes(nome)) return num;
+          }
+          return null;
+        });
+
+        console.log(`[educadf.pap] 7.5 Mês atual no calendário: ${mesAtualFC} | Alvo: ${mesAlvo}`);
+
+        if (mesAtualFC === mesAlvo) {
+          console.log(`[educadf.pap] ✅ 7.5 Calendário já no mês correto (${mesAlvo}).`);
+          break;
+        }
+
+        if (mesAtualFC === null) {
+          console.warn('[educadf.pap] ⚠️ 7.5 Não foi possível detectar o mês do calendário.');
+          break;
+        }
+
+        // Navega: se mês atual > alvo → clicar "prev"; se < → clicar "next"
+        const direction = mesAtualFC > mesAlvo ? 'prev' : 'next';
+        const btnSelector = direction === 'prev'
+          ? '.fc-prev-button, .fc-toolbar button[aria-label="prev"], button.fc-prev-button'
+          : '.fc-next-button, .fc-toolbar button[aria-label="next"], button.fc-next-button';
+
+        console.log(`[educadf.pap] 7.5 Clicando "${direction}" (mês ${mesAtualFC} → ${mesAlvo})...`);
+
+        const navClicked = await page.evaluate((sel) => {
+          const btn = document.querySelector(sel);
+          if (btn) { btn.click(); return true; }
+          return false;
+        }, btnSelector);
+
+        if (!navClicked) {
+          console.warn(`[educadf.pap] ⚠️ 7.5 Botão "${direction}" não encontrado. Parando navegação.`);
+          break;
+        }
+
+        // Aguarda o calendário re-renderizar
+        await session.delay(2000);
+
+        // Re-aguarda eventos no novo mês
+        try {
+          await page.waitForSelector(fcEventSelector, { timeout: 10000 });
+        } catch {
+          console.warn(`[educadf.pap] ⚠️ 7.5 Nenhum evento no mês após navegação — continuando...`);
+        }
+      }
+
+      await session.delay(1000);
+      await session.screenshot('pap_07_5_calendario_bimestre_correto');
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // PASSO 8: Clicar em QUALQUER evento do calendário para abrir o diário.
-    // O evento serve APENAS como ponto de entrada — o bimestre correto
-    // será selecionado na aba interna (passo 10).
+    // Agora o calendário está no mês correto, então o evento clicado
+    // terá uma data do bimestre correto, ancorando o Angular no contexto certo.
     // ══════════════════════════════════════════════════════════════════════
     await removerBackdrops(page);
     await session.screenshot('pap_04c_calendario');
@@ -1369,6 +1459,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     //
     // MOTIVO: Ao trocar bimestre, o EDUCADF recarrega o diário e sai da aba
     // Procedimentos. Precisamos re-entrar usando mouse.click (que funciona).
+    //
+    // ⚠️ PROBLEMA IDENTIFICADO (07/05/2026): O re-clique na aba RESETA o
+    // bimestre Angular para o bimestre do evento do calendário (que é sempre
+    // o do mês atual). Solução: re-selecionar o bimestre APÓS o re-clique.
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 10c Re-clicando "Procedimentos Avaliativos" via mouse.click...');
     await session.delay(2000);
@@ -1394,6 +1488,99 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(3000);
     await session.screenshot('pap_06c_procedimentos_reaberta');
     await removerBackdrops(page);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 10d: RE-SELECIONAR o bimestre APÓS o re-clique na aba.
+    //
+    // CAUSA RAIZ: O re-clique em "Procedimentos Avaliativos" (10c) faz o
+    // Angular recarregar o componente e RESETAR o bimestre para o contexto
+    // original do evento do calendário clicado (passo 8). Como o calendário
+    // mostra o mês atual (maio = 2º bimestre), o bimestre é resetado para
+    // o 2º bimestre, MESMO QUE o passo 10a tenha confirmado o 1º bimestre.
+    //
+    // Solução: re-selecionar o bimestre AQUI, DEPOIS do re-clique.
+    // ══════════════════════════════════════════════════════════════════════
+    console.log(`[educadf.pap] 10d RE-SELECIONANDO ${bimNumPAP}º Bimestre (pós re-clique na aba)...`);
+
+    // Aguarda as tabs de bimestre aparecerem novamente após o re-clique
+    await page.waitForSelector(bimSelector, { timeout: 15000 })
+      .catch(() => console.warn('[educadf.pap] ⚠️ 10d Timeout aguardando tabs de bimestre pós re-clique'));
+    await removerBackdrops(page);
+    await session.delay(1500);
+
+    // Verifica se o bimestre AINDA está correto após o re-clique
+    const checkPosReclick = await page.evaluate((num) => {
+      const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+      const tabs = [...document.querySelectorAll('.nav-link')]
+        .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+      return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+    }, bimNumPAP);
+    console.log(`[educadf.pap] 10d Check pós re-clique: ${JSON.stringify(checkPosReclick)}`);
+
+    const bimAindaCorreto = checkPosReclick.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
+    const outroBimAtivo = checkPosReclick.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
+
+    if (!bimAindaCorreto || outroBimAtivo) {
+      console.warn(`[educadf.pap] ⚠️ 10d Bimestre RESETOU após re-clique! Re-selecionando...`);
+
+      // Re-seleciona o bimestre (mesma lógica do passo 10a)
+      let bimReselected = false;
+      for (let tentRe = 1; tentRe <= 3 && !bimReselected; tentRe++) {
+        const tabInfoRe = await page.evaluate((num) => {
+          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+          const alvo = `${num}O BIMESTRE`;
+          const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
+            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
+          if (!tabs.length) return null;
+          const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+          if (!tabAlvo) return { error: 'não encontrado' };
+          tabAlvo.scrollIntoView({ block: 'center' });
+          const rect = tabAlvo.getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
+        }, bimNumPAP);
+
+        if (!tabInfoRe || tabInfoRe.error) { await session.delay(2000); continue; }
+
+        console.log(`[educadf.pap] 10d Re-click bimestre "${tabInfoRe.txt}" em (${tabInfoRe.x.toFixed(0)}, ${tabInfoRe.y.toFixed(0)})`);
+        await page.mouse.click(tabInfoRe.x, tabInfoRe.y);
+        await session.delay(3000);
+
+        // Verifica novamente
+        const checkFinal = await page.evaluate((num) => {
+          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+          const tabs = [...document.querySelectorAll('.nav-link')]
+            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+          return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+        }, bimNumPAP);
+        console.log(`[educadf.pap] 10d Check final (tentativa ${tentRe}): ${JSON.stringify(checkFinal)}`);
+
+        const alvoFinal = checkFinal.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
+        const outroFinal = checkFinal.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
+        if (alvoFinal && !outroFinal) {
+          bimReselected = true;
+          console.log(`[educadf.pap] ✅ 10d ${bimNumPAP}º Bimestre RE-CONFIRMADO (tentativa ${tentRe})`);
+        }
+      }
+
+      if (!bimReselected) {
+        console.error(`[educadf.pap] ❌ 10d Falha ao re-selecionar ${bimNumPAP}º Bimestre após 3 tentativas.`);
+        await session.screenshot('pap_10d_bimestre_falha');
+        return {
+          ok: false,
+          message: `Não foi possível confirmar o ${bimNumPAP}º Bimestre após re-clique na aba Procedimentos. O bimestre resetou para o 2º. Abortando para evitar exportação no bimestre errado.`,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+    } else {
+      console.log(`[educadf.pap] ✅ 10d Bimestre ${bimNumPAP}º permaneceu correto após re-clique.`);
+    }
+
+    await session.delay(2000);
+    await session.screenshot('pap_10d_bimestre_final');
 
     // Declara nomeAtividade antecipadamente para usar na verificação
     const nomeAtividade = item.atividade || 'Avaliação Bimestral';
@@ -1949,6 +2136,77 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     }
     console.log(`[educadf.notas] ✅ Turma confirmada no calendário (${calConf.total} eventos).`);
 
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 4.5: NAVEGAR O CALENDÁRIO PARA O MÊS DO BIMESTRE CORRETO
+    //
+    // CAUSA RAIZ (confirmada 07/05/2026 via sub-agente): O EDUCADF usa a
+    // DATA do evento clicado para determinar o bimestre de criação/edição.
+    // A aba "1º Bimestre" é apenas filtro visual, não contexto Angular.
+    // Devemos navegar o calendário para um mês do bimestre correto ANTES
+    // de clicar num evento.
+    // ══════════════════════════════════════════════════════════════════════
+    const BIM_TARGET_MONTH_N = { '1': 3, '2': 5, '3': 8, '4': 10 };
+    const bimNumNav = String(plano.bimestre || '').replace(/\D/g, '');
+    const mesAlvoN = BIM_TARGET_MONTH_N[bimNumNav] || null;
+    const fcEventSelectorN = '.fc-event:not(.external-event), .fc-daygrid-event, .fc-timegrid-event';
+
+    if (mesAlvoN) {
+      console.log(`[educadf.notas] 4.5/7 Navegando calendário para mês ${mesAlvoN} (bimestre ${bimNumNav}º)...`);
+
+      for (let navTent = 0; navTent < 12; navTent++) {
+        const mesAtualFC = await page.evaluate(() => {
+          const titleEl = document.querySelector('.fc-toolbar-title, .fc-center h2, .fc-toolbar h2');
+          if (!titleEl) return null;
+          const txt = (titleEl.textContent || '').toLowerCase().trim();
+          const meses = {
+            'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
+            'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8,
+            'setembro': 9, 'outubro': 10, 'novembro': 11, 'dezembro': 12,
+          };
+          for (const [nome, num] of Object.entries(meses)) {
+            if (txt.includes(nome)) return num;
+          }
+          return null;
+        });
+
+        console.log(`[educadf.notas] 4.5 Mês atual: ${mesAtualFC} | Alvo: ${mesAlvoN}`);
+
+        if (mesAtualFC === mesAlvoN) {
+          console.log(`[educadf.notas] ✅ 4.5 Calendário no mês correto.`);
+          break;
+        }
+        if (mesAtualFC === null) {
+          console.warn('[educadf.notas] ⚠️ 4.5 Não foi possível detectar o mês.');
+          break;
+        }
+
+        const direction = mesAtualFC > mesAlvoN ? 'prev' : 'next';
+        const btnSelector = direction === 'prev'
+          ? '.fc-prev-button, .fc-toolbar button[aria-label="prev"], button.fc-prev-button'
+          : '.fc-next-button, .fc-toolbar button[aria-label="next"], button.fc-next-button';
+
+        const navClicked = await page.evaluate((sel) => {
+          const btn = document.querySelector(sel);
+          if (btn) { btn.click(); return true; }
+          return false;
+        }, btnSelector);
+
+        if (!navClicked) {
+          console.warn(`[educadf.notas] ⚠️ 4.5 Botão "${direction}" não encontrado.`);
+          break;
+        }
+
+        await session.delay(2000);
+        try {
+          await page.waitForSelector(fcEventSelectorN, { timeout: 10000 });
+        } catch {
+          console.warn(`[educadf.notas] ⚠️ 4.5 Nenhum evento no mês após navegação.`);
+        }
+      }
+      await session.delay(1000);
+      await session.screenshot('notas_04_5_calendario_bimestre_correto');
+    }
+
     // PASSO 5: Clicar num evento do calendário
     console.log('[educadf.notas] 5/7 Clicando num evento do calendário...');
     await session.delay(2000);
@@ -1979,10 +2237,9 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     let eventoClicado = false;
 
-    // ══ PASSO 8 do fluxo: clicar em QUALQUER evento da turma ══════════════
-    // O bimestre NÃO é verificado aqui — o calendário já está filtrado pela
-    // turma. O bimestre correto será selecionado DENTRO do diário (passo 10).
-    // ════════════════════════════════════════════════════════════════════════
+    // ══ PASSO 5 continuação: clicar em QUALQUER evento da turma ═══════════
+    // Com o calendário já no mês do bimestre correto, o evento clicado
+    // terá data do bimestre correto, ancorando o Angular no contexto certo.
 
     // Tentativa 1: turma + componente (qualquer bimestre)
     for (let i = 0; i < total && !eventoClicado; i++) {
@@ -2076,38 +2333,58 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     }
 
     console.log(`[educadf.notas] 6b/7 Selecionando ${bimNumNotas}º Bimestre na aba (até 3 tentativas)...`);
-    let btnBimClicadoN = null;
-    for (let _t = 1; _t <= 3; _t++) {
-      btnBimClicadoN = await page.evaluate((num) => {
-        const norm = (s) => String(s)
-          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    let btnBimClicadoN = false;
+    for (let _t = 1; _t <= 3 && !btnBimClicadoN; _t++) {
+      // Usa mouse.click com coordenadas (como no PAP) para garantir que Angular processe
+      const tabInfoN = await page.evaluate((num) => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
         const alvo = `${num}O BIMESTRE`;
-        // Seletor ampliado: inclui [role=tab] e variações de classe do EDUCADF
-        const botoes = [...document.querySelectorAll(
-          'button, a.btn, .nav-link, li.nav-item a, [role="tab"], [class*="bimestre"], [class*="tab-item"]'
-        )];
-        const btn = botoes.find(b => norm(b.textContent || '').includes(alvo));
-        if (btn) {
-          btn.scrollIntoView({ block: 'center' });
-          btn.click();
-          return btn.textContent?.trim();
-        }
-        return null;
+        const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
+          .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
+        if (!tabs.length) return null;
+        const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+        if (!tabAlvo) return { error: 'não encontrado' };
+        tabAlvo.scrollIntoView({ block: 'center' });
+        const rect = tabAlvo.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
       }, bimNumNotas);
-      if (btnBimClicadoN) break;
-      console.warn(`[educadf.notas] ⚠️  Tentativa ${_t}/3: botão "${bimNumNotas}º Bimestre" não encontrado. Aguardando 2s...`);
-      await session.delay(2000);
+
+      if (!tabInfoN || tabInfoN.error) {
+        console.warn(`[educadf.notas] ⚠️  Tentativa ${_t}/3: botão "${bimNumNotas}º Bimestre" não encontrado. Aguardando 2s...`);
+        await session.delay(2000);
+        continue;
+      }
+
+      console.log(`[educadf.notas] 6b Tab "${tabInfoN.txt}" em (${tabInfoN.x.toFixed(0)}, ${tabInfoN.y.toFixed(0)})`);
+      await page.mouse.click(tabInfoN.x, tabInfoN.y);
+      await session.delay(3000);
+
+      // Verifica se o bimestre correto ficou ativo
+      const checkN = await page.evaluate((num) => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+        const tabs = [...document.querySelectorAll('.nav-link')]
+          .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+        return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+      }, bimNumNotas);
+      console.log(`[educadf.notas] 6b PÓS-clique: ${JSON.stringify(checkN)}`);
+
+      const alvoOkN = checkN.find(t => t.txt.includes(`${bimNumNotas}º`) && t.active);
+      const outroOkN = checkN.find(t => !t.txt.includes(`${bimNumNotas}º`) && t.active);
+      if (alvoOkN && !outroOkN) {
+        btnBimClicadoN = true;
+        console.log(`[educadf.notas] ✅ ${bimNumNotas}º Bimestre CONFIRMADO`);
+      }
     }
 
     if (btnBimClicadoN) {
-      console.log(`[educadf.notas] ✅ Bimestre selecionado: "${btnBimClicadoN}"`);
-      await session.delay(2000); // aguarda React re-renderizar a aba
+      await session.delay(2000);
       await session.screenshot('notas_06b_bimestre_selecionado');
     } else {
       // FALHA CRÍTICA — nunca continua com bimestre errado
-      console.error(`[educadf.notas] ❌ FALHA CRÍTICA: botão "${bimNumNotas}º Bimestre" não encontrado após 3 tentativas.`);
+      console.error(`[educadf.notas] ❌ FALHA CRÍTICA: botão "${bimNumNotas}º Bimestre" não encontrado/confirmado após 3 tentativas.`);
       await session.screenshot('notas_06b_bimestre_FALHA');
       return {
         ok: false,
