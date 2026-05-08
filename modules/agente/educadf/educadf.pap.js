@@ -1223,6 +1223,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     //   3º Bim = agosto (mês 8)
     //   4º Bim = outubro (mês 10)
     // ══════════════════════════════════════════════════════════════════════
+    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
+    if (!bimNumPAP) {
+      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}".`, durationMs: 0 };
+    }
+
     const BIM_TARGET_MONTH = { '1': 3, '2': 5, '3': 8, '4': 10 };
     const mesAlvo = BIM_TARGET_MONTH[bimNumPAP] || null;
 
@@ -1395,10 +1400,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 10: Selecionar o bimestre correto (dentro de Procedimentos)
     // ══════════════════════════════════════════════════════════════════════
-    const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
-    if (!bimNumPAP) {
-      return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}".`, durationMs: 0 };
-    }
+    // bimNumPAP já declarado no Step 7.5 (antes do clique no evento)
     console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
 
     const bimSelector = `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`;
