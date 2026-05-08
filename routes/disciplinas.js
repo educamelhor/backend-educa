@@ -28,11 +28,12 @@ router.get("/", verificarEscola, async (req, res) => {
       SELECT 
         id,
         nome AS disciplina,
+        etapa,
         carga,
         escola_id
       FROM disciplinas
       WHERE escola_id = ?
-      ORDER BY nome
+      ORDER BY nome, etapa
       `,
       [escola_id]
     );
@@ -51,35 +52,37 @@ router.get("/", verificarEscola, async (req, res) => {
  * Cria uma nova disciplina para a escola do usuário
  */
 router.post("/", verificarEscola, async (req, res) => {
-  const { nome, carga } = req.body;
+  const { nome, carga, etapa } = req.body;
   const { escola_id } = req.user;
 
   if (!nome || carga == null) {
     return res.status(400).json({ message: "Nome e carga são obrigatórios." });
   }
 
+  const etapaFinal = etapa?.trim().toUpperCase() || "GERAL";
+
   try {
-    // ✅ FIX MÉDIO 7: Validar unicidade no backend (nome normalizado + escola_id)
+    // ✅ Validação de unicidade: nome normalizado + etapa + escola_id
     const nomeNormalizado = nome.trim();
     const [[existente]] = await pool.query(
       `SELECT id FROM disciplinas
-       WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? LIMIT 1`,
-      [nomeNormalizado, escola_id]
+       WHERE LOWER(TRIM(nome)) = LOWER(?) AND UPPER(TRIM(etapa)) = ? AND escola_id = ? LIMIT 1`,
+      [nomeNormalizado, etapaFinal, escola_id]
     );
     if (existente) {
       return res.status(409).json({
-        message: `Já existe uma disciplina com o nome "${nomeNormalizado}" nesta escola.`
+        message: `Já existe a disciplina "${nomeNormalizado}" para a etapa "${etapaFinal}" nesta escola.`
       });
     }
 
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, carga, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, NOW(), NOW())`,
-      [nomeNormalizado, carga, escola_id]
+      `INSERT INTO disciplinas (nome, etapa, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NOW(), NOW())`,
+      [nomeNormalizado, etapaFinal, carga, escola_id]
     );
 
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, carga, escola_id
+      `SELECT id, nome AS disciplina, etapa, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -91,8 +94,6 @@ router.post("/", verificarEscola, async (req, res) => {
     res.status(500).json({ message: "Não foi possível criar a disciplina." });
   }
 });
-
-
 
 
 
@@ -131,8 +132,6 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 
 
 
-
-
 /**
  * PUT /api/disciplinas/:id
  * Atualiza disciplina da escola do usuário
@@ -140,31 +139,33 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, carga } = req.body;
+    const { nome, carga, etapa } = req.body;
     const { escola_id } = req.user;
 
     if (!nome || carga == null) {
       return res.status(400).json({ message: "Nome e carga são obrigatórios." });
     }
 
-    // ✅ FIX MÉDIO 7: Validar unicidade no backend ao editar (exclui o próprio registro)
+    const etapaFinal = etapa?.trim().toUpperCase() || "GERAL";
+
+    // ✅ Validação de unicidade ao editar: exclui o próprio registro
     const nomeNormalizado = nome.trim();
     const [[duplicada]] = await pool.query(
       `SELECT id FROM disciplinas
-       WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? AND id != ? LIMIT 1`,
-      [nomeNormalizado, escola_id, id]
+       WHERE LOWER(TRIM(nome)) = LOWER(?) AND UPPER(TRIM(etapa)) = ? AND escola_id = ? AND id != ? LIMIT 1`,
+      [nomeNormalizado, etapaFinal, escola_id, id]
     );
     if (duplicada) {
       return res.status(409).json({
-        message: `Já existe outra disciplina com o nome "${nomeNormalizado}" nesta escola.`
+        message: `Já existe outra disciplina "${nomeNormalizado}" para a etapa "${etapaFinal}" nesta escola.`
       });
     }
 
     const [result] = await pool.query(
       `UPDATE disciplinas
-       SET nome = ?, carga = ?
+       SET nome = ?, etapa = ?, carga = ?
        WHERE id = ? AND escola_id = ?`,
-      [nomeNormalizado, carga, id, escola_id]
+      [nomeNormalizado, etapaFinal, carga, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
