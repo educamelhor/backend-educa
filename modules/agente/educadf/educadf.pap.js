@@ -1599,21 +1599,59 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const _nomeAlvo = _normNome(nomeAtividade);
 
     const _procedimentosExistentes = await page.evaluate(() => {
-      // Lê todos os <th> visíveis na aba de Registro de Procedimentos Avaliativos.
-      // O modal está fechado neste momento — leitura limpa dos cabeçalhos.
-      const headers = [...document.querySelectorAll('th, td.column-header')];
-      return headers
-        .map(h => (h.textContent || '').trim())
-        .filter(t => t.length > 1 && t.length < 200);
+      // ══════════════════════════════════════════════════════════════════
+      // DETECÇÃO DE DUPLICATAS — CORRIGIDA 08/05/2026
+      //
+      // O EDUCADF renderiza os procedimentos avaliativos como colunas <th>
+      // dentro da tabela de notas. O cabeçalho de cada procedimento contém:
+      //   - Data (dd-MM-yyyy)
+      //   - Nome do procedimento (ex: "Prova Bimestral")
+      //   - Ícone de editar (botão)
+      //
+      // PROBLEMA ANTERIOR: o seletor 'th' pegava TAMBÉM os <th> do
+      // calendário lateral (dom, seg, ter...) e da tabela de alunos
+      // (RE, Nº DA CHAMADA). Resultado: nunca encontrava "Prova Bimestral".
+      //
+      // SOLUÇÃO: Buscar em TODOS os <th> da página e extrair texto
+      // normalizado. Também buscar em spans/divs dentro de <th> que
+      // possam conter o nome do procedimento isolado.
+      // ══════════════════════════════════════════════════════════════════
+      const textos = new Set();
+
+      // 1) Todos os <th> — texto completo
+      document.querySelectorAll('th').forEach(th => {
+        const txt = (th.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt.length > 1 && txt.length < 500) textos.add(txt);
+      });
+
+      // 2) Spans e divs DENTRO de <th> — nomes isolados do procedimento
+      document.querySelectorAll('th span, th div, th a').forEach(el => {
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt.length > 2 && txt.length < 200) textos.add(txt);
+      });
+
+      // 3) Elementos com data-column-name (se o EDUCADF usar)
+      document.querySelectorAll('[data-column-name]').forEach(el => {
+        const val = el.getAttribute('data-column-name') || '';
+        if (val.length > 2) textos.add(val);
+      });
+
+      return [...textos];
     });
 
-    console.log(`[educadf.pap] Procedimentos na tabela: ${JSON.stringify(_procedimentosExistentes.slice(0, 10))}`);
+    console.log(`[educadf.pap] Procedimentos na tabela (${_procedimentosExistentes.length} textos): ${JSON.stringify(_procedimentosExistentes.slice(0, 15))}`);
 
-    if (_procedimentosExistentes.some(nome => _normNome(nome) === _nomeAlvo)) {
+    // Verifica se o nome da atividade aparece em algum cabeçalho (match exato OU contido)
+    const _jaExiste = _procedimentosExistentes.some(nome => {
+      const normNome = _normNome(nome);
+      return normNome === _nomeAlvo || normNome.includes(_nomeAlvo);
+    });
+
+    if (_jaExiste) {
       console.warn(`[educadf.pap] ⚠️  "${nomeAtividade}" já existe no EDUCADF — cancelando para evitar duplicata.`);
       await session.screenshot('pap_ja_existe');
       return {
-        ok: false,
+        ok: true,
         errorCode: 'JA_EXISTE',
         message: `O procedimento "${nomeAtividade}" já está cadastrado no EDUCADF para ${plano.turmas} · ${plano.bimestre}. Nenhuma duplicata foi criada.`,
         durationMs: Date.now() - startedAt,
