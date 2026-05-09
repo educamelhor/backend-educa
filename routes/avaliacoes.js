@@ -576,7 +576,51 @@ router.post("/", async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/avaliacoes/:id/item/:itemId/data
+ * Professor atualiza a data_inicio de um item específico do PAP.
+ * Bloqueado para itens fixo_direcao (Prova Bimestral — gerenciado pela direção).
+ * body: { data_inicio: "YYYY-MM-DD" }
+ */
+router.patch("/:id/item/:itemId/data", async (req, res) => {
+  try {
+    const { escola_id, usuario_id } = req.user;
+    const { id: planoId, itemId } = req.params;
+    const { data_inicio } = req.body;
 
+    // Verifica se o plano pertence à escola e ao professor
+    const [[plano]] = await pool.query(
+      `SELECT id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ? AND usuario_id = ?`,
+      [planoId, escola_id, usuario_id]
+    );
+    if (!plano) {
+      return res.status(404).json({ ok: false, error: "Plano não encontrado ou sem permissão." });
+    }
+
+    // Verifica se o item existe e não é fixo_direcao
+    const [[item]] = await pool.query(
+      `SELECT id, fixo_direcao FROM itens_avaliacao WHERE id = ? AND plano_id = ?`,
+      [itemId, planoId]
+    );
+    if (!item) {
+      return res.status(404).json({ ok: false, error: "Item não encontrado." });
+    }
+    if (item.fixo_direcao) {
+      return res.status(403).json({ ok: false, error: "A data da Prova Bimestral é gerenciada pela Direção e não pode ser alterada aqui." });
+    }
+
+    const dataFormatada = toDateOnly(data_inicio);
+    await pool.query(
+      `UPDATE itens_avaliacao SET data_inicio = ?, data_final = ?, updated_at = NOW() WHERE id = ?`,
+      [dataFormatada, dataFormatada, itemId]
+    );
+
+    return res.json({ ok: true, data_inicio: dataFormatada });
+  } catch (error) {
+    console.error("Erro ao atualizar data do item:", error);
+    return res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
 
 /**
  * 5) PATCH /api/avaliacoes/:id/status
@@ -584,6 +628,7 @@ router.post("/", async (req, res) => {
  * body: { status: "APROVADO" | "DEVOLVIDO" | "RASCUNHO", motivo?: string }
  */
 router.patch("/:id/status", async (req, res) => {
+
   try {
     const { escola_id } = req.user;
     const { id } = req.params;
