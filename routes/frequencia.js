@@ -5,11 +5,60 @@
 // - CRUD de busca ativa (contatos com famílias)
 // - Relatórios de alunos faltosos
 // - Encaminhamentos ao Conselho Tutelar
+//
+// ── Governança de Acesso ────────────────────────────────────────────────────
+// Quem VISUALIZA e REGISTRA: diretor, vice_diretor, supervisor, secretario,
+//                            coordenador, orientador, pedagogo
+// Quem só VISUALIZA:         professor (filtrado por LGPD — apenas suas turmas)
+// Sem acesso:                disciplinar, diretor_disciplinar, militar
 // ============================================================================
 
 import { Router } from "express";
 
 const router = Router();
+
+// ─────────────────────────────────────────────────
+// MIDDLEWARES DE GOVERNANÇA
+// ─────────────────────────────────────────────────
+
+const PERFIS_DISCIPLINAR = new Set([
+  "disciplinar", "diretor_disciplinar", "militar", "comandante",
+]);
+
+const PERFIS_SOMENTE_LEITURA = new Set(["professor"]);
+
+/**
+ * Bloqueia totalmente perfis disciplinar/militar do módulo de frequência.
+ * HTTP 403 com mensagem clara.
+ */
+function bloquearDisciplinar(req, res, next) {
+  const perfil = String(req.user?.perfil || "").toLowerCase().trim();
+  if (PERFIS_DISCIPLINAR.has(perfil)) {
+    return res.status(403).json({
+      error: "Acesso negado",
+      message: "O perfil disciplinar não tem acesso ao módulo de Frequência.",
+    });
+  }
+  next();
+}
+
+/**
+ * Bloqueia professores de operações de escrita (POST / PUT / DELETE).
+ * Professores só podem consultar (GET).
+ */
+function apenasLeituraProfessor(req, res, next) {
+  const perfil = String(req.user?.perfil || "").toLowerCase().trim();
+  if (PERFIS_SOMENTE_LEITURA.has(perfil)) {
+    return res.status(403).json({
+      error: "Acesso negado",
+      message: "Professores podem apenas consultar os atestados. O registro é realizado pela secretaria ou equipe gestora.",
+    });
+  }
+  next();
+}
+
+// Aplica bloquearDisciplinar em TODAS as rotas deste router
+router.use(bloquearDisciplinar);
 
 // ─────────────────────────────────────────────────
 // JUSTIFICATIVAS (Atestados) — CRUD COMPLETO
@@ -102,7 +151,7 @@ router.get("/justificativas", async (req, res) => {
 
 // POST /api/frequencia/justificativas
 // Verifica duplicata (mesmo aluno + tipo + período) antes de inserir
-router.post("/justificativas", async (req, res) => {
+router.post("/justificativas", apenasLeituraProfessor, async (req, res) => {
   try {
     const { escola_id, turma_id, aluno_id, tipo, data_inicio, data_fim, dias, observacao } = req.body;
     if (!escola_id || !aluno_id || !tipo || !data_inicio || !data_fim) {
@@ -141,7 +190,7 @@ router.post("/justificativas", async (req, res) => {
 });
 
 // PUT /api/frequencia/justificativas/:id
-router.put("/justificativas/:id", async (req, res) => {
+router.put("/justificativas/:id", apenasLeituraProfessor, async (req, res) => {
   try {
     const { id } = req.params;
     const { tipo, data_inicio, data_fim, dias, observacao } = req.body;
@@ -189,7 +238,7 @@ router.put("/justificativas/:id", async (req, res) => {
 });
 
 // DELETE /api/frequencia/justificativas/:id
-router.delete("/justificativas/:id", async (req, res) => {
+router.delete("/justificativas/:id", apenasLeituraProfessor, async (req, res) => {
   try {
     const { id } = req.params;
     const escola_id = req.escola_id;
@@ -251,7 +300,7 @@ router.get("/busca-ativa", async (req, res) => {
 
 // POST /api/frequencia/busca-ativa
 // Verifica duplicata antes de inserir (mesmo aluno + data + meio + resultado)
-router.post("/busca-ativa", async (req, res) => {
+router.post("/busca-ativa", apenasLeituraProfessor, async (req, res) => {
   try {
     const { escola_id, turma_id, aluno_id, data_contato, meio_contato, resultado, observacao } = req.body;
     if (!escola_id || !aluno_id || !meio_contato || !resultado) {
@@ -293,7 +342,7 @@ router.post("/busca-ativa", async (req, res) => {
 
 // PUT /api/frequencia/busca-ativa/:id
 // Edita um registro existente e registra rastreabilidade de quem editou
-router.put("/busca-ativa/:id", async (req, res) => {
+router.put("/busca-ativa/:id", apenasLeituraProfessor, async (req, res) => {
   try {
     const { id } = req.params;
     const { data_contato, meio_contato, resultado, observacao } = req.body;
@@ -330,7 +379,7 @@ router.put("/busca-ativa/:id", async (req, res) => {
 });
 
 // DELETE /api/frequencia/busca-ativa/:id
-router.delete("/busca-ativa/:id", async (req, res) => {
+router.delete("/busca-ativa/:id", apenasLeituraProfessor, async (req, res) => {
   try {
     const { id } = req.params;
     const escola_id = req.escola_id;
@@ -469,7 +518,7 @@ router.get("/conselho-tutelar/encaminhamentos", async (req, res) => {
 });
 
 // POST /api/frequencia/conselho-tutelar/encaminhamentos
-router.post("/conselho-tutelar/encaminhamentos", async (req, res) => {
+router.post("/conselho-tutelar/encaminhamentos", apenasLeituraProfessor, async (req, res) => {
   try {
     const { escola_id, turma_id, aluno_id, motivo } = req.body;
     if (!escola_id || !aluno_id) return res.status(400).json({ error: "escola_id e aluno_id obrigatórios" });
