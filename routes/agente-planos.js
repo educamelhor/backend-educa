@@ -131,17 +131,41 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       });
     }
 
-    // ── 3. Busca itens ───────────────────────────────────────────────────────
+    // ── 3. Busca itens ────────────────────────────────────────────────────────────────────────
     const [itens] = await db.query(
-      'SELECT * FROM itens_avaliacao WHERE plano_id = ?', [planoId]
+      'SELECT * FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC', [planoId]
     );
-    const itemBimestral = (itens || []).find(i => i.fixo_direcao);
-    if (!itemBimestral) {
+    if (!itens || itens.length === 0) {
       return res.status(422).json({
         ok: false,
-        error: 'Este plano não possui item de Avaliação Bimestral (fixo_direcao).',
+        error: 'Este plano não possui itens de avaliação cadastrados.',
       });
     }
+
+    // Fallback de data por bimestre: dia 15 do mês de referência
+    // 1º Bim → 15/mar, 2º Bim → 15/mai, 3º Bim → 15/ago, 4º Bim → 15/nov
+    const bimN = String(plano.bimestre || '').replace(/\D/g, '');
+    const anoPlano = plano.ano || new Date().getFullYear();
+    const BIM_MONTH_MAP = { '1': '03', '2': '05', '3': '08', '4': '11' };
+    const mesFallback = BIM_MONTH_MAP[bimN] || '03';
+    const dataFallback = `${anoPlano}-${mesFallback}-15`;
+
+    // Monta array de itens com data resolvida (data_inicio do banco ou fallback por bimestre)
+    const itensComData = itens.map(item => {
+      const dataResolvida = item.data_inicio || dataFallback;
+      if (!item.data_inicio) {
+        console.log(`[agente-planos] item "${item.atividade}": data_inicio null → fallback ${dataResolvida}`);
+      }
+      return {
+        atividade:      item.atividade,
+        tipo_avaliacao: item.tipo_avaliacao,
+        data_inicio:    dataResolvida,
+        data:           dataResolvida,
+        descricao:      item.descricao,
+        nota_total:     item.nota_total,
+        fixo_direcao:   !!item.fixo_direcao,
+      };
+    });
 
     // ── 4. Credenciais ───────────────────────────────────────────────────────
     const cred = await buscarCredenciais(db, escolaId, usuarioId);
@@ -162,32 +186,13 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
-    // Fallback de data: se data_inicio é null, gera data padrão baseada no bimestre
-    // 1º Bim → 15/mar, 2º Bim → 15/mai, 3º Bim → 15/ago, 4º Bim → 15/nov
-    let dataItem = itemBimestral.data_inicio;
-    if (!dataItem) {
-      const bimN = String(plano.bimestre || '').replace(/\D/g, '');
-      const anoPlano = plano.ano || new Date().getFullYear();
-      const BIM_MONTH_MAP = { '1': '03', '2': '05', '3': '08', '4': '11' };
-      const mesFallback = BIM_MONTH_MAP[bimN] || '03';
-      dataItem = `${anoPlano}-${mesFallback}-15`;
-      console.log(`[agente-planos] data_inicio null → fallback: ${dataItem}`);
-    }
-
     const dadosPlano = {
       turmas:      plano.turmas,
       disciplina:  plano.disciplina,
       bimestre:    plano.bimestre,
       ano:         plano.ano,
       professorNome,
-      item: {
-        atividade:      itemBimestral.atividade,
-        tipo_avaliacao: itemBimestral.tipo_avaliacao,
-        data_inicio:    dataItem,
-        data:           dataItem,
-        descricao:      itemBimestral.descricao,
-        nota_total:     itemBimestral.nota_total,
-      },
+      itens:       itensComData,      // array completo — todos os itens do professor
     };
 
     // ── 5. SET lock + resposta imediata 202 ──────────────────────────────────

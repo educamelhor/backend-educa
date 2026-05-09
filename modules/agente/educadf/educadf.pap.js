@@ -1,4 +1,4 @@
-// modules/agente/educadf/educadf.pap.js
+﻿// modules/agente/educadf/educadf.pap.js
 // ============================================================================
 // AGENTE EDUCADF — EXPORTAR PLANO DE AVALIAÇÃO PEDAGÓGICA (PAP)
 // ============================================================================
@@ -901,8 +901,17 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
   if (!page) return { ok: false, message: 'Sessão do browser não está ativa.', durationMs: 0 };
 
-  const item = plano.item;
-  if (!item) return { ok: false, message: 'Nenhum item de Avaliação Bimestral no plano.', durationMs: 0 };
+  const item = plano.item;   // retrocompatibilidade com chamadas antigas
+  // ── Normaliza: suporta tanto plano.item (singular, legado) quanto plano.itens (array) ──
+  const itensParaExportar = Array.isArray(plano.itens) && plano.itens.length > 0
+    ? plano.itens
+    : item
+      ? [item]
+      : [];
+
+  if (itensParaExportar.length === 0) {
+    return { ok: false, message: 'Nenhum item de avaliação no plano.', durationMs: 0 };
+  }
 
   try {
     // ══════════════════════════════════════════════════════════════════════
@@ -1584,406 +1593,350 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(2000);
     await session.screenshot('pap_10d_bimestre_final');
 
-    // Declara nomeAtividade antecipadamente para usar na verificação
-    const nomeAtividade = item.atividade || 'Avaliação Bimestral';
+    await session.delay(2000);
+    await session.screenshot('pap_10d_bimestre_final');
 
-    // ── Passo 7.1: Lê os procedimentos já cadastrados na tabela do EDUCADF ──
-    console.log(`[educadf.pap] 7.1/8 Verificando se "${nomeAtividade}" já existe na tabela...`);
-
+    // ═══════════════════════════════════════════════════════════════════════
+    // LOOP — Criar um procedimento avaliativo para cada item do plano.
+    // O bimestre e a aba "Procedimentos Avaliativos" já estão selecionados.
+    // Para cada item: verifica duplicata > cria > workaround de data.
+    // ═══════════════════════════════════════════════════════════════════════
     const _normNome = (s) => String(s)
       .toUpperCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^A-Z0-9 ]/g, ' ')
       .replace(/\s+/g, ' ').trim();
 
-    const _nomeAlvo = _normNome(nomeAtividade);
+    let totalCriados  = 0;
+    let totalJaExistia = 0;
+    let ultimoOk = true;
+    let ultimaMensagem = '';
 
-    const _procedimentosExistentes = await page.evaluate(() => {
-      // ══════════════════════════════════════════════════════════════════
-      // DETECÇÃO DE DUPLICATAS — CORRIGIDA 08/05/2026
-      //
-      // O EDUCADF renderiza os procedimentos avaliativos como colunas <th>
-      // dentro da tabela de notas. O cabeçalho de cada procedimento contém:
-      //   - Data (dd-MM-yyyy)
-      //   - Nome do procedimento (ex: "Prova Bimestral")
-      //   - Ícone de editar (botão)
-      //
-      // PROBLEMA ANTERIOR: o seletor 'th' pegava TAMBÉM os <th> do
-      // calendário lateral (dom, seg, ter...) e da tabela de alunos
-      // (RE, Nº DA CHAMADA). Resultado: nunca encontrava "Prova Bimestral".
-      //
-      // SOLUÇÃO: Buscar em TODOS os <th> da página e extrair texto
-      // normalizado. Também buscar em spans/divs dentro de <th> que
-      // possam conter o nome do procedimento isolado.
-      // ══════════════════════════════════════════════════════════════════
-      const textos = new Set();
+    for (let iIdx = 0; iIdx < itensParaExportar.length; iIdx++) {
+      const itemAtual = itensParaExportar[iIdx];
+      const nomeAtividade = itemAtual.atividade || 'Avaliação Bimestral';
+      const dataStr = itemAtual.data_inicio || itemAtual.data || '';
+      const dataFormatadaWk = formatarDataEducaDF(dataStr);
 
-      // 1) Todos os <th> — texto completo
-      document.querySelectorAll('th').forEach(th => {
-        const txt = (th.textContent || '').replace(/\s+/g, ' ').trim();
-        if (txt.length > 1 && txt.length < 500) textos.add(txt);
-      });
+      console.log(`\n[educadf.pap] ▶ ITEM ${iIdx + 1}/${itensParaExportar.length}: "${nomeAtividade}" | data: "${dataStr}"`);
 
-      // 2) Spans e divs DENTRO de <th> — nomes isolados do procedimento
-      document.querySelectorAll('th span, th div, th a').forEach(el => {
-        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (txt.length > 2 && txt.length < 200) textos.add(txt);
-      });
+      // ── A partir do 2º item: precisa re-abrir a aba Procedimentos e re-confirmar bimestre ──
+      if (iIdx > 0) {
+        console.log(`[educadf.pap] [item ${iIdx+1}] Re-abrindo aba Procedimentos...`);
+        await removerBackdrops(page);
+        await session.delay(1500);
 
-      // 3) Elementos com data-column-name (se o EDUCADF usar)
-      document.querySelectorAll('[data-column-name]').forEach(el => {
-        const val = el.getAttribute('data-column-name') || '';
-        if (val.length > 2) textos.add(val);
-      });
-
-      return [...textos];
-    });
-
-    console.log(`[educadf.pap] Procedimentos na tabela (${_procedimentosExistentes.length} textos): ${JSON.stringify(_procedimentosExistentes.slice(0, 15))}`);
-
-    // Verifica se o nome da atividade aparece em algum cabeçalho (match exato OU contido)
-    const _jaExiste = _procedimentosExistentes.some(nome => {
-      const normNome = _normNome(nome);
-      return normNome === _nomeAlvo || normNome.includes(_nomeAlvo);
-    });
-
-    if (_jaExiste) {
-      console.warn(`[educadf.pap] ⚠️  "${nomeAtividade}" já existe no EDUCADF — cancelando para evitar duplicata.`);
-      await session.screenshot('pap_ja_existe');
-      return {
-        ok: true,
-        errorCode: 'JA_EXISTE',
-        message: `O procedimento "${nomeAtividade}" já está cadastrado no EDUCADF para ${plano.turmas} · ${plano.bimestre}. Nenhuma duplicata foi criada.`,
-        durationMs: Date.now() - startedAt,
-      };
-    }
-
-    console.log(`[educadf.pap] ✅ "${nomeAtividade}" não encontrado — prosseguindo com a criação.`);
-
-    // ── Passo 7.2: Clicar em "+ Criar procedimento avaliativo" ───────────
-
-    console.log('[educadf.pap] 7.2/8 Clicando em "+ Criar procedimento avaliativo"...');
-
-    const textosBotaoCriar = [
-      'Criar procedimento avaliativo',
-      'Criar Procedimento Avaliativo',
-      'Criar Procedimento',
-      'Novo Procedimento',
-    ];
-
-    let botaoCriarClicado = false;
-    for (const texto of textosBotaoCriar) {
-      try {
-        const loc = page.locator(`button:has-text('${texto}')`).first();
-        if (await loc.count() > 0) {
-          console.log(`[educadf.pap] Botão Criar encontrado: "${texto}"`);
-          await loc.click({ timeout: 20000 });
-          botaoCriarClicado = true;
-          break;
-        }
-      } catch (err) {
-        console.warn(`[educadf.pap] Botão "${texto}" falhou: ${err.message}`);
-      }
-    }
-
-    // Fallback JS: qualquer botão azul (btn-primary) visível
-    if (!botaoCriarClicado) {
-      const jsClicked = await page.evaluate(() => {
-        const btns = [...document.querySelectorAll('button.btn-primary, button.btn-success')];
-        const el = btns.find(b => b.textContent?.toLowerCase().includes('criar') || b.textContent?.toLowerCase().includes('novo') || b.textContent?.toLowerCase().includes('adicionar'));
-        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
-        return false;
-      });
-      if (jsClicked) {
-        console.log('[educadf.pap] Botão Criar clicado via JS fallback.');
-        botaoCriarClicado = true;
-      }
-    }
-
-    if (!botaoCriarClicado) {
-      throw new Error('Botão "Criar procedimento avaliativo" não encontrado na página.');
-    }
-
-    // Remove quaisquer backdrops e aguarda o modal abrir
-    await removerBackdrops(page);
-    await session.delay(TIMING.actionDelay + 500);
-    await session.screenshot('pap_06_modal_aberto');
-
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 7: Preencher modal "Criar Instrumento/Procedimento Avaliativo"
-    //
-    // Campos confirmados pela screenshot do usuário:
-    //   [Nome]         → input texto required (borda laranja)
-    //   [Tipo]         → ng-select (dropdown Angular)
-    //   [Data]         → date picker "DD Mmm, YYYY"
-    //   [Atribuir nota]→ toggle JÁ ATIVO por padrão → NÃO TOCAR
-    //   [Observações]  → textarea
-    //   [Salvar]       → button.btn-success
-    // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 7/7 Preenchendo modal...');
-
-    // Aguarda modal aparecer (título identificador)
-    await page.waitForSelector('text=Criar Instrumento/Procedimento Avaliativo', { timeout: TIMING.defaultTimeout });
-    await session.delay(500);
-
-    // — PREENCHE CAMPOS DO MODAL VIA JAVASCRIPT —
-    // O ngb-modal-window (aria-modal=true) bloqueia TODOS os clicks do Playwright
-    // (click, triple-click, fill, pressSequentially). A única solução é usar
-    // page.evaluate() com manipulação DOM nativa que ignora pointer-events.
-
-    // Helper: dispara os eventos que Angular precisa para marcar o campo como válido
-    const dispatchAngularOk = async (selector) => {
-      await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return;
-        ['input', 'change', 'keyup', 'blur'].forEach(ev =>
-          el.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
-        );
-      }, selector);
-    };
-
-    // — Campo: Nome —
-    // O input de Nome é o ÚNICO input[type="text"] sem size=1 / maxlength<=5 (que são os date-picker)
-    const nomeOk = await page.evaluate((nome) => {
-      const modal = document.querySelector('ngb-modal-window');
-      if (!modal) return false;
-      const inputs = [...modal.querySelectorAll('input')];
-      const nomeInp = inputs.find(inp => {
-        const t = inp.type || 'text';
-        if (t !== 'text' && t !== '') return false;
-        const sz = parseInt(inp.getAttribute('size') || '100');
-        const ml = parseInt(inp.getAttribute('maxlength') || '9999');
-        return sz > 2 && ml > 10; // date-picker parts têm size=1, maxlength=5
-      });
-      if (!nomeInp) return false;
-      // Foca, limpa, preenche e dispara eventos Angular
-      nomeInp.focus();
-      nomeInp.value = '';
-      nomeInp.dispatchEvent(new Event('input', { bubbles: true }));
-      nomeInp.value = nome;
-      ['input', 'change', 'keyup'].forEach(ev =>
-        nomeInp.dispatchEvent(new Event(ev, { bubbles: true }))
-      );
-      nomeInp.blur();
-      nomeInp.dispatchEvent(new Event('blur', { bubbles: true }));
-      return true;
-    }, nomeAtividade);
-    console.log(`[educadf.pap] Nome ${nomeOk ? '✅' : '⚠️'}: "${nomeAtividade}"`);
-    await page.waitForTimeout(500);
-
-    // — Campo: Tipo (ng-select no modal) —
-    // O ng-select ainda é clicável pois usa Playwright sobre él mesmo (não sobre o input)
-    if (item.tipo_avaliacao) {
-      await selecionarTipoNoModal(page, item.tipo_avaliacao);
-      await page.waitForTimeout(800);
-    }
-
-    // — Campo: Data —
-    // O ngb-datepicker Angular IGNORA texto digitado via teclado simulado.
-    // A única forma confiável é navegar o calendário visual e clicar no dia correto.
-    const dataStr = item.data_inicio || item.data;
-    console.log(`[educadf.pap] Data do plano: "${dataStr}"`);
-
-    if (dataStr) {
-      const dataFormatada = formatarDataEducaDF(dataStr);
-      console.log(`[educadf.pap] Data formatada: "${dataFormatada}"`);
-      const calOkCriacao = await navegarCalendarioEClicarDia(page, dataStr);
-      if (!calOkCriacao) {
-        console.warn('[educadf.pap] Data ⚠️: calendário não respondeu — a data pode estar incorreta.');
-      } else {
-        console.log(`[educadf.pap] Data ✅: "${dataFormatada}" selecionada no calendário.`);
-      }
-    } else {
-      console.warn('[educadf.pap] Data ⚠️: item.data_inicio está vazio.');
-    }
-
-
-    // — Campo: Observações —
-    if (item.descricao) {
-      await page.evaluate((desc) => {
-        const modal = document.querySelector('ngb-modal-window');
-        if (!modal) return;
-        const ta = modal.querySelector('textarea');
-        if (!ta) return;
-        ta.focus();
-        ta.value = desc;
-        ['input', 'change', 'blur'].forEach(ev =>
-          ta.dispatchEvent(new Event(ev, { bubbles: true }))
-        );
-      }, item.descricao);
-      console.log(`[educadf.pap] Observações: "${item.descricao.substring(0, 60)}"`);
-    }
-
-    // Aguarda Angular estabilizar os validadores
-    await page.waitForTimeout(1000);
-    await session.screenshot('pap_07_modal_preenchido');
-
-    // — Salvar —
-    // IMPORTANTE: usa JS click direto pois o ngb-modal-window intercepta pointer events
-    // e o Playwright.click() falha com "subtree intercepts pointer events".
-    console.log('[educadf.pap] Clicando em Salvar (via JavaScript)...');
-    const salvarOk = await page.evaluate(() => {
-      const seletores = [
-        'ngb-modal-window button[aria-label="Salvar"]',
-        'ngb-modal-window button.btn-success',
-        '.modal button.btn-success',
-        '.modal button[aria-label="Salvar"]',
-        '[role="dialog"] button.btn-success',
-      ];
-      for (const sel of seletores) {
-        const btn = document.querySelector(sel);
-        if (btn) {
-          btn.scrollIntoView({ block: 'center' });
-          // dispatchEvent é mais compatível com Angular do que .click() simples
-          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          return sel;
-        }
-      }
-      return null;
-    });
-
-    if (salvarOk) {
-      console.log(`[educadf.pap] ✅ Salvar clicado via JS: ${salvarOk}`);
-    } else {
-      // Fallback final: Playwright com force:true (bypassa pointer-event checks)
-      console.warn('[educadf.pap] JS não encontrou botão — tentando force click...');
-      const btnSalvar = page.locator(
-        'ngb-modal-window button.btn-success, .modal button.btn-success'
-      ).first();
-      await btnSalvar.click({ timeout: 10000, force: true });
-      console.log('[educadf.pap] ✅ Salvar clicado via force click.');
-    }
-
-    // Aguarda o modal fechar (dá até 3s)
-    await session.delay(3000);
-    await session.screenshot('pap_08_pos_salvar');
-
-    // ── Verifica erros de validação no modal (diagnóstico) ─────────────────
-    const modalAindaAberto = await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
-    if (modalAindaAberto) {
-      const errosValidacao = await page.evaluate(() => {
-        return [...document.querySelectorAll('.invalid-feedback, .text-danger, .form-text.text-danger')]
-          .map(e => e.textContent?.trim()).filter(Boolean);
-      });
-      const camposInvalidos = await page.evaluate(() => {
-        return [...document.querySelectorAll('ngb-modal-window .ng-invalid')]
-          .map(el => ({ tag: el.tagName, aria: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder') }));
-      });
-      if (errosValidacao.length > 0) console.warn(`[educadf.pap] Erros validação: ${JSON.stringify(errosValidacao)}`);
-      if (camposInvalidos.length > 0) console.warn(`[educadf.pap] Campos inválidos ng-invalid: ${JSON.stringify(camposInvalidos)}`);
-    }
-
-    // ── Verificar sucesso ──────────────────────────────────────────────
-    const alertSucesso = await page.locator('.alert-success, .toast-success, .swal2-success').isVisible().catch(() => false);
-    const ok = !modalAindaAberto || alertSucesso;
-
-    console.log(`[educadf.pap] Resultado: modalFechado=${!modalAindaAberto}, alertSucesso=${alertSucesso}`);
-
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 8: Workaround Robustez — Re-editar para forçar a confirmação da data
-    // A data digitada no modal de criação às vezes é ignorada pelo Angular.
-    // Solução: após salvar, clicar no lápis da coluna criada e corrigir a data.
-    // ══════════════════════════════════════════════════════════════════════
-    const dataFormatadaWk = formatarDataEducaDF(dataStr);
-    console.log(`[educadf.pap] Data para workaround: "${dataFormatadaWk}" (origem: "${dataStr}")`);
-
-    if (ok && dataFormatadaWk) {
-      console.log(`[educadf.pap] 8/8 Workaround: Re-editando "${nomeAtividade}" para forçar data "${dataFormatadaWk}"...`);
-      await session.delay(4000); // Aguarda tabela atualizar com a nova coluna
-      await session.screenshot('pap_08b_antes_edicao');
-
-      try {
-        // Clica no botão de lápis dentro do TH que contém o nome da atividade
-        const editClicked = await page.evaluate((nome) => {
-          const normalize = s => s.toLowerCase().trim();
-          const alvo = normalize(nome);
-          const headers = [...document.querySelectorAll('th')];
-          for (const el of headers) {
-            const txt = el.textContent || '';
-            if (txt.length < 200 && normalize(txt).includes(alvo)) {
-              const btn = el.querySelector(
-                'button, a, i.fa-edit, i.fa-pencil, i.fa-pen, [class*="edit"], [class*="pencil"]'
-              );
-              if (btn) {
-                const clickTarget = btn.closest('button, a') || btn;
-                clickTarget.scrollIntoView({ block: 'center' });
-                clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                return `clicou em: ${clickTarget.tagName} / ${clickTarget.className}`;
-              }
-              // Se achou o TH mas não achou botão dentro, loga quais filhos tem
-              return `TH encontrado mas sem botão. Filhos: ${[...el.children].map(c => c.tagName + '.' + c.className).join(', ')}`;
-            }
-          }
-          return null;
-        }, nomeAtividade);
-
-        console.log(`[educadf.pap] Workaround edit resultado: ${editClicked}`);
-
-        if (editClicked && editClicked.startsWith('clicou')) {
-          // Aguarda modal de edição abrir
-          try {
-            await page.waitForSelector(
-              'text=Editar Instrumento/Procedimento Avaliativo',
-              { timeout: 15000 }
-            );
-          } catch {
-            // Tenta seletor genérico do ngb-modal
-            await page.waitForSelector('ngb-modal-window', { timeout: 5000 });
-          }
-          await session.delay(1000);
-          await session.screenshot('pap_08c_modal_edicao_aberto');
-
-          // Usa calendário visual — digitar no input NÃO atualiza o modelo Angular
-          const calOkEdit = await navegarCalendarioEClicarDia(page, dataStr);
-          if (calOkEdit) {
-            console.log(`[educadf.pap] Workaround Data Edit ✅: "${dataFormatadaWk}"`);
-          } else {
-            console.warn('[educadf.pap] ⚠️ Workaround: calendário não respondeu no modal de edição.');
-          }
-
-          // Salvar edição
-          console.log('[educadf.pap] Salvando workaround...');
-          await page.waitForTimeout(500);
-          await page.evaluate(() => {
-            const btn = document.querySelector(
-              'ngb-modal-window button.btn-success, .modal button.btn-success'
-            );
-            if (btn) {
-              btn.scrollIntoView({ block: 'center' });
-              btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            }
+        const reCoords = await page.evaluate(() => {
+          const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+            const t = (l.textContent || '').toLowerCase();
+            return t.includes('procedimento') && t.includes('avaliativo');
           });
+          if (!el) return null;
+          el.scrollIntoView({ block: 'center' });
+          const rect = el.getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        });
+        if (reCoords) {
+          await page.mouse.click(reCoords.x, reCoords.y);
           await session.delay(3000);
-          await session.screenshot('pap_09_pos_salvar_workaround');
-          console.log('[educadf.pap] ✅ Workaround concluído!');
-        } else {
-          console.warn(`[educadf.pap] ⚠️ Workaround: lápis não clicado. Resultado evaluate: ${editClicked}`);
         }
-      } catch (wkErr) {
-        console.warn(`[educadf.pap] ⚠️ Workaround de edição falhou: ${wkErr.message}`);
-        await session.screenshot('pap_08_wk_erro').catch(() => {});
+
+        // Re-confirma bimestre após re-abrir aba
+        await page.waitForSelector(bimSelector, { timeout: 15000 }).catch(() => {});
+        await removerBackdrops(page);
+        await session.delay(1000);
+
+        const tabReInfo = await page.evaluate((num) => {
+          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+          const alvo = `${num}O BIMESTRE`;
+          const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
+            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
+          if (!tabs.length) return null;
+          const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+          if (!tabAlvo) return { error: 'nao encontrado' };
+          tabAlvo.scrollIntoView({ block: 'center' });
+          const rect = tabAlvo.getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
+        }, bimNumPAP);
+
+        if (tabReInfo && !tabReInfo.error) {
+          await page.mouse.click(tabReInfo.x, tabReInfo.y);
+          await session.delay(3000);
+          console.log(`[educadf.pap] [item ${iIdx+1}] Bimestre re-selecionado: "${tabReInfo.txt}"`);
+        }
+        await session.screenshot(`pap_item${iIdx+1}_pronto`);
       }
-    } else if (!dataFormatadaWk) {
-      console.warn(`[educadf.pap] ⚠️ Workaround pulado: não foi possível formatar a data "${dataStr}" para o EDUCADF.`);
-    }
+
+      // ── Verifica se este item já existe na tabela do EDUCADF ──
+      const _nomeAlvo = _normNome(nomeAtividade);
+      const procedimentosExistentes = await page.evaluate(() => {
+        const textos = new Set();
+        document.querySelectorAll('th').forEach(th => {
+          const txt = (th.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt.length > 1 && txt.length < 500) textos.add(txt);
+        });
+        document.querySelectorAll('th span, th div, th a').forEach(el => {
+          const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt.length > 2 && txt.length < 200) textos.add(txt);
+        });
+        return [...textos];
+      });
+
+      const jaExiste = procedimentosExistentes.some(nome => {
+        const normNome = _normNome(nome);
+        return normNome === _nomeAlvo || normNome.includes(_nomeAlvo);
+      });
+
+      if (jaExiste) {
+        console.log(`[educadf.pap] ⏭️  [item ${iIdx+1}] "${nomeAtividade}" já existe — pulando.`);
+        await session.screenshot(`pap_item${iIdx+1}_ja_existe`);
+        totalJaExistia++;
+        ultimaMensagem = `"${nomeAtividade}" já existia.`;
+        continue;
+      }
+
+      console.log(`[educadf.pap] ✅ [item ${iIdx+1}] "${nomeAtividade}" não encontrado — criando...`);
+
+      // ── Clica em "+ Criar procedimento avaliativo" ──
+      const textosBotaoCriar = [
+        'Criar procedimento avaliativo',
+        'Criar Procedimento Avaliativo',
+        'Criar Procedimento',
+        'Novo Procedimento',
+      ];
+      let botaoCriarClicado = false;
+      for (const texto of textosBotaoCriar) {
+        try {
+          const loc = page.locator(`button:has-text('${texto}')`).first();
+          if (await loc.count() > 0) {
+            await loc.click({ timeout: 20000 });
+            botaoCriarClicado = true;
+            break;
+          }
+        } catch (err) {
+          console.warn(`[educadf.pap] [item ${iIdx+1}] Botão "${texto}" falhou: ${err.message}`);
+        }
+      }
+      if (!botaoCriarClicado) {
+        const jsClicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button.btn-primary, button.btn-success')];
+          const el = btns.find(b => b.textContent?.toLowerCase().includes('criar') || b.textContent?.toLowerCase().includes('novo') || b.textContent?.toLowerCase().includes('adicionar'));
+          if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
+          return false;
+        });
+        if (jsClicked) botaoCriarClicado = true;
+      }
+      if (!botaoCriarClicado) {
+        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] Botão Criar não encontrado. Pulando item.`);
+        ultimoOk = false;
+        ultimaMensagem = `Botão Criar não encontrado para "${nomeAtividade}".`;
+        continue;
+      }
+
+      await removerBackdrops(page);
+      await session.delay(TIMING.actionDelay + 500);
+      await session.screenshot(`pap_item${iIdx+1}_modal_aberto`);
+
+      // ── Aguarda modal ──
+      await page.waitForSelector('text=Criar Instrumento/Procedimento Avaliativo', { timeout: TIMING.defaultTimeout }).catch(() => {
+        console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Modal não encontrado via texto.`);
+      });
+      await session.delay(500);
+
+      // ── Helper: dispara eventos Angular ──
+      const dispatchAngularOk = async (selector) => {
+        await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return;
+          ['input', 'change', 'keyup', 'blur'].forEach(ev =>
+            el.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
+          );
+        }, selector);
+      };
+
+      // ── Campo: Nome ──
+      const nomeOk = await page.evaluate((nome) => {
+        const modal = document.querySelector('ngb-modal-window');
+        if (!modal) return false;
+        const inputs = [...modal.querySelectorAll('input')];
+        const nomeInp = inputs.find(inp => {
+          const t = inp.type || 'text';
+          if (t !== 'text' && t !== '') return false;
+          const sz = parseInt(inp.getAttribute('size') || '100');
+          const ml = parseInt(inp.getAttribute('maxlength') || '9999');
+          return sz > 2 && ml > 10;
+        });
+        if (!nomeInp) return false;
+        nomeInp.focus();
+        nomeInp.value = '';
+        nomeInp.dispatchEvent(new Event('input', { bubbles: true }));
+        nomeInp.value = nome;
+        ['input', 'change', 'keyup'].forEach(ev =>
+          nomeInp.dispatchEvent(new Event(ev, { bubbles: true }))
+        );
+        nomeInp.blur();
+        nomeInp.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+      }, nomeAtividade);
+      console.log(`[educadf.pap] [item ${iIdx+1}] Nome ${nomeOk ? '✅' : '⚠️'}: "${nomeAtividade}"`);
+      await page.waitForTimeout(500);
+
+      // ── Campo: Tipo ──
+      if (itemAtual.tipo_avaliacao) {
+        await selecionarTipoNoModal(page, itemAtual.tipo_avaliacao);
+        await page.waitForTimeout(800);
+      }
+
+      // ── Campo: Data ──
+      if (dataStr) {
+        console.log(`[educadf.pap] [item ${iIdx+1}] Data: "${dataStr}"`);
+        const calOk = await navegarCalendarioEClicarDia(page, dataStr);
+        if (!calOk) {
+          console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Calendário não respondeu para "${dataStr}".`);
+        }
+      } else {
+        console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] data_inicio vazio.`);
+      }
+
+      // ── Campo: Observações ──
+      if (itemAtual.descricao) {
+        await page.evaluate((desc) => {
+          const modal = document.querySelector('ngb-modal-window');
+          if (!modal) return;
+          const ta = modal.querySelector('textarea');
+          if (!ta) return;
+          ta.focus();
+          ta.value = desc;
+          ['input', 'change', 'blur'].forEach(ev =>
+            ta.dispatchEvent(new Event(ev, { bubbles: true }))
+          );
+        }, itemAtual.descricao);
+      }
+
+      await page.waitForTimeout(1000);
+      await session.screenshot(`pap_item${iIdx+1}_modal_preenchido`);
+
+      // ── Salvar ──
+      const salvarOk = await page.evaluate(() => {
+        const seletores = [
+          'ngb-modal-window button[aria-label="Salvar"]',
+          'ngb-modal-window button.btn-success',
+          '.modal button.btn-success',
+          '[role="dialog"] button.btn-success',
+        ];
+        for (const sel of seletores) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            btn.scrollIntoView({ block: 'center' });
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            return sel;
+          }
+        }
+        return null;
+      });
+      if (!salvarOk) {
+        const btnSalvar = page.locator('ngb-modal-window button.btn-success, .modal button.btn-success').first();
+        await btnSalvar.click({ timeout: 10000, force: true }).catch(() => {});
+      }
+
+      await session.delay(3000);
+      await session.screenshot(`pap_item${iIdx+1}_pos_salvar`);
+
+      const modalAindaAberto = await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
+      const itemOk = !modalAindaAberto;
+
+      if (itemOk) {
+        totalCriados++;
+        console.log(`[educadf.pap] ✅ [item ${iIdx+1}] "${nomeAtividade}" criado.`);
+
+        // ── Workaround: re-editar para forçar data ──
+        if (dataFormatadaWk) {
+          console.log(`[educadf.pap] [item ${iIdx+1}] Workaround: re-editando para forçar data "${dataFormatadaWk}"...`);
+          await session.delay(4000);
+          try {
+            const editClicked = await page.evaluate((nome) => {
+              const normalize = s => s.toLowerCase().trim();
+              const alvo = normalize(nome);
+              const headers = [...document.querySelectorAll('th')];
+              for (const el of headers) {
+                const txt = el.textContent || '';
+                if (txt.length < 200 && normalize(txt).includes(alvo)) {
+                  const btn = el.querySelector('button, a, i.fa-edit, i.fa-pencil, i.fa-pen, [class*="edit"], [class*="pencil"]');
+                  if (btn) {
+                    const clickTarget = btn.closest('button, a') || btn;
+                    clickTarget.scrollIntoView({ block: 'center' });
+                    clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    return `clicou em: ${clickTarget.tagName}`;
+                  }
+                  return `TH encontrado mas sem botão`;
+                }
+              }
+              return null;
+            }, nomeAtividade);
+
+            if (editClicked && editClicked.startsWith('clicou')) {
+              await page.waitForSelector('text=Editar Instrumento/Procedimento Avaliativo', { timeout: 15000 }).catch(() =>
+                page.waitForSelector('ngb-modal-window', { timeout: 5000 }).catch(() => {})
+              );
+              await session.delay(1000);
+              const calOkEdit = await navegarCalendarioEClicarDia(page, dataStr);
+              if (calOkEdit) {
+                console.log(`[educadf.pap] [item ${iIdx+1}] Workaround data ✅: "${dataFormatadaWk}"`);
+              }
+              await page.waitForTimeout(500);
+              await page.evaluate(() => {
+                const btn = document.querySelector('ngb-modal-window button.btn-success, .modal button.btn-success');
+                if (btn) {
+                  btn.scrollIntoView({ block: 'center' });
+                  btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
+              });
+              await session.delay(3000);
+              console.log(`[educadf.pap] [item ${iIdx+1}] Workaround concluído.`);
+            } else {
+              console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Workaround: lápis não clicado. "${editClicked}"`);
+            }
+          } catch (wkErr) {
+            console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Workaround falhou: ${wkErr.message}`);
+          }
+        }
+        ultimaMensagem = `"${nomeAtividade}" criado com sucesso.`;
+      } else {
+        ultimoOk = false;
+        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] "${nomeAtividade}": modal ainda aberto após salvar.`);
+        ultimaMensagem = `Modal ainda aberto para "${nomeAtividade}" — verifique validações.`;
+        // Fecha modal para não bloquear próximo item
+        await page.keyboard.press('Escape').catch(() => {});
+        await session.delay(1500);
+      }
+    } // fim do loop de itens
+
+    await session.screenshot('pap_loop_concluido');
+    console.log(`[educadf.pap] ✅ Loop concluído: ${totalCriados} criado(s), ${totalJaExistia} já existia(m).`);
+
+    const tudoJaExistia = totalJaExistia === itensParaExportar.length && totalCriados === 0;
 
     return {
-      ok,
-      message: ok
-        ? `Procedimento "${nomeAtividade}" criado (e revisado para forçar data) no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
-        : `Modal ainda aberto após salvar — verifique os logs de validação.`,
+      ok: ultimoOk || totalCriados > 0 || tudoJaExistia,
+      errorCode: tudoJaExistia ? 'JA_EXISTE' : undefined,
+      totalCriados,
+      totalJaExistia,
+      message: tudoJaExistia
+        ? `Todos os ${itensParaExportar.length} procedimento(s) já estavam cadastrados no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
+        : `${totalCriados} de ${itensParaExportar.length} procedimento(s) criado(s) para ${plano.turmas} · ${plano.bimestre}. ${ultimaMensagem}`,
       durationMs: Date.now() - startedAt,
     };
 
   } catch (err) {
     const errorScreenshot = await session.screenshot('pap_erro').catch(() => null);
-    console.error(`[educadf.pap] ❌ Erro: ${err.message}`);
+    console.error(`[educadf.pap] Erro: ${err.message}`);
     return {
       ok: false,
       message: `Erro durante a exportação: ${err.message}`,
       screenshotPath: errorScreenshot,
       durationMs: Date.now() - startedAt,
-      // Propaga o errorCode específico (ex: PORTAL_INDISPONIVEL) se foi definido na throw
       errorCode: err.errorCode || 'PAP_EXPORT_ERROR',
     };
   }
