@@ -1045,6 +1045,104 @@ router.post("/pair/request", async (req, res) => {
     });
   }
 
+  // ── DEMO BYPASS ──────────────────────────────────────────────────────────
+  // Conta demo para revisão Apple/Google Store.
+  // Verificado ANTES da consulta ao banco para evitar o 401.
+  // DEMO-APPLE: auto-aprova o device imediatamente (escola_id = 1).
+  // ────────────────────────────────────────────────────────────────────────
+  const DEMO_ACCESS_CODES = ["DEMO-APPLE"];
+  if (DEMO_ACCESS_CODES.includes(access_code)) {
+    let conn = null;
+    const demo_escola_id = 1; // escola demo fixa para revisão das lojas
+    const created_ip = getClientIp(req);
+    const created_user_agent = getUserAgent(req);
+    try {
+      conn = await pool.getConnection();
+      await conn.beginTransaction();
+
+      // Gera device_token
+      const device_token = crypto.randomBytes(32).toString("hex");
+      const device_secret_hash = await bcrypt.hash(device_token, 10);
+
+      // Upsert em capture_devices
+      const [devRows] = await conn.query(
+        "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
+        [device_uid]
+      );
+
+      let device_id = null;
+      if (devRows && devRows.length > 0) {
+        device_id = Number(devRows[0].id);
+        await conn.query(
+          `UPDATE capture_devices
+              SET escola_id = ?, nome_dispositivo = ?, plataforma = ?,
+                  device_secret_hash = ?, app_version = ?, ativo = 1,
+                  enrolled_by_usuario_id = 99999, last_seen_at = NOW()
+            WHERE id = ?`,
+          [demo_escola_id, nome_dispositivo || "EDUCA-CAPTURE (Demo)", plataforma, device_secret_hash, app_version, device_id]
+        );
+      } else {
+        const [ins] = await conn.query(
+          `INSERT INTO capture_devices
+            (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, 99999, NOW(), NOW())`,
+          [demo_escola_id, nome_dispositivo || "EDUCA-CAPTURE (Demo)", plataforma, device_uid, device_secret_hash, app_version]
+        );
+        device_id = Number(ins.insertId);
+      }
+
+      // Cria pair_code já aprovado (para rastreabilidade)
+      const pair_code = generatePairCode();
+      try {
+        await conn.query(
+          `INSERT INTO capture_pair_codes
+            (pair_code, escola_id, device_uid, plataforma, nome_dispositivo, app_version,
+             expires_at, created_ip, created_user_agent, created_at,
+             approved_at, approved_by_usuario_id, device_id, used_at,
+             device_token_plain, token_delivered_at)
+           VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR), ?, ?, NOW(),
+                   NOW(), 99999, ?, NOW(), ?, NOW())`,
+          [pair_code, demo_escola_id, device_uid, plataforma, nome_dispositivo, app_version,
+           created_ip, created_user_agent, device_id, device_token]
+        );
+      } catch (e) {
+        if (String(e?.code || "") !== "ER_DUP_ENTRY") throw e;
+      }
+
+      await safeInsertCaptureAuditoria(conn, {
+        escola_id: demo_escola_id,
+        aluno_id: null,
+        device_id,
+        usuario_id: 99999,
+        acao: "DEMO_AUTO_APPROVE",
+        ip: created_ip,
+        user_agent: created_user_agent,
+      });
+
+      await conn.commit();
+
+      console.log(`[CAPTURE][DEMO] Auto-approve: access_code=${access_code}, device_uid=${device_uid}, device_id=${device_id}`);
+
+      return res.status(201).json({
+        ok: true,
+        pair_code,
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        _demo: true,
+        _auto_approved: true,
+        device_token,
+        device_uid,
+        device_id,
+      });
+    } catch (err) {
+      try { if (conn) await conn.rollback(); } catch {}
+      console.error("[CAPTURE][DEMO] erro ao auto-aprovar:", err?.message || err);
+      return res.status(500).json({ ok: false, message: "Erro interno ao auto-aprovar conta demo." });
+    } finally {
+      try { if (conn) conn.release(); } catch {}
+    }
+  }
+  // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
+
   // Resolve escola_id via access_code (multi-escola hardening)
   let escola_id = 0;
   try {
@@ -1077,9 +1175,13 @@ router.post("/pair/request", async (req, res) => {
     });
   }
 
+  const created_ip = getClientIp(req);
+  const created_user_agent = getUserAgent(req);
 
-
-
+  // ✅ escola_id já resolvido e validado pelo access_code acima.
+  // Não exigimos pré-cadastro do device_uid em capture_devices:
+  // o access_code É a prova de pertencimento à escola.
+  // O device será criado/atualizado em capture_devices no momento do approve.
 
 
 
@@ -1097,103 +1199,6 @@ router.post("/pair/request", async (req, res) => {
   // o access_code É a prova de pertencimento à escola.
   // O device será criado/atualizado em capture_devices no momento do approve.
 
-  // ── DEMO BYPASS ──────────────────────────────────────────────────────────
-  // Conta demo para revisão Apple/Google Store.
-  // Quando access_code == "DEMO-APPLE", auto-aprova o device imediatamente,
-  // eliminando a necessidade de um segundo dispositivo/navegador para o
-  // revisor aprovar o pareamento.
-  // ────────────────────────────────────────────────────────────────────────
-  const DEMO_ACCESS_CODES = ["DEMO-APPLE"];
-  if (DEMO_ACCESS_CODES.includes(access_code)) {
-    let conn = null;
-    try {
-      conn = await pool.getConnection();
-      await conn.beginTransaction();
-
-      // 1) Gera device_token
-      const device_token = crypto.randomBytes(32).toString("hex");
-      const device_secret_hash = await bcrypt.hash(device_token, 10);
-
-      // 2) Upsert em capture_devices
-      const [devRows] = await conn.query(
-        "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
-        [device_uid]
-      );
-
-      let device_id = null;
-      if (devRows && devRows.length > 0) {
-        device_id = Number(devRows[0].id);
-        await conn.query(
-          `UPDATE capture_devices
-              SET escola_id = ?, nome_dispositivo = ?, plataforma = ?,
-                  device_secret_hash = ?, app_version = ?, ativo = 1,
-                  enrolled_by_usuario_id = 99999, last_seen_at = NOW()
-            WHERE id = ?`,
-          [escola_id, nome_dispositivo || "EDUCA-CAPTURE (Demo)", plataforma, device_secret_hash, app_version, device_id]
-        );
-      } else {
-        const [ins] = await conn.query(
-          `INSERT INTO capture_devices
-            (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
-           VALUES (?, ?, ?, ?, ?, ?, 1, 99999, NOW(), NOW())`,
-          [escola_id, nome_dispositivo || "EDUCA-CAPTURE (Demo)", plataforma, device_uid, device_secret_hash, app_version]
-        );
-        device_id = Number(ins.insertId);
-      }
-
-      // 3) Cria pair_code já aprovado (para rastreabilidade)
-      const pair_code = generatePairCode();
-      try {
-        await conn.query(
-          `INSERT INTO capture_pair_codes
-            (pair_code, escola_id, device_uid, plataforma, nome_dispositivo, app_version,
-             expires_at, created_ip, created_user_agent, created_at,
-             approved_at, approved_by_usuario_id, device_id, used_at,
-             device_token_plain, token_delivered_at)
-           VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR), ?, ?, NOW(),
-                   NOW(), 99999, ?, NOW(), ?, NOW())`,
-          [pair_code, escola_id, device_uid, plataforma, nome_dispositivo, app_version,
-           created_ip, created_user_agent, device_id, device_token]
-        );
-      } catch (e) {
-        // Ignora colisão de pair_code — o pair_code é só para auditoria neste caso
-        if (String(e?.code || "") !== "ER_DUP_ENTRY") throw e;
-      }
-
-      await safeInsertCaptureAuditoria(conn, {
-        escola_id,
-        aluno_id: null,
-        device_id,
-        usuario_id: 99999,
-        acao: "DEMO_AUTO_APPROVE",
-        ip: created_ip,
-        user_agent: created_user_agent,
-      });
-
-      await conn.commit();
-
-      console.log(`[CAPTURE][DEMO] Auto-approve: access_code=${access_code}, device_uid=${device_uid}, device_id=${device_id}`);
-
-      return res.status(201).json({
-        ok: true,
-        pair_code,
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-        // ✅ DEMO: entrega device_token direto (sem polling)
-        _demo: true,
-        _auto_approved: true,
-        device_token,
-        device_uid,
-        device_id,
-      });
-    } catch (err) {
-      try { if (conn) await conn.rollback(); } catch {}
-      console.error("[CAPTURE][DEMO] erro ao auto-aprovar:", err?.message || err);
-      return res.status(500).json({ ok: false, message: "Erro interno ao auto-aprovar conta demo." });
-    } finally {
-      try { if (conn) conn.release(); } catch {}
-    }
-  }
-  // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
 
   const expiresAt = new Date(Date.now() + CAPTURE_PAIR_EXPIRES_MS);
   const MAX_TRIES = 6;
