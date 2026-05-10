@@ -320,15 +320,25 @@ router.post('/:id/exportar-notas', async (req, res) => {
     }
     const itemIdx = itens.findIndex(i => i.id === itemBimestral.id);
 
-    // ── 4. Busca alunos com notas ────────────────────────────────────────────
+    // ── 4. Busca alunos com notas (agrega sub-colunas via SUM) ───────────────
+    // Itens com oportunidades > 1 (ex: Caderno com 5 colunas) geram múltiplas linhas
+    // em notas_diario (oportunidade_idx 0..N-1). O EDUCADF espera UM valor por aluno,
+    // então agrupamos via GROUP BY + SUM para consolidar todas as sub-colunas.
+    // Para itens com oportunidades = 1, SUM equivale à nota única (comportamento idêntico ao anterior).
     let alunosComNotas = [];
     try {
       const [rows] = await db.query(`
-        SELECT a.codigo AS re, a.estudante AS nome, nd.nota
-          FROM notas_diario nd
-          JOIN alunos a ON a.id = nd.aluno_id
-         WHERE nd.plano_id = ? AND nd.item_idx = ? AND nd.nota IS NOT NULL
-         ORDER BY a.estudante ASC
+        SELECT
+          a.codigo        AS re,
+          a.estudante     AS nome,
+          SUM(nd.nota)    AS nota
+        FROM notas_diario nd
+        JOIN alunos a ON a.id = nd.aluno_id
+        WHERE nd.plano_id = ?
+          AND nd.item_idx  = ?
+          AND nd.nota IS NOT NULL
+        GROUP BY a.id, a.codigo, a.estudante
+        ORDER BY a.estudante ASC
       `, [planoId, itemIdx]);
       alunosComNotas = rows || [];
     } catch (e) {
