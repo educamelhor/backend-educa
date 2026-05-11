@@ -565,6 +565,24 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration questoes_canceladas (não crítico):", migErr.message);
   }
 
+  // [2026-05-11] Data de aplicação da prova bimestral no módulo Gabarito
+  try {
+    const [colsDataApl] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gabarito_avaliacoes' AND COLUMN_NAME = 'data_aplicacao'
+    `);
+    if (colsDataApl.length === 0) {
+      await pool.query(`
+        ALTER TABLE gabarito_avaliacoes
+          ADD COLUMN data_aplicacao DATE DEFAULT NULL
+          COMMENT 'Data de aplicação da prova bimestral — definida pela direção ao criar o gabarito'
+      `);
+      console.log("[MIGRATION] Coluna 'data_aplicacao' adicionada em 'gabarito_avaliacoes' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration data_aplicacao (não crítico):", migErr.message);
+  }
+
   // [2026-04-24] Tabela de OTP codes do App Pais
   try {
     await pool.query(`
