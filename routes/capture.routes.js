@@ -1,19 +1,19 @@
-import express from "express";
+﻿import express from "express";
 import pool from "../db.js";
 
 const router = express.Router();
 
-// Rate limit em memória (por device). Para multi-instância, migrar para Redis.
+// Rate limit em memÃ³ria (por device). Para multi-instÃ¢ncia, migrar para Redis.
 const CAPTURE_RL_WINDOW_MS = Number(process.env.CAPTURE_RL_WINDOW_MS || 60_000);
 const CAPTURE_RL_MAX = Number(process.env.CAPTURE_RL_MAX || 12);
 
 const _captureRlStore = new Map(); // key -> { count, resetAt }
 
-// PASSO 5.2 — Cooldown de ENROLL/REENROLL (evita duplo clique / corrida de token)
+// PASSO 5.2 â€” Cooldown de ENROLL/REENROLL (evita duplo clique / corrida de token)
 const CAPTURE_ENROLL_COOLDOWN_MS = Number(process.env.CAPTURE_ENROLL_COOLDOWN_MS || 10_000);
 const _captureEnrollCooldown = new Map(); // key -> { resetAt }
 
-// PASSO 3 — Pareamento com aprovação (pair_code temporário)
+// PASSO 3 â€” Pareamento com aprovaÃ§Ã£o (pair_code temporÃ¡rio)
 const CAPTURE_PAIR_EXPIRES_MS = Number(process.env.CAPTURE_PAIR_EXPIRES_MS || 10 * 60_000); // 10 min
 const CAPTURE_PAIR_REQ_COOLDOWN_MS = Number(process.env.CAPTURE_PAIR_REQ_COOLDOWN_MS || 5_000); // evita spam
 const _capturePairReqCooldown = new Map(); // device_uid -> { resetAt }
@@ -23,7 +23,7 @@ function normalizeDeviceUid(raw) {
   return v || null;
 }
 
-// Código curto (formato XXXX-XXXX), evitando chars confusos
+// CÃ³digo curto (formato XXXX-XXXX), evitando chars confusos
 function generatePairCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem I, O, 0, 1
   const pick = () => alphabet[crypto.randomInt(0, alphabet.length)];
@@ -110,7 +110,7 @@ function checkCaptureRateLimit(deviceKey) {
   return { ok: true, remaining: Math.max(0, CAPTURE_RL_MAX - cur.count), resetAt: cur.resetAt };
 }
 
-// PASSO 5.2 — Cooldown de ENROLL/REENROLL (por escola + device_uid)
+// PASSO 5.2 â€” Cooldown de ENROLL/REENROLL (por escola + device_uid)
 function checkEnrollCooldown(keyRaw) {
   const key = String(keyRaw || "").trim();
   if (!key) return { ok: true };
@@ -139,7 +139,7 @@ async function rateLimitCapturePorDevice(req, res, next) {
       retry_after_ms: Math.max(0, rl.resetAt - Date.now()),
     };
 
-    // Auditoria mínima do bloqueio (LGPD + rastreabilidade)
+    // Auditoria mÃ­nima do bloqueio (LGPD + rastreabilidade)
     const escola_id = Number(req.captureDevice?.escola_id || 0) || null;
     const device_id = Number(req.captureDevice?.id || 0) || null;
 
@@ -153,8 +153,8 @@ async function rateLimitCapturePorDevice(req, res, next) {
       user_agent: getUserAgent(req),
     });
 
-    // ⚠️ Estamos ANTES do multer: o iOS/Expo pode falhar se responder enquanto o multipart ainda está sendo enviado.
-    // Estratégia: drenar o body e só finalizar a resposta quando o request terminar.
+    // âš ï¸ Estamos ANTES do multer: o iOS/Expo pode falhar se responder enquanto o multipart ainda estÃ¡ sendo enviado.
+    // EstratÃ©gia: drenar o body e sÃ³ finalizar a resposta quando o request terminar.
     try {
       let responded = false;
 
@@ -173,7 +173,7 @@ async function rateLimitCapturePorDevice(req, res, next) {
       // garante que o stream flua
       req.resume();
 
-      // não chama next()
+      // nÃ£o chama next()
       return;
     } catch {
       // fallback: resposta imediata
@@ -195,7 +195,7 @@ router.use((req, _res, next) => {
 });
 
 // ==============================
-// PASSO 3 — Timeout controlado (HARD para multipart/Expo iOS)
+// PASSO 3 â€” Timeout controlado (HARD para multipart/Expo iOS)
 // ==============================
 const CAPTURE_REQ_TIMEOUT_MS = Number(process.env.CAPTURE_REQ_TIMEOUT_MS || 30_000);
 
@@ -221,7 +221,7 @@ router.use((req, res, next) => {
   const onAbort = () => onDone();
 
   const hardClose = () => {
-    // Para multipart no iOS/Expo: garantir quebra real da conexão
+    // Para multipart no iOS/Expo: garantir quebra real da conexÃ£o
     try { res.setHeader("Connection", "close"); } catch {}
     try { res.flushHeaders?.(); } catch {}
     try { req.socket?.destroy?.(); } catch {}
@@ -235,7 +235,7 @@ router.use((req, res, next) => {
     console.warn(`[CAPTURE][TIMEOUT] ${req.method} ${req.originalUrl} device_uid=${deviceUid || "-"}`);
 
     try {
-      // garante encerramento da resposta para o iOS/Expo não ficar pendurado
+      // garante encerramento da resposta para o iOS/Expo nÃ£o ficar pendurado
       if (!res.headersSent) {
         res.status(408);
         res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -243,11 +243,11 @@ router.use((req, res, next) => {
         res.end(JSON.stringify({
           ok: false,
           code: "CAPTURE_TIMEOUT",
-          message: "Tempo limite excedido na requisição do EDUCA-CAPTURE.",
+          message: "Tempo limite excedido na requisiÃ§Ã£o do EDUCA-CAPTURE.",
           timeoutMs: CAPTURE_REQ_TIMEOUT_MS,
         }));
       } else if (!res.writableEnded) {
-        // headers já foram enviados por algum motivo — ainda assim finaliza o stream
+        // headers jÃ¡ foram enviados por algum motivo â€” ainda assim finaliza o stream
         try { res.end(); } catch {}
       }
     } catch {}
@@ -261,11 +261,11 @@ router.use((req, res, next) => {
   };
 
   const onSocketTimeout = () => {
-    // redundância: timeout do socket também dispara o mesmo comportamento
+    // redundÃ¢ncia: timeout do socket tambÃ©m dispara o mesmo comportamento
     onTimeout();
   };
 
-  // Timer determinístico
+  // Timer determinÃ­stico
   const timer = setTimeout(onTimeout, CAPTURE_REQ_TIMEOUT_MS);
 
   // Timeout do socket (ajuda em uploads pendurados)
@@ -284,7 +284,7 @@ router.use((req, res, next) => {
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
-// 🔒 Middlewares já existentes no seu projeto
+// ðŸ”’ Middlewares jÃ¡ existentes no seu projeto
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
 import { autenticarDeviceCapture } from "../middleware/autenticarDeviceCapture.js";
@@ -314,7 +314,7 @@ router.get("/device-ping", autenticarDeviceCapture, async (req, res) => {
 });
 
 // ============================================================================
-// PASSO 1.6 — Turma por ID (fonte única da verdade no backend)
+// PASSO 1.6 â€” Turma por ID (fonte Ãºnica da verdade no backend)
 // GET /api/capture/turmas/:id
 //
 // Auth: Authorization: Device <device_token>
@@ -328,15 +328,15 @@ router.get("/turmas/:id", autenticarDeviceCapture, async (req, res) => {
   const turma_id = Number(req.params?.id || 0);
 
   if (!db) {
-    return res.status(500).json({ ok: false, message: "DB não disponível no request." });
+    return res.status(500).json({ ok: false, message: "DB nÃ£o disponÃ­vel no request." });
   }
 
   if (!escola_id || escola_id <= 0) {
-    return res.status(400).json({ ok: false, message: "escola_id inválida no device." });
+    return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no device." });
   }
 
   if (!turma_id || turma_id <= 0) {
-    return res.status(400).json({ ok: false, message: "turma_id inválido." });
+    return res.status(400).json({ ok: false, message: "turma_id invÃ¡lido." });
   }
 
   try {
@@ -361,7 +361,7 @@ router.get("/turmas/:id", autenticarDeviceCapture, async (req, res) => {
     if (!rows || rows.length === 0) {
       return res.status(404).json({
         ok: false,
-        message: "Turma não encontrada para esta escola.",
+        message: "Turma nÃ£o encontrada para esta escola.",
       });
     }
 
@@ -377,10 +377,10 @@ router.get("/turmas/:id", autenticarDeviceCapture, async (req, res) => {
 
 /**
  * ============================================================================
- * PASSO 1 — DADOS REAIS (Turnos, Turmas, Alunos) via device (multi-escola)
+ * PASSO 1 â€” DADOS REAIS (Turnos, Turmas, Alunos) via device (multi-escola)
  *
- * Observação:
- * - O app EDUCA-CAPTURE não usa token de usuário do sistema principal.
+ * ObservaÃ§Ã£o:
+ * - O app EDUCA-CAPTURE nÃ£o usa token de usuÃ¡rio do sistema principal.
  * - Portanto, estes endpoints usam autenticarDeviceCapture e filtram por
  *   req.captureDevice.escola_id (isolamento por escola).
  *
@@ -396,7 +396,7 @@ router.get("/turnos", autenticarDeviceCapture, async (req, res) => {
     const escola_id = Number(req.captureDevice?.escola_id || 0);
 
     if (!escola_id) {
-      return res.status(401).json({ ok: false, message: "Device inválido (escola_id ausente)." });
+      return res.status(401).json({ ok: false, message: "Device invÃ¡lido (escola_id ausente)." });
     }
 
     const [rows] = await req.db.query(
@@ -423,10 +423,10 @@ router.get("/turmas", autenticarDeviceCapture, async (req, res) => {
     const turno = String(req.query?.turno || "").trim();
 
     if (!escola_id) {
-      return res.status(401).json({ ok: false, message: "Device inválido (escola_id ausente)." });
+      return res.status(401).json({ ok: false, message: "Device invÃ¡lido (escola_id ausente)." });
     }
 
-    // Sempre filtra pelo ano letivo corrente (ano calendário)
+    // Sempre filtra pelo ano letivo corrente (ano calendÃ¡rio)
     let sql = `
       SELECT
         t.id,
@@ -465,7 +465,7 @@ router.get("/alunos", autenticarDeviceCapture, async (req, res) => {
     const status = String(req.query?.status || "").trim().toLowerCase();
 
     if (!escola_id) {
-      return res.status(401).json({ ok: false, message: "Device inválido (escola_id ausente)." });
+      return res.status(401).json({ ok: false, message: "Device invÃ¡lido (escola_id ausente)." });
     }
 
     const where = ["a.escola_id = ?"];
@@ -509,7 +509,7 @@ router.get("/alunos", autenticarDeviceCapture, async (req, res) => {
 });
 
 // ============================================================================
-// PASSO 4.3 — Upload Multipart (buffer) -> DigitalOcean Spaces -> alunos.foto -> auditoria
+// PASSO 4.3 â€” Upload Multipart (buffer) -> DigitalOcean Spaces -> alunos.foto -> auditoria
 // POST /api/capture/upload
 //
 // Auth: Authorization: Device <device_token>
@@ -517,25 +517,25 @@ router.get("/alunos", autenticarDeviceCapture, async (req, res) => {
 //
 // multipart/form-data:
 //   - file: (jpg/png)  [campo: "file"]
-//   - aluno_id: number (obrigatório)
+//   - aluno_id: number (obrigatÃ³rio)
 //
 // Resultado:
 //   - atualiza alunos.foto (URL do Spaces)
 //   - insere capture_auditoria (acao='CAPTURA_FOTO')
-//   - tudo em transação
+//   - tudo em transaÃ§Ã£o
 // ============================================================================
 
 const CAPTURE_MAX_BYTES = Number(process.env.CAPTURE_UPLOAD_MAX_BYTES || 3 * 1024 * 1024); // 3MB
 
-// Saída (normalização)
-const CAPTURE_OUT_MAX_PX = Number(process.env.CAPTURE_IMG_MAX_PX || 1024); // max width/height após normalização
+// SaÃ­da (normalizaÃ§Ã£o)
+const CAPTURE_OUT_MAX_PX = Number(process.env.CAPTURE_IMG_MAX_PX || 1024); // max width/height apÃ³s normalizaÃ§Ã£o
 const CAPTURE_JPEG_QUALITY = Number(process.env.CAPTURE_IMG_JPEG_QUALITY || 82);
 
 // Entrada (hardening)
 const CAPTURE_IN_MIN_PX = Number(process.env.CAPTURE_IMG_MIN_PX || 96);
 const CAPTURE_IN_MAX_PX = Number(process.env.CAPTURE_IMG_IN_MAX_PX || 4096);
 
-// Proporção (evita extremos / imagens “panorâmicas” maliciosas)
+// ProporÃ§Ã£o (evita extremos / imagens â€œpanorÃ¢micasâ€ maliciosas)
 const CAPTURE_ASPECT_MIN = Number(process.env.CAPTURE_IMG_ASPECT_MIN || 0.6);
 const CAPTURE_ASPECT_MAX = Number(process.env.CAPTURE_IMG_ASPECT_MAX || 1.8);
 
@@ -545,7 +545,7 @@ const CAPTURE_CACHE_CONTROL =
 
 const CAPTURE_PROCESS_TIMEOUT_MS = Number(process.env.CAPTURE_PROCESS_TIMEOUT_MS || 3000);
 
-function withTimeout(promise, ms, label = "operação") {
+function withTimeout(promise, ms, label = "operaÃ§Ã£o") {
   let t;
   const timeout = new Promise((_, reject) => {
     t = setTimeout(() => reject(new Error(`timeout:${label}`)), ms);
@@ -598,13 +598,13 @@ router.post(
     const device = req.captureDevice;
     const db = req.db;
 
-    // Se o timeout middleware já encerrou a conexão, não responda novamente
+    // Se o timeout middleware jÃ¡ encerrou a conexÃ£o, nÃ£o responda novamente
     if (req.aborted || res.writableEnded || res.headersSent) {
       return;
     }
 
     if (!db) {
-      return res.status(500).json({ ok: false, message: "DB não disponível no request." });
+      return res.status(500).json({ ok: false, message: "DB nÃ£o disponÃ­vel no request." });
     }
 
     const escola_id = Number(req.captureDevice?.escola_id || 0);
@@ -613,24 +613,24 @@ router.post(
     const aluno_id = Number(req.body?.aluno_id || 0);
 
     if (!escola_id || !device_id) {
-      return res.status(401).json({ ok: false, message: "Device inválido (contexto ausente)." });
+      return res.status(401).json({ ok: false, message: "Device invÃ¡lido (contexto ausente)." });
     }
 
     if (!aluno_id || aluno_id <= 0) {
-      return res.status(400).json({ ok: false, message: "aluno_id obrigatório." });
+      return res.status(400).json({ ok: false, message: "aluno_id obrigatÃ³rio." });
     }
 
     const file = req.file;
     if (!file) {
-      return res.status(400).json({ ok: false, message: "Arquivo obrigatório (campo: file)." });
+      return res.status(400).json({ ok: false, message: "Arquivo obrigatÃ³rio (campo: file)." });
     }
 
-    // 1) NÃO confiar em mimetype. Validar por magic number.
+    // 1) NÃƒO confiar em mimetype. Validar por magic number.
     const magic = detectImageByMagicNumber(file.buffer);
     if (!magic) {
       return res.status(400).json({
         ok: false,
-        message: "Tipo inválido. Aceito apenas JPEG/PNG (validação por assinatura do arquivo).",
+        message: "Tipo invÃ¡lido. Aceito apenas JPEG/PNG (validaÃ§Ã£o por assinatura do arquivo).",
       });
     }
 
@@ -641,7 +641,7 @@ router.post(
     let uploaded = null;
 
     try {
-      // 2) Decodificar/validar imagem REAL + metadata (LGPD: remove metadata na saída)
+      // 2) Decodificar/validar imagem REAL + metadata (LGPD: remove metadata na saÃ­da)
       let meta;
       try {
         meta = await withTimeout(
@@ -654,27 +654,27 @@ router.post(
         if (msg.startsWith("timeout:")) {
           return res.status(408).json({ ok: false, message: "Timeout ao processar imagem (metadata)." });
         }
-        return res.status(400).json({ ok: false, message: "Imagem inválida/corrompida (decode falhou)." });
+        return res.status(400).json({ ok: false, message: "Imagem invÃ¡lida/corrompida (decode falhou)." });
       }
 
       const inW = Number(meta?.width || 0);
       const inH = Number(meta?.height || 0);
 
       if (!inW || !inH) {
-        return res.status(400).json({ ok: false, message: "Imagem inválida (dimensões ausentes)." });
+        return res.status(400).json({ ok: false, message: "Imagem invÃ¡lida (dimensÃµes ausentes)." });
       }
 
       if (inW < CAPTURE_IN_MIN_PX || inH < CAPTURE_IN_MIN_PX) {
         return res.status(400).json({
           ok: false,
-          message: `Imagem muito pequena (${inW}x${inH}). Mínimo: ${CAPTURE_IN_MIN_PX}px.`,
+          message: `Imagem muito pequena (${inW}x${inH}). MÃ­nimo: ${CAPTURE_IN_MIN_PX}px.`,
         });
       }
 
       if (inW > CAPTURE_IN_MAX_PX || inH > CAPTURE_IN_MAX_PX) {
         return res.status(400).json({
           ok: false,
-          message: `Imagem muito grande (${inW}x${inH}). Máximo entrada: ${CAPTURE_IN_MAX_PX}px.`,
+          message: `Imagem muito grande (${inW}x${inH}). MÃ¡ximo entrada: ${CAPTURE_IN_MAX_PX}px.`,
         });
       }
 
@@ -682,14 +682,14 @@ router.post(
       if (aspect < CAPTURE_ASPECT_MIN || aspect > CAPTURE_ASPECT_MAX) {
         return res.status(400).json({
           ok: false,
-          message: `Proporção inválida (${aspect.toFixed(2)}). Aceito entre ${CAPTURE_ASPECT_MIN} e ${CAPTURE_ASPECT_MAX}.`,
+          message: `ProporÃ§Ã£o invÃ¡lida (${aspect.toFixed(2)}). Aceito entre ${CAPTURE_ASPECT_MIN} e ${CAPTURE_ASPECT_MAX}.`,
         });
       }
 
       // 3) Normalizar para JPEG (resize + compress + strip metadata)
       const normalizedBuffer = await withTimeout(
         sharp(file.buffer, { failOnError: true })
-          .rotate() // respeita orientação EXIF
+          .rotate() // respeita orientaÃ§Ã£o EXIF
           .resize({
             width: CAPTURE_OUT_MAX_PX,
             height: CAPTURE_OUT_MAX_PX,
@@ -701,7 +701,7 @@ router.post(
         CAPTURE_PROCESS_TIMEOUT_MS,
         "normalize"
       );
-      // abre conexão dedicada para transação (mysql2/promise pool)
+      // abre conexÃ£o dedicada para transaÃ§Ã£o (mysql2/promise pool)
       conn = await db.getConnection();
       await conn.beginTransaction();
 
@@ -712,7 +712,7 @@ router.post(
 
 
 
-      // garante que o aluno pertence à escola (multi-escola) + pega o CODIGO (para nome do arquivo)
+      // garante que o aluno pertence Ã  escola (multi-escola) + pega o CODIGO (para nome do arquivo)
       const [chk] = await conn.query(
         `SELECT id, escola_id, codigo FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1`,
         [aluno_id, escola_id]
@@ -720,13 +720,13 @@ router.post(
 
       if (!chk || chk.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, message: "Aluno não encontrado nesta escola." });
+        return res.status(404).json({ ok: false, message: "Aluno nÃ£o encontrado nesta escola." });
       }
 
       const alunoCodigo = String(chk[0]?.codigo || "").trim();
       if (!alunoCodigo) {
         await conn.rollback();
-        return res.status(400).json({ ok: false, message: "Aluno sem CODIGO válido (necessário para nome do arquivo)." });
+        return res.status(400).json({ ok: false, message: "Aluno sem CODIGO vÃ¡lido (necessÃ¡rio para nome do arquivo)." });
       }
 
       // resolve apelido real da escola (ex.: CEF04_PLAN). fallback seguro: escola_<id>
@@ -741,7 +741,7 @@ router.post(
 
       escolaApelido = escolaApelido || `escola_${escola_id}`;
 
-      // 🔥 objectKey fixo (sem subpastas): uploads/<APELIDO>/alunos/<CODIGO>.jpg
+      // ðŸ”¥ objectKey fixo (sem subpastas): uploads/<APELIDO>/alunos/<CODIGO>.jpg
       const objectKey = `uploads/${escolaApelido}/alunos/${alunoCodigo}.jpg`;
 
       // upload Spaces (buffer normalizado)
@@ -758,7 +758,7 @@ router.post(
 
       uploaded = up;
 
-      // atualiza alunos.foto com URL do Spaces (App Pais já aceita http/https)
+      // atualiza alunos.foto com URL do Spaces (App Pais jÃ¡ aceita http/https)
       await conn.query(
         `UPDATE alunos SET foto = ? WHERE id = ? AND escola_id = ?`,
         [up.publicUrl, aluno_id, escola_id]
@@ -787,7 +787,7 @@ router.post(
         objectKey: up.objectKey,
       });
     } catch (err) {
-      // Se a conexão já foi encerrada pelo timeout, só faz cleanup/rollback e sai
+      // Se a conexÃ£o jÃ¡ foi encerrada pelo timeout, sÃ³ faz cleanup/rollback e sai
       if (req.aborted || res.writableEnded || res.headersSent) {
         try { if (conn) await conn.rollback(); } catch {}
         if (uploaded?.objectKey) {
@@ -798,7 +798,7 @@ router.post(
 
       try { if (conn) await conn.rollback(); } catch {}
 
-      // rollback compensatório: se subiu no Spaces e falhou depois (DB/auditoria), apagar objeto para não ficar órfão
+      // rollback compensatÃ³rio: se subiu no Spaces e falhou depois (DB/auditoria), apagar objeto para nÃ£o ficar Ã³rfÃ£o
       if (uploaded?.objectKey) {
         try {
           await deleteObjectFromSpaces(uploaded.objectKey);
@@ -822,7 +822,7 @@ router.post(
 
 /**
  * ============================================================================
- * PASSO 3 — PAREAMENTO COM APROVAÇÃO (MODELO CORPORATIVO)
+ * PASSO 3 â€” PAREAMENTO COM APROVAÃ‡ÃƒO (MODELO CORPORATIVO)
  *
  * Fluxo:
  * 1) App (sem login) -> POST /api/capture/pair/request
@@ -833,17 +833,17 @@ router.post(
  *    - retorna device_uid + device_token (UMA vez)
  *
  * Importante:
- * - NÃO remove /enroll (fluxo antigo continua existindo)
- * - Multi-escola: escola_id vem do diretor (token) na aprovação
+ * - NÃƒO remove /enroll (fluxo antigo continua existindo)
+ * - Multi-escola: escola_id vem do diretor (token) na aprovaÃ§Ã£o
  * ============================================================================
  */
 
-// GET /api/capture/pair/qr/:pair_code  (PADRÃO QR PAYLOAD - app/web só codifica/decodifica)
+// GET /api/capture/pair/qr/:pair_code  (PADRÃƒO QR PAYLOAD - app/web sÃ³ codifica/decodifica)
 router.get("/pair/qr/:pair_code", async (req, res) => {
   const pair_code = String(req.params?.pair_code || "").trim().toUpperCase();
 
   if (!pair_code || pair_code.length < 8) {
-    return res.status(400).json({ ok: false, message: "pair_code inválido." });
+    return res.status(400).json({ ok: false, message: "pair_code invÃ¡lido." });
   }
 
   try {
@@ -861,13 +861,13 @@ router.get("/pair/qr/:pair_code", async (req, res) => {
     );
 
     if (!rows || rows.length === 0) {
-      return res.status(404).json({ ok: false, message: "pair_code não encontrado." });
+      return res.status(404).json({ ok: false, message: "pair_code nÃ£o encontrado." });
     }
 
     const r = rows[0];
 
     if (r.used_at) {
-      return res.status(409).json({ ok: false, message: "pair_code já foi utilizado." });
+      return res.status(409).json({ ok: false, message: "pair_code jÃ¡ foi utilizado." });
     }
 
     const exp = new Date(r.expires_at);
@@ -875,7 +875,7 @@ router.get("/pair/qr/:pair_code", async (req, res) => {
       return res.status(410).json({ ok: false, message: "pair_code expirado. Gere um novo no app." });
     }
 
-    // Payload padronizado (versão 1). App/Web devem codificar/ler exatamente esta string.
+    // Payload padronizado (versÃ£o 1). App/Web devem codificar/ler exatamente esta string.
     const qr_payload = JSON.stringify({
       v: 1,
       type: "CAPTURE_PAIR",
@@ -894,16 +894,16 @@ router.get("/pair/qr/:pair_code", async (req, res) => {
   }
 });
 
-// GET /api/capture/pair/status/:pair_code  (APP — polling: aprovado pelo diretor?)
+// GET /api/capture/pair/status/:pair_code  (APP â€” polling: aprovado pelo diretor?)
 // Retorna { ok, approved, device_token?, device_uid? }
-// O device_token só é entregue UMA vez (aprovação detectada por approved_at != null e token_delivered_at == null).
-// Para usar este endpoint, adicione à tabela capture_pair_codes:
+// O device_token sÃ³ Ã© entregue UMA vez (aprovaÃ§Ã£o detectada por approved_at != null e token_delivered_at == null).
+// Para usar este endpoint, adicione Ã  tabela capture_pair_codes:
 //   ALTER TABLE capture_pair_codes ADD COLUMN token_delivered_at DATETIME NULL DEFAULT NULL;
 router.get("/pair/status/:pair_code", async (req, res) => {
   const pair_code = String(req.params?.pair_code || "").trim().toUpperCase();
 
   if (!pair_code || pair_code.length < 8) {
-    return res.status(400).json({ ok: false, message: "pair_code inválido." });
+    return res.status(400).json({ ok: false, message: "pair_code invÃ¡lido." });
   }
 
   try {
@@ -926,45 +926,45 @@ router.get("/pair/status/:pair_code", async (req, res) => {
     );
 
     if (!rows || rows.length === 0) {
-      return res.status(404).json({ ok: false, message: "pair_code não encontrado." });
+      return res.status(404).json({ ok: false, message: "pair_code nÃ£o encontrado." });
     }
 
     const r = rows[0];
 
-    // Expirado e não aprovado → erro
+    // Expirado e nÃ£o aprovado â†’ erro
     const exp = new Date(r.expires_at);
     if (!r.approved_at && Date.now() > exp.getTime()) {
       return res.status(410).json({ ok: false, approved: false, message: "pair_code expirado." });
     }
 
-    // Ainda não aprovado
+    // Ainda nÃ£o aprovado
     if (!r.approved_at) {
       return res.status(200).json({ ok: true, approved: false });
     }
 
-    // Já aprovado, mas token já foi entregue anteriormente → não entrega de novo
+    // JÃ¡ aprovado, mas token jÃ¡ foi entregue anteriormente â†’ nÃ£o entrega de novo
     if (r.token_delivered_at) {
       return res.status(200).json({
         ok: true,
         approved: true,
-        message: "Dispositivo já credenciado. O token foi entregue anteriormente.",
+        message: "Dispositivo jÃ¡ credenciado. O token foi entregue anteriormente.",
       });
     }
 
-    // ✅ Aprovado e token ainda não foi entregue: busca o device_token real via capture_devices
+    // âœ… Aprovado e token ainda nÃ£o foi entregue: busca o device_token real via capture_devices
     const device_id = Number(r.device_id || 0);
     if (!device_id) {
       return res.status(500).json({ ok: false, message: "device_id ausente no par. Tente novo pareamento." });
     }
 
-    // Gera um novo token temporário? Não — o token foi gerado em /admin/pair/approve.
-    // Para entregá-lo, o backend precisaria armazená-lo em texto plano antes de fazer hash.
-    // ESTRATÉGIA CLEAN: marcar delivered e mandar o app refazer a autenticação normalmente.
-    // O app vai usar o token que o diretor copiou/exibiu. Mas numa integração full, o backend
+    // Gera um novo token temporÃ¡rio? NÃ£o â€” o token foi gerado em /admin/pair/approve.
+    // Para entregÃ¡-lo, o backend precisaria armazenÃ¡-lo em texto plano antes de fazer hash.
+    // ESTRATÃ‰GIA CLEAN: marcar delivered e mandar o app refazer a autenticaÃ§Ã£o normalmente.
+    // O app vai usar o token que o diretor copiou/exibiu. Mas numa integraÃ§Ã£o full, o backend
     // pode guardar o token_plain na tabela temporariamente para entrega aqui.
     //
     // Por ora: entregamos device_uid e sinalizamos o app para aguardar o token do diretor.
-    // Se quiser entrega automática, adicione coluna `device_token_plain TEXT` em capture_pair_codes
+    // Se quiser entrega automÃ¡tica, adicione coluna `device_token_plain TEXT` em capture_pair_codes
     // e popule-a em /admin/pair/approve antes de fazer o bcrypt.hash.
 
     // Busca device_uid
@@ -974,13 +974,13 @@ router.get("/pair/status/:pair_code", async (req, res) => {
     );
     const device_uid = devRows?.[0]?.device_uid ? String(devRows[0].device_uid) : null;
 
-    // Marca como entregue para não repetir
+    // Marca como entregue para nÃ£o repetir
     await pool.query(
       "UPDATE capture_pair_codes SET token_delivered_at = NOW() WHERE id = ?",
       [Number(r.id)]
     );
 
-    // Se existe device_token_plain na tabela, entrega; caso contrário, apenas avisa
+    // Se existe device_token_plain na tabela, entrega; caso contrÃ¡rio, apenas avisa
     let device_token_plain = null;
     try {
       const [tRows] = await pool.query(
@@ -990,7 +990,7 @@ router.get("/pair/status/:pair_code", async (req, res) => {
       device_token_plain = tRows?.[0]?.device_token_plain
         ? String(tRows[0].device_token_plain)
         : null;
-    } catch { /* coluna pode não existir ainda */ }
+    } catch { /* coluna pode nÃ£o existir ainda */ }
 
     return res.status(200).json({
       ok: true,
@@ -1007,7 +1007,7 @@ router.get("/pair/status/:pair_code", async (req, res) => {
   }
 });
 
-// POST /api/capture/pair/request  (APP, sem autenticação de usuário)
+// POST /api/capture/pair/request  (APP, sem autenticaÃ§Ã£o de usuÃ¡rio)
 router.post("/pair/request", async (req, res) => {
   const nome_dispositivo = req.body?.nome_dispositivo ? String(req.body.nome_dispositivo).trim() : null;
   const plataforma = String(req.body?.plataforma || "").trim().toUpperCase();
@@ -1015,7 +1015,7 @@ router.post("/pair/request", async (req, res) => {
 
   const device_uid = normalizeDeviceUid(req.body?.device_uid || req.headers?.["x-device-uid"] || "");
 
-  // ✅ NOVO: código de acesso (primeira tela do app) -> resolve escola_id
+  // âœ… NOVO: cÃ³digo de acesso (primeira tela do app) -> resolve escola_id
   const access_code = String(req.body?.access_code || "").trim().toUpperCase();
 
   const UID_MIN = 8;
@@ -1025,15 +1025,15 @@ router.post("/pair/request", async (req, res) => {
   if (!device_uid || device_uid.length < UID_MIN || device_uid.length > UID_MAX || !UID_RE.test(device_uid)) {
     return res.status(400).json({
       ok: false,
-      message: `device_uid inválido. Use ${UID_MIN}-${UID_MAX} chars, apenas A-Z, 0-9, _ ou - (ex: TAB_SEC_001).`,
+      message: `device_uid invÃ¡lido. Use ${UID_MIN}-${UID_MAX} chars, apenas A-Z, 0-9, _ ou - (ex: TAB_SEC_001).`,
     });
   }
 
   if (!["ANDROID", "IOS"].includes(plataforma)) {
-    return res.status(400).json({ ok: false, message: "plataforma inválida (ANDROID|IOS)." });
+    return res.status(400).json({ ok: false, message: "plataforma invÃ¡lida (ANDROID|IOS)." });
   }
 
-  // Regras do access_code: A-Z, 0-9, hífen e underscore (ex: CEF04-CCMDF, CEF_04)
+  // Regras do access_code: A-Z, 0-9, hÃ­fen e underscore (ex: CEF04-CCMDF, CEF_04)
   const AC_MIN = 4;
   const AC_MAX = 24;
   const AC_RE = /^[A-Z0-9][A-Z0-9_-]*[A-Z0-9]$|^[A-Z0-9]$/;
@@ -1041,19 +1041,19 @@ router.post("/pair/request", async (req, res) => {
   if (!access_code || access_code.length < AC_MIN || access_code.length > AC_MAX || !AC_RE.test(access_code)) {
     return res.status(400).json({
       ok: false,
-      message: `access_code inválido. Use ${AC_MIN}-${AC_MAX} chars (A-Z, 0-9, hífen ou underscore). Exemplo: CEF04-CCMDF.`,
+      message: `access_code invÃ¡lido. Use ${AC_MIN}-${AC_MAX} chars (A-Z, 0-9, hÃ­fen ou underscore). Exemplo: CEF04-CCMDF.`,
     });
   }
 
-  // ── DEMO BYPASS ──────────────────────────────────────────────────────────
-  // Conta demo para revisão Apple/Google Store.
+  // â”€â”€ DEMO BYPASS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Conta demo para revisÃ£o Apple/Google Store.
   // Verificado ANTES da consulta ao banco para evitar o 401.
   // DEMO-APPLE: auto-aprova o device imediatamente (escola_id = 1).
-  // ────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const DEMO_ACCESS_CODES = ["DEMO-APPLE"];
   if (DEMO_ACCESS_CODES.includes(access_code)) {
     let conn = null;
-    const demo_escola_id = 1; // escola demo fixa para revisão das lojas
+    const demo_escola_id = 1; // escola demo fixa para revisÃ£o das lojas
     const created_ip = getClientIp(req);
     const created_user_agent = getUserAgent(req);
     try {
@@ -1091,7 +1091,7 @@ router.post("/pair/request", async (req, res) => {
         device_id = Number(ins.insertId);
       }
 
-      // Cria pair_code já aprovado (para rastreabilidade)
+      // Cria pair_code jÃ¡ aprovado (para rastreabilidade)
       const pair_code = generatePairCode();
       try {
         await conn.query(
@@ -1141,7 +1141,7 @@ router.post("/pair/request", async (req, res) => {
       try { if (conn) conn.release(); } catch {}
     }
   }
-  // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
+  // â”€â”€ FIM DEMO BYPASS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   // Resolve escola_id via access_code (multi-escola hardening)
   let escola_id = 0;
@@ -1159,7 +1159,7 @@ router.post("/pair/request", async (req, res) => {
 
     escola_id = Number(aRows?.[0]?.escola_id || 0);
     if (!escola_id || escola_id <= 0) {
-      return res.status(401).json({ ok: false, message: "access_code inválido ou inativo." });
+      return res.status(401).json({ ok: false, message: "access_code invÃ¡lido ou inativo." });
     }
   } catch (err) {
     console.error("[CAPTURE][PAIR] erro ao validar access_code:", err?.message || err);
@@ -1170,7 +1170,7 @@ router.post("/pair/request", async (req, res) => {
   if (!cd.ok) {
     return res.status(429).json({
       ok: false,
-      message: "Solicitação de pareamento muito frequente. Aguarde alguns segundos e tente novamente.",
+      message: "SolicitaÃ§Ã£o de pareamento muito frequente. Aguarde alguns segundos e tente novamente.",
       retry_after_ms: Math.max(0, cd.resetAt - Date.now()),
     });
   }
@@ -1178,26 +1178,10 @@ router.post("/pair/request", async (req, res) => {
   const created_ip = getClientIp(req);
   const created_user_agent = getUserAgent(req);
 
-  // ✅ escola_id já resolvido e validado pelo access_code acima.
-  // Não exigimos pré-cadastro do device_uid em capture_devices:
-  // o access_code É a prova de pertencimento à escola.
-  // O device será criado/atualizado em capture_devices no momento do approve.
-
-
-
-
-
-
-
-
-
-  const created_ip = getClientIp(req);
-  const created_user_agent = getUserAgent(req);
-
-  // ✅ escola_id já resolvido e validado pelo access_code acima.
-  // Não exigimos pré-cadastro do device_uid em capture_devices:
-  // o access_code É a prova de pertencimento à escola.
-  // O device será criado/atualizado em capture_devices no momento do approve.
+  // âœ… escola_id jÃ¡ resolvido e validado pelo access_code acima.
+  // NÃ£o exigimos prÃ©-cadastro do device_uid em capture_devices:
+  // o access_code Ã‰ a prova de pertencimento Ã  escola.
+  // O device serÃ¡ criado/atualizado em capture_devices no momento do approve.
 
 
   const expiresAt = new Date(Date.now() + CAPTURE_PAIR_EXPIRES_MS);
@@ -1224,7 +1208,7 @@ router.post("/pair/request", async (req, res) => {
           expires_at: expiresAt.toISOString(),
         });
       } catch (e) {
-        // colisão de unique(pair_code) → tenta outro
+        // colisÃ£o de unique(pair_code) â†’ tenta outro
         if (String(e?.code || "") === "ER_DUP_ENTRY") continue;
         throw e;
       }
@@ -1250,11 +1234,11 @@ router.post(
     const pair_code = String(req.body?.pair_code || "").trim().toUpperCase();
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     if (!pair_code || pair_code.length < 8) {
-      return res.status(400).json({ ok: false, message: "pair_code obrigatório." });
+      return res.status(400).json({ ok: false, message: "pair_code obrigatÃ³rio." });
     }
 
     const approved_ip = getClientIp(req);
@@ -1266,7 +1250,7 @@ router.post(
       conn = await pool.getConnection();
       await conn.beginTransaction();
 
-      // 1) Busca e valida o pair_code (não expirado, não usado)
+      // 1) Busca e valida o pair_code (nÃ£o expirado, nÃ£o usado)
       const [rows] = await conn.query(
         `
         SELECT
@@ -1289,24 +1273,24 @@ router.post(
 
       if (!rows || rows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, message: "pair_code não encontrado." });
+        return res.status(404).json({ ok: false, message: "pair_code nÃ£o encontrado." });
       }
 
       const r = rows[0];
 
-      // ✅ HARDENING multi-escola: pair_code precisa pertencer à escola do diretor
+      // âœ… HARDENING multi-escola: pair_code precisa pertencer Ã  escola do diretor
       const pair_escola_id = Number(r.escola_id || 0);
       if (!pair_escola_id || pair_escola_id !== escola_id) {
         await conn.rollback();
         return res.status(403).json({
           ok: false,
-          message: "pair_code não pertence a esta escola (ou foi gerado sem escola_id). Gere novamente no app com access_code válido.",
+          message: "pair_code nÃ£o pertence a esta escola (ou foi gerado sem escola_id). Gere novamente no app com access_code vÃ¡lido.",
         });
       }
 
       if (r.used_at) {
         await conn.rollback();
-        return res.status(409).json({ ok: false, message: "pair_code já foi utilizado." });
+        return res.status(409).json({ ok: false, message: "pair_code jÃ¡ foi utilizado." });
       }
 
       const exp = new Date(r.expires_at);
@@ -1324,7 +1308,7 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid (mantém o comportamento do /enroll)
+      // 3) Upsert em capture_devices por device_uid (mantÃ©m o comportamento do /enroll)
       const [devRows] = await conn.query(
         "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
         [device_uid]
@@ -1384,8 +1368,8 @@ router.post(
       }
 
       // 4) Marca o pair_code como usado + aprovado + vinculando escola e device_id
-      // device_token_plain é guardado temporariamente para entrega via /pair/status (polling do app).
-      // Após a entrega, token_delivered_at é marcado e device_token_plain pode ser apagado.
+      // device_token_plain Ã© guardado temporariamente para entrega via /pair/status (polling do app).
+      // ApÃ³s a entrega, token_delivered_at Ã© marcado e device_token_plain pode ser apagado.
       await conn.query(
         `
         UPDATE capture_pair_codes
@@ -1445,11 +1429,11 @@ router.post(
     const pair_id = Number(req.params?.id || 0);
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     if (!pair_id || pair_id <= 0) {
-      return res.status(400).json({ ok: false, message: "pair_id inválido." });
+      return res.status(400).json({ ok: false, message: "pair_id invÃ¡lido." });
     }
 
     const approved_ip = getClientIp(req);
@@ -1461,7 +1445,7 @@ router.post(
       conn = await pool.getConnection();
       await conn.beginTransaction();
 
-      // 1) Busca e valida o pair_code pelo ID (não expirado, não usado)
+      // 1) Busca e valida o pair_code pelo ID (nÃ£o expirado, nÃ£o usado)
       const [rows] = await conn.query(
         `
         SELECT
@@ -1484,24 +1468,24 @@ router.post(
 
       if (!rows || rows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, message: "pair_id não encontrado." });
+        return res.status(404).json({ ok: false, message: "pair_id nÃ£o encontrado." });
       }
 
       const r = rows[0];
 
-      // ✅ HARDENING multi-escola: pair_code precisa pertencer à escola do diretor
+      // âœ… HARDENING multi-escola: pair_code precisa pertencer Ã  escola do diretor
       const pair_escola_id = Number(r.escola_id || 0);
       if (!pair_escola_id || pair_escola_id !== escola_id) {
         await conn.rollback();
         return res.status(403).json({
           ok: false,
-          message: "pair_code não pertence a esta escola (ou foi gerado sem escola_id). Gere novamente no app com access_code válido.",
+          message: "pair_code nÃ£o pertence a esta escola (ou foi gerado sem escola_id). Gere novamente no app com access_code vÃ¡lido.",
         });
       }
 
       if (r.used_at) {
         await conn.rollback();
-        return res.status(409).json({ ok: false, message: "pair_code já foi utilizado." });
+        return res.status(409).json({ ok: false, message: "pair_code jÃ¡ foi utilizado." });
       }
 
       const exp = new Date(r.expires_at);
@@ -1519,7 +1503,7 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid (mantém o comportamento do /enroll)
+      // 3) Upsert em capture_devices por device_uid (mantÃ©m o comportamento do /enroll)
       const [devRows] = await conn.query(
         "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
         [device_uid]
@@ -1627,9 +1611,9 @@ router.post(
 );
 
 // GET /api/capture/admin/pair/pending  (DIRETOR/WEB)
-// Lista pair_codes pendentes (não usados e não expirados).
-// Observação: como o pair_code nasce sem escola_id (device ainda não vinculado),
-// este endpoint retorna pendências globais (sem dados sensíveis como IP/UA).
+// Lista pair_codes pendentes (nÃ£o usados e nÃ£o expirados).
+// ObservaÃ§Ã£o: como o pair_code nasce sem escola_id (device ainda nÃ£o vinculado),
+// este endpoint retorna pendÃªncias globais (sem dados sensÃ­veis como IP/UA).
 router.get(
   "/admin/pair/pending",
   autenticarToken,
@@ -1637,12 +1621,12 @@ router.get(
   autorizarPermissao("capture_devices.gerenciar"),
   async (req, res) => {
     try {
-      // Mantém a validação de contexto (diretor precisa estar em uma escola),
-      // mesmo que o filtro por escola ainda não seja possível antes da aprovação.
+      // MantÃ©m a validaÃ§Ã£o de contexto (diretor precisa estar em uma escola),
+      // mesmo que o filtro por escola ainda nÃ£o seja possÃ­vel antes da aprovaÃ§Ã£o.
       const escola_id = Number(req.user?.escola_id || 0);
 
       if (!escola_id || escola_id <= 0) {
-        return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+        return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
       }
 
       const limitRaw = Number(req.query?.limit || 50);
@@ -1674,8 +1658,8 @@ router.get(
         pending: rows || [],
       });
     } catch (err) {
-      console.error("[CAPTURE][PAIR][ADMIN] erro ao listar pendências:", err?.message || err);
-      return res.status(500).json({ ok: false, message: "Erro interno ao listar pendências." });
+      console.error("[CAPTURE][PAIR][ADMIN] erro ao listar pendÃªncias:", err?.message || err);
+      return res.status(500).json({ ok: false, message: "Erro interno ao listar pendÃªncias." });
     }
   }
 );
@@ -1683,18 +1667,18 @@ router.get(
 /**
  * POST /api/capture/enroll
  * - Protegido: JWT + escola (x-escola-id ou token escolar)
- * - Objetivo: parear um dispositivo institucional e gerar device_token (1ª e única vez)
+ * - Objetivo: parear um dispositivo institucional e gerar device_token (1Âª e Ãºnica vez)
  * Body:
  *  - nome_dispositivo (string)
  *  - plataforma ('ANDROID'|'IOS')
- *  - device_uid (string)  // identificador único gerado no app
+ *  - device_uid (string)  // identificador Ãºnico gerado no app
  *  - app_version (string opcional)
  */
 // ============================================================================
-// PASSO 3.1 — ADMIN (Diretor / Gestão) — Devices EDUCA-CAPTURE
+// PASSO 3.1 â€” ADMIN (Diretor / GestÃ£o) â€” Devices EDUCA-CAPTURE
 // - SEM alterar o fluxo do app
 // - Isolamento por escola_id (multi-tenant)
-// - Bloqueio/liberação via campo capture_devices.ativo (já suportado pelo middleware)
+// - Bloqueio/liberaÃ§Ã£o via campo capture_devices.ativo (jÃ¡ suportado pelo middleware)
 // ============================================================================
 
 // GET /api/capture/admin/devices
@@ -1707,7 +1691,7 @@ router.get(
     const escola_id = Number(req.user?.escola_id || 0);
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     try {
@@ -1764,15 +1748,15 @@ router.patch(
           : null;
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     if (!device_id || device_id <= 0) {
-      return res.status(400).json({ ok: false, message: "device_id inválido." });
+      return res.status(400).json({ ok: false, message: "device_id invÃ¡lido." });
     }
 
     if (ativo === null) {
-      return res.status(400).json({ ok: false, message: "Campo 'ativo' obrigatório (0/1 ou true/false)." });
+      return res.status(400).json({ ok: false, message: "Campo 'ativo' obrigatÃ³rio (0/1 ou true/false)." });
     }
 
     try {
@@ -1788,7 +1772,7 @@ router.patch(
       );
 
       if (!rows || rows.length === 0) {
-        return res.status(404).json({ ok: false, message: "Device não encontrado para esta escola." });
+        return res.status(404).json({ ok: false, message: "Device nÃ£o encontrado para esta escola." });
       }
 
       await pool.query(
@@ -1827,9 +1811,9 @@ router.patch(
 
 
 // ============================================================================
-// PASSO — ACCESS CODE (ADMIN / DIRETOR)
-// Objetivo: diretor cria um código curto (ex: A1B2C3) para o app informar na 1ª tela.
-// Depois, o /pair/request poderá nascer com escola_id sem pré-cadastro de device_uid.
+// PASSO â€” ACCESS CODE (ADMIN / DIRETOR)
+// Objetivo: diretor cria um cÃ³digo curto (ex: A1B2C3) para o app informar na 1Âª tela.
+// Depois, o /pair/request poderÃ¡ nascer com escola_id sem prÃ©-cadastro de device_uid.
 //
 // Tabela esperada (a ser criada no DB):
 // capture_access_codes: id, escola_id, access_code, label, ativo,
@@ -1846,7 +1830,7 @@ router.get(
     const escola_id = Number(req.user?.escola_id || 0);
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     try {
@@ -1888,7 +1872,7 @@ router.post(
     const usuario_id = req.user?.usuarioId ?? req.user?.id ?? req.user?.usuario_id ?? null;
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     const access_code = String(req.body?.access_code || "")
@@ -1897,14 +1881,14 @@ router.post(
 
     const label = req.body?.label ? String(req.body.label).trim().slice(0, 80) : null;
 
-    // Padrão unificado: 4-24 chars, A-Z/0-9, hífen ou underscore internos (ex: CEF04-CCMDF)
+    // PadrÃ£o unificado: 4-24 chars, A-Z/0-9, hÃ­fen ou underscore internos (ex: CEF04-CCMDF)
     const RE = /^[A-Z0-9][A-Z0-9_-]*[A-Z0-9]$|^[A-Z0-9]$/;
     const AC_MIN = 4;
     const AC_MAX = 24;
     if (!access_code || access_code.length < AC_MIN || access_code.length > AC_MAX || !RE.test(access_code)) {
       return res.status(400).json({
         ok: false,
-        message: `access_code inválido. Use ${AC_MIN}-${AC_MAX} chars (A-Z, 0-9, hífen ou underscore). Ex: CEF04-CCMDF.`,
+        message: `access_code invÃ¡lido. Use ${AC_MIN}-${AC_MAX} chars (A-Z, 0-9, hÃ­fen ou underscore). Ex: CEF04-CCMDF.`,
       });
     }
 
@@ -1923,7 +1907,7 @@ router.post(
       if (dup && dup.length > 0) {
         return res.status(409).json({
           ok: false,
-          message: "Este access_code já existe para esta escola.",
+          message: "Este access_code jÃ¡ existe para esta escola.",
           id: Number(dup[0].id),
           ativo: Number(dup[0].ativo) ? 1 : 0,
         });
@@ -1989,15 +1973,15 @@ router.patch(
           : null;
 
     if (!escola_id || escola_id <= 0) {
-      return res.status(400).json({ ok: false, message: "escola_id inválida no usuário." });
+      return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida no usuÃ¡rio." });
     }
 
     if (!id || id <= 0) {
-      return res.status(400).json({ ok: false, message: "id inválido." });
+      return res.status(400).json({ ok: false, message: "id invÃ¡lido." });
     }
 
     if (ativo === null) {
-      return res.status(400).json({ ok: false, message: "Campo 'ativo' obrigatório (0/1 ou true/false)." });
+      return res.status(400).json({ ok: false, message: "Campo 'ativo' obrigatÃ³rio (0/1 ou true/false)." });
     }
 
     try {
@@ -2012,7 +1996,7 @@ router.patch(
       );
 
       if (!rows || rows.length === 0) {
-        return res.status(404).json({ ok: false, message: "access_code não encontrado para esta escola." });
+        return res.status(404).json({ ok: false, message: "access_code nÃ£o encontrado para esta escola." });
       }
 
       const access_code = String(rows[0]?.access_code || "").trim();
@@ -2072,7 +2056,7 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
   const nome_dispositivo = String(req.body?.nome_dispositivo || "").trim();
   const plataforma = String(req.body?.plataforma || "").trim().toUpperCase();
 
-  // PASSO 4 — Normalização/validação estrutural do UID (consistente com autenticarDeviceCapture)
+  // PASSO 4 â€” NormalizaÃ§Ã£o/validaÃ§Ã£o estrutural do UID (consistente com autenticarDeviceCapture)
   const deviceUidBodyRaw = String(req.body?.device_uid || "").trim();
   const deviceUidHeaderRaw = String(req.headers?.["x-device-uid"] || "").trim();
 
@@ -2083,14 +2067,14 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
   const UID_MAX = 64;
   const UID_RE = /^[A-Z0-9][A-Z0-9_-]*$/;
 
-  // Se vierem os 2 (body e header) e forem diferentes após normalização → rejeita
+  // Se vierem os 2 (body e header) e forem diferentes apÃ³s normalizaÃ§Ã£o â†’ rejeita
   if (deviceUidBodyRaw && deviceUidHeaderRaw) {
     const b = deviceUidBodyRaw.toUpperCase();
     const h = deviceUidHeaderRaw.toUpperCase();
     if (b !== h) {
       return res.status(400).json({
         ok: false,
-        message: "Conflito: device_uid no body difere do header. Envie apenas um, ou valores idênticos.",
+        message: "Conflito: device_uid no body difere do header. Envie apenas um, ou valores idÃªnticos.",
       });
     }
   }
@@ -2098,25 +2082,25 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
   const app_version = req.body?.app_version ? String(req.body.app_version).trim() : null;
 
   if (!escola_id || escola_id <= 0) {
-    return res.status(400).json({ ok: false, message: "escola_id inválida." });
+    return res.status(400).json({ ok: false, message: "escola_id invÃ¡lida." });
   }
 
   if (!nome_dispositivo || nome_dispositivo.length < 3) {
-    return res.status(400).json({ ok: false, message: "nome_dispositivo obrigatório." });
+    return res.status(400).json({ ok: false, message: "nome_dispositivo obrigatÃ³rio." });
   }
 
   if (!["ANDROID", "IOS"].includes(plataforma)) {
-    return res.status(400).json({ ok: false, message: "plataforma inválida (ANDROID|IOS)." });
+    return res.status(400).json({ ok: false, message: "plataforma invÃ¡lida (ANDROID|IOS)." });
   }
 
   if (!device_uid || device_uid.length < UID_MIN || device_uid.length > UID_MAX || !UID_RE.test(device_uid)) {
     return res.status(400).json({
       ok: false,
-      message: `device_uid inválido. Use ${UID_MIN}-${UID_MAX} chars, apenas A-Z, 0-9, _ ou - (ex: TAB_SEC_001).`,
+      message: `device_uid invÃ¡lido. Use ${UID_MIN}-${UID_MAX} chars, apenas A-Z, 0-9, _ ou - (ex: TAB_SEC_001).`,
     });
   }
 
-  // PASSO 5.2 — Cooldown: evita reenroll duplicado que invalida o token anterior
+  // PASSO 5.2 â€” Cooldown: evita reenroll duplicado que invalida o token anterior
   const enrollKey = `${escola_id}:${device_uid}`;
   const cd = checkEnrollCooldown(enrollKey);
   if (!cd.ok) {
@@ -2128,11 +2112,11 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
   }
 
   try {
-    // Gera token do dispositivo (entregue UMA única vez ao app)
+    // Gera token do dispositivo (entregue UMA Ãºnica vez ao app)
     const device_token = crypto.randomBytes(32).toString("hex");
     const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-    // Upsert simples: se device_uid já existir, atualiza segredo + meta
+    // Upsert simples: se device_uid jÃ¡ existir, atualiza segredo + meta
     const [rows] = await pool.query(
       "SELECT id FROM capture_devices WHERE device_uid = ?",
       [device_uid]
@@ -2171,7 +2155,7 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
         ok: true,
         message: "Dispositivo reenrolled com sucesso.",
         device_id: deviceId,
-        device_token, // ⚠️ entregue apenas aqui
+        device_token, // âš ï¸ entregue apenas aqui
       });
     }
 
@@ -2198,7 +2182,7 @@ router.post("/enroll", autenticarToken, verificarEscola, async (req, res) => {
       ok: true,
       message: "Dispositivo enrolled com sucesso.",
       device_id: ins.insertId,
-      device_token, // ⚠️ entregue apenas aqui
+      device_token, // âš ï¸ entregue apenas aqui
     });
   } catch (err) {
     console.error("[CAPTURE] erro no enroll:", err?.message || err);
