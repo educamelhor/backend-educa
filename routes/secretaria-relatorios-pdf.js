@@ -282,4 +282,272 @@ router.get("/idades", async (req, res) => {
   }
 });
 
+// ─── PDF TURMAS ───────────────────────────────────────────────────────────────
+router.get("/turmas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { ano_letivo, turno } = req.query;
+    const ano = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
+    const turnoLabel = (!turno || turno === "todos") ? "Todos os Turnos" : turno.charAt(0) + turno.slice(1).toLowerCase();
+
+    const [[escola]] = await pool.query("SELECT nome, apelido, endereco, cidade FROM escolas WHERE id = ?", [escola_id]);
+
+    const params = [ano, escola_id];
+    let tf = "";
+    if (turno && turno !== "todos") { tf = "AND UPPER(t.turno) = UPPER(?)"; params.push(turno); }
+
+    const [rows] = await pool.query(`
+      SELECT turma_id, turma, turno, serie, total_alunos FROM (
+        SELECT t.id AS turma_id, t.nome AS turma, t.turno,
+          CASE WHEN t.nome LIKE '6%' THEN '6º Ano' WHEN t.nome LIKE '7%' THEN '7º Ano'
+            WHEN t.nome LIKE '8%' THEN '8º Ano' WHEN t.nome LIKE '9%' THEN '9º Ano' ELSE 'Outra' END AS serie,
+          COUNT(DISTINCT m.aluno_id) AS total_alunos
+        FROM turmas t INNER JOIN matriculas m ON m.turma_id=t.id AND m.ano_letivo=? AND m.status='ativo'
+        WHERE t.escola_id=? ${tf}
+        GROUP BY t.id, t.nome, t.turno
+      ) AS sub
+      ORDER BY CASE serie WHEN '6º Ano' THEN 1 WHEN '7º Ano' THEN 2 WHEN '8º Ano' THEN 3 WHEN '9º Ano' THEN 4 ELSE 5 END, turma
+    `, params);
+
+    const total = rows.reduce((a, r) => a + Number(r.total_alunos), 0);
+    const L = 40, PW = 595.28 - 80, PAGE_H = 841.89, FOOTER_Y = PAGE_H - 25, MAX_Y = FOOTER_Y - 15;
+    const logos = getLogos();
+    const doc = new PDFDocument({ size:"A4", margins:{top:30,bottom:0,left:L,right:40}, autoFirstPage:true,
+      info:{Title:"Relatório de Turmas",Author:"EDUCA.MELHOR"} });
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`inline; filename="relatorio_turmas_${ano}.pdf"`);
+    const chunks=[]; const {PassThrough}=await import("stream"); const pt=new PassThrough();
+    pt.on("data",c=>chunks.push(c)); doc.pipe(pt);
+    let pageNum=1;
+    const footer=()=>doc.font("Helvetica").fontSize(6.5).fillColor("#aaa")
+      .text(`Relatório de Turmas • ${ano} • Turno: ${turnoLabel} • EDUCA.MELHOR • Pág. ${pageNum}`,L,FOOTER_Y,{width:PW,align:"center",lineBreak:false});
+    const ensureSpace=(n)=>{ if(doc.y+n>MAX_Y){footer();doc.addPage();pageNum++;doc.y=30;} };
+
+    drawHeader(doc,escola,logos,L,PW);
+    doc.font("Helvetica-Bold").fontSize(16).fillColor(AZUL).text("RELATÓRIO DE TURMAS",L,doc.y,{width:PW,align:"center"});
+    doc.y+=8;
+
+    // Info row
+    const infoY=doc.y;
+    doc.roundedRect(L,infoY,PW,20,3).fill("#f0f4ff");
+    doc.roundedRect(L,infoY,PW,20,3).strokeColor("#c7d2fe").lineWidth(0.5).stroke();
+    const cw=PW/4;
+    [["Ano Letivo:",String(ano)],["Turno:",turnoLabel],["Total Alunos:",`${total}`],["Total Turmas:",`${rows.length}`]].forEach(([l,v],i)=>{
+      const cx=L+cw*i+6;
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL).text(l,cx,infoY+6,{width:cw-12,lineBreak:false,continued:true});
+      doc.font("Helvetica").fontSize(7.5).fillColor("#334155").text(` ${v}`,{lineBreak:false});
+    });
+    doc.y=infoY+20+12;
+
+    const CORES={"6º Ano":"#6366f1","7º Ano":"#0ea5e9","8º Ano":"#10b981","9º Ano":"#f59e0b","Outra":"#94a3b8"};
+
+    // Tabela
+    const TH=16, TR=24;
+    const C1=180, C2=80, C3=80, C4=80, C5=PW-C1-C2-C3-C4;
+    const thY=doc.y;
+    doc.rect(L,thY,PW,TH).fill(AZUL);
+    let tx=L;
+    [["TURMA",C1,"left"],["SÉRIE",C2,"center"],["TURNO",C3,"center"],["ALUNOS",C4,"center"],["DISTRIBUIÇÃO",C5,"center"]].forEach(([t,w,al])=>{
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff").text(t,tx+4,thY+4,{width:w-8,align:al,lineBreak:false});
+      tx+=w;
+    });
+    doc.y=thY+TH;
+
+    rows.forEach((r,i)=>{
+      ensureSpace(TR+2);
+      const rowY=doc.y;
+      if(i%2===0) doc.rect(L,rowY,PW,TR).fill("#f8fafc");
+      doc.moveTo(L,rowY+TR).lineTo(L+PW,rowY+TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+      const cor=CORES[r.serie]||"#94a3b8";
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("#1e293b").text(r.turma,L+4,rowY+7,{width:C1-8,lineBreak:false});
+      doc.roundedRect(L+C1+4,rowY+5,C2-8,14,7).fill(cor+"22");
+      doc.font("Helvetica-Bold").fontSize(7).fillColor(cor).text(r.serie,L+C1+4,rowY+9,{width:C2-8,align:"center",lineBreak:false});
+      doc.font("Helvetica").fontSize(8).fillColor("#475569").text(r.turno,L+C1+C2+4,rowY+7,{width:C3-8,align:"center",lineBreak:false});
+      doc.font("Helvetica-Bold").fontSize(12).fillColor(cor).text(String(r.total_alunos),L+C1+C2+C3+4,rowY+5,{width:C4-8,align:"center",lineBreak:false});
+      const barX=L+C1+C2+C3+C4+6, barW=C5-12, barY=rowY+TR/2;
+      const pct=total>0?(r.total_alunos/total):0;
+      doc.rect(barX,barY-2,barW,4).fill("#e2e8f0");
+      doc.rect(barX,barY-2,barW*pct,4).fill(cor);
+      const pctStr=`${(pct*100).toFixed(1)}%`;
+      doc.font("Helvetica").fontSize(6.5).fillColor("#64748b").text(pctStr,barX,barY+4,{width:barW,align:"right",lineBreak:false});
+      doc.y=rowY+TR;
+    });
+
+    // Total
+    doc.y+=4;
+    const totY=doc.y;
+    doc.rect(L,totY,PW,22).fill("#1e293b");
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#fff").text("TOTAL GERAL",L+6,totY+6,{width:C1-12,lineBreak:false});
+    doc.font("Helvetica-Bold").fontSize(14).fillColor("#facc15").text(String(total),L+C1,totY+3,{width:C4,align:"center",lineBreak:false});
+    doc.font("Helvetica").fontSize(8).fillColor("#94a3b8").text(`${rows.length} turmas`,L+C1+C4+4,totY+7,{width:PW-C1-C4-8,lineBreak:false});
+    doc.y=totY+22;
+
+    footer();
+    pt.on("end",()=>{const buf=Buffer.concat(chunks);res.setHeader("Content-Length",buf.length);res.end(buf);});
+    doc.end();
+  } catch(err){
+    console.error("[pdf] turmas:",err);
+    if(!res.headersSent) res.status(500).json({message:"Erro ao gerar PDF."});
+  }
+});
+
+// ─── PDF GÊNERO ───────────────────────────────────────────────────────────────
+router.get("/genero", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { ano_letivo, turno } = req.query;
+    const ano = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
+    const turnoLabel = (!turno || turno === "todos") ? "Todos os Turnos" : turno.charAt(0) + turno.slice(1).toLowerCase();
+
+    const [[escola]] = await pool.query("SELECT nome, apelido, endereco, cidade FROM escolas WHERE id = ?", [escola_id]);
+
+    const params = [escola_id, ano];
+    let tf = "";
+    if (turno && turno !== "todos") { tf = "AND UPPER(t.turno) = UPPER(?)"; params.push(turno); }
+
+    const [rows] = await pool.query(`
+      SELECT serie, sexo, total FROM (
+        SELECT
+          CASE WHEN t.nome LIKE '6%' THEN '6º Ano' WHEN t.nome LIKE '7%' THEN '7º Ano'
+            WHEN t.nome LIKE '8%' THEN '8º Ano' WHEN t.nome LIKE '9%' THEN '9º Ano' ELSE 'Outra' END AS serie,
+          COALESCE(UPPER(a.sexo),'NÃO INFORMADO') AS sexo,
+          COUNT(DISTINCT m.aluno_id) AS total
+        FROM matriculas m INNER JOIN alunos a ON a.id=m.aluno_id INNER JOIN turmas t ON t.id=m.turma_id
+        WHERE m.escola_id=? AND m.ano_letivo=? AND m.status='ativo' ${tf}
+        GROUP BY CASE WHEN t.nome LIKE '6%' THEN '6º Ano' WHEN t.nome LIKE '7%' THEN '7º Ano'
+          WHEN t.nome LIKE '8%' THEN '8º Ano' WHEN t.nome LIKE '9%' THEN '9º Ano' ELSE 'Outra' END,
+          COALESCE(UPPER(a.sexo),'NÃO INFORMADO')
+      ) AS sub
+      ORDER BY CASE serie WHEN '6º Ano' THEN 1 WHEN '7º Ano' THEN 2 WHEN '8º Ano' THEN 3 WHEN '9º Ano' THEN 4 ELSE 5 END, sexo
+    `, params);
+
+    const totM=rows.filter(r=>r.sexo==="M").reduce((a,r)=>a+Number(r.total),0);
+    const totF=rows.filter(r=>r.sexo==="F").reduce((a,r)=>a+Number(r.total),0);
+    const totO=rows.filter(r=>r.sexo!=="M"&&r.sexo!=="F").reduce((a,r)=>a+Number(r.total),0);
+    const total=totM+totF+totO;
+
+    const L=40,PW=595.28-80,PAGE_H=841.89,FOOTER_Y=PAGE_H-25,MAX_Y=FOOTER_Y-15;
+    const logos=getLogos();
+    const doc=new PDFDocument({size:"A4",margins:{top:30,bottom:0,left:L,right:40},autoFirstPage:true,
+      info:{Title:"Relatório de Gênero",Author:"EDUCA.MELHOR"}});
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`inline; filename="relatorio_genero_${ano}.pdf"`);
+    const chunks=[]; const {PassThrough}=await import("stream"); const pt=new PassThrough();
+    pt.on("data",c=>chunks.push(c)); doc.pipe(pt);
+    let pageNum=1;
+    const footer=()=>doc.font("Helvetica").fontSize(6.5).fillColor("#aaa")
+      .text(`Relatório de Gênero • ${ano} • Turno: ${turnoLabel} • EDUCA.MELHOR • Pág. ${pageNum}`,L,FOOTER_Y,{width:PW,align:"center",lineBreak:false});
+    const ensureSpace=(n)=>{ if(doc.y+n>MAX_Y){footer();doc.addPage();pageNum++;doc.y=30;} };
+
+    drawHeader(doc,escola,logos,L,PW);
+    doc.font("Helvetica-Bold").fontSize(16).fillColor(AZUL).text("RELATÓRIO DE DISTRIBUIÇÃO POR GÊNERO",L,doc.y,{width:PW,align:"center"});
+    doc.y+=8;
+
+    // Info row
+    const infoY=doc.y;
+    doc.roundedRect(L,infoY,PW,20,3).fill("#f0f4ff");
+    doc.roundedRect(L,infoY,PW,20,3).strokeColor("#c7d2fe").lineWidth(0.5).stroke();
+    const cw=PW/4;
+    [["Ano Letivo:",String(ano)],["Turno:",turnoLabel],["Total Geral:",`${total}`],["Emitido em:",new Date().toLocaleDateString("pt-BR")]].forEach(([l,v],i)=>{
+      const cx=L+cw*i+6;
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL).text(l,cx,infoY+6,{width:cw-12,lineBreak:false,continued:true});
+      doc.font("Helvetica").fontSize(7.5).fillColor("#334155").text(` ${v}`,{lineBreak:false});
+    });
+    doc.y=infoY+20+14;
+
+    // Cards resumo M/F
+    const cH=55, cW=(PW-16)/3;
+    [
+      {label:"MASCULINO",val:totM,cor:"#0ea5e9",pct:total>0?((totM/total)*100).toFixed(1):"0.0",icone:"♂"},
+      {label:"FEMININO",val:totF,cor:"#ec4899",pct:total>0?((totF/total)*100).toFixed(1):"0.0",icone:"♀"},
+      {label:"NÃO INFORMADO",val:totO,cor:"#94a3b8",pct:total>0?((totO/total)*100).toFixed(1):"0.0",icone:"?"}
+    ].forEach((c,i)=>{
+      const cx=L+i*(cW+8), cy=doc.y;
+      doc.roundedRect(cx,cy,cW,cH,8).fill(c.cor+"18");
+      doc.roundedRect(cx,cy,cW,cH,8).strokeColor(c.cor).lineWidth(1).stroke();
+      doc.font("Helvetica-Bold").fontSize(24).fillColor(c.cor).text(String(c.val),cx,cy+6,{width:cW,align:"center",lineBreak:false});
+      doc.font("Helvetica").fontSize(7).fillColor("#475569").text(`${c.label} • ${c.pct}%`,cx,cy+cH-16,{width:cW,align:"center",lineBreak:false});
+    });
+    doc.y+=cH+14;
+
+    // Barra proporcional visual M/F
+    const barTotalW=PW, barH=18;
+    const barY=doc.y;
+    const wM=total>0?Math.round(barTotalW*(totM/total)):0;
+    const wF=total>0?Math.round(barTotalW*(totF/total)):0;
+    const wO=barTotalW-wM-wF;
+    doc.roundedRect(L,barY,wM,barH,0).fill("#0ea5e9");
+    doc.rect(L+wM,barY,wF,barH).fill("#ec4899");
+    if(wO>0) doc.rect(L+wM+wF,barY,wO,barH).fill("#94a3b8");
+    if(wM>30) doc.font("Helvetica-Bold").fontSize(8).fillColor("#fff").text(`${((totM/total)*100).toFixed(0)}%`,L+wM/2-20,barY+5,{width:40,align:"center",lineBreak:false});
+    if(wF>30) doc.font("Helvetica-Bold").fontSize(8).fillColor("#fff").text(`${((totF/total)*100).toFixed(0)}%`,L+wM+wF/2-20,barY+5,{width:40,align:"center",lineBreak:false});
+    doc.y=barY+barH+14;
+
+    // Tabela por série
+    const TH=16,TR=24;
+    const C1=130,C2=100,C3=80,C4=80,C5=PW-C1-C2-C3-C4;
+    ensureSpace(TH+TR+4);
+    const thY=doc.y;
+    doc.rect(L,thY,PW,TH).fill(AZUL);
+    let tx=L;
+    [["SÉRIE",C1,"left"],["GÊNERO",C2,"center"],["ALUNOS",C3,"center"],["% DA SÉRIE",C4,"center"],["BARRA",C5,"center"]].forEach(([t,w,al])=>{
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff").text(t,tx+4,thY+4,{width:w-8,align:al,lineBreak:false});
+      tx+=w;
+    });
+    doc.y=thY+TH;
+
+    const CORES_SERIE={"6º Ano":"#6366f1","7º Ano":"#0ea5e9","8º Ano":"#10b981","9º Ano":"#f59e0b","Outra":"#94a3b8"};
+    const COR_GENERO={M:"#0ea5e9",F:"#ec4899"};
+
+    // Agrupar por série
+    const porSerie={};
+    rows.forEach(r=>{
+      if(!porSerie[r.serie]) porSerie[r.serie]=[];
+      porSerie[r.serie].push(r);
+    });
+
+    let rowIdx=0;
+    Object.entries(porSerie).forEach(([serie,itens])=>{
+      const totalSerie=itens.reduce((a,r)=>a+Number(r.total),0);
+      itens.forEach((r,j)=>{
+        ensureSpace(TR+2);
+        const rowY=doc.y;
+        if(rowIdx%2===0) doc.rect(L,rowY,PW,TR).fill("#f8fafc");
+        doc.moveTo(L,rowY+TR).lineTo(L+PW,rowY+TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+        const corSerie=CORES_SERIE[serie]||"#94a3b8";
+        const corGen=COR_GENERO[r.sexo]||"#94a3b8";
+        if(j===0){
+          doc.roundedRect(L+4,rowY+5,C1-8,14,7).fill(corSerie+"22");
+          doc.font("Helvetica-Bold").fontSize(8).fillColor(corSerie).text(serie,L+4,rowY+9,{width:C1-8,align:"center",lineBreak:false});
+        }
+        const genLabel=r.sexo==="M"?"♂ Masculino":r.sexo==="F"?"♀ Feminino":"? N/I";
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(corGen).text(genLabel,L+C1+4,rowY+7,{width:C2-8,align:"center",lineBreak:false});
+        doc.font("Helvetica-Bold").fontSize(12).fillColor(corGen).text(String(r.total),L+C1+C2+4,rowY+5,{width:C3-8,align:"center",lineBreak:false});
+        const pct=totalSerie>0?((r.total/totalSerie)*100).toFixed(1):"0.0";
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(corGen).text(`${pct}%`,L+C1+C2+C3+4,rowY+7,{width:C4-8,align:"center",lineBreak:false});
+        const bx=L+C1+C2+C3+C4+6,bw=C5-12,by=rowY+TR/2;
+        doc.rect(bx,by-3,bw,5).fill("#e2e8f0");
+        doc.rect(bx,by-3,bw*(r.total/totalSerie),5).fill(corGen);
+        doc.y=rowY+TR;
+        rowIdx++;
+      });
+    });
+
+    doc.y+=4;
+    const totY2=doc.y;
+    doc.rect(L,totY2,PW,22).fill("#1e293b");
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#fff").text("TOTAL GERAL",L+6,totY2+6,{width:C1-12,lineBreak:false});
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#0ea5e9").text(`♂ ${totM}`,L+C1+4,totY2+6,{width:C2-8,align:"center",lineBreak:false});
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#ec4899").text(`♀ ${totF}`,L+C1+C2+4,totY2+6,{width:C3-8,align:"center",lineBreak:false});
+    doc.font("Helvetica-Bold").fontSize(14).fillColor("#facc15").text(String(total),L+C1+C2+C3+4,totY2+3,{width:C4+C5-8,align:"center",lineBreak:false});
+
+    footer();
+    pt.on("end",()=>{const buf=Buffer.concat(chunks);res.setHeader("Content-Length",buf.length);res.end(buf);});
+    doc.end();
+  } catch(err){
+    console.error("[pdf] genero:",err);
+    if(!res.headersSent) res.status(500).json({message:"Erro ao gerar PDF."});
+  }
+});
 export default router;
+
