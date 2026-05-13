@@ -107,6 +107,7 @@ import governancaRouter from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
+import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
@@ -942,6 +943,9 @@ async function bootstrap() {
 
   // ✅ RELATÓRIOS DA SECRETARIA — Matrículas, Idades, Turmas, Gênero
   app.use("/api/secretaria/relatorios", autenticarToken, verificarEscola, secretariaRelatoriosRouter);
+
+  // ✅ PDF RELATÓRIOS DA SECRETARIA
+  app.use("/api/secretaria/relatorios/pdf", autenticarToken, verificarEscola, secretariaRelatoriosPdfRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
