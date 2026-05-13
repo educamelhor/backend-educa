@@ -156,6 +156,7 @@ console.log("[FF] FLAGS efetivas:", {
   FF_APP_PAIS,
   FF_CONFIG_PEDAGOGICA,
   FF_CONTEUDOS_ADMIN,
+  FF_EDUCA_CAPTURE,
   FF_MONITORAMENTO,
   FF_AGENTE_EDUCADF,
 });
@@ -273,10 +274,13 @@ function ff(name, defaultValue = false) {
 async function safeImportDefault(flagName, importPath) {
   try {
     const mod = await import(importPath);
-    return mod?.default ?? mod;
+    const router = mod?.default ?? mod;
+    console.log(`[FF] ${flagName}: carregado com sucesso (${importPath}). Router ok: ${!!router}`);
+    return router;
   } catch (err) {
-    console.warn(
-      `[FF] ${flagName}: NÃO carregado (${importPath}). Motivo: ${err?.message || err}`
+    // ✅ Sempre loga — inclusive em PROD — para diagnóstico de falhas silenciosas
+    console.error(
+      `[FF] ${flagName}: FALHA ao carregar (${importPath}). Erro: ${err?.message || err}`
     );
     return null; // não quebra o boot
   }
@@ -777,7 +781,12 @@ async function bootstrap() {
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
 
-  if (captureRoutes) app.use("/api/capture", captureRoutes);
+  if (captureRoutes) {
+    app.use("/api/capture", captureRoutes);
+    console.log("[FF] FF_EDUCA_CAPTURE: router montado em /api/capture ✅");
+  } else {
+    console.error("[FF] FF_EDUCA_CAPTURE: captureRoutes é NULL — rota /api/capture NÃO montada ❌");
+  }
 
 
 
