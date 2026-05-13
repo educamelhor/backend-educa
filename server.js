@@ -106,6 +106,7 @@ import direcaoRouter from "./routes/direcao.js";
 import governancaRouter from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
+import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
@@ -938,6 +939,9 @@ async function bootstrap() {
 
   // ✅ MÓDULO FREQUÊNCIA — Atestados, Busca Ativa, Relatórios, Conselho Tutelar
   app.use("/api/frequencia", autenticarToken, verificarEscola, frequenciaRouter);
+
+  // ✅ RELATÓRIOS DA SECRETARIA — Matrículas, Idades, Turmas, Gênero
+  app.use("/api/secretaria/relatorios", autenticarToken, verificarEscola, secretariaRelatoriosRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
