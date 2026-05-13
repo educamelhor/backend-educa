@@ -1,7 +1,6 @@
 // routes/secretaria-relatorios.js
 // ============================================================================
 // Rotas de relatórios da Secretaria
-// Todos os endpoints são protegidos por escola_id (via req.user)
 // ============================================================================
 
 import express from 'express';
@@ -9,38 +8,23 @@ import pool from '../db.js';
 
 const router = express.Router();
 
-// Helper: ano letivo padrão com data de corte em 31/jan
 function anoLetivoPadrao() {
   const hoje = new Date();
   const mes = hoje.getMonth() + 1;
   return mes <= 1 ? hoje.getFullYear() - 1 : hoje.getFullYear();
 }
 
-// Expressão CASE reutilizável para série (compatível com only_full_group_by)
-const CASE_SERIE = `
-  CASE
-    WHEN t.nome LIKE '6%' OR t.nome LIKE '6\xba%' OR t.nome LIKE '6 %' THEN '6\xba Ano'
-    WHEN t.nome LIKE '7%' OR t.nome LIKE '7\xba%' OR t.nome LIKE '7 %' THEN '7\xba Ano'
-    WHEN t.nome LIKE '8%' OR t.nome LIKE '8\xba%' OR t.nome LIKE '8 %' THEN '8\xba Ano'
-    WHEN t.nome LIKE '9%' OR t.nome LIKE '9\xba%' OR t.nome LIKE '9 %' THEN '9\xba Ano'
-    ELSE 'Outra'
-  END
-`;
-
-const ORDER_SERIE = `
-  CASE ${CASE_SERIE}
-    WHEN '6\xba Ano' THEN 1
-    WHEN '7\xba Ano' THEN 2
-    WHEN '8\xba Ano' THEN 3
-    WHEN '9\xba Ano' THEN 4
-    ELSE 5
-  END
-`;
+// CASE reutilizável — classifica série pelo nome da turma
+const CASE_SERIE = `CASE
+  WHEN t.nome LIKE '6%' THEN '6\xba Ano'
+  WHEN t.nome LIKE '7%' THEN '7\xba Ano'
+  WHEN t.nome LIKE '8%' THEN '8\xba Ano'
+  WHEN t.nome LIKE '9%' THEN '9\xba Ano'
+  ELSE 'Outra'
+END`;
 
 // ============================================================================
 // 1) RELATÓRIO SINTÉTICO DE MATRÍCULAS
-// GET /api/secretaria/relatorios/sintetico-matriculas
-// Informa quantos alunos estão matriculados por série/turno
 // ============================================================================
 router.get('/sintetico-matriculas', async (req, res) => {
   try {
@@ -55,28 +39,37 @@ router.get('/sintetico-matriculas', async (req, res) => {
       params.push(turno);
     }
 
-    // ✅ GROUP BY usa a expressão CASE completa (evita only_full_group_by error)
+    // ✅ Subquery: agrupa pela expressão CASE internamente.
+    // A query externa ordena pelo alias 'serie' — sem referenciar t.nome diretamente.
     const sql = `
-      SELECT
-        ${CASE_SERIE} AS serie,
-        t.turno,
-        COUNT(DISTINCT m.aluno_id) AS total
-      FROM matriculas m
-      INNER JOIN turmas t ON t.id = m.turma_id
-      WHERE m.escola_id = ?
-        AND m.ano_letivo = ?
-        AND m.status = 'ativo'
-        ${turnoFilter}
-      GROUP BY ${CASE_SERIE}, t.turno
-      ORDER BY ${ORDER_SERIE}, t.turno
+      SELECT serie, turno, total FROM (
+        SELECT
+          ${CASE_SERIE} AS serie,
+          t.turno                           AS turno,
+          COUNT(DISTINCT m.aluno_id)        AS total
+        FROM matriculas m
+        INNER JOIN turmas t ON t.id = m.turma_id
+        WHERE m.escola_id = ?
+          AND m.ano_letivo = ?
+          AND m.status = 'ativo'
+          ${turnoFilter}
+        GROUP BY ${CASE_SERIE}, t.turno
+      ) AS sub
+      ORDER BY
+        CASE serie
+          WHEN '6\xba Ano' THEN 1
+          WHEN '7\xba Ano' THEN 2
+          WHEN '8\xba Ano' THEN 3
+          WHEN '9\xba Ano' THEN 4
+          ELSE 5
+        END,
+        turno
     `;
 
     const [rows] = await pool.query(sql, params);
 
-    // Total geral
     const total = rows.reduce((acc, r) => acc + Number(r.total), 0);
 
-    // Resumo por série (agrupando turnos)
     const porSerie = {};
     for (const row of rows) {
       if (!porSerie[row.serie]) {
@@ -102,8 +95,6 @@ router.get('/sintetico-matriculas', async (req, res) => {
 
 // ============================================================================
 // 2) RELATÓRIO DE IDADES
-// GET /api/secretaria/relatorios/idades
-// Distribuição de alunos por faixa etária
 // ============================================================================
 router.get('/idades', async (req, res) => {
   try {
@@ -118,21 +109,19 @@ router.get('/idades', async (req, res) => {
       extraFilters += ' AND UPPER(t.turno) = UPPER(?)';
       params.push(turno);
     }
-
     if (serie && serie !== 'todas') {
-      extraFilters += ` AND (t.nome LIKE ? OR t.nome LIKE ? OR t.nome LIKE ?)`;
-      params.push(`${serie}%`, `${serie}\xba%`, `${serie} %`);
+      extraFilters += ' AND t.nome LIKE ?';
+      params.push(`${serie}%`);
     }
 
-    // ✅ data_nascimento formatada como string pura (evita Invalid Date no frontend)
     const sql = `
       SELECT
         a.id,
         a.estudante,
         DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
         TIMESTAMPDIFF(YEAR, a.data_nascimento, CURDATE()) AS idade,
-        t.nome AS turma,
-        t.turno,
+        t.nome  AS turma,
+        t.turno AS turno,
         ${CASE_SERIE} AS serie
       FROM matriculas m
       INNER JOIN alunos a ON a.id = m.aluno_id
@@ -147,7 +136,6 @@ router.get('/idades', async (req, res) => {
 
     const [rows] = await pool.query(sql, params);
 
-    // Distribuição por faixas etárias
     const faixas = [
       { label: 'Até 11 anos',  min: 0,  max: 11  },
       { label: '12 anos',      min: 12, max: 12  },
@@ -161,10 +149,10 @@ router.get('/idades', async (req, res) => {
 
     const distribuicao = faixas.map(f => ({
       ...f,
-      total: rows.filter(r => r.idade >= f.min && r.idade <= f.max).length,
+      total: rows.filter(r => Number(r.idade) >= f.min && Number(r.idade) <= f.max).length,
     }));
 
-    // Sem data de nascimento (respeitando filtros de turno/série aplicados)
+    // Sem data de nascimento — respeitando os mesmos filtros
     const semDobParams = [escola_id, anoEfetivo];
     let semDobFilter = '';
     if (turno && turno !== 'todos') {
@@ -172,8 +160,8 @@ router.get('/idades', async (req, res) => {
       semDobParams.push(turno);
     }
     if (serie && serie !== 'todas') {
-      semDobFilter += ` AND (t.nome LIKE ? OR t.nome LIKE ? OR t.nome LIKE ?)`;
-      semDobParams.push(`${serie}%`, `${serie}\xba%`, `${serie} %`);
+      semDobFilter += ' AND t.nome LIKE ?';
+      semDobParams.push(`${serie}%`);
     }
 
     const sqlSemDob = `
@@ -197,7 +185,7 @@ router.get('/idades', async (req, res) => {
       alunos: rows.map(r => ({
         id: r.id,
         estudante: r.estudante,
-        data_nascimento: r.data_nascimento, // string 'YYYY-MM-DD'
+        data_nascimento: r.data_nascimento,
         idade: r.idade,
         turma: r.turma,
         turno: r.turno,
@@ -212,8 +200,6 @@ router.get('/idades', async (req, res) => {
 
 // ============================================================================
 // 3) RELATÓRIO DE TURMAS
-// GET /api/secretaria/relatorios/turmas
-// Lista de turmas com total de alunos matriculados
 // ============================================================================
 router.get('/turmas', async (req, res) => {
   try {
@@ -221,7 +207,6 @@ router.get('/turmas', async (req, res) => {
     const { ano_letivo, turno } = req.query;
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
 
-    // ✅ params em ordem correta — escola_id no WHERE, anoEfetivo no JOIN
     const params = [anoEfetivo, escola_id];
     let turnoFilter = '';
     if (turno && turno !== 'todos') {
@@ -229,23 +214,33 @@ router.get('/turmas', async (req, res) => {
       params.push(turno);
     }
 
-    // ✅ GROUP BY usa colunas reais (t.id, t.nome, t.turno) — sem alias
+    // ✅ Subquery: GROUP BY colunas reais; ORDER BY pelo alias da subquery
     const sql = `
-      SELECT
-        t.id AS turma_id,
-        t.nome AS turma,
-        t.turno,
-        ${CASE_SERIE} AS serie,
-        COUNT(DISTINCT m.aluno_id) AS total_alunos
-      FROM turmas t
-      INNER JOIN matriculas m
-        ON m.turma_id = t.id
-        AND m.ano_letivo = ?
-        AND m.status = 'ativo'
-      WHERE t.escola_id = ?
-        ${turnoFilter}
-      GROUP BY t.id, t.nome, t.turno
-      ORDER BY ${ORDER_SERIE}, t.nome
+      SELECT turma_id, turma, turno, serie, total_alunos FROM (
+        SELECT
+          t.id                               AS turma_id,
+          t.nome                             AS turma,
+          t.turno                            AS turno,
+          ${CASE_SERIE}                      AS serie,
+          COUNT(DISTINCT m.aluno_id)         AS total_alunos
+        FROM turmas t
+        INNER JOIN matriculas m
+          ON m.turma_id = t.id
+          AND m.ano_letivo = ?
+          AND m.status = 'ativo'
+        WHERE t.escola_id = ?
+          ${turnoFilter}
+        GROUP BY t.id, t.nome, t.turno
+      ) AS sub
+      ORDER BY
+        CASE serie
+          WHEN '6\xba Ano' THEN 1
+          WHEN '7\xba Ano' THEN 2
+          WHEN '8\xba Ano' THEN 3
+          WHEN '9\xba Ano' THEN 4
+          ELSE 5
+        END,
+        turma
     `;
 
     const [rows] = await pool.query(sql, params);
@@ -264,8 +259,6 @@ router.get('/turmas', async (req, res) => {
 
 // ============================================================================
 // 4) RELATÓRIO DE GÊNERO
-// GET /api/secretaria/relatorios/genero
-// Distribuição por sexo (M/F) por série
 // ============================================================================
 router.get('/genero', async (req, res) => {
   try {
@@ -280,21 +273,31 @@ router.get('/genero', async (req, res) => {
       params.push(turno);
     }
 
-    // ✅ GROUP BY e ORDER BY usam expressão CASE completa (evita ambiguidade)
+    // ✅ Subquery: agrupa internamente; ORDER BY pelo alias 'serie' externo
     const sql = `
-      SELECT
-        ${CASE_SERIE} AS serie,
-        COALESCE(UPPER(a.sexo), 'NÃO INFORMADO') AS sexo,
-        COUNT(DISTINCT m.aluno_id) AS total
-      FROM matriculas m
-      INNER JOIN alunos a ON a.id = m.aluno_id
-      INNER JOIN turmas t ON t.id = m.turma_id
-      WHERE m.escola_id = ?
-        AND m.ano_letivo = ?
-        AND m.status = 'ativo'
-        ${turnoFilter}
-      GROUP BY ${CASE_SERIE}, COALESCE(UPPER(a.sexo), 'NÃO INFORMADO')
-      ORDER BY ${ORDER_SERIE}, sexo
+      SELECT serie, sexo, total FROM (
+        SELECT
+          ${CASE_SERIE}                                    AS serie,
+          COALESCE(UPPER(a.sexo), 'NÃO INFORMADO')        AS sexo,
+          COUNT(DISTINCT m.aluno_id)                       AS total
+        FROM matriculas m
+        INNER JOIN alunos a ON a.id = m.aluno_id
+        INNER JOIN turmas t ON t.id = m.turma_id
+        WHERE m.escola_id = ?
+          AND m.ano_letivo = ?
+          AND m.status = 'ativo'
+          ${turnoFilter}
+        GROUP BY ${CASE_SERIE}, COALESCE(UPPER(a.sexo), 'NÃO INFORMADO')
+      ) AS sub
+      ORDER BY
+        CASE serie
+          WHEN '6\xba Ano' THEN 1
+          WHEN '7\xba Ano' THEN 2
+          WHEN '8\xba Ano' THEN 3
+          WHEN '9\xba Ano' THEN 4
+          ELSE 5
+        END,
+        sexo
     `;
 
     const [rows] = await pool.query(sql, params);
@@ -308,11 +311,7 @@ router.get('/genero', async (req, res) => {
       else totais.outro += n;
     }
 
-    return res.json({
-      ano_letivo: anoEfetivo,
-      totais,
-      detalhado: rows,
-    });
+    return res.json({ ano_letivo: anoEfetivo, totais, detalhado: rows });
   } catch (err) {
     console.error('[relatorios] genero:', err);
     return res.status(500).json({ message: 'Erro ao gerar relatório de gênero.' });
@@ -321,7 +320,6 @@ router.get('/genero', async (req, res) => {
 
 // ============================================================================
 // 5) ANOS LETIVOS DISPONÍVEIS
-// GET /api/secretaria/relatorios/anos-letivos
 // ============================================================================
 router.get('/anos-letivos', async (req, res) => {
   try {
