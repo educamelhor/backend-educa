@@ -48,6 +48,18 @@ function hoje() {
   return `${d.getDate()} de ${m[d.getMonth()]} de ${d.getFullYear()}`;
 }
 
+// Busca nome do usuário no banco (nome NÃO está no JWT payload)
+async function getNomeUsuario(req) {
+  const uid = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
+  if (!uid) return "Usuário";
+  try {
+    const [[row]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [uid]);
+    return row?.nome || "Usuário";
+  } catch {
+    return "Usuário";
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // GET /api/disciplinar-atas — Listar atas da escola
 // ══════════════════════════════════════════════════════════════════════════
@@ -76,14 +88,16 @@ router.get("/", async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.post("/", async (req, res) => {
   try {
-    const { escola_id, nome, id: usuario_id } = req.user;
+    const { escola_id, id: usuario_id } = req.user;
     const { titulo, conteudo } = req.body;
     if (!titulo || !conteudo) return res.status(400).json({ error: "Título e conteúdo são obrigatórios." });
+
+    const nomeUsuario = await getNomeUsuario(req);
 
     const [result] = await pool.query(
       `INSERT INTO disciplinar_atas (escola_id, titulo, conteudo, status, criado_por, criado_por_id)
        VALUES (?, ?, ?, 'Rascunho', ?, ?)`,
-      [escola_id, titulo.trim(), conteudo.trim(), nome || "Usuário", usuario_id]
+      [escola_id, titulo.trim(), conteudo.trim(), nomeUsuario, usuario_id]
     );
 
     const [[ata]] = await pool.query(
@@ -102,7 +116,7 @@ router.post("/", async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.put("/:id", async (req, res) => {
   try {
-    const { escola_id, nome, id: usuario_id } = req.user;
+    const { escola_id, id: usuario_id } = req.user;
     const { id } = req.params;
     const { titulo, conteudo } = req.body;
 
@@ -113,11 +127,13 @@ router.put("/:id", async (req, res) => {
     if (!ata) return res.status(404).json({ error: "Ata não encontrada." });
     if (ata.status === "Finalizado") return res.status(400).json({ error: "Não é possível editar uma ata finalizada." });
 
+    const nomeUsuario = await getNomeUsuario(req);
+
     await pool.query(
       `UPDATE disciplinar_atas
        SET titulo = ?, conteudo = ?, editado_por = ?, editado_por_id = ?, editado_em = NOW()
        WHERE id = ? AND escola_id = ?`,
-      [titulo.trim(), conteudo.trim(), nome || "Usuário", usuario_id, id, escola_id]
+      [titulo.trim(), conteudo.trim(), nomeUsuario, usuario_id, id, escola_id]
     );
 
     const [[updated]] = await pool.query("SELECT * FROM disciplinar_atas WHERE id = ?", [id]);
@@ -133,7 +149,7 @@ router.put("/:id", async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.post("/:id/finalizar", async (req, res) => {
   try {
-    const { escola_id, nome, id: usuario_id } = req.user;
+    const { escola_id, id: usuario_id } = req.user;
     const { id } = req.params;
 
     const [[ata]] = await pool.query(
@@ -143,11 +159,13 @@ router.post("/:id/finalizar", async (req, res) => {
     if (!ata) return res.status(404).json({ error: "Ata não encontrada." });
     if (ata.status === "Finalizado") return res.status(400).json({ error: "Ata já finalizada." });
 
+    const nomeUsuario = await getNomeUsuario(req);
+
     await pool.query(
       `UPDATE disciplinar_atas
        SET status = 'Finalizado', finalizado_por = ?, finalizado_por_id = ?, finalizado_em = NOW()
        WHERE id = ? AND escola_id = ?`,
-      [nome || "Usuário", usuario_id, id, escola_id]
+      [nomeUsuario, usuario_id, id, escola_id]
     );
 
     const [[updated]] = await pool.query("SELECT * FROM disciplinar_atas WHERE id = ?", [id]);
