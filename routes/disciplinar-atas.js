@@ -41,6 +41,41 @@ async function ensureTable() {
 }
 ensureTable().catch(err => console.error("[DISCIPLINAR-ATAS] Erro ao criar tabela:", err));
 
+// ── Correção retroativa: atualizar registros com 'Usuário' usando _por_id ──
+async function fixNomesUsuario() {
+  try {
+    // Corrige criado_por
+    await pool.query(`
+      UPDATE disciplinar_atas da
+      JOIN usuarios u ON u.id = da.criado_por_id
+      SET da.criado_por = u.nome
+      WHERE (da.criado_por IS NULL OR da.criado_por = 'Usuário')
+        AND da.criado_por_id IS NOT NULL
+    `);
+    // Corrige editado_por
+    await pool.query(`
+      UPDATE disciplinar_atas da
+      JOIN usuarios u ON u.id = da.editado_por_id
+      SET da.editado_por = u.nome
+      WHERE (da.editado_por IS NULL OR da.editado_por = 'Usuário')
+        AND da.editado_por_id IS NOT NULL
+    `);
+    // Corrige finalizado_por
+    await pool.query(`
+      UPDATE disciplinar_atas da
+      JOIN usuarios u ON u.id = da.finalizado_por_id
+      SET da.finalizado_por = u.nome
+      WHERE (da.finalizado_por IS NULL OR da.finalizado_por = 'Usuário')
+        AND da.finalizado_por_id IS NOT NULL
+    `);
+    console.log("[DISCIPLINAR-ATAS] Nomes retroativos corrigidos ✅");
+  } catch (err) {
+    console.warn("[DISCIPLINAR-ATAS] Erro ao corrigir nomes retroativos (não crítico):", err.message);
+  }
+}
+fixNomesUsuario();
+
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 function hoje() {
   const m = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
