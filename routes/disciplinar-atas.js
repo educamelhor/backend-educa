@@ -335,9 +335,7 @@ router.get("/:id/pdf", async (req, res) => {
       .text(ata.titulo.toUpperCase(), L, doc.y, { width: PW, align: "center" });
     doc.y += 10;
 
-    doc.font("Helvetica").fontSize(8).fillColor(COR_CINZA).text(`Documento ID: #${ata.id}`, L, doc.y, { width: PW * 0.5 });
-    doc.y -= 9;
-    doc.font("Helvetica").fontSize(8).fillColor(COR_CINZA).text(`Status: ${ata.status}`, L + PW * 0.5, doc.y, { width: PW * 0.5, align: "right" });
+    doc.font("Helvetica").fontSize(8).fillColor(COR_CINZA).text(`Documento ID: #${ata.id}`, L, doc.y, { width: PW });
     doc.y += 12;
     doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ccc").lineWidth(0.5).stroke(); doc.y += 10;
 
