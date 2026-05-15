@@ -93,11 +93,14 @@ router.get("/", async (req, res) => {
   try {
     const { escola_id } = req.user;
     const [rows] = await pool.query(
-      `SELECT id, titulo, conteudo, status,
-              turno, turma_id, turma_nome, aluno_id,
-              criado_por, criado_em, editado_por, editado_em,
-              finalizado_por, finalizado_em
-       FROM disciplinar_atas WHERE escola_id = ? ORDER BY criado_em DESC`,
+      `SELECT da.id, da.titulo, da.conteudo, da.status,
+              da.turno, da.turma_id, da.turma_nome, da.aluno_id,
+              al.estudante AS aluno_nome,
+              da.criado_por, da.criado_em, da.editado_por, da.editado_em,
+              da.finalizado_por, da.finalizado_em
+       FROM disciplinar_atas da
+       LEFT JOIN alunos al ON al.id = da.aluno_id
+       WHERE da.escola_id = ? ORDER BY da.criado_em DESC`,
       [escola_id]
     );
     res.json(rows);
