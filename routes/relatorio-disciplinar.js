@@ -56,6 +56,122 @@ function getConceito(pontos) {
   return "VI - Incompatível";
 }
 
+// ── Calcula e persiste o Bônus de Mérito (registro único por aluno) ─────────
+// Regra: a partir do 61º dia consecutivo sem registro NEGATIVO no ano letivo,
+// o aluno acumula +0,01 ponto por dia. A acumulação daí em diante pode ser
+// interrompida por novos negativos, mas os pontos já conquistados são mantidos.
+async function calcularEUpsertMerito(alunoId, escolaId) {
+  try {
+    const anoAtual = new Date().getFullYear();
+    const dataAncoraPadrao = new Date(`${anoAtual}-02-15`); // 15/02 do ano corrente
+    const hoje = new Date();
+    hoje.setHours(23, 59, 59, 0);
+
+    // 1. Buscar todos os registros NEGATIVOS do ano (posição negativa = pontos < 0)
+    //    Excluir registros tipo 'MERITO' e CANCELADOS
+    const [negativos] = await pool.query(
+      `SELECT DATE(o.data_ocorrencia) AS data_oc
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE o.aluno_id = ? AND o.escola_id = ?
+         AND o.tipo_ocorrencia != 'MERITO'
+         AND o.status NOT IN ('CANCELADA')
+         AND COALESCE(r.pontos, 0) < 0
+         AND YEAR(o.data_ocorrencia) = ?
+       ORDER BY o.data_ocorrencia ASC`,
+      [alunoId, escolaId, anoAtual]
+    );
+
+    // 2. Montar lista de datas âncora (datas dos negativos)
+    const datasNegativas = negativos.map(n => new Date(n.data_oc));
+
+    // 3. Calcular bônus acumulado somando todos os períodos
+    //    Período = [data_âncora_i, data_âncora_(i+1)] ou [data_âncora_última, hoje]
+    let ancoras;
+    if (datasNegativas.length === 0) {
+      // Sem negativos no ano: único período é [15/02, hoje]
+      ancoras = [dataAncoraPadrao];
+    } else {
+      // Começa em 15/02 ou na primeira data negativa (o que for anterior)
+      const primeira = datasNegativas[0] < dataAncoraPadrao ? datasNegativas[0] : dataAncoraPadrao;
+      ancoras = [primeira, ...datasNegativas.slice(1)];
+      // A última âncora é sempre o último negativo
+    }
+
+    let totalBonusDias = 0;
+
+    // Para cada período entre âncoras consecutivas
+    const todosLimites = [
+      ...(datasNegativas.length > 0 ? [ancoras[0]] : [dataAncoraPadrao]),
+      ...datasNegativas.slice(datasNegativas.length > 0 ? 0 : 0),
+      hoje,
+    ];
+
+    // Reconstrói: período_i = [data_negativa_i, data_negativa_(i+1)] ou [data_negativa_última, hoje]
+    // Ponto de partida: 15/02 (ou data do 1º negativo se for anterior a 15/02)
+    const inicioGlobal = datasNegativas.length > 0 && datasNegativas[0] < dataAncoraPadrao
+      ? datasNegativas[0]
+      : dataAncoraPadrao;
+
+    // Sequência de "marcos" = [início, neg1, neg2, ..., hoje]
+    const marcos = [inicioGlobal, ...datasNegativas, hoje];
+
+    for (let i = 0; i < marcos.length - 1; i++) {
+      const inicio = marcos[i];
+      const fim = marcos[i + 1];
+      const diffMs = fim - inicio;
+      const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      // Período que é uma data negativa (i > 0) não conta (dia do registro é interrupção)
+      // Apenas períodos após o último marco negativo contam plenamente
+      const diasBonus = Math.max(0, diffDias - 60);
+      totalBonusDias += diasBonus;
+    }
+
+    const bonusTotal = parseFloat((totalBonusDias * 0.01).toFixed(2));
+
+    // 4. Verificar se já existe registro de mérito para este aluno
+    const [[meritoExistente]] = await pool.query(
+      `SELECT id FROM ocorrencias_disciplinares
+       WHERE aluno_id = ? AND escola_id = ? AND tipo_ocorrencia = 'MERITO'
+       LIMIT 1`,
+      [alunoId, escolaId]
+    );
+
+    const descricaoMerito = "Pontuação positiva por mérito de ausência de reincidência de registro.";
+    const dataRef = new Date();
+    const dataRefStr = `${dataRef.getFullYear()}-${String(dataRef.getMonth()+1).padStart(2,'0')}-${String(dataRef.getDate()).padStart(2,'0')}`;
+
+    if (bonusTotal > 0) {
+      if (meritoExistente) {
+        // Atualiza o registro existente
+        await pool.query(
+          `UPDATE ocorrencias_disciplinares
+           SET motivo = ?, descricao = ?, status = 'FINALIZADA',
+               data_ocorrencia = ?, updated_at = NOW()
+           WHERE id = ?`,
+          [descricaoMerito, `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`, dataRefStr, meritoExistente.id]
+        );
+      } else {
+        // Cria o registro de mérito pela primeira vez
+        await pool.query(
+          `INSERT INTO ocorrencias_disciplinares
+             (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia, created_at, updated_at)
+           VALUES (?, ?, 'MERITO', ?, ?, 'FINALIZADA', ?, NOW(), NOW())`,
+          [alunoId, escolaId, descricaoMerito,
+           `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`,
+           dataRefStr]
+        );
+      }
+    }
+
+    return { bonusTotal, totalBonusDias, temMerito: bonusTotal > 0 };
+  } catch (err) {
+    console.warn("[MERITO] Erro ao calcular bônus (não crítico):", err.message);
+    return { bonusTotal: 0, totalBonusDias: 0, temMerito: false };
+  }
+}
+
 // ── Rota GET /validar/:alunoId — verifica dados obrigatórios para gerar PDF ──
 router.get("/validar/:alunoId", async (req, res) => {
   try {
@@ -260,6 +376,9 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: "Registro não encontrado ou possui status cancelado." });
 
     const registros = rows;
+
+    // ── Bônus Mérito: calcular e persistir antes de somar pontos ──
+    await calcularEUpsertMerito(alunoId, escola_id);
 
     // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
     const PONTUACAO_INICIAL = 8.00;
@@ -717,15 +836,20 @@ router.get("/:alunoId", async (req, res) => {
       [alunoId, escola_id]
     );
 
-    // Registros disciplinares — APENAS FINALIZADOS (exclui registrados e cancelados)
+    // Registros disciplinares — FINALIZADOS + MERITO (exclui cancelados)
     const [rows] = await pool.query(
       `SELECT LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
-              COALESCE(r.tipo_ocorrencia, 'N/D') AS tipo,
-              COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
+              CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 'Mérito'
+                   ELSE COALESCE(r.tipo_ocorrencia, 'N/D') END AS tipo,
+              CASE WHEN o.tipo_ocorrencia = 'MERITO'
+                   THEN 'Pontuação positiva por mérito de ausência de reincidência de registro.'
+                   ELSE COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') END AS medida,
               o.motivo,
               o.descricao,
-              COALESCE(r.pontos, 0) AS pontos,
+              CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                   ELSE COALESCE(r.pontos, 0) END AS pontos,
+              o.tipo_ocorrencia AS tipo_raw,
               o.status,
               o.convocar_responsavel,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
@@ -733,23 +857,40 @@ router.get("/:alunoId", async (req, res) => {
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'
-       ORDER BY o.data_ocorrencia ASC, o.id ASC`,
+       ORDER BY
+         CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 1 ELSE 0 END ASC,
+         o.data_ocorrencia ASC, o.id ASC`,
       [alunoId, escola_id]
     );
 
-    const registros = rows;
+    // ── Bônus Mérito: calcular e persistir antes de somar pontos ──
+    const merito = await calcularEUpsertMerito(alunoId, escola_id);
+
+    // Injetar pontos reais no registro de MERITO (que veio com pontos=0 do SQL)
+    const registros = rows.map(r => {
+      if (r.tipo_raw === 'MERITO') {
+        return { ...r, pontos: merito.bonusTotal, tipo: 'Mérito',
+          medida: 'Pontuação positiva por mérito de ausência de reincidência de registro.' };
+      }
+      return r;
+    });
 
     // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
+    // O bônus de mérito já está incluído em rowsPts via o registro MERITO = FINALIZADA
     const PONTUACAO_INICIAL = 8.00;
     const [rowsPts] = await pool.query(
-      `SELECT COALESCE(r.pontos, 0) AS pontos, o.status
+      `SELECT
+         CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+              ELSE COALESCE(r.pontos, 0) END AS pontos,
+         o.tipo_ocorrencia AS tipo_raw, o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
-    const totalPontos = rowsPts.reduce((s, r) => s + Number(r.pontos || 0), 0);
+    const totalPontosBase = rowsPts.reduce((s, r) => s + Number(r.pontos || 0), 0);
+    const totalPontos = totalPontosBase + merito.bonusTotal;
     const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 

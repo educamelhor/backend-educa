@@ -634,6 +634,27 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration usuario_registro_id (não crítico):", migErr.message);
   }
 
+  // [2026-05-16] Bônus Mérito: garantir coluna updated_at em ocorrencias_disciplinares
+  try {
+    const [colsUpd] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'ocorrencias_disciplinares'
+        AND COLUMN_NAME = 'updated_at'
+    `);
+    if (colsUpd.length === 0) {
+      await pool.query(`
+        ALTER TABLE ocorrencias_disciplinares
+          ADD COLUMN updated_at DATETIME NULL DEFAULT NULL
+          ON UPDATE CURRENT_TIMESTAMP
+          COMMENT 'Última atualização do registro'
+      `);
+      console.log("[MIGRATION] Coluna 'updated_at' adicionada em 'ocorrencias_disciplinares' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration updated_at (não crítico):", migErr.message);
+  }
+
   // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
   try {
     // Verifica se 'scan_mobile' já está no ENUM antes de alterar
