@@ -481,11 +481,15 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     doc.y = yR1 + 26;
 
     const yR2 = doc.y;
+    const enderecoText1 = resp?.endereco || "—";
+    const enderecoH1 = Math.max(26,
+      doc.font("Helvetica-Bold").fontSize(10).heightOfString(enderecoText1, { width: PW * 0.55 }) + 14
+    );
     label("Endereço", L, yR2, PW * 0.55);
-    value(resp?.endereco || "—", L, yR2 + 10, PW * 0.55);
+    value(enderecoText1, L, yR2 + 10, PW * 0.55);
     label("Telefone", L + PW * 0.58, yR2, PW * 0.42);
     value(fmtTel(resp?.telefone_celular), L + PW * 0.58, yR2 + 10, PW * 0.42);
-    doc.y = yR2 + 26;
+    doc.y = yR2 + enderecoH1;
 
     drawLine(); doc.y += 6;
 
@@ -952,11 +956,15 @@ router.get("/:alunoId", async (req, res) => {
     doc.y = yR1 + 26;
 
     const yR2 = doc.y;
+    const enderecoText2 = resp?.endereco || "—";
+    const enderecoH2 = Math.max(26,
+      doc.font("Helvetica-Bold").fontSize(10).heightOfString(enderecoText2, { width: PW * 0.55 }) + 14
+    );
     label("Endereço", L, yR2, PW * 0.55);
-    value(resp?.endereco || "—", L, yR2 + 10, PW * 0.55);
+    value(enderecoText2, L, yR2 + 10, PW * 0.55);
     label("Telefone", L + PW * 0.58, yR2, PW * 0.42);
     value(fmtTel(resp?.telefone_celular), L + PW * 0.58, yR2 + 10, PW * 0.42);
-    doc.y = yR2 + 26;
+    doc.y = yR2 + enderecoH2;
 
     drawLine(); doc.y += 6;
 
