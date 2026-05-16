@@ -96,6 +96,7 @@ import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
 import disciplinarAtasRouter from "./routes/disciplinar-atas.js";
 import relatorioDisciplinarRouter from "./routes/relatorio-disciplinar.js";
+import disciplinarMetadadosRouter from "./routes/disciplinar-metadados.js";
 import listasImpressaoRouter from "./routes/listas-impressao.js";
 import gradeBaseRoutes from "./routes/gradeBase.js";
 import gradeSolveRoutes from "./routes/gradeSolve.js";
@@ -923,6 +924,7 @@ async function bootstrap() {
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/disciplinar-atas", autenticarToken, verificarEscola, disciplinarAtasRouter);
   app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
+  app.use("/api/disciplinar-metadados", autenticarToken, verificarEscola, disciplinarMetadadosRouter);
   app.use("/api/listas-impressao", autenticarToken, verificarEscola, listasImpressaoRouter);
   app.use("/api/suporte", autenticarToken, verificarEscola, suporteRouter);
 
