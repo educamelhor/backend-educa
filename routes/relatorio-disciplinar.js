@@ -61,14 +61,18 @@ function getConceito(pontos) {
 // o aluno acumula +0,01 ponto por dia. A acumulação daí em diante pode ser
 // interrompida por novos negativos, mas os pontos já conquistados são mantidos.
 async function calcularEUpsertMerito(alunoId, escolaId) {
+  // ── 1. CÁLCULO (try-catch isolado — resultado sempre retorna) ─────────────
+  let totalBonusDias = 0;
+  let bonusTotal = 0;
+
   try {
     const anoAtual = new Date().getFullYear();
-    const dataAncoraPadrao = new Date(`${anoAtual}-02-15`); // 15/02 do ano corrente
+    // Data âncora padrão: 15/02 do ano corrente (dia juliano 46)
+    const dataAncoraPadrao = new Date(`${anoAtual}-02-15T00:00:00`);
     const hoje = new Date();
     hoje.setHours(23, 59, 59, 0);
 
-    // 1. Buscar todos os registros NEGATIVOS do ano (posição negativa = pontos < 0)
-    //    Excluir registros tipo 'MERITO' e CANCELADOS
+    // Buscar todos os registros negativos (pontos < 0) do ano, exceto MERITO e CANCELADA
     const [negativos] = await pool.query(
       `SELECT DATE(o.data_ocorrencia) AS data_oc
        FROM ocorrencias_disciplinares o
@@ -83,94 +87,73 @@ async function calcularEUpsertMerito(alunoId, escolaId) {
       [alunoId, escolaId, anoAtual]
     );
 
-    // 2. Montar lista de datas âncora (datas dos negativos)
-    const datasNegativas = negativos.map(n => new Date(n.data_oc));
+    const datasNegativas = negativos.map(n => {
+      const d = new Date(n.data_oc);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    });
 
-    // 3. Calcular bônus acumulado somando todos os períodos
-    //    Período = [data_âncora_i, data_âncora_(i+1)] ou [data_âncora_última, hoje]
-    let ancoras;
-    if (datasNegativas.length === 0) {
-      // Sem negativos no ano: único período é [15/02, hoje]
-      ancoras = [dataAncoraPadrao];
-    } else {
-      // Começa em 15/02 ou na primeira data negativa (o que for anterior)
-      const primeira = datasNegativas[0] < dataAncoraPadrao ? datasNegativas[0] : dataAncoraPadrao;
-      ancoras = [primeira, ...datasNegativas.slice(1)];
-      // A última âncora é sempre o último negativo
-    }
-
-    let totalBonusDias = 0;
-
-    // Para cada período entre âncoras consecutivas
-    const todosLimites = [
-      ...(datasNegativas.length > 0 ? [ancoras[0]] : [dataAncoraPadrao]),
-      ...datasNegativas.slice(datasNegativas.length > 0 ? 0 : 0),
-      hoje,
-    ];
-
-    // Reconstrói: período_i = [data_negativa_i, data_negativa_(i+1)] ou [data_negativa_última, hoje]
-    // Ponto de partida: 15/02 (ou data do 1º negativo se for anterior a 15/02)
-    const inicioGlobal = datasNegativas.length > 0 && datasNegativas[0] < dataAncoraPadrao
+    // Montar sequência de marcos: [início, neg1, neg2, ..., hoje]
+    // "início" = 15/02 ou a data do 1º negativo se anterior a 15/02
+    const inicioGlobal = (datasNegativas.length > 0 && datasNegativas[0] < dataAncoraPadrao)
       ? datasNegativas[0]
       : dataAncoraPadrao;
 
-    // Sequência de "marcos" = [início, neg1, neg2, ..., hoje]
     const marcos = [inicioGlobal, ...datasNegativas, hoje];
 
+    // Somar dias bônus de cada período (cada gap entre marcos)
     for (let i = 0; i < marcos.length - 1; i++) {
-      const inicio = marcos[i];
-      const fim = marcos[i + 1];
-      const diffMs = fim - inicio;
-      const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      // Período que é uma data negativa (i > 0) não conta (dia do registro é interrupção)
-      // Apenas períodos após o último marco negativo contam plenamente
-      const diasBonus = Math.max(0, diffDias - 60);
-      totalBonusDias += diasBonus;
+      const diffMs  = marcos[i + 1] - marcos[i];
+      const diffDias = Math.floor(diffMs / 86_400_000);
+      totalBonusDias += Math.max(0, diffDias - 60);
     }
 
-    const bonusTotal = parseFloat((totalBonusDias * 0.01).toFixed(2));
+    bonusTotal = parseFloat((totalBonusDias * 0.01).toFixed(2));
 
-    // 4. Verificar se já existe registro de mérito para este aluno
-    const [[meritoExistente]] = await pool.query(
-      `SELECT id FROM ocorrencias_disciplinares
-       WHERE aluno_id = ? AND escola_id = ? AND tipo_ocorrencia = 'MERITO'
-       LIMIT 1`,
-      [alunoId, escolaId]
-    );
-
-    const descricaoMerito = "Pontuação positiva por mérito de ausência de reincidência de registro.";
-    const dataRef = new Date();
-    const dataRefStr = `${dataRef.getFullYear()}-${String(dataRef.getMonth()+1).padStart(2,'0')}-${String(dataRef.getDate()).padStart(2,'0')}`;
-
-    if (bonusTotal > 0) {
-      if (meritoExistente) {
-        // Atualiza o registro existente
-        await pool.query(
-          `UPDATE ocorrencias_disciplinares
-           SET motivo = ?, descricao = ?, status = 'FINALIZADA',
-               data_ocorrencia = ?, updated_at = NOW()
-           WHERE id = ?`,
-          [descricaoMerito, `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`, dataRefStr, meritoExistente.id]
-        );
-      } else {
-        // Cria o registro de mérito pela primeira vez
-        await pool.query(
-          `INSERT INTO ocorrencias_disciplinares
-             (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia, created_at, updated_at)
-           VALUES (?, ?, 'MERITO', ?, ?, 'FINALIZADA', ?, NOW(), NOW())`,
-          [alunoId, escolaId, descricaoMerito,
-           `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`,
-           dataRefStr]
-        );
-      }
-    }
-
-    return { bonusTotal, totalBonusDias, temMerito: bonusTotal > 0 };
-  } catch (err) {
-    console.warn("[MERITO] Erro ao calcular bônus (não crítico):", err.message);
+  } catch (calcErr) {
+    console.warn("[MERITO] Erro no cálculo (não crítico):", calcErr.message);
     return { bonusTotal: 0, totalBonusDias: 0, temMerito: false };
   }
+
+  // ── 2. PERSISTÊNCIA (try-catch isolado — não afeta o retorno) ─────────────
+  if (bonusTotal > 0) {
+    try {
+      const [[meritoExistente]] = await pool.query(
+        `SELECT id FROM ocorrencias_disciplinares
+         WHERE aluno_id = ? AND escola_id = ? AND tipo_ocorrencia = 'MERITO'
+         LIMIT 1`,
+        [alunoId, escolaId]
+      );
+
+      const descricaoMerito = "Pontuação positiva por mérito de ausência de reincidência de registro.";
+      const descDetalhada   = `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`;
+      const hoje2 = new Date();
+      const dataRefStr = `${hoje2.getFullYear()}-${String(hoje2.getMonth()+1).padStart(2,'0')}-${String(hoje2.getDate()).padStart(2,'0')}`;
+
+      if (meritoExistente) {
+        await pool.query(
+          `UPDATE ocorrencias_disciplinares
+           SET motivo = ?, descricao = ?, status = 'FINALIZADA', data_ocorrencia = ?
+           WHERE id = ?`,
+          [descricaoMerito, descDetalhada, dataRefStr, meritoExistente.id]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO ocorrencias_disciplinares
+             (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia)
+           VALUES (?, ?, 'MERITO', ?, ?, 'FINALIZADA', ?)`,
+          [alunoId, escolaId, descricaoMerito, descDetalhada, dataRefStr]
+        );
+      }
+    } catch (dbErr) {
+      // Erro de persistência não impede retornar o cálculo correto
+      console.warn("[MERITO] Erro ao persistir registro (não crítico):", dbErr.message);
+    }
+  }
+
+  return { bonusTotal, totalBonusDias, temMerito: bonusTotal > 0 };
 }
+
 
 // ── Rota GET /validar/:alunoId — verifica dados obrigatórios para gerar PDF ──
 router.get("/validar/:alunoId", async (req, res) => {
