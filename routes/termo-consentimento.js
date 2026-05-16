@@ -30,6 +30,15 @@ function hoje() {
   const d = new Date();
   return `Planaltina, ${d.getDate()} de ${m[d.getMonth()]} de ${d.getFullYear()}`;
 }
+function calcularIdade(dataNasc) {
+  if (!dataNasc) return 0;
+  const nasc = new Date(dataNasc);
+  const hoje = new Date();
+  let idade = hoje.getFullYear() - nasc.getFullYear();
+  const m = hoje.getMonth() - nasc.getMonth();
+  if (m < 0 || (m === 0 && hoje.getDate() < nasc.getDate())) idade--;
+  return idade;
+}
 
 // ─── Rota em LOTE: todos os termos de uma turma ──────────────────────────────
 // GET /turma/:turmaId
@@ -333,12 +342,18 @@ router.get("/turma/:turmaId", async (req, res) => {
 
       const sigCW = PW * 0.60;
       const sigCX = L + (PW - sigCW) / 2;
+      // ── Assinatura: maior de idade assina por si; menor assina o responsável ──
+      const idadeAluno = calcularIdade(aluno.data_nascimento);
+      const ehMaiorDeIdade = idadeAluno >= 18;
+      const nomeSignatario = ehMaiorDeIdade ? aluno.estudante : (resp?.nome || "—");
+      const tituloSignatario = ehMaiorDeIdade ? "ALUNO(A) — TITULAR DO CONSENTIMENTO" : "RESPONSÁVEL LEGAL";
+
       doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
-        .text("RESPONSÁVEL LEGAL", sigCX, doc.y, { width: sigCW, align: "center" });
+        .text(tituloSignatario, sigCX, doc.y, { width: sigCW, align: "center" });
       gap(3);
       doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
         .text("Nome: ", sigCX, doc.y, { width: sigCW, continued: true });
-      doc.font("Helvetica").fillColor("#111").text(resp?.nome || "—");
+      doc.font("Helvetica").fillColor("#111").text(nomeSignatario);
       gap(12);
       doc.font("Helvetica").fontSize(S.b).fillColor("#555")
         .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
@@ -715,12 +730,18 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const sigCW = PW * 0.60;
     const sigCX = L + (PW - sigCW) / 2;
 
+    // ── Assinatura: maior de idade assina por si; menor assina o responsável ──
+    const idadeAluno = calcularIdade(aluno.data_nascimento);
+    const ehMaiorDeIdade = idadeAluno >= 18;
+    const nomeSignatario = ehMaiorDeIdade ? aluno.estudante : (resp.nome || "—");
+    const tituloSignatario = ehMaiorDeIdade ? "ALUNO(A) — TITULAR DO CONSENTIMENTO" : "RESPONSÁVEL LEGAL";
+
     doc.font("Helvetica-Bold").fontSize(S.h).fillColor("#0a4a7a")
-      .text("RESPONSÁVEL LEGAL", sigCX, doc.y, { width: sigCW, align: "center" });
+      .text(tituloSignatario, sigCX, doc.y, { width: sigCW, align: "center" });
     gap(3);
     doc.font("Helvetica-Bold").fontSize(S.b).fillColor("#444")
       .text("Nome: ", sigCX, doc.y, { width: sigCW, continued: true });
-    doc.font("Helvetica").fillColor("#111").text(resp.nome || "—");
+    doc.font("Helvetica").fillColor("#111").text(nomeSignatario);
     gap(12);
     doc.font("Helvetica").fontSize(S.b).fillColor("#555")
       .text("Assinatura: _____________________________________________", sigCX, doc.y, { width: sigCW, align: "center" });
