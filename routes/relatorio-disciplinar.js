@@ -322,6 +322,20 @@ router.get("/validar/:alunoId/registro/:ocorrenciaId", async (req, res) => {
   }
 });
 
+// ── Rota GET /merito/:alunoId — calcula e retorna bônus de mérito ─────────────
+// Chamada pelo frontend ao abrir o modal de relatório disciplinar
+router.get("/merito/:alunoId", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { alunoId } = req.params;
+    const result = await calcularEUpsertMerito(alunoId, escola_id);
+    res.json(result);
+  } catch (err) {
+    console.error("[MERITO] Erro na rota /merito:", err);
+    res.status(500).json({ error: "Erro ao calcular bônus de mérito.", bonusTotal: 0, totalBonusDias: 0 });
+  }
+});
+
 // ── Rota GET /:alunoId/registro/:ocorrenciaId — PDF de registro individual ──
 router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
   try {
