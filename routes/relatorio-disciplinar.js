@@ -261,14 +261,14 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
 
     const registros = rows;
 
-    // Pontuação de TODOS finalizados para manter consistência no cabeçalho
+    // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
     const PONTUACAO_INICIAL = 8.00;
     const [allRows] = await pool.query(
-      `SELECT COALESCE(r.pontos, 0) AS pontos
+      `SELECT COALESCE(r.pontos, 0) AS pontos, o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
-       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'`,
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
     const totalPontosGeral = allRows.reduce((s, r) => s + Number(r.pontos || 0), 0);
@@ -589,21 +589,64 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       });
     doc.y = resumoY + resumoH + 4;
 
+    // Busca nome do militar que está imprimindo
+    const nomeUsuario = await (async () => {
+      try {
+        const uid = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
+        if (!uid) return null;
+        const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [uid]);
+        return u?.nome || null;
+      } catch { return null; }
+    })();
+
+    // Verifica se há convocação do responsável neste registro
+    const temConvocacao = Number(registros[0]?.convocar_responsavel) === 1;
+    const numItemConvocacao = temConvocacao ? 3 : null;
+    const numItemCiencia = temConvocacao ? 4 : 3;
+
     drawLine(); doc.y += 6;
 
+    // ══ ITEM 3 CONDICIONAL: CONVOCAÇÃO DO RESPONSÁVEL (se houver) ══════
+    if (temConvocacao) {
+      ensureSpace(80);
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL)
+        .text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
+      doc.y += 4;
+      const dataComp = registros[0].data_comparecimento;
+      if (dataComp) {
+        doc.font("Helvetica").fontSize(8.5).fillColor("#333")
+          .text(
+            `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} ` +
+            `para tomar conhecimento do registro disciplinar nº ${registros[0].registro}, ` +
+            `vinculado ao(à) estudante ${aluno.estudante}.`,
+            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
+          );
+      } else {
+        doc.font("Helvetica").fontSize(8.5).fillColor("#333")
+          .text(
+            `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola ` +
+            `em relação ao registro disciplinar nº ${registros[0].registro}, ` +
+            `vinculado ao(à) estudante ${aluno.estudante}.`,
+            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
+          );
+      }
+      doc.y += 8;
+      drawLine(); doc.y += 6;
+    }
+
     // ══════════════════════════════════════════════════════════════════
-    // 4. CIÊNCIA DO RESPONSÁVEL
+    // ITEM CIÊNCIA DO RESPONSÁVEL (número dinâmico: 3 ou 4)
     // ══════════════════════════════════════════════════════════════════
-    ensureSpace(120);
+    ensureSpace(130);
     doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL)
-      .text("4. CIÊNCIA DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
+      .text(`${numItemCiencia}. CIÊNCIA DO RESPONSÁVEL LEGAL`, L, doc.y, { width: PW });
     doc.y += 4;
 
     doc.font("Helvetica").fontSize(8.5).fillColor("#333")
       .text(
         `Declaro que tomei ciência do registro disciplinar nº ${registros[0].registro} ` +
         `vinculado ao(à) estudante ${aluno.estudante}, ` +
-        `conforme detalhado na seção 3 deste documento.`,
+        `conforme detalhado na seção ${numItemConvocacao || numItemCiencia - 0} deste documento.`,
         L, doc.y, { width: PW, lineGap: 2, align: "justify" }
       );
     doc.y += 8;
@@ -613,11 +656,13 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       .text(`${cidadeEscola} — DF, ${hoje()}.`, L, doc.y, { width: PW, align: "right" });
     doc.y += 20;
 
-    // Assinatura centralizada do Responsável
-    const sigW = PW * 0.50;
-    const sigX = L + (PW - sigW) / 2;
-    drawSigLine(sigX, doc.y, sigW, resp?.nome || "—", "Responsável Legal");
-    doc.y += 50;
+    // Assinaturas: Responsável Legal (esquerda) + Militar (direita)
+    const sigW = PW * 0.42;
+    const sigGap = PW * 0.16;
+    const ySig = doc.y;
+    drawSigLine(L,                   ySig, sigW, resp?.nome || "—", "Responsável Legal");
+    drawSigLine(L + sigW + sigGap,   ySig, sigW, nomeUsuario || "", "Militar Responsável pelo Registro");
+    doc.y = ySig + 52;
 
     // Rodapé da última página
     drawFooter();
@@ -690,9 +735,17 @@ router.get("/:alunoId", async (req, res) => {
 
     const registros = rows;
 
-    // Pontuação: soma dos pontos de TODOS os registros finalizados
+    // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
     const PONTUACAO_INICIAL = 8.00;
-    const totalPontos = rows.reduce((s, r) => s + Number(r.pontos || 0), 0);
+    const [rowsPts] = await pool.query(
+      `SELECT COALESCE(r.pontos, 0) AS pontos, o.status
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+      [alunoId, escola_id]
+    );
+    const totalPontos = rowsPts.reduce((s, r) => s + Number(r.pontos || 0), 0);
     const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 
@@ -1022,12 +1075,22 @@ router.get("/:alunoId", async (req, res) => {
       });
     doc.y = resumoY + resumoH + 4;
 
+    // Busca nome do militar que está imprimindo
+    const nomeUsuarioRelatorio = await (async () => {
+      try {
+        const uid = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
+        if (!uid) return null;
+        const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [uid]);
+        return u?.nome || null;
+      } catch { return null; }
+    })();
+
     drawLine(); doc.y += 6;
 
     // ══════════════════════════════════════════════════════════════════
     // 4. CIÊNCIA DO RESPONSÁVEL (apenas assinatura do responsável)
     // ══════════════════════════════════════════════════════════════════
-    ensureSpace(120);
+    ensureSpace(130);
     doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL)
       .text("4. CIÊNCIA DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
     doc.y += 4;
@@ -1046,11 +1109,13 @@ router.get("/:alunoId", async (req, res) => {
       .text(`${cidadeEscola} — DF, ${hoje()}.`, L, doc.y, { width: PW, align: "right" });
     doc.y += 20;
 
-    // Assinatura centralizada do Responsável
-    const sigW = PW * 0.50;
-    const sigX = L + (PW - sigW) / 2;
-    drawSigLine(sigX, doc.y, sigW, resp?.nome || "—", "Responsável Legal");
-    doc.y += 50;
+    // Assinaturas: Responsável Legal (esquerda) + Militar (direita)
+    const sigWR = PW * 0.42;
+    const sigGapR = PW * 0.16;
+    const ySigR = doc.y;
+    drawSigLine(L,                    ySigR, sigWR, resp?.nome || "—", "Responsável Legal");
+    drawSigLine(L + sigWR + sigGapR,  ySigR, sigWR, nomeUsuarioRelatorio || "", "Militar Responsável pelo Registro");
+    doc.y = ySigR + 52;
 
     // Rodapé da última página
     drawFooter();
