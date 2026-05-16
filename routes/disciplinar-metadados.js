@@ -110,7 +110,7 @@ router.get("/", async (req, res) => {
         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
       WHERE o.escola_id = ${pool.escape(escola_id)}
         AND o.convocar_responsavel = 1
-        AND (o.data_comparecimento_responsavel IS NULL OR o.data_comparecimento_responsavel = '0000-00-00 00:00:00')
+        AND (o.data_comparecimento_responsavel IS NULL OR YEAR(o.data_comparecimento_responsavel) IS NULL OR YEAR(o.data_comparecimento_responsavel) = 0)
         AND o.status != 'CANCELADA'
       ORDER BY o.data_ocorrencia ASC
       LIMIT 50
@@ -157,7 +157,7 @@ router.get("/", async (req, res) => {
       JOIN responsaveis resp ON resp.id = ra.responsavel_id
       WHERE o.escola_id = ${pool.escape(escola_id)}
         AND o.convocar_responsavel = 1
-        AND (o.data_comparecimento_responsavel IS NULL OR o.data_comparecimento_responsavel = '0000-00-00 00:00:00')
+        AND (o.data_comparecimento_responsavel IS NULL OR YEAR(o.data_comparecimento_responsavel) IS NULL OR YEAR(o.data_comparecimento_responsavel) = 0)
         AND o.status != 'CANCELADA'
       ORDER BY resp.nome
       LIMIT 30
