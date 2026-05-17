@@ -383,24 +383,29 @@ router.post(
  * (matching por keyword contra bncc_componentes.nome)
  */
 async function resolveComponenteByNome(db, nomeDisc) {
+  // normTxt: lowercase + remove acentos  
   const n = normTxt(nomeDisc || "");
   let keyword = null;
-  if (n.includes("matemat"))                                  keyword = "matem";
-  else if (n.includes("portugues") || n.includes("port"))    keyword = "portugu";
-  else if (n.includes("ciencia") || n.includes("ciências")) keyword = "ciência";
-  else if (n.includes("geograf"))                            keyword = "geogr";
-  else if (n.includes("histor"))                             keyword = "hist";
-  else if (n.includes("arte"))                               keyword = "arte";
-  else if (n.includes("fisica") || n.includes("ed") && n.includes("fis")) keyword = "física";
-  else if (n.includes("ingl"))                               keyword = "ingl";
+  // Keywords sem acentos (normTxt já normalizou `n`; o LIKE usa CONVERT para também normalizar o BD)
+  if      (n.includes("matemat"))                        keyword = "matem";
+  else if (n.includes("portugues"))                      keyword = "portugu";
+  else if (n.includes("cienc"))                          keyword = "cienc";
+  else if (n.includes("geograf"))                        keyword = "geogr";
+  else if (n.includes("histor"))                         keyword = "hist";
+  else if (n.includes("arte"))                           keyword = "arte";
+  else if (n.includes("fisica") || (n.includes("ed") && n.includes("fis"))) keyword = "sica";
+  else if (n.includes("ingl"))                           keyword = "ingl";
 
   if (!keyword) return null;
   try {
+    // CONVERT...USING ASCII descarta acentos no lado do BD antes do LIKE
     const [rows] = await db.query(
-      "SELECT id, disciplina_id FROM bncc_componentes WHERE ativo = 1 AND LOWER(nome) LIKE ? LIMIT 1",
+      `SELECT id, disciplina_id FROM bncc_componentes
+       WHERE ativo = 1
+       AND LOWER(CONVERT(nome USING ASCII)) LIKE ? LIMIT 1`,
       [`%${keyword}%`]
     );
-    return rows?.[0] || null; // { id: componente_id, disciplina_id: seedf_disc_id }
+    return rows?.[0] || null;
   } catch { return null; }
 }
 
@@ -414,20 +419,29 @@ router.get(
   autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
     try {
-      const escola_id = Number(req.user.escola_id);
+      // Usa o mesmo padrão de escola_id do restante do sistema
+      const escola_id = Number(req.escola_id ?? req.user?.escola_id);
       const db = req.db;
 
-      // Disciplinas registradas pela escola (Secretaria)
+      if (!escola_id || escola_id <= 0) {
+        console.warn("[etapas-e-disciplinas] escola_id inválido:", req.escola_id, req.user?.escola_id);
+        return res.status(403).json({ ok: false, message: "escola_id não encontrado no token." });
+      }
+
+      // Disciplinas registradas pela escola (Secretaria > Disciplinas)
       const [discs] = await db.query(
         `SELECT id, nome, etapa FROM disciplinas
          WHERE escola_id = ? ORDER BY etapa, nome`,
         [escola_id]
       );
 
-      // Etapas distintas da escola
-      const etapas = [...new Set(discs.map(d => (d.etapa || "").toUpperCase()))].filter(Boolean).sort();
+      console.log(`[etapas-e-disciplinas] escola_id=${escola_id} => ${discs.length} disciplinas`);
 
-      // Para cada disciplina, verifica se tem BNCC (por nome)
+      // Etapas distintas da escola (upper-case para normalizar "Fundamental" e "FUNDAMENTAL")
+      const etapas = [...new Set(discs.map(d => (d.etapa || "").toUpperCase()))]
+        .filter(Boolean).sort();
+
+      // Para cada disciplina, verifica se tem mapeamento BNCC (por nome)
       const disciplinas = await Promise.all(discs.map(async d => {
         const comp = await resolveComponenteByNome(db, d.nome);
         return { id: d.id, nome: d.nome, etapa: (d.etapa || "").toUpperCase(), tem_bncc: !!comp };
@@ -436,7 +450,7 @@ router.get(
       return res.json({ ok: true, etapas, disciplinas });
     } catch (err) {
       console.error("Erro GET /bncc/etapas-e-disciplinas:", err);
-      return res.status(500).json({ ok: false, message: "Erro ao carregar etapas e disciplinas." });
+      return res.status(500).json({ ok: false, message: "Erro ao carregar etapas e disciplinas.", detail: err.message });
     }
   }
 );
