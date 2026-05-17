@@ -99,7 +99,7 @@ router.get(
       const db = req.db;
       const comp = await resolveComponenteByNome(db, disciplina_nome);
       if (!comp) return res.json({ ok: true, conteudos: [] });
-      const params = [comp.disciplina_id, serie];
+      const params = [comp.id, serie]; // usa bncc_componentes.id como chave do SEE-DF
       let whereExtra = "";
       if (unidade_tematica_id) { whereExtra = " AND bncc_unidade_tematica_id = ?"; params.push(unidade_tematica_id); }
       const [rows] = await db.query(
