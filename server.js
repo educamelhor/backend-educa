@@ -333,8 +333,21 @@ app.use(
       return cb(err);
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-escola-id",
+      "x-perfil",
+      "x-request-id",
+      "x-worker-token",
+    ],
+    optionsSuccessStatus: 204,
   })
 );
+
+// Responde preflight OPTIONS globalmente antes de qualquer rota
+app.options("*", cors());
 
 app.use((req, res, next) => {
   req.db = pool;
