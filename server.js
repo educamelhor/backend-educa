@@ -145,7 +145,7 @@ const DEFAULT_ON_DEV = process.env.NODE_ENV !== "production";
 
 const FF_APP_PAIS = ff("FF_APP_PAIS", DEFAULT_ON_DEV);
 const FF_CONFIG_PEDAGOGICA = ff("FF_CONFIG_PEDAGOGICA", DEFAULT_ON_DEV);
-const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", DEFAULT_ON_DEV);
+const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", true); // Habilitado em DEV e PROD (feature em uso)
 
 const FF_EDUCA_CAPTURE = ff("FF_EDUCA_CAPTURE", DEFAULT_ON_DEV);
 
