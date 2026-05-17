@@ -311,17 +311,10 @@ router.post(
       });
     }
 
-    if (
-      !disciplina_id ||
-      !serie ||
-      !bimestre ||
-      !ano_letivo ||
-      !bncc_unidade_tematica_id ||
-      !seedf_conteudo_id
-    ) {
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
       return res.status(400).json({
         ok: false,
-        message: "Campos obrigatórios não informados.",
+        message: "Campos obrigatórios: disciplina_id, serie, bimestre, ano_letivo.",
       });
     }
 
@@ -379,6 +372,139 @@ router.post(
     });
   }
 });
+
+
+// ═══════════════════════════════════════════════════════════════
+// ENDPOINTS DE CASCATA BNCC — Novo Conteúdo Programático
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/conteudos/admin/bncc/disciplinas
+ * Disciplinas com mapeamento BNCC ativo (para dropdown do BÁSICO)
+ */
+router.get(
+  "/conteudos/admin/bncc/disciplinas",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const db = req.db;
+      const [rows] = await db.query(
+        `SELECT d.id, d.nome, bc.id AS componente_id
+         FROM bncc_componentes bc
+         JOIN disciplinas d ON bc.disciplina_id = d.id
+         WHERE bc.ativo = 1
+         ORDER BY d.nome ASC`
+      );
+      return res.json({ ok: true, disciplinas: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /bncc/disciplinas:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar disciplinas BNCC." });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/bncc/unidades?disciplina_id=X&ano_id=Y
+ * Unidades Temáticas BNCC para a disciplina+ano (1ª cascata)
+ */
+router.get(
+  "/conteudos/admin/bncc/unidades",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const disciplina_id = Number(req.query.disciplina_id);
+      const ano_id = Number(req.query.ano_id);
+      if (!disciplina_id || !ano_id) {
+        return res.status(400).json({ ok: false, message: "disciplina_id e ano_id são obrigatórios." });
+      }
+      const db = req.db;
+      // Resolve componente_id via bncc_componentes (join direto, sem text-matching)
+      const [comp] = await db.query(
+        "SELECT id FROM bncc_componentes WHERE disciplina_id = ? AND ativo = 1 LIMIT 1",
+        [disciplina_id]
+      );
+      const componente_id = comp?.[0]?.id;
+      if (!componente_id) return res.json({ ok: true, unidades: [] });
+
+      const [rows] = await db.query(
+        `SELECT id, nome AS texto FROM bncc_unidades_tematicas
+         WHERE componente_id = ? AND ano_id = ?
+         ORDER BY nome ASC LIMIT 500`,
+        [componente_id, ano_id]
+      );
+      return res.json({ ok: true, unidades: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /bncc/unidades:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar unidades temáticas." });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/bncc/objetos?unidade_tematica_id=X
+ * Objetos de Conhecimento para a Unidade Temática selecionada (2ª cascata)
+ */
+router.get(
+  "/conteudos/admin/bncc/objetos",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const unidade_tematica_id = Number(req.query.unidade_tematica_id);
+      if (!unidade_tematica_id) {
+        return res.status(400).json({ ok: false, message: "unidade_tematica_id é obrigatório." });
+      }
+      const db = req.db;
+      const [rows] = await db.query(
+        `SELECT id, nome AS texto FROM bncc_objetos_conhecimento
+         WHERE unidade_tematica_id = ?
+         ORDER BY nome ASC LIMIT 500`,
+        [unidade_tematica_id]
+      );
+      return res.json({ ok: true, objetos: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /bncc/objetos:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar objetos de conhecimento." });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/seedf/conteudos?disciplina_id=X&serie=Y[&unidade_tematica_id=Z]
+ * Conteúdos SEE-DF filtrados pela disciplina, série e (opcionalmente) unidade temática
+ */
+router.get(
+  "/conteudos/admin/seedf/conteudos",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const disciplina_id = Number(req.query.disciplina_id);
+      const serie = normSerie(req.query.serie || ""); // ex: "6º ANO"
+      const unidade_tematica_id = req.query.unidade_tematica_id
+        ? Number(req.query.unidade_tematica_id)
+        : null;
+      if (!disciplina_id || !serie) {
+        return res.status(400).json({ ok: false, message: "disciplina_id e serie são obrigatórios." });
+      }
+      const db = req.db;
+      const params = [disciplina_id, serie];
+      let whereExtra = "";
+      if (unidade_tematica_id) {
+        whereExtra = " AND bncc_unidade_tematica_id = ?";
+        params.push(unidade_tematica_id);
+      }
+      const [rows] = await db.query(
+        `SELECT id, texto FROM seedf_conteudos
+         WHERE disciplina_id = ? AND serie = ? AND ativo = 1 ${whereExtra}
+         ORDER BY texto ASC LIMIT 800`,
+        params
+      );
+      return res.json({ ok: true, conteudos: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /seedf/conteudos:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar conteúdos SEE-DF." });
+    }
+  }
+);
 
 
 /**
