@@ -1,6 +1,6 @@
 // routes/bncc_cascade.js — importado estaticamente (sem feature flag)
 import { Router } from "express";
-import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
+// autorizarPermissao removido: rotas de leitura já protegidas por autenticarToken+verificarEscola no server.js
 
 const router = Router();
 
@@ -36,7 +36,6 @@ async function resolveComponenteByNome(db, nomeDisc) {
  */
 router.get(
   "/conteudos/admin/bncc/unidades",
-  autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
     try {
       const disciplina_nome = req.query.disciplina_nome || "";
@@ -65,7 +64,6 @@ router.get(
  */
 router.get(
   "/conteudos/admin/bncc/objetos",
-  autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
     try {
       const unidade_tematica_id = Number(req.query.unidade_tematica_id);
@@ -91,7 +89,6 @@ router.get(
  */
 router.get(
   "/conteudos/admin/seedf/conteudos",
-  autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
     try {
       const disciplina_nome = req.query.disciplina_nome || "";
