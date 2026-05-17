@@ -1,4 +1,4 @@
-// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
+﻿// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
@@ -728,9 +728,9 @@ router.get("/alunos/:id/foto-url", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// PASSO 3.1 â€” GET /boletim (App Pais)
-// - Retorna notas do aluno para o responsÃ¡vel logado
-// - Valida vÃ­nculo em responsaveis_alunos (ativo=1) e permissÃ£o pode_ver_boletim
+// PASSO 3.1 — GET /boletim (App Pais)
+// - Retorna notas do aluno para o responsável logado
+// - Valida vínculo em responsaveis_alunos (ativo=1) e permissão pode_ver_boletim
 // Querystring:
 //   /api/app-pais/boletim?aluno_id=2&ano=2024   (ano opcional)
 // ============================================================================
@@ -738,16 +738,29 @@ router.get("/boletim", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
-    const { responsavel_id } = req.appPaisAuth;
+    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
     const aluno_id = Number(req.query?.aluno_id);
     const ano = req.query?.ano != null ? Number(req.query.ano) : null;
 
     if (!Number.isFinite(aluno_id)) {
-      return res.status(400).json({ message: "aluno_id Ã© obrigatÃ³rio." });
+      return res.status(400).json({ message: "aluno_id é obrigatório." });
     }
 
-    // 1) Confirma vÃ­nculo ativo + permissÃ£o de boletim e obtÃ©m escola_id do vÃ­nculo
+    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
+    if (cpfAuth === '00000000019') {
+      return res.json({
+        ok: true,
+        aluno: 'Maria Eduarda Santos',
+        turma: '7º Ano - Turma B',
+        escola_id: null,
+        notas: [],
+        anos: [new Date().getFullYear()],
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // 1) Confirma vínculo ativo + permissão de boletim e obtém escola_id do vínculo
     const [[vinculo]] = await db.query(
       `
       SELECT escola_id, pode_ver_boletim
@@ -765,13 +778,13 @@ router.get("/boletim", authAppPais, async (req, res) => {
     }
 
     if (!vinculo.pode_ver_boletim) {
-      return res.status(403).json({ message: "Sem permissÃ£o para ver boletim." });
+      return res.status(403).json({ message: "Sem permissão para ver boletim." });
     }
 
     const escola_id = Number(vinculo.escola_id);
 
     // 2) Busca notas (join com disciplinas para devolver nome)
-    // ObservaÃ§Ã£o: a tabela notas no seu BD tem: escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas...
+    // Observação: a tabela notas no seu BD tem: escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas...
     const params = [escola_id, aluno_id];
     let sql = `
       SELECT
@@ -813,10 +826,10 @@ router.get("/boletim", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// PASSO 8.2 â€” GET /boletim-pdf (App Pais)
+// PASSO 8.2 — GET /boletim-pdf (App Pais)
 // - Backend gera PDF e o app apenas baixa/abre
 // - PDF SEMPRE reflete TODAS as notas do ANO selecionado
-// - Ranking no PDF Ã© acumulado atÃ© o bimestre (opcional) informado
+// - Ranking no PDF é acumulado até o bimestre (opcional) informado
 // Querystring:
 //   /api/app-pais/boletim-pdf?aluno_id=2&ano=2025&bimestre=2
 // ============================================================================
@@ -824,7 +837,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
   const db = pool;
 
   try {
-    const { responsavel_id } = req.appPaisAuth;
+    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
     const aluno_id = Number(req.query?.aluno_id);
     const ano = Number(req.query?.ano);
@@ -832,15 +845,29 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     const bimestre = Number.isFinite(bimestreRaw) ? bimestreRaw : 4;
 
     if (!Number.isFinite(aluno_id) || !Number.isFinite(ano)) {
-      return res.status(400).json({ message: "aluno_id e ano sÃ£o obrigatÃ³rios." });
+      return res.status(400).json({ message: "aluno_id e ano são obrigatórios." });
     }
 
     if (bimestre < 1 || bimestre > 4) {
-      return res.status(400).json({ message: "bimestre invÃ¡lido (1 a 4)." });
+      return res.status(400).json({ message: "bimestre inválido (1 a 4)." });
     }
 
+    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
+    if (cpfAuth === '00000000019') {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="boletim-demo.pdf"');
+      const demoDoc = new PDFDocument();
+      demoDoc.pipe(res);
+      demoDoc.fontSize(18).text('Boletim Demo - Apple Review', { align: 'center' });
+      demoDoc.moveDown();
+      demoDoc.fontSize(12).text('Maria Eduarda Santos - 7º Ano Turma B');
+      demoDoc.end();
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ----------------------------------------------------------------------
-    // 1) Confirma vÃ­nculo ativo + permissÃ£o e obtÃ©m escopos (turma/sÃ©rie/turno)
+    // 1) Confirma vínculo ativo + permissão e obtém escopos (turma/série/turno)
     // ----------------------------------------------------------------------
     const [[vinculo]] = await db.query(
       `
@@ -868,7 +895,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     }
 
     if (!vinculo.pode_ver_boletim) {
-      return res.status(403).json({ message: "Sem permissÃ£o para ver boletim." });
+      return res.status(403).json({ message: "Sem permissão para ver boletim." });
     }
 
     const escola_id = Number(vinculo.escola_id);
@@ -895,7 +922,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     );
 
     // ----------------------------------------------------------------------
-    // 3) Ranking (acumulado atÃ© o bimestre informado) â€” mesma lÃ³gica do /ranking
+    // 3) Ranking (acumulado até o bimestre informado) — mesma lógica do /ranking
     // ----------------------------------------------------------------------
     async function calcularRanking(whereExtraSql = "", paramsExtra = []) {
       const [ranks] = await db.query(
@@ -923,7 +950,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       return {
         posicao: idx >= 0 ? idx + 1 : null,
         total,
-        label: idx >= 0 ? `${idx + 1}/${total}` : `â€”/${total}`,
+        label: idx >= 0 ? `${idx + 1}/${total}` : `—/${total}`,
       };
     }
 
@@ -933,7 +960,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     const rankingEscola = await calcularRanking();
 
     // ----------------------------------------------------------------------
-    // 4) GeraÃ§Ã£o do PDF (stream)
+    // 4) Geração do PDF (stream)
     // ----------------------------------------------------------------------
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
@@ -946,15 +973,15 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     // Pipe para a resposta HTTP
     doc.pipe(res);
 
-    // CabeÃ§alho
-    doc.fontSize(18).text("EDUCA.MELHOR â€” Boletim", { align: "left" });
+    // Cabeçalho
+    doc.fontSize(18).text("EDUCA.MELHOR — Boletim", { align: "left" });
     doc.moveDown(0.5);
 
     doc.fontSize(11).fillColor("#111111");
     doc.text(`Aluno: ${vinculo.aluno_nome || `ID ${aluno_id}`}`);
-    doc.text(`Turma: ${vinculo.turma_nome || "â€”"} | SÃ©rie: ${vinculo.turma_serie || "â€”"} | Turno: ${vinculo.turma_turno || "â€”"}`);
+    doc.text(`Turma: ${vinculo.turma_nome || "—"} | Série: ${vinculo.turma_serie || "—"} | Turno: ${vinculo.turma_turno || "—"}`);
     doc.text(`Ano letivo: ${ano}`);
-    doc.text(`Ranking acumulado atÃ©: ${bimestre}Âº bimestre`);
+    doc.text(`Ranking acumulado até: ${bimestre}º bimestre`);
     doc.moveDown(0.8);
 
     // Ranking (4 linhas)
@@ -962,25 +989,25 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     doc.moveDown(0.4);
     doc.fontSize(11);
     doc.text(`Ranking sala:   ${rankingSala.label}`);
-    doc.text(`Ranking sÃ©rie:  ${rankingSerie.label}`);
+    doc.text(`Ranking série:  ${rankingSerie.label}`);
     doc.text(`Ranking turno:  ${rankingTurno.label}`);
     doc.text(`Ranking escola: ${rankingEscola.label}`);
     doc.moveDown(1);
 
     // ----------------------------------------------------------------------
-    // TABELA ÃšNICA (mais usual): Disciplina x Bimestres (1Âº..4Âº)
+    // TABELA ÚNICA (mais usual): Disciplina x Bimestres (1º..4º)
     // - Linhas: disciplinas
-    // - Colunas: 1Âº, 2Âº, 3Âº, 4Âº (nota)
-    // - ObservaÃ§Ã£o: no futuro podemos adicionar tambÃ©m faltas por bimestre
+    // - Colunas: 1º, 2º, 3º, 4º (nota)
+    // - Observação: no futuro podemos adicionar também faltas por bimestre
     // ----------------------------------------------------------------------
-    doc.fontSize(12).text("Notas do ano (todas as notas lanÃ§adas)", { underline: true });
+    doc.fontSize(12).text("Notas do ano (todas as notas lançadas)", { underline: true });
     doc.moveDown(0.6);
 
     // Pivot: disciplina -> {1:{nota,faltas},2:{...},3:{...},4:{...}}
     const porDisciplina = new Map();
 
     for (const r of rows) {
-      const disc = String(r.disciplina || "â€”").trim() || "â€”";
+      const disc = String(r.disciplina || "—").trim() || "—";
       const bim = Number(r.bimestre);
       if (bim < 1 || bim > 4) continue;
 
@@ -994,7 +1021,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       };
     }
 
-    // Ordena disciplinas (natural e previsÃ­vel)
+    // Ordena disciplinas (natural e previsível)
     const disciplinasOrdenadas = Array.from(porDisciplina.keys()).sort((a, b) =>
       a.localeCompare(b, "pt-BR", { sensitivity: "base" })
     );
@@ -1008,14 +1035,14 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
 
 
 
-    // Layout de colunas (compacto): Disciplina | 1Âº | 2Âº | 3Âº | 4Âº | Total Faltas | Resultado
+    // Layout de colunas (compacto): Disciplina | 1º | 2º | 3º | 4º | Total Faltas | Resultado
 
     const X0 = 40;
     const GAP = 6;
 
     // Ajuste fino para caber com folga na margem direita do A4
     const W_DISC = 220;
-    const W_BIM = 34;      // 1Âº..4Âº (nota)
+    const W_BIM = 34;      // 1º..4º (nota)
     const W_FALTAS = 48;   // total faltas
     const W_RES = 72;      // resultado (compacto)
 
@@ -1028,9 +1055,9 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
     const xRes = xTF + W_FALTAS + GAP;
 
     function classificarResultado(media) {
-      if (media == null || !Number.isFinite(media)) return "â€”";
+      if (media == null || !Number.isFinite(media)) return "—";
       if (media >= 7.0) return "Aprovado";
-      if (media >= 5.0) return "RecuperaÃ§Ã£o";
+      if (media >= 5.0) return "Recuperação";
       return "Reprovado";
     }
 
@@ -1039,10 +1066,10 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       const y = doc.y;
 
       doc.text("Disciplina", xDisc, y, { width: W_DISC });
-      doc.text("1Âº", xB1, y, { width: W_BIM, align: "right" });
-      doc.text("2Âº", xB2, y, { width: W_BIM, align: "right" });
-      doc.text("3Âº", xB3, y, { width: W_BIM, align: "right" });
-      doc.text("4Âº", xB4, y, { width: W_BIM, align: "right" });
+      doc.text("1º", xB1, y, { width: W_BIM, align: "right" });
+      doc.text("2º", xB2, y, { width: W_BIM, align: "right" });
+      doc.text("3º", xB3, y, { width: W_BIM, align: "right" });
+      doc.text("4º", xB4, y, { width: W_BIM, align: "right" });
       doc.text("Faltas", xTF, y, { width: W_FALTAS, align: "right" });
       doc.text("Resultado", xRes, y, { width: W_RES, align: "right" });
 
@@ -1057,16 +1084,16 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       doc.fontSize(10).fillColor("#111111");
     }
 
-    // Se nÃ£o houver registros no ano
+    // Se não houver registros no ano
     if (disciplinasOrdenadas.length === 0) {
       doc.fontSize(11).fillColor("#111111");
-      doc.text("Nenhuma nota lanÃ§ada para este ano.");
+      doc.text("Nenhuma nota lançada para este ano.");
       doc.moveDown(0.6);
     } else {
       printTabelaHeader();
 
       for (const disc of disciplinasOrdenadas) {
-        // Quebra de pÃ¡gina: se estiver no final, adiciona pÃ¡gina e reimprime header
+        // Quebra de página: se estiver no final, adiciona página e reimprime header
         if (doc.y > 760) {
           doc.addPage();
           doc.moveDown(0.2);
@@ -1076,9 +1103,9 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
         const data = porDisciplina.get(disc);
 
         const formatNota = (cell) => {
-          if (!cell || cell.nota == null) return "â€”";
+          if (!cell || cell.nota == null) return "—";
           const n = Number(cell.nota);
-          return Number.isFinite(n) ? n.toFixed(1) : "â€”";
+          return Number.isFinite(n) ? n.toFixed(1) : "—";
         };
 
         // Total faltas (somando as faltas dos bimestres existentes)
@@ -1088,7 +1115,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
           (data[3]?.faltas != null ? Number(data[3].faltas) : 0) +
           (data[4]?.faltas != null ? Number(data[4].faltas) : 0);
 
-        // MÃ©dia anual da disciplina (apenas bimestres com nota)
+        // Média anual da disciplina (apenas bimestres com nota)
         const notas = [data[1], data[2], data[3], data[4]]
           .map((c) => (c?.nota == null ? null : Number(c.nota)))
           .filter((v) => Number.isFinite(v));
@@ -1124,13 +1151,13 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
 
 
     // ----------------------------------------------------------------------
-    // PASSO 8.2.5 â€” RESUMO GERAL DO ANO (abaixo da tabela)
-    // - MÃ©dia geral do ano (todas as notas do ano, ignorando null)
-    // - Total de faltas do ano (somatÃ³rio de todas as faltas do ano)
+    // PASSO 8.2.5 — RESUMO GERAL DO ANO (abaixo da tabela)
+    // - Média geral do ano (todas as notas do ano, ignorando null)
+    // - Total de faltas do ano (somatório de todas as faltas do ano)
     // - Resultado final do aluno no ano
     // ----------------------------------------------------------------------
     {
-      // 1) Todas as notas numÃ©ricas do ano (todas disciplinas / bimestres)
+      // 1) Todas as notas numéricas do ano (todas disciplinas / bimestres)
       const notasAno = (rows || [])
         .map((r) => (r?.nota == null ? null : Number(r.nota)))
         .filter((n) => Number.isFinite(n));
@@ -1141,7 +1168,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
         return acc + (Number.isFinite(f) ? f : 0);
       }, 0);
 
-      // 3) MÃ©dia geral do ano
+      // 3) Média geral do ano
       const mediaAno =
         notasAno.length > 0
           ? notasAno.reduce((acc, v) => acc + v, 0) / notasAno.length
@@ -1150,13 +1177,13 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       const resultadoFinalAno = classificarResultado(mediaAno);
 
       // ------------------------------------------------------------
-      // FORÃ‡A DE LAYOUT: sempre comeÃ§ar no X padrÃ£o e com largura total
+      // FORÇA DE LAYOUT: sempre começar no X padrão e com largura total
       // ------------------------------------------------------------
       const BOX_X = 40;
-      const BOX_W = 555 - 40; // mesma largura Ãºtil do conteÃºdo (A4 com margin 40)
-      const mediaTexto = mediaAno == null ? "â€”" : mediaAno.toFixed(1);
+      const BOX_W = 555 - 40; // mesma largura útil do conteúdo (A4 com margin 40)
+      const mediaTexto = mediaAno == null ? "—" : mediaAno.toFixed(1);
 
-      // EspaÃ§o antes do resumo
+      // Espaço antes do resumo
       doc.moveDown(0.8);
 
       // Linha separadora (full width)
@@ -1168,7 +1195,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
 
       doc.moveDown(0.6);
 
-      // Se estiver perto do fim, joga o resumo para a prÃ³xima pÃ¡gina (antes de desenhar o  card)
+      // Se estiver perto do fim, joga o resumo para a próxima página (antes de desenhar o  card)
       if (doc.y > 660) {
         doc.addPage();
       }
@@ -1186,7 +1213,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       // volta para desenhar texto por cima
       doc.fillColor("#111111");
 
-      // tÃ­tulo (sem underline para nÃ£o â€œquebrarâ€ estÃ©tica)
+      // título (sem underline para não “quebrar” estética)
       doc.fontSize(12).text("Resumo geral do ano", BOX_X + cardPad, cardTop + cardPad, {
         width: BOX_W - cardPad * 2,
         align: "left",
@@ -1198,7 +1225,7 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
       doc.fontSize(11).fillColor("#111111");
       const bodyTop = cardTop + cardPad + 22;
 
-      doc.text(`MÃ©dia geral do ano: ${mediaTexto}`, BOX_X + cardPad, bodyTop, {
+      doc.text(`Média geral do ano: ${mediaTexto}`, BOX_X + cardPad, bodyTop, {
         width: BOX_W - cardPad * 2,
         align: "left",
       });
@@ -1227,13 +1254,13 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
 
 
 
-    // RodapÃ©
+    // Rodapé
     doc.fontSize(9).fillColor("#6b7280");
 
-    // RodapÃ© com coordenada fixa para nunca â€œquebrarâ€ em vÃ¡rias linhas
+    // Rodapé com coordenada fixa para nunca “quebrar” em várias linhas
     const rodapeTexto = `Gerado em: ${new Date().toLocaleString("pt-BR")}`;
 
-    // y fixo prÃ³ximo ao final da pÃ¡gina (A4 com margin 40)
+    // y fixo próximo ao final da página (A4 com margin 40)
     const rodapeY = doc.page.height - 40;
 
     doc.text(rodapeTexto, 40, rodapeY, {
@@ -1259,9 +1286,9 @@ router.get("/boletim-pdf", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// PASSO 7.2 â€” GET /ranking (App Pais)
-// - Retorna ranking acumulado (atÃ© o bimestre selecionado)
-// - Escopos: sala, sÃ©rie, turno, escola
+// PASSO 7.2 — GET /ranking (App Pais)
+// - Retorna ranking acumulado (até o bimestre selecionado)
+// - Escopos: sala, série, turno, escola
 // Querystring:
 //   /api/app-pais/ranking?aluno_id=2&ano=2025&bimestre=2
 // ============================================================================
@@ -1283,12 +1310,12 @@ router.get("/ranking", authAppPais, async (req, res) => {
       bimestre > 4
     ) {
       return res.status(400).json({
-        message: "ParÃ¢metros invÃ¡lidos: aluno_id, ano e bimestre sÃ£o obrigatÃ³rios.",
+        message: "Parâmetros inválidos: aluno_id, ano e bimestre são obrigatórios.",
       });
     }
 
     // ----------------------------------------------------------------------
-    // 1) Confirma vÃ­nculo ativo + permissÃ£o
+    // 1) Confirma vínculo ativo + permissão
     // ----------------------------------------------------------------------
     const [[vinculo]] = await db.query(
       `
@@ -1314,7 +1341,7 @@ router.get("/ranking", authAppPais, async (req, res) => {
     }
 
     if (!vinculo.pode_ver_boletim) {
-      return res.status(403).json({ message: "Sem permissÃ£o para ver ranking." });
+      return res.status(403).json({ message: "Sem permissão para ver ranking." });
     }
 
     const escola_id = vinculo.escola_id;
@@ -1330,7 +1357,7 @@ router.get("/ranking", authAppPais, async (req, res) => {
           AVG(n.nota) AS media
         FROM notas n
         INNER JOIN alunos a ON a.id = n.aluno_id
-        LEFT JOIN turmas t ON t.id = a.turma_id
+        LEFT JOIN turmas t ON t.id = n.turma_id
         WHERE n.escola_id = ?
           AND n.ano = ?
           AND n.bimestre <= ?
@@ -1348,7 +1375,7 @@ router.get("/ranking", authAppPais, async (req, res) => {
       return {
         posicao: index >= 0 ? index + 1 : null,
         total,
-        label: index >= 0 ? `${index + 1}/${total}` : `â€”/${total}`,
+        label: index >= 0 ? `${index + 1}/${total}` : `—/${total}`,
       };
     }
 
@@ -1405,8 +1432,8 @@ router.get("/ranking", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// PASSO 2.3.1 â€” GET /credenciais/contextos (master)
-// - Retorna lista de escolas + estudantes onde o responsÃ¡vel logado Ã© MASTER
+// PASSO 2.3.1 — GET /credenciais/contextos (master)
+// - Retorna lista de escolas + estudantes onde o responsável logado é MASTER
 // - Usado pelo seletor moderno (multiescola/multiestudante)
 // ============================================================================
 router.get("/credenciais/contextos", authAppPais, async (req, res) => {
@@ -1468,16 +1495,16 @@ router.post("/solicitar-codigo", async (req, res) => {
   const cpf = normalizarCpf(req.body?.cpf);
 
   if (!cpf) {
-    return res.status(400).json({ message: "CPF Ã© obrigatÃ³rio." });
+    return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
-  // â”€â”€ DEMO ACCOUNT (Apple App Store Review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // CPF 00000000191 bypassa envio de SMS â€” cÃ³digo fixo 000000
+  // ── DEMO ACCOUNT (Apple App Store Review) ────────────────────────────────
+  // CPF 00000000191 bypassa envio de SMS — código fixo 000000
   if (cpf === '00000000019') {
-    console.log('[APP_PAIS][DEMO] Conta de revisÃ£o Apple â€” bypass SMS');
+    console.log('[APP_PAIS][DEMO] Conta de revisão Apple — bypass SMS');
     return res.json({ ok: true });
   }
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─────────────────────────────────────────────────────────────────────────
 
   try {
 
@@ -1487,14 +1514,14 @@ router.post("/solicitar-codigo", async (req, res) => {
     );
 
     if (!rows.length) {
-      return res.status(404).json({ message: "ResponsÃ¡vel nÃ£o encontrado." });
+      return res.status(404).json({ message: "Responsável não encontrado." });
     }
 
     const responsavel = rows[0];
 
-    // âœ… PASSO 2.2.7 â€” BLOQUEIO: prÃ©-cadastro (pendente) nÃ£o pode receber cÃ³digo ainda
-    // Regra: enquanto nÃ£o houver e-mail vÃ¡lido (e/ou status nÃ£o estiver ATIVO),
-    // o usuÃ¡rio deve ser orientado a procurar secretaria ou responsÃ¡vel master.
+    // ✅ PASSO 2.2.7 — BLOQUEIO: pré-cadastro (pendente) não pode receber código ainda
+    // Regra: enquanto não houver e-mail válido (e/ou status não estiver ATIVO),
+    // o usuário deve ser orientado a procurar secretaria ou responsável master.
     const email = String(responsavel.email || "").trim();
     const status = String(responsavel.status_global || "").trim().toUpperCase();
 
@@ -1502,7 +1529,7 @@ router.post("/solicitar-codigo", async (req, res) => {
       return res.status(403).json({
         code: "CREDENCIAL_PENDENTE",
         message:
-          "Seu credenciamento ainda nÃ£o foi liberado. Procure a secretaria da escola do estudante ou solicite ao responsÃ¡vel jÃ¡ credenciado para liberar seu acesso.",
+          "Seu credenciamento ainda não foi liberado. Procure a secretaria da escola do estudante ou solicite ao responsável já credenciado para liberar seu acesso.",
       });
     }
 
@@ -1523,7 +1550,7 @@ router.post("/solicitar-codigo", async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /solicitar-codigo:", error);
-    return res.status(500).json({ ok: false, message: "Erro ao enviar cÃ³digo. Tente novamente." });
+    return res.status(500).json({ ok: false, message: "Erro ao enviar código. Tente novamente." });
   }
 });
 
@@ -1536,20 +1563,20 @@ router.post("/verificar-codigo", async (req, res) => {
   const codigo = normalizarCodigo(req.body?.codigo);
 
   if (!cpf || !codigo) {
-    return res.status(400).json({ message: "CPF e cÃ³digo sÃ£o obrigatÃ³rios." });
+    return res.status(400).json({ message: "CPF e código são obrigatórios." });
   }
 
-  // â”€â”€ DEMO ACCOUNT (Apple App Store Review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // CPF 00000000191 + OTP 000000 â†’ token de demonstraÃ§Ã£o com dados reais no banco
+  // ── DEMO ACCOUNT (Apple App Store Review) ────────────────────────────────
+  // CPF 00000000191 + OTP 000000 → token de demonstração com dados reais no banco
   if (cpf === '00000000019' && codigo === '000000') {
-    console.log('[APP_PAIS][DEMO] Bypass de revisÃ£o Apple â€” buscando responsÃ¡vel demo no banco');
+    console.log('[APP_PAIS][DEMO] Bypass de revisão Apple — buscando responsável demo no banco');
     try {
       const [[demoResp]] = await db.query(
         "SELECT id, nome, cpf, email FROM responsaveis WHERE cpf = '00000000019' LIMIT 1"
       );
       if (!demoResp) {
-        console.error('[APP_PAIS][DEMO] ResponsÃ¡vel demo nÃ£o encontrado no banco!');
-        return res.status(500).json({ message: "Conta demo nÃ£o configurada." });
+        console.error('[APP_PAIS][DEMO] Responsável demo não encontrado no banco!');
+        return res.status(500).json({ message: "Conta demo não configurada." });
       }
       const token = gerarTokenSessaoResponsavel(demoResp);
       return res.json({
@@ -1559,11 +1586,11 @@ router.post("/verificar-codigo", async (req, res) => {
         responsavel: demoResp,
       });
     } catch (err) {
-      console.error('[APP_PAIS][DEMO] Erro ao buscar responsÃ¡vel demo:', err.message);
+      console.error('[APP_PAIS][DEMO] Erro ao buscar responsável demo:', err.message);
       return res.status(500).json({ message: "Erro na conta demo." });
     }
   }
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─────────────────────────────────────────────────────────────────────────
 
   try {
     const [[responsavel]] = await db.query(
@@ -1571,7 +1598,7 @@ router.post("/verificar-codigo", async (req, res) => {
       [cpf]
     );
       if (!responsavel) {
-        return res.status(404).json({ message: "ResponsÃ¡vel nÃ£o encontrado." });
+        return res.status(404).json({ message: "Responsável não encontrado." });
       }
     const [[registro]] = await db.query(
       `
@@ -1583,11 +1610,11 @@ router.post("/verificar-codigo", async (req, res) => {
     );
 
     if (!registro) {
-      return res.status(400).json({ message: "CÃ³digo invÃ¡lido." });
+      return res.status(400).json({ message: "Código inválido." });
     }
 
     if (new Date(registro.expiracao) < new Date()) {
-      return res.status(400).json({ message: "CÃ³digo expirado." });
+      return res.status(400).json({ message: "Código expirado." });
     }
 
     await db.query(
@@ -1597,9 +1624,9 @@ router.post("/verificar-codigo", async (req, res) => {
 
 
     // ============================================================================
-    // PASSO 2.7.3.6 â€” BLOQUEIO DE SESSÃƒO SEM VÃNCULO (S3 NÃƒO PODE EXISTIR)
-    // Regra: se o CPF passou no OTP, ele precisa ter ao menos 1 vÃ­nculo ativo em responsaveis_alunos.
-    // Caso contrÃ¡rio, NÃƒO gera token e orienta a procurar a secretaria.
+    // PASSO 2.7.3.6 — BLOQUEIO DE SESSÃO SEM VÍNCULO (S3 NÃO PODE EXISTIR)
+    // Regra: se o CPF passou no OTP, ele precisa ter ao menos 1 vínculo ativo em responsaveis_alunos.
+    // Caso contrário, NÃO gera token e orienta a procurar a secretaria.
     // ============================================================================
     const [[vinculoAtivo]] = await db.query(
       `
@@ -1612,10 +1639,10 @@ router.post("/verificar-codigo", async (req, res) => {
       [responsavel.id]
     );
 
-    if (!vinculoAtivo) {
+    if (!vinculoAtivo && cpf !== '00000000019') {
       return res.status(403).json({
         message:
-          "Cadastro encontrado, porÃ©m sem vÃ­nculo ativo com aluno. Procure a secretaria da escola para regularizar o credenciamento.",
+          "Cadastro encontrado, porém sem vínculo ativo com aluno. Procure a secretaria da escola para regularizar o credenciamento.",
         code: "SEM_VINCULO_ATIVO",
       });
     }
@@ -1629,21 +1656,21 @@ router.post("/verificar-codigo", async (req, res) => {
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /verificar-codigo:", error);
-    return res.status(500).json({ ok: false, message: "Erro ao verificar cÃ³digo. Tente novamente." });
+    return res.status(500).json({ ok: false, message: "Erro ao verificar código. Tente novamente." });
   }
 });
 
 // ============================================================================
-// PASSO 2.3.1 â€” GET /credenciais/buscar?cpf=...
+// PASSO 2.3.1 — GET /credenciais/buscar?cpf=...
 // - Master digita CPF do terceiro
-// - Se nÃ£o existir no BD â†’ 404 com orientaÃ§Ã£o (precisa solicitar no app)
+// - Se não existir no BD → 404 com orientação (precisa solicitar no app)
 // ============================================================================
 router.get("/credenciais/buscar", authAppPais, async (req, res) => {
   const db = pool;
   const cpf = normalizarCpf(req.query?.cpf);
 
   if (!cpf) {
-    return res.status(400).json({ message: "CPF Ã© obrigatÃ³rio." });
+    return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
   try {
@@ -1668,25 +1695,25 @@ router.get("/credenciais/buscar", authAppPais, async (req, res) => {
 });
 
 // ============================================================================
-// ðŸ†• PASSO 2.7.3.4 â€” CREDENCIAL / CONTEXTO (prÃ©-login)
+// 🆕 PASSO 2.7.3.4 — CREDENCIAL / CONTEXTO (pré-login)
 // ============================================================================
 router.get("/credencial/contexto", async (req, res) => {
   const db = pool;
   const cpf = normalizarCpf(req.query?.cpf);
 
   if (!cpf) {
-    return res.status(400).json({ message: "CPF Ã© obrigatÃ³rio." });
+    return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
-  // âœ… Se CPF jÃ¡ existe, o fluxo correto Ã© S1 (solicitar-codigo), nÃ£o S2.
+  // ✅ Se CPF já existe, o fluxo correto é S1 (solicitar-codigo), não S2.
   const [[resp]] = await db.query(
     "SELECT id FROM responsaveis WHERE cpf = ? LIMIT 1",
     [cpf]
   );
 
-  // âœ… PrÃ©-login: nÃ£o hÃ¡ escola selecionada aqui.
-  // Regra do fluxo: se existir responsÃ¡vel master em QUALQUER escola,
-  // a solicitaÃ§Ã£o pode ser aberta (a escola serÃ¡ herdada do(s) master(s)).
+  // ✅ Pré-login: não há escola selecionada aqui.
+  // Regra do fluxo: se existir responsável master em QUALQUER escola,
+  // a solicitação pode ser aberta (a escola será herdada do(s) master(s)).
   const [masters] = await db.query(
     `
     SELECT DISTINCT escola_id
@@ -1710,9 +1737,9 @@ router.get("/credencial/contexto", async (req, res) => {
 
 
 // ============================================================================
-// ðŸ†• PASSO 2.7.3.X â€” CREDENCIAL / PRÃ‰-CADASTRO (silencioso)
-// - Objetivo: salvar o CPF no BD para posterior finalizaÃ§Ã£o pela secretaria
-// - NÃƒO abre solicitaÃ§Ã£o, NÃƒO exige master, NÃƒO exige nome/email
+// 🆕 PASSO 2.7.3.X — CREDENCIAL / PRÉ-CADASTRO (silencioso)
+// - Objetivo: salvar o CPF no BD para posterior finalização pela secretaria
+// - NÃO abre solicitação, NÃO exige master, NÃO exige nome/email
 // ============================================================================
 // POST /api/app-pais/credencial/pre-cadastro
 // body: { cpf }
@@ -1721,11 +1748,11 @@ router.post("/credencial/pre-cadastro", async (req, res) => {
   const cpfNorm = normalizarCpf(req.body?.cpf);
 
   if (!cpfNorm) {
-    return res.status(400).json({ message: "CPF Ã© obrigatÃ³rio." });
+    return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
   try {
-    // 1) Se jÃ¡ existe, nÃ£o mexe (prÃ©-cadastro Ã© â€œidempotenteâ€)
+    // 1) Se já existe, não mexe (pré-cadastro é “idempotente”)
     const [[existente]] = await db.query(
       "SELECT id FROM responsaveis WHERE cpf = ? LIMIT 1",
       [cpfNorm]
@@ -1740,8 +1767,8 @@ router.post("/credencial/pre-cadastro", async (req, res) => {
       });
     }
 
-    // 2) Se nÃ£o existe, cria registro mÃ­nimo para a secretaria completar depois
-    // ObservaÃ§Ã£o: para evitar risco de coluna NOT NULL em "nome", gravamos "PENDENTE".
+    // 2) Se não existe, cria registro mínimo para a secretaria completar depois
+    // Observação: para evitar risco de coluna NOT NULL em "nome", gravamos "PENDENTE".
     await db.query(
       `
       INSERT INTO responsaveis (cpf, nome, email, status_global)
@@ -1763,24 +1790,24 @@ router.post("/credencial/pre-cadastro", async (req, res) => {
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /credencial/pre-cadastro:", error);
-    return res.status(500).json({ message: "Erro ao registrar prÃ©-cadastro." });
+    return res.status(500).json({ message: "Erro ao registrar pré-cadastro." });
   }
 });
 
 // ============================================================================
-// ðŸ†• PASSO 2.7.3.4 â€” CREDENCIAL / SOLICITAR (prÃ©-login)
+// 🆕 PASSO 2.7.3.4 — CREDENCIAL / SOLICITAR (pré-login)
 // ============================================================================
 router.post("/credencial/solicitar", async (req, res) => {
   const db = pool;
   const { cpf, nome, email, parentesco, observacao } = req.body;
 
   if (!cpf || !nome) {
-    return res.status(400).json({ message: "CPF e nome sÃ£o obrigatÃ³rios." });
+    return res.status(400).json({ message: "CPF e nome são obrigatórios." });
   }
 
   const cpfNorm = normalizarCpf(cpf);
 
-  // âœ… Descobre todas as escolas onde existe responsÃ¡vel master (prÃ©-login)
+  // ✅ Descobre todas as escolas onde existe responsável master (pré-login)
   const [masters] = await db.query(
     `
     SELECT DISTINCT escola_id
@@ -1799,7 +1826,7 @@ router.post("/credencial/solicitar", async (req, res) => {
     });
   }
 
-  // âœ… Cria/atualiza o responsÃ¡vel solicitante
+  // ✅ Cria/atualiza o responsável solicitante
   await db.query(
     `
     INSERT INTO responsaveis (cpf, nome, email, status_global)
@@ -1811,8 +1838,8 @@ router.post("/credencial/solicitar", async (req, res) => {
     [cpfNorm, String(nome).toUpperCase(), email || null]
   );
 
-  // âš ï¸ Em ON DUPLICATE KEY UPDATE, insertId pode nÃ£o vir como esperado.
-  // EntÃ£o garantimos o ID com SELECT.
+  // ⚠️ Em ON DUPLICATE KEY UPDATE, insertId pode não vir como esperado.
+  // Então garantimos o ID com SELECT.
   const [[respRow]] = await db.query(
     "SELECT id FROM responsaveis WHERE cpf = ? LIMIT 1",
     [cpfNorm]
@@ -1821,14 +1848,14 @@ router.post("/credencial/solicitar", async (req, res) => {
   const responsavel_id = respRow?.id;
 
   if (!responsavel_id) {
-    return res.status(500).json({ message: "Erro ao registrar responsÃ¡vel." });
+    return res.status(500).json({ message: "Erro ao registrar responsável." });
   }
 
-  // âœ… Abre solicitaÃ§Ã£o ABERTA para cada escola que tenha master
-  // (a aprovaÃ§Ã£o final ocorrerÃ¡ pela secretaria/master no painel)
+  // ✅ Abre solicitação ABERTA para cada escola que tenha master
+  // (a aprovação final ocorrerá pela secretaria/master no painel)
   const obs =
     observacao ||
-    `Parentesco: ${parentesco || "N/I"} | SolicitaÃ§Ã£o via app (prÃ©-login)`;
+    `Parentesco: ${parentesco || "N/I"} | Solicitação via app (pré-login)`;
 
   for (const m of masters) {
     const escola_id = m.escola_id;
@@ -1846,15 +1873,15 @@ router.post("/credencial/solicitar", async (req, res) => {
   return res.json({
     ok: true,
     status: "ABERTA",
-    message: "SolicitaÃ§Ã£o registrada. Aguarde autorizaÃ§Ã£o.",
+    message: "Solicitação registrada. Aguarde autorização.",
     escolas_destino: masters.map((m) => m.escola_id),
   });
 });
 
 // ============================================================================
-// PASSO 2.3.1 â€” POST /credenciais/autorizar
-// - Master autoriza um CPF (prÃ©-cadastrado) para um estudante especÃ­fico
-// - PermissÃµes ficam no vÃ­nculo responsaveis_alunos (escopo: escola + aluno)
+// PASSO 2.3.1 — POST /credenciais/autorizar
+// - Master autoriza um CPF (pré-cadastrado) para um estudante específico
+// - Permissões ficam no vínculo responsaveis_alunos (escopo: escola + aluno)
 // Body:
 // {
 //   cpf: "00000000000",
@@ -1881,14 +1908,14 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
   const p = req.body?.permissoes || {};
 
   if (!cpf || !Number.isFinite(escola_id) || !Number.isFinite(aluno_id)) {
-    return res.status(400).json({ message: "cpf, escola_id e aluno_id sÃ£o obrigatÃ³rios." });
+    return res.status(400).json({ message: "cpf, escola_id e aluno_id são obrigatórios." });
   }
 
   try {
-    // 1) Confirma que o LOGADO Ã© master nesse contexto (escola+aluno)
+    // 1) Confirma que o LOGADO é master nesse contexto (escola+aluno)
     await exigirMasterNoContexto(db, responsavel_id, escola_id, aluno_id);
 
-    // 2) Confirma que o CPF existe (prÃ©-cadastro)
+    // 2) Confirma que o CPF existe (pré-cadastro)
     const [[terceiro]] = await db.query(
       "SELECT id, email, status_global FROM responsaveis WHERE cpf = ? LIMIT 1",
       [cpf]
@@ -1902,14 +1929,14 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
     }
 
     // 3) Monta flags (campos existentes no seu SELECT do /alunos)
-    // ObservaÃ§Ã£o: conteudos/registros/atividades podem exigir colunas novas (ver nota abaixo).
+    // Observação: conteudos/registros/atividades podem exigir colunas novas (ver nota abaixo).
     const pode_ver_boletim = !!p.boletim;
     const pode_ver_agenda = !!p.agenda;
     const pode_ver_frequencia = !!p.historico_entrada;
     const pode_receber_notificacoes = true; // default seguro (pode evoluir depois)
     const pode_autorizar_terceiros = !!p.credenciais;
 
-    // 4) Upsert do vÃ­nculo (se existir, atualiza; se nÃ£o, cria)
+    // 4) Upsert do vínculo (se existir, atualiza; se não, cria)
     const [[existeVinculo]] = await db.query(
       `
       SELECT id
@@ -1965,8 +1992,8 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
       );
     }
 
-    // 5) Opcional: ajustar status_global (nÃ£o quebra login, mas mantÃ©m semÃ¢ntica)
-    // - Se ainda nÃ£o tem email, continua PENDENTE (o OTP depende de email).
+    // 5) Opcional: ajustar status_global (não quebra login, mas mantém semântica)
+    // - Se ainda não tem email, continua PENDENTE (o OTP depende de email).
     // - Se tem email, pode promover para ATIVO.
     const email = String(terceiro.email || "").trim();
     if (email) {
@@ -1994,23 +2021,37 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// CONTEÃšDOS (APP PAIS) â€” por turma/disciplina/bimestre/ano_letivo
-// - Objetivo: retornar "itens" (array de tÃ³picos) para o ConteudosScreen.js
-// - Filtro: turma_id Ã© derivado do aluno (alunos.turma_id)
-// - SeguranÃ§a: responsÃ¡vel precisa estar vinculado ao aluno (responsaveis_alunos ativo)
+// CONTEÚDOS (APP PAIS) — por turma/disciplina/bimestre/ano_letivo
+// - Objetivo: retornar "itens" (array de tópicos) para o ConteudosScreen.js
+// - Filtro: turma_id é derivado do aluno (alunos.turma_id)
+// - Segurança: responsável precisa estar vinculado ao aluno (responsaveis_alunos ativo)
 // ============================================================================
 
 router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
   const db = pool;
   try {
-    const { responsavel_id } = req.appPaisAuth;
+    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
     const alunoId = Number(req.query.aluno_id);
 
     if (!alunoId || Number.isNaN(alunoId)) {
-      return res.status(400).json({ message: "ParÃ¢metro aluno_id invÃ¡lido." });
+      return res.status(400).json({ message: "Parâmetro aluno_id inválido." });
     }
 
-    // 1) Descobre escola_id a partir do vÃ­nculo (garante acesso)
+    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
+    if (cpfAuth === '00000000019') {
+      return res.json({ ok: true, disciplinas: [
+        { id: 1, nome: 'Português' },
+        { id: 2, nome: 'Matemática' },
+        { id: 3, nome: 'Ciências' },
+        { id: 4, nome: 'História' },
+        { id: 5, nome: 'Geografia' },
+        { id: 6, nome: 'Artes' },
+        { id: 7, nome: 'Educação Física' },
+      ]});
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // 1) Descobre escola_id a partir do vínculo (garante acesso)
     const [vinc] = await db.query(
       `
       SELECT ra.escola_id
@@ -2050,29 +2091,39 @@ router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
 router.get("/conteudos", authAppPais, async (req, res) => {
   const db = pool;
   try {
-    const { responsavel_id } = req.appPaisAuth;
+    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
     const alunoId = Number(req.query.aluno_id);
     const disciplinaId = Number(req.query.disciplina_id);
     const bimestre = Number(req.query.bimestre);
 
-    // ano_letivo opcional: se nÃ£o vier, usamos o ano corrente
+    // ano_letivo opcional: se não vier, usamos o ano corrente
     const anoLetivo = req.query.ano_letivo ? Number(req.query.ano_letivo) : new Date().getFullYear();
 
     if (!alunoId || Number.isNaN(alunoId)) {
-      return res.status(400).json({ message: "ParÃ¢metro aluno_id invÃ¡lido." });
+      return res.status(400).json({ message: "Parâmetro aluno_id inválido." });
     }
     if (!disciplinaId || Number.isNaN(disciplinaId)) {
-      return res.status(400).json({ message: "ParÃ¢metro disciplina_id invÃ¡lido." });
-    }
-    if (!bimestre || Number.isNaN(bimestre) || bimestre < 1 || bimestre > 4) {
-      return res.status(400).json({ message: "ParÃ¢metro bimestre invÃ¡lido (1..4)." });
-    }
-    if (!anoLetivo || Number.isNaN(anoLetivo)) {
-      return res.status(400).json({ message: "ParÃ¢metro ano_letivo invÃ¡lido." });
+      return res.status(400).json({ message: "Parâmetro disciplina_id inválido." });
     }
 
-    // 1) Resolve escola_id e turma_id com validaÃ§Ã£o do vÃ­nculo
+    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
+    if (cpfAuth === '00000000019') {
+      return res.json({ ok: true,
+        ref: { escola_id: null, turma_id: null, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
+        itens: [],
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    if (!bimestre || Number.isNaN(bimestre) || bimestre < 1 || bimestre > 4) {
+      return res.status(400).json({ message: "Parâmetro bimestre inválido (1..4)." });
+    }
+    if (!anoLetivo || Number.isNaN(anoLetivo)) {
+      return res.status(400).json({ message: "Parâmetro ano_letivo inválido." });
+    }
+
+    // 1) Resolve escola_id e turma_id com validação do vínculo
     const [ctx] = await db.query(
       `
       SELECT
@@ -2103,7 +2154,7 @@ router.get("/conteudos", authAppPais, async (req, res) => {
       });
     }
 
-    // 2) Busca o plano (cabeÃ§alho)
+    // 2) Busca o plano (cabeçalho)
     const [planos] = await db.query(
       `
       SELECT id
@@ -2129,7 +2180,7 @@ router.get("/conteudos", authAppPais, async (req, res) => {
 
     const planoId = planos[0].id;
 
-    // 3) Busca itens (ordenados) â€” formato pronto para renderizar em lista
+    // 3) Busca itens (ordenados) — formato pronto para renderizar em lista
     const [itensRows] = await db.query(
       `
       SELECT ordem, texto
@@ -2150,13 +2201,13 @@ router.get("/conteudos", authAppPais, async (req, res) => {
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em GET /conteudos:", error);
-    return res.status(500).json({ message: "Erro ao carregar conteÃºdos." });
+    return res.status(500).json({ message: "Erro ao carregar conteúdos." });
   }
 });
 
 
 // ============================================================================
-// PASSO 3 â€” POST /device-token
+// PASSO 3 — POST /device-token
 // - Registra ou atualiza o token do Expo Push Notification (mobile_devices)
 // - Para que possamos testar pelo App (educa-mobile)
 // ============================================================================
@@ -2200,7 +2251,7 @@ router.post("/device-token", authAppPais, async (req, res) => {
 router.get("/registros", authAppPais, async (req, res) => {
   const db = pool;
   try {
-    const { responsavel_id } = req.appPaisAuth;
+    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
     const aluno_id = Number(req.query?.aluno_id);
     const ano      = req.query?.ano ? Number(req.query.ano) : null;
@@ -2209,6 +2260,12 @@ router.get("/registros", authAppPais, async (req, res) => {
     if (!Number.isFinite(aluno_id)) {
       return res.status(400).json({ message: "aluno_id Ã© obrigatÃ³rio." });
     }
+
+    // ── DEMO-APPLE bypass
+    if (cpfAuth === '00000000019') {
+      return res.json({ ok: true, pedagogicos: [], disciplinares: [], registros: [] });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // 1) Valida vÃ­nculo ativo
     const [[vinculo]] = await db.query(
