@@ -111,6 +111,7 @@ import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
+import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -975,6 +976,9 @@ async function bootstrap() {
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
   app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
+
+  // ✅ BNCC cascade — import estático, sem feature flag, sem risco de 404 por falha de módulo
+  app.use("/api", autenticarToken, verificarEscola, bnccCascadeRouter);
 
   // ✅ MÓDULO FREQUÊNCIA — Atestados, Busca Ativa, Relatórios, Conselho Tutelar
   app.use("/api/frequencia", autenticarToken, verificarEscola, frequenciaRouter);
