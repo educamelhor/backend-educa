@@ -3,6 +3,9 @@ import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
 
 export function autenticarToken(req, res, next) {
   try {
+    // ── CORS preflight: OPTIONS nunca carrega token por especificação HTTP ──
+    if (req.method === "OPTIONS") return next();
+
     const authHeader = req.headers?.authorization || "";
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
