@@ -346,8 +346,8 @@ app.use(
   })
 );
 
-// Responde preflight OPTIONS globalmente antes de qualquer rota
-app.options("*", cors());
+// Responde preflight OPTIONS globalmente antes de qualquer rota (Express 5: usar /{*any})
+app.options("/{*any}", cors());
 
 app.use((req, res, next) => {
   req.db = pool;
