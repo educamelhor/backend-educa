@@ -221,7 +221,59 @@ router.get("/avaliacao-config", async (req, res) => {
   }
 });
 
-// ── GET /api/governanca?escola_id=X — Listar configurações (sincronizadas com CEO) ──
+// ── GET /api/governanca/conteudo-modo?escola_id=X ─────────────────
+// Retorna o modo ativo de governança de conteúdos programáticos.
+// Modos:
+//   "coordenacao_decide"    → Só direção/coordenação cria (padrão)
+//   "professor_aprovacao"   → Professor cria e envia para aprovação
+//   "professor_autonomo"    → Professor cria com publicação direta
+// ──────────────────────────────────────────────────────────────────
+router.get("/conteudo-modo", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
+  const CHAVES = [
+    "coordenacao_decide_conteudo",
+    "professor_decide_conteudo",
+    "coordenacao_aprova_conteudo",
+  ];
+
+  const DEFAULTS = {
+    coordenacao_decide_conteudo: "1",
+    professor_decide_conteudo:   "0",
+    coordenacao_aprova_conteudo: "0",
+  };
+
+  try {
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave IN (?, ?, ?)`,
+      [escolaId, ...CHAVES]
+    );
+
+    const cfg = { ...DEFAULTS };
+    for (const row of rows) cfg[row.chave] = row.valor;
+
+    const isOn = (k) => cfg[k] === "1" || cfg[k] === "true";
+
+    // Determina modo ativo (prioridade: professor_autonomo > professor_aprovacao > coordenacao_decide)
+    let modo = "coordenacao_decide";
+    if (isOn("professor_decide_conteudo"))   modo = "professor_aprovacao";
+    if (isOn("coordenacao_aprova_conteudo")) modo = "professor_autonomo";
+
+    return res.json({ ok: true, modo, config: cfg });
+  } catch (err) {
+    if (err?.code === "ER_NO_SUCH_TABLE") {
+      return res.json({ ok: true, modo: "coordenacao_decide", config: { ...DEFAULTS } });
+    }
+    console.error("[GOVERNANCA][CONTEUDO-MODO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar modo de conteúdo." });
+  }
+});
+
+
 router.get("/", guardDiretor, async (req, res) => {
   const db = req.db;
   const escolaId = Number(req.query.escola_id);
