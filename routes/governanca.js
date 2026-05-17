@@ -127,6 +127,10 @@ function guardDiretor(req, res, next) {
   });
 }
 
+// ── OPTIONS: responde preflight explicitamente para todas as rotas deste router ──
+router.options("/{*any}", (req, res) => res.status(204).end());
+router.options("/", (req, res) => res.status(204).end());
+
 // ═══════════════════════════════════════════════════════════════
 // ENDPOINTS
 // ═══════════════════════════════════════════════════════════════

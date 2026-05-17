@@ -1,5 +1,8 @@
-﻿export function verificarEscola(req, res, next) {
+export function verificarEscola(req, res, next) {
   try {
+    // ── CORS preflight: OPTIONS passa direto ──────────────────────────────────
+    if (req.method === "OPTIONS") return next();
+
     // 🔒 Governança de escopo: token de plataforma NÃO pode acessar rotas escolares
     const scope = req.user?.scope;
     if (scope === "plataforma") {
