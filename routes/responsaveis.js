@@ -419,6 +419,29 @@ router.put("/:id", async (req, res) => {
   }
 });
 
+// DESVINCULAR ALUNO ESPECÍFICO DE UM RESPONSÁVEL (por vinculo_id da tabela responsaveis_alunos)
+// Usado quando há divórcio/separação e o vínculo com um aluno específico precisa ser removido.
+router.delete("/vinculo/:vinculo_id", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { vinculo_id } = req.params;
+
+    const [result] = await pool.query(
+      "DELETE FROM responsaveis_alunos WHERE id = ? AND escola_id = ?",
+      [vinculo_id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Vínculo não encontrado ou sem permissão para removê-lo." });
+    }
+
+    res.json({ message: "Vínculo removido com sucesso." });
+  } catch (err) {
+    console.error("Erro ao desvincular aluno:", err);
+    res.status(500).json({ error: "Erro ao desvincular aluno." });
+  }
+});
+
 // EXCLUIR RESPONSÁVEL (Apenas remove o vínculo da escola)
 router.delete("/:id", async (req, res) => {
   try {
