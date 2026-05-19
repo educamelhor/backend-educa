@@ -166,6 +166,7 @@ router.get("/turma/:turmaId", async (req, res) => {
       const addr = [escola?.endereco, escola?.cidade, escola?.estado].filter(Boolean).join(", ") || "—";
       fld("Endereço", addr, L, idColW);
       body("Denominada ESCOLA.", L, idColW);
+      const idY1 = doc.y; // captura fim da coluna 1.1
 
       doc.y = idTop;
       subH("1.2", "RESPONSÁVEL LEGAL", idX2, idColW);
@@ -174,6 +175,7 @@ router.get("/turma/:turmaId", async (req, res) => {
       if (resp?.telefone_celular) fld("Telefone", resp.telefone_celular, idX2, idColW);
       if (resp?.email) fld("E-mail", resp.email, idX2, idColW);
       body("Denominado RESPONSÁVEL LEGAL.", idX2, idColW);
+      const idY2 = doc.y; // captura fim da coluna 1.2
 
       doc.y = idTop;
       subH("1.3", "ALUNO(A)", idX3, idColW);
@@ -182,7 +184,10 @@ router.get("/turma/:turmaId", async (req, res) => {
       fld("RE", aluno.codigo || "—", idX3, idColW);
       fld("Turma", aluno.turma || "—", idX3, idColW);
       body("Denominado ALUNO(A).", idX3, idColW);
+      const idY3 = doc.y; // captura fim da coluna 1.3
 
+      // Posiciona o 1.4 abaixo da coluna mais alta (evita sobreposição)
+      doc.y = Math.max(idY1, idY2, idY3);
       gap(3);
       const dpoY = doc.y;
       doc.rect(L - 2, dpoY, PW + 4, 8).fill("#fff3cd");
@@ -509,6 +514,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     const addr = [escola?.endereco, escola?.cidade, escola?.estado].filter(Boolean).join(", ") || "—";
     fld("Endereço", addr, L, idColW);
     body("Denominada ESCOLA.", L, idColW);
+    const idY1 = doc.y; // captura fim da coluna 1.1
 
     // 1.2 Responsável
     doc.y = idTop;
@@ -518,6 +524,7 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     if (resp.telefone_celular) fld("Telefone", resp.telefone_celular, idX2, idColW);
     if (resp.email) fld("E-mail", resp.email, idX2, idColW);
     body("Denominado RESPONSÁVEL LEGAL.", idX2, idColW);
+    const idY2 = doc.y; // captura fim da coluna 1.2
 
     // 1.3 Aluno
     doc.y = idTop;
@@ -527,7 +534,10 @@ router.get("/:responsavelId/:alunoId", async (req, res) => {
     fld("RE", aluno.codigo || "—", idX3, idColW);
     fld("Turma", aluno.turma || "—", idX3, idColW);
     body("Denominado ALUNO(A).", idX3, idColW);
+    const idY3 = doc.y; // captura fim da coluna 1.3
 
+    // Posiciona o 1.4 abaixo da coluna mais alta (evita sobreposição)
+    doc.y = Math.max(idY1, idY2, idY3);
     gap(3);
     // 1.4 DPO
     const dpoY = doc.y;
