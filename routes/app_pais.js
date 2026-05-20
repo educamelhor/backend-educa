@@ -1,4 +1,4 @@
-﻿// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
+// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
@@ -209,6 +209,70 @@ async function enviarCodigoPorEmail(email, codigo) {
   console.log("[APP_PAIS][SMTP] E-mail enviado:", info.messageId);
 }
 
+// ============================================================================
+// SMS VIA TWILIO
+// Env vars: TWILIO_SID, TWILIO_TOKEN, TWILIO_PHONE
+// ============================================================================
+async function enviarCodigoPorSms(telefone, codigo) {
+  const SID   = process.env.TWILIO_SID;
+  const TOKEN = process.env.TWILIO_TOKEN;
+  const FROM  = process.env.TWILIO_PHONE;
+
+  if (!SID || !TOKEN || !FROM) {
+    console.error("[APP_PAIS][SMS] Twilio não configurado (TWILIO_SID/TOKEN/PHONE).");
+    throw new Error("SMS_NAO_CONFIGURADO");
+  }
+
+  // Normaliza para E.164 (+55DDNNNNNNNNN)
+  const digitos = String(telefone || "").replace(/\D/g, "");
+  const e164 = digitos.startsWith("55") ? `+${digitos}` : `+55${digitos}`;
+
+  // ── Formato Google SMS Retriever API ─────────────────────────────────────
+  // O SMS DEVE começar com "<#>" e terminar com o App Hash de 11 chars.
+  // Sem o hash → SMS é entregue normalmente, mas o auto-read Android não dispara.
+  // Hash obtido em: console.log do app (LoginCodigoScreen) no primeiro build Android.
+  // Configurar via: SMS_APP_HASH no painel do DigitalOcean.
+  const appHash = process.env.SMS_APP_HASH || "";     // ex: "Fjk9Rk2ABC1"
+  const hashSuffix = appHash ? `\n${appHash}` : "";   // linha final do SMS
+
+  const body = `<#> EDUCA.MELHOR\nSeu código de acesso: ${codigo}\nVálido por 10 min. Não compartilhe.${hashSuffix}`;
+
+  const resp = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${SID}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${SID}:${TOKEN}`).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ From: FROM, To: e164, Body: body }).toString(),
+    }
+  );
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    console.error("[APP_PAIS][SMS] Erro Twilio:", resp.status, data);
+    throw new Error(`TWILIO_ERROR:${resp.status}:${data?.message || ""}`);
+  }
+  console.log("[APP_PAIS][SMS] Enviado para", e164, "| hash incluso:", !!appHash, "| SID:", data?.sid);
+}
+
+
+// Helper: máscara de e-mail (ex: jo***@gmail.com)
+function mascaraEmail(email) {
+  if (!email || !email.includes("@")) return null;
+  const [local, domain] = email.split("@");
+  const vis = local.slice(0, Math.min(2, local.length));
+  return `${vis}***@${domain}`;
+}
+
+// Helper: máscara de telefone (ex: (61) 9****-1234)
+function mascaraTelefone(tel) {
+  if (!tel) return null;
+  const d = String(tel).replace(/\D/g, "");
+  if (d.length < 10) return null;
+  return `(${d.slice(0, 2)}) 9****-${d.slice(-4)}`;
+}
 
 // ============================================================================
 // STARTUP MIGRATIONS â€” executadas automaticamente no boot do servidor
@@ -1487,29 +1551,28 @@ router.get("/credenciais/contextos", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// POST /solicitar-codigo
+// POST /solicitar-codigo  (v2 — suporte a e-mail + SMS + fluxo PRECISA_EMAIL)
 // ============================================================================
 router.post("/solicitar-codigo", async (req, res) => {
-  console.log("[SOLICITAR-CODIGO] Handler chamado! body:", JSON.stringify(req.body ?? null));
+  console.log("[SOLICITAR-CODIGO] body:", JSON.stringify(req.body ?? null));
   const db = pool;
-  const cpf = normalizarCpf(req.body?.cpf);
+  const cpf   = normalizarCpf(req.body?.cpf);
+  const canal = String(req.body?.canal || "email").toLowerCase(); // "email" | "sms"
 
   if (!cpf) {
     return res.status(400).json({ message: "CPF é obrigatório." });
   }
 
   // ── DEMO ACCOUNT (Apple App Store Review) ────────────────────────────────
-  // CPF 00000000191 bypassa envio de SMS — código fixo 000000
-  if (cpf === '00000000019') {
-    console.log('[APP_PAIS][DEMO] Conta de revisão Apple — bypass SMS');
+  if (cpf === "00000000019") {
+    console.log("[APP_PAIS][DEMO] Conta revisão Apple — bypass");
     return res.json({ ok: true });
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
   try {
-
     const [rows] = await db.query(
-      "SELECT id, email, status_global FROM responsaveis WHERE cpf = ? LIMIT 1",
+      `SELECT id, email, telefone_celular, status_global
+       FROM responsaveis WHERE cpf = ? LIMIT 1`,
       [cpf]
     );
 
@@ -1518,14 +1581,12 @@ router.post("/solicitar-codigo", async (req, res) => {
     }
 
     const responsavel = rows[0];
+    const email       = String(responsavel.email || "").trim();
+    const telefone    = String(responsavel.telefone_celular || "").trim();
+    const status      = String(responsavel.status_global || "").trim().toUpperCase();
 
-    // ✅ PASSO 2.2.7 — BLOQUEIO: pré-cadastro (pendente) não pode receber código ainda
-    // Regra: enquanto não houver e-mail válido (e/ou status não estiver ATIVO),
-    // o usuário deve ser orientado a procurar secretaria ou responsável master.
-    const email = String(responsavel.email || "").trim();
-    const status = String(responsavel.status_global || "").trim().toUpperCase();
-
-    if (!email || status === "PENDENTE") {
+    // ── Bloqueio real: consentimento ainda não foi confirmado pela escola ────
+    if (status === "PENDENTE") {
       return res.status(403).json({
         code: "CREDENCIAL_PENDENTE",
         message:
@@ -1533,24 +1594,165 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
+    // ── Sem e-mail e canal email: pede o e-mail ao usuário ──────────────────
+    if (canal === "email" && !email) {
+      return res.status(403).json({
+        code: "PRECISA_EMAIL",
+        message: "Informe seu e-mail para receber o código de acesso.",
+        tem_sms: !!(telefone && process.env.TWILIO_SID),
+        telefone_mascara: mascaraTelefone(telefone) || null,
+      });
+    }
+
+    // ── Canal SMS: sempre pede confirmação/digitação do número antes de enviar ──
+    // Isso garante que números desatualizados possam ser corrigidos pelo pai/mãe.
+    if (canal === "sms") {
+      if (!process.env.TWILIO_SID) {
+        return res.status(503).json({
+          code: "SMS_NAO_CONFIGURADO",
+          message: "Envio por SMS temporariamente indisponível. Use e-mail.",
+        });
+      }
+      // Sempre retorna CONFIRMAR_TELEFONE para o app mostrar o modal de confirmação.
+      // O app exibe o número mascarado (se cadastrado) e permite digitar um novo.
+      return res.status(202).json({
+        code: "CONFIRMAR_TELEFONE",
+        message: telefone
+          ? "Confirme ou atualize o número de celular para receber o código."
+          : "Informe seu número de celular para receber o código por SMS.",
+        telefone_mascara: mascaraTelefone(telefone) || null,
+        tem_telefone: !!telefone,
+      });
+    }
+
+
+    // ── Gera e persiste o código ─────────────────────────────────────────────
     const codigo = gerarCodigo();
-    ;
+    const destino = canal === "sms" ? telefone : email;
 
     await db.query(
-      `
-      INSERT INTO app_pais_codigos
-        (responsavel_id, codigo, canal, destino, expiracao)
-      VALUES (?, ?, 'email', ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))
-      `,
-      [responsavel.id, codigo, responsavel.email]
+      `INSERT INTO app_pais_codigos
+         (responsavel_id, codigo, canal, destino, expiracao)
+       VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+      [responsavel.id, codigo, canal, destino]
     );
 
-    await enviarCodigoPorEmail(responsavel.email, codigo);
+    // ── Envia pelo canal escolhido ───────────────────────────────────────────
+    if (canal === "sms") {
+      await enviarCodigoPorSms(telefone, codigo);
+    } else {
+      await enviarCodigoPorEmail(email, codigo);
+    }
 
-    return res.json({ ok: true });
+    return res.json({
+      ok: true,
+      canal,
+      destino_mascara: canal === "sms" ? mascaraTelefone(telefone) : mascaraEmail(email),
+    });
+
   } catch (error) {
     console.error("[APP_PAIS] Erro em /solicitar-codigo:", error);
-    return res.status(500).json({ ok: false, message: "Erro ao enviar código. Tente novamente." });
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erro ao enviar código. Tente novamente." });
+  }
+});
+
+
+// ============================================================================
+// POST /salvar-email
+// Salva (ou atualiza) o e-mail do responsável antes do login (pré-autenticação).
+// body: { cpf, email }
+// - Não requer token (pré-login)
+// - O e-mail fica persistido; no próximo acesso o backend usa diretamente
+// - Pode ser chamado novamente para trocar o e-mail
+// ============================================================================
+router.post("/salvar-email", async (req, res) => {
+  const db  = pool;
+  const cpf = normalizarCpf(req.body?.cpf);
+  const emailRaw = String(req.body?.email || "").trim().toLowerCase();
+
+  if (!cpf) {
+    return res.status(400).json({ message: "CPF é obrigatório." });
+  }
+  if (!emailRaw || !emailRaw.includes("@") || !emailRaw.includes(".")) {
+    return res.status(400).json({ message: "Informe um e-mail válido." });
+  }
+
+  try {
+    const [[resp]] = await db.query(
+      "SELECT id, status_global FROM responsaveis WHERE cpf = ? LIMIT 1",
+      [cpf]
+    );
+
+    if (!resp) {
+      return res.status(404).json({ message: "Responsável não encontrado." });
+    }
+
+    // Salva o e-mail
+    await db.query(
+      "UPDATE responsaveis SET email = ? WHERE id = ?",
+      [emailRaw, resp.id]
+    );
+
+    console.log(`[APP_PAIS][SALVAR-EMAIL] E-mail atualizado para responsável ${resp.id}`);
+
+    return res.json({
+      ok: true,
+      message: "E-mail salvo com sucesso.",
+      email_mascara: mascaraEmail(emailRaw),
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /salvar-email:", error);
+    return res.status(500).json({ message: "Erro ao salvar e-mail. Tente novamente." });
+  }
+});
+
+// ============================================================================
+// POST /salvar-telefone
+// Salva (ou atualiza) o celular do responsável antes do login via SMS.
+// body: { cpf, telefone }
+// - Não requer token (pré-login)
+// - Valida formato brasileiro (10-11 dígitos numéricos)
+// - Permite corrigir número desatualizado sem ir à secretaria
+// ============================================================================
+router.post("/salvar-telefone", async (req, res) => {
+  const db  = pool;
+  const cpf = normalizarCpf(req.body?.cpf);
+  const telRaw = String(req.body?.telefone || "").replace(/\D/g, "").trim();
+
+  if (!cpf) {
+    return res.status(400).json({ message: "CPF é obrigatório." });
+  }
+  if (!telRaw || telRaw.length < 10 || telRaw.length > 11) {
+    return res.status(400).json({ message: "Informe um número de celular válido (com DDD)." });
+  }
+
+  try {
+    const [[resp]] = await db.query(
+      "SELECT id FROM responsaveis WHERE cpf = ? LIMIT 1",
+      [cpf]
+    );
+
+    if (!resp) {
+      return res.status(404).json({ message: "Responsável não encontrado." });
+    }
+
+    await db.query(
+      "UPDATE responsaveis SET telefone_celular = ? WHERE id = ?",
+      [telRaw, resp.id]
+    );
+
+    console.log(`[APP_PAIS][SALVAR-TEL] Telefone atualizado para responsável ${resp.id}`);
+
+    return res.json({
+      ok: true,
+      message: "Telefone salvo com sucesso.",
+      telefone_mascara: mascaraTelefone(telRaw),
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /salvar-telefone:", error);
+    return res.status(500).json({ message: "Erro ao salvar telefone. Tente novamente." });
   }
 });
 

@@ -261,6 +261,15 @@ router.post("/:id/consentimento-imagem", async (req, res) => {
       }
 
       await conn.commit();
+
+      // ── Libera acesso ao EDUCA MOBILE ────────────────────────────────────────
+      // O endpoint /solicitar-codigo verifica status_global = 'ATIVO'.
+      // Ao confirmar o consentimento presencial, o responsável está liberado.
+      await pool.query(
+        `UPDATE responsaveis SET status_global = 'ATIVO' WHERE id = ?`,
+        [responsavelId]
+      );
+
       res.json({ message: "Consentimento registrado com sucesso.", aluno_ids });
     } catch (err) {
       await conn.rollback();
