@@ -110,6 +110,7 @@ import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
+import pedagogicoRelatoriosRouter from "./routes/pedagogico_relatorios.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
 
@@ -823,7 +824,31 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar disciplina_carga_segmento (não crítico):", migErr.message);
   }
 
-
+  // [2026-05-20] Plano de Avaliação Pedagógica — controle de status por professor/escola/ano
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS plano_avaliacao (
+        id            INT           NOT NULL AUTO_INCREMENT,
+        escola_id     INT           NOT NULL,
+        professor_id  INT           NOT NULL,
+        ano_letivo    INT           NOT NULL,
+        status        ENUM('nao_iniciado','rascunho','enviado','aprovado','revisao')
+                      NOT NULL DEFAULT 'nao_iniciado',
+        observacoes   TEXT          DEFAULT NULL,
+        criado_em     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
+                      ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_escola_prof_ano (escola_id, professor_id, ano_letivo),
+        INDEX idx_escola_ano (escola_id, ano_letivo),
+        INDEX idx_professor  (professor_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Plano de Avaliação Pedagógica — status de entrega por professor, escola e ano letivo'
+    `);
+    console.log("[MIGRATION] Tabela plano_avaliacao garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar plano_avaliacao (não crítico):", migErr.message);
+  }
 
 
   // ============================================================================
@@ -1014,6 +1039,9 @@ async function bootstrap() {
 
   // ✅ PDF RELATÓRIOS DA SECRETARIA
   app.use("/api/secretaria/relatorios/pdf", autenticarToken, verificarEscola, secretariaRelatoriosPdfRouter);
+
+  // ✅ Relatórios Pedagógicos (Plano de Avaliação, etc.)
+  app.use("/api/pedagogico/relatorios", autenticarToken, verificarEscola, pedagogicoRelatoriosRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
