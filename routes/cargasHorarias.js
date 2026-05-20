@@ -41,7 +41,7 @@ router.get("/", verificarEscola, async (req, res) => {
          tc.turma_id,
          tc.disciplina_id,
          tc.carga,
-         d.nome AS disciplina_nome
+         UPPER(d.nome) AS disciplina_nome
        FROM turma_cargas tc
        JOIN disciplinas d ON d.id = tc.disciplina_id
       WHERE tc.turma_id = ?
@@ -125,7 +125,7 @@ router.post("/definir", verificarEscola, async (req, res) => {
          tc.turma_id,
          tc.disciplina_id,
          tc.carga,
-         d.nome AS disciplina_nome
+          UPPER(d.nome) AS disciplina_nome
        FROM turma_cargas tc
        JOIN disciplinas d ON d.id = tc.disciplina_id
       WHERE tc.turma_id = ?
