@@ -28,30 +28,20 @@ export const salvarModulacao = async (req, res) => {
     return res.status(400).json({ message: "Nenhum horário enviado." });
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // [ANTIGO - DESATIVADO] Estratégia EXCLUDENTE por turno (mantido por histórico)
-  // ──────────────────────────────────────────────────────────────────────────
-
   try {
     // UPSERT (não excludente): insere ou atualiza 'aulas'
-    // Pré-requisito ideal: índice único abrangendo (escola_id, professor_id, disciplina_id, turma_id_norm)
     for (const h of modulacao) {
       const professor_id = Number(h.professor_id) || null;
       const disciplina_id = Number(h.disciplina_id) || null;
       const turma_id = h.turma_id == null ? null : Number(h.turma_id);
       const aulas = Number(h.aulas) || 0;
 
-      if (!professor_id || !disciplina_id) {
-        // Ignora registros inválidos silenciosamente
-        continue;
-      }
+      if (!professor_id || !disciplina_id) continue;
 
       await pool.query(
-        `
-        INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas)
-        VALUES (?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)
-        `,
+        `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
         [escola_id, professor_id, turma_id, disciplina_id, aulas]
       );
     }
@@ -102,12 +92,10 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
 
     if (turmaIds.length) {
       const placeholders = turmaIds.map(() => "?").join(",");
-      // ATENÇÃO: a ordem do WHERE é (escola_id = ?) e depois IN (ids) → mantenha a mesma ordem aqui
       const paramsComTurma = [escola_id, ...turmaIds];
 
       const [resultComTurma] = await pool.query(
-        `
-        SELECT
+        `SELECT
           h.professor_id,
           h.disciplina_id,
           h.turma_id,
@@ -115,21 +103,19 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
           p.nome AS professor_nome,
           d.nome AS disciplina_nome,
           t.turno  AS turno
-        FROM modulacao h
-        JOIN professores p ON p.id = h.professor_id
-        JOIN disciplinas d ON d.id = h.disciplina_id
-        JOIN turmas t      ON t.id = h.turma_id
-        WHERE h.escola_id = ?
-          AND h.turma_id IN (${placeholders})
-          AND t.ano = YEAR(CURDATE())
-        `,
+         FROM modulacao h
+         JOIN professores p ON p.id = h.professor_id
+         JOIN disciplinas d ON d.id = h.disciplina_id
+         JOIN turmas t      ON t.id = h.turma_id
+         WHERE h.escola_id = ?
+           AND h.turma_id IN (${placeholders})
+           AND t.ano = YEAR(CURDATE())`,
         paramsComTurma
       );
 
       // 3) Alocações SEM turma_id (válidas para a escola inteira)
       const [resultSemTurma] = await pool.query(
-        `
-        SELECT
+        `SELECT
           h.professor_id,
           h.disciplina_id,
           h.turma_id,
@@ -137,12 +123,11 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
           p.nome AS professor_nome,
           d.nome AS disciplina_nome,
           NULL AS turno
-        FROM modulacao h
-        JOIN professores p ON p.id = h.professor_id
-        JOIN disciplinas d ON d.id = h.disciplina_id
-        WHERE h.escola_id = ?
-          AND h.turma_id IS NULL
-        `,
+         FROM modulacao h
+         JOIN professores p ON p.id = h.professor_id
+         JOIN disciplinas d ON d.id = h.disciplina_id
+         WHERE h.escola_id = ?
+           AND h.turma_id IS NULL`,
         [escola_id]
       );
 
@@ -214,7 +199,7 @@ export const upsertModulacao = async (req, res, escolaIdFromRoute) => {
           r.escola_id,
           r.professor_id,
           r.disciplina_id,
-          r.turma_id, // pode ser NULL; índice único deve usar turma_id_norm
+          r.turma_id,
           r.aulas,
         ]);
         await conn.query(baseSql, [values]);
@@ -240,10 +225,13 @@ export const upsertModulacao = async (req, res, escolaIdFromRoute) => {
 // GET /api/modulacao/carga-turma?turno=X  → Mapa de carga real por turma
 // ============================================================================
 // Retorna: { [turma_id]: { [disciplina_id]: N_aulas } }
-// Lógica de fallback (cascata):
-//   1. disciplina_carga_segmento (escola + disciplina + etapa + turno)
-//   2. disciplinas.carga (global da escola)
-//   3. padrão 1
+//
+// Lógica correta e simplificada:
+//   A tabela DISCIPLINAS já é cadastrada por Etapa + Turno + Carga.
+//   Exemplo: ARTES|Fundamental|Noturno = carga 1; ARTES|Médio|Noturno = carga 3.
+//   A tabela TURMA_CARGAS vincula cada turma à disciplina específica de sua etapa/turno.
+//   Basta fazer JOIN turma_cargas → disciplinas para obter a carga real diretamente.
+//   Nenhuma tabela auxiliar de configuração é necessária.
 // ============================================================================
 export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
   const { turno } = req.query || {};
@@ -253,65 +241,28 @@ export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
   if (!turno)     return res.status(400).json({ erro: "turno é obrigatório." });
 
   try {
-    // 1) Turmas do turno (ano letivo corrente)
-    const [turmas] = await pool.query(
-      `SELECT id, etapa, turno FROM turmas
-       WHERE escola_id = ? AND turno = ? AND ano = YEAR(CURDATE())`,
+    // JOIN direto: turma_cargas → disciplinas → turmas
+    // O disciplina_id em turma_cargas já aponta para o registro correto
+    // de disciplinas (com etapa+turno+carga da turma).
+    const [rows] = await pool.query(
+      `SELECT
+         tc.turma_id,
+         tc.disciplina_id,
+         IFNULL(d.carga, 1) AS carga
+       FROM turma_cargas tc
+       JOIN disciplinas d ON d.id = tc.disciplina_id
+       JOIN turmas      t ON t.id  = tc.turma_id
+       WHERE tc.escola_id = ?
+         AND t.turno      = ?
+         AND t.ano        = YEAR(CURDATE())`,
       [escola_id, turno]
     );
-    if (!turmas.length) return res.json({});
 
-    // 2) Configurações específicas (tabela disciplina_carga_segmento)
-    const [configs] = await pool.query(
-      `SELECT disciplina_id, etapa, turno, carga
-       FROM disciplina_carga_segmento
-       WHERE escola_id = ?`,
-      [escola_id]
-    );
-    // mapa: "etapa_norm|turno_norm|disc_id" → carga
-    const cfgMap = {};
-    for (const c of configs) {
-      const key = `${String(c.etapa).toLowerCase().trim()}|${String(c.turno).toLowerCase().trim()}|${c.disciplina_id}`;
-      cfgMap[key] = c.carga;
-    }
-
-    // 3) Carga global da disciplina (fallback)
-    const [disciplinas] = await pool.query(
-      `SELECT id, IFNULL(carga, 1) AS carga FROM disciplinas WHERE escola_id = ?`,
-      [escola_id]
-    );
-    const discCargaGlobal = {};
-    for (const d of disciplinas) discCargaGlobal[d.id] = Number(d.carga) || 1;
-
-    // 4) Disciplinas vinculadas a cada turma (turma_cargas)
-    const turmaIds = turmas.map(t => t.id);
-    const phTurmas = turmaIds.map(() => "?").join(",");
-    const [turmaCargas] = await pool.query(
-      `SELECT turma_id, disciplina_id FROM turma_cargas
-       WHERE escola_id = ? AND turma_id IN (${phTurmas})`,
-      [escola_id, ...turmaIds]
-    );
-
-    // 5) Monta mapa auxiliar { turma_id: { etapa, turno } }
-    const turmaInfo = {};
-    for (const t of turmas) turmaInfo[t.id] = { etapa: t.etapa || "", turno: t.turno || "" };
-
-    // 6) Resolve carga por turma × disciplina
+    // Monta mapa { turma_id: { disciplina_id: carga } }
     const resultado = {};
-    for (const tc of turmaCargas) {
-      const info = turmaInfo[tc.turma_id];
-      if (!info) continue;
-
-      const etapaNorm = String(info.etapa).toLowerCase().trim();
-      const turnoNorm = String(info.turno).toLowerCase().trim();
-      const discId   = tc.disciplina_id;
-      const cfgKey   = `${etapaNorm}|${turnoNorm}|${discId}`;
-
-      // Cascata: config específica → global → padrão 1
-      const carga = cfgMap[cfgKey] ?? discCargaGlobal[discId] ?? 1;
-
-      if (!resultado[tc.turma_id]) resultado[tc.turma_id] = {};
-      resultado[tc.turma_id][discId] = carga;
+    for (const row of rows) {
+      if (!resultado[row.turma_id]) resultado[row.turma_id] = {};
+      resultado[row.turma_id][row.disciplina_id] = Number(row.carga) || 1;
     }
 
     return res.json(resultado);
