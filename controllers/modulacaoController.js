@@ -235,3 +235,88 @@ export const upsertModulacao = async (req, res, escolaIdFromRoute) => {
     return res.status(500).json({ message: "Falha inesperada." });
   }
 };
+
+// ============================================================================
+// GET /api/modulacao/carga-turma?turno=X  → Mapa de carga real por turma
+// ============================================================================
+// Retorna: { [turma_id]: { [disciplina_id]: N_aulas } }
+// Lógica de fallback (cascata):
+//   1. disciplina_carga_segmento (escola + disciplina + etapa + turno)
+//   2. disciplinas.carga (global da escola)
+//   3. padrão 1
+// ============================================================================
+export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
+  const { turno } = req.query || {};
+  const escola_id = req.user?.escola_id ?? escolaIdFromRoute;
+
+  if (!escola_id) return res.status(403).json({ erro: "Acesso negado: escola não definida." });
+  if (!turno)     return res.status(400).json({ erro: "turno é obrigatório." });
+
+  try {
+    // 1) Turmas do turno (ano letivo corrente)
+    const [turmas] = await pool.query(
+      `SELECT id, etapa, turno FROM turmas
+       WHERE escola_id = ? AND turno = ? AND ano = YEAR(CURDATE())`,
+      [escola_id, turno]
+    );
+    if (!turmas.length) return res.json({});
+
+    // 2) Configurações específicas (tabela disciplina_carga_segmento)
+    const [configs] = await pool.query(
+      `SELECT disciplina_id, etapa, turno, carga
+       FROM disciplina_carga_segmento
+       WHERE escola_id = ?`,
+      [escola_id]
+    );
+    // mapa: "etapa_norm|turno_norm|disc_id" → carga
+    const cfgMap = {};
+    for (const c of configs) {
+      const key = `${String(c.etapa).toLowerCase().trim()}|${String(c.turno).toLowerCase().trim()}|${c.disciplina_id}`;
+      cfgMap[key] = c.carga;
+    }
+
+    // 3) Carga global da disciplina (fallback)
+    const [disciplinas] = await pool.query(
+      `SELECT id, IFNULL(carga, 1) AS carga FROM disciplinas WHERE escola_id = ?`,
+      [escola_id]
+    );
+    const discCargaGlobal = {};
+    for (const d of disciplinas) discCargaGlobal[d.id] = Number(d.carga) || 1;
+
+    // 4) Disciplinas vinculadas a cada turma (turma_cargas)
+    const turmaIds = turmas.map(t => t.id);
+    const phTurmas = turmaIds.map(() => "?").join(",");
+    const [turmaCargas] = await pool.query(
+      `SELECT turma_id, disciplina_id FROM turma_cargas
+       WHERE escola_id = ? AND turma_id IN (${phTurmas})`,
+      [escola_id, ...turmaIds]
+    );
+
+    // 5) Monta mapa auxiliar { turma_id: { etapa, turno } }
+    const turmaInfo = {};
+    for (const t of turmas) turmaInfo[t.id] = { etapa: t.etapa || "", turno: t.turno || "" };
+
+    // 6) Resolve carga por turma × disciplina
+    const resultado = {};
+    for (const tc of turmaCargas) {
+      const info = turmaInfo[tc.turma_id];
+      if (!info) continue;
+
+      const etapaNorm = String(info.etapa).toLowerCase().trim();
+      const turnoNorm = String(info.turno).toLowerCase().trim();
+      const discId   = tc.disciplina_id;
+      const cfgKey   = `${etapaNorm}|${turnoNorm}|${discId}`;
+
+      // Cascata: config específica → global → padrão 1
+      const carga = cfgMap[cfgKey] ?? discCargaGlobal[discId] ?? 1;
+
+      if (!resultado[tc.turma_id]) resultado[tc.turma_id] = {};
+      resultado[tc.turma_id][discId] = carga;
+    }
+
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[modulacao/carga-turma] Erro:", err);
+    return res.status(500).json({ erro: "Erro ao calcular carga por turma." });
+  }
+};

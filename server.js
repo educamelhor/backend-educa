@@ -799,6 +799,32 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar questoes_uso_escola (não crítico):", migErr.message);
   }
 
+  // [2026-05-19] Modulação Inteligente: carga de disciplina por etapa+turno por escola
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS disciplina_carga_segmento (
+        id            INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+        escola_id     INT             NOT NULL,
+        disciplina_id INT             NOT NULL,
+        etapa         VARCHAR(80)     NOT NULL COMMENT 'Ex: Fundamental, Médio, Técnico',
+        turno         VARCHAR(50)     NOT NULL COMMENT 'Ex: Matutino, Vespertino, Noturno',
+        carga         INT UNSIGNED    NOT NULL DEFAULT 1 COMMENT 'Nº de aulas por turma por semana',
+        criado_em     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uq_disc_seg (escola_id, disciplina_id, etapa, turno),
+        INDEX idx_escola_disc (escola_id, disciplina_id),
+        INDEX idx_escola_etapa (escola_id, etapa, turno)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Modulação inteligente: aulas por disciplina × etapa × turno por escola'
+    `);
+    console.log("[MIGRATION] Tabela disciplina_carga_segmento garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar disciplina_carga_segmento (não crítico):", migErr.message);
+  }
+
+
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)

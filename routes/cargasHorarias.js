@@ -220,5 +220,111 @@ router.post("/definir-lote", verificarEscola, async (req, res) => {
   }
 });
 
-export default router;
 
+// ----------------------------------------------------------------------------
+// ============================================================================
+// ROTAS MODULAÇÃO INTELIGENTE: config-segmento
+// Configuração de carga por disciplina × etapa × turno por escola.
+// Alimenta a lógica de "quanto essa disciplina consome por turma" na modulação.
+// ============================================================================
+
+// GET /api/cargas-horarias/config-segmento
+// Lista todas as configs da escola (ou filtra por disciplina_id)
+router.get("/config-segmento", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { disciplina_id } = req.query;
+
+    let sql = `
+      SELECT
+        dcs.id,
+        dcs.disciplina_id,
+        d.nome AS disciplina_nome,
+        dcs.etapa,
+        dcs.turno,
+        dcs.carga,
+        dcs.atualizado_em
+      FROM disciplina_carga_segmento dcs
+      JOIN disciplinas d ON d.id = dcs.disciplina_id
+      WHERE dcs.escola_id = ?
+    `;
+    const params = [escola_id];
+
+    if (disciplina_id) {
+      sql += " AND dcs.disciplina_id = ?";
+      params.push(Number(disciplina_id));
+    }
+
+    sql += " ORDER BY d.nome, dcs.etapa, dcs.turno";
+
+    const [rows] = await pool.query(sql, params);
+    return res.json({ ok: true, itens: rows });
+  } catch (err) {
+    console.error("[config-segmento] Erro ao listar:", err);
+    return res.status(500).json({ message: "Erro ao listar configurações de segmento." });
+  }
+});
+
+// POST /api/cargas-horarias/config-segmento
+// Upsert: cria ou atualiza a config (escola, disciplina, etapa, turno) → carga
+router.post("/config-segmento", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { disciplina_id, etapa, turno, carga } = req.body;
+
+    if (!disciplina_id || !etapa || !turno || carga == null) {
+      return res.status(400).json({ message: "disciplina_id, etapa, turno e carga são obrigatórios." });
+    }
+
+    const cargaNum = Number(carga);
+    if (!Number.isInteger(cargaNum) || cargaNum < 1) {
+      return res.status(400).json({ message: "carga deve ser um inteiro >= 1." });
+    }
+
+    await pool.query(
+      `INSERT INTO disciplina_carga_segmento (escola_id, disciplina_id, etapa, turno, carga)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE carga = VALUES(carga), atualizado_em = NOW()`,
+      [escola_id, Number(disciplina_id), String(etapa).trim(), String(turno).trim(), cargaNum]
+    );
+
+    // Retorna o registro atualizado/criado
+    const [[row]] = await pool.query(
+      `SELECT dcs.id, dcs.disciplina_id, d.nome AS disciplina_nome, dcs.etapa, dcs.turno, dcs.carga
+       FROM disciplina_carga_segmento dcs
+       JOIN disciplinas d ON d.id = dcs.disciplina_id
+       WHERE dcs.escola_id = ? AND dcs.disciplina_id = ? AND dcs.etapa = ? AND dcs.turno = ?`,
+      [escola_id, Number(disciplina_id), String(etapa).trim(), String(turno).trim()]
+    );
+
+    return res.status(200).json({ ok: true, item: row });
+  } catch (err) {
+    console.error("[config-segmento] Erro ao salvar:", err);
+    return res.status(500).json({ message: "Erro ao salvar configuração de segmento." });
+  }
+});
+
+// DELETE /api/cargas-horarias/config-segmento/:id
+// Remove uma configuração específica da escola
+router.delete("/config-segmento/:id", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const id = Number(req.params.id);
+
+    const [result] = await pool.query(
+      "DELETE FROM disciplina_carga_segmento WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Configuração não encontrada." });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[config-segmento] Erro ao remover:", err);
+    return res.status(500).json({ message: "Erro ao remover configuração de segmento." });
+  }
+});
+
+export default router;

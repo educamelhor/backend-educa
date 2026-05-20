@@ -21,6 +21,7 @@ import {
   salvarModulacao,           // LEGADO: mantido p/ compatibilidade do frontend
   listarModulacaoPorTurno,   // Lista por turno (filtro no controller)
   upsertModulacao,           // NOVO: UPSERT em lote
+  getCargaPorTurma,          // MODULAÇÃO INTELIGENTE: mapa de carga por turma
 } from "../controllers/modulacaoController.js";
 
 const router = express.Router();
@@ -43,6 +44,17 @@ function verificarEscola(req, res, next) {
 router.get("/", verificarEscola, (req, res) => {
   listarModulacaoPorTurno(req, res, req.user.escola_id);
 });
+
+// ----------------------------------------------------------------------------
+// GET /api/modulacao/carga-turma?turno=X
+// Retorna mapa { turma_id: { disciplina_id: N_aulas } } com lógica inteligente:
+// fallback: config específica → carga global da disciplina → padrão 1
+// ----------------------------------------------------------------------------
+router.get("/carga-turma", verificarEscola, (req, res) => {
+  getCargaPorTurma(req, res, req.user.escola_id);
+});
+
+
 
 // ----------------------------------------------------------------------------
 // POST /api/modulacao  (LEGADO - compatibilidade)
