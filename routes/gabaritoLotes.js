@@ -1441,16 +1441,15 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
     const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
     const nota = parseFloat((acertos * valorQuestao).toFixed(2));
 
-    // 7. Calcular confiança
-    const mediana = bolhasData.mediana || 200;
-    const threshold = bolhasData.threshold || 150;
-    const confianca = Math.min(100, Math.max(0,
-      100 - (avisos.length / Math.max(1, numQuestoes)) * 100
-    ));
+    // 7. Confiança: usar o valor calculado pelo OMR (n_det/nQ) — mais preciso
+    // que recalcular com base em avisos
+    const confianca = typeof bolhasData.confianca === 'number'
+      ? bolhasData.confianca
+      : Math.min(100, Math.max(0, 100 - (avisos.length / Math.max(1, numQuestoes)) * 100));
 
-    console.log(`[scan-mobile] avaliacao=${avaliacao_id} aluno=${codigoAluno || '?'} acertos=${acertos}/${numQuestoes} nota=${nota}`);
+    console.log(`[scan-mobile] avaliacao=${avaliacao_id} aluno=${codigoAluno || '?'} acertos=${acertos}/${numQuestoes} nota=${nota} confianca=${confianca.toFixed(1)}%`);
 
-    res.json({
+    const respPayload = {
       respostas: respostasAluno,
       gabaritoOficial: gabOficial,
       qrData,
@@ -1465,7 +1464,15 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
       confianca: parseFloat(confianca.toFixed(1)),
       arquivoId: arquivo_id ? Number(arquivo_id) : null,
       loteId: lote_id ? Number(lote_id) : null,
-    });
+    };
+
+    // Passar imagem de debug do OMR (mostra onde cada bolha foi amostrada)
+    // Útil para diagnóstico de alinhamento durante desenvolvimento
+    if (bolhasData.debugImage) {
+      respPayload.debugImage = bolhasData.debugImage;
+    }
+
+    res.json(respPayload);
   } catch (err) {
     console.error("[scan-mobile] Erro:", err);
     res.status(500).json({ error: err?.message || "Erro interno ao processar scan." });
