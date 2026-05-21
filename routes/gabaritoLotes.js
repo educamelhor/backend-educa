@@ -1391,6 +1391,40 @@ router.post("/scan-mobile/preview", verificarEscola, upload.single("file"), asyn
   }
 });
 
+// ─── POST /api/gabarito-lotes/scan-mobile/detect-corners ─────────────────────
+// Proxy rápido para feedback em tempo real: envia foto de probe para o OMR
+// e retorna quais cantos têm marcadores detectados.
+// Chamado ~1x/segundo pelo app mobile enquanto professor posiciona o gabarito.
+router.post("/scan-mobile/detect-corners", verificarEscola, upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.json({ TL: false, TR: false, BL: false, BR: false, detected: 0 });
+  }
+
+  try {
+    const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
+
+    const formCorners = new FormData();
+    formCorners.append("file", req.file.buffer, { filename: "probe.jpg" });
+
+    const respCorners = await fetch(`${OMR_URL}/detect-corners`, {
+      method: "POST",
+      body: formCorners,
+      headers: formCorners.getHeaders(),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!respCorners.ok) {
+      return res.json({ TL: false, TR: false, BL: false, BR: false, detected: 0 });
+    }
+
+    const data = await respCorners.json();
+    return res.json(data);
+  } catch (err) {
+    // Erros silenciosos — o app ignora e tenta novamente no próximo ciclo
+    return res.json({ TL: false, TR: false, BL: false, BR: false, detected: 0 });
+  }
+});
+
 // ─── POST /api/gabarito-lotes/scan-mobile ────────────────────────────────────
 // Proxy OMR para o app mobile: recebe foto, crop, lê bolhas, compara gabarito
 // Retorna resultado completo (respostas, acertos, nota, confiança)
