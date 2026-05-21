@@ -1333,6 +1333,64 @@ router.get("/corretores-disponiveis", verificarEscola, async (req, res) => {
 // EDUCA-SCAN — Endpoints para o app mobile do professor
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── POST /api/gabarito-lotes/scan-mobile/preview ────────────────────────────
+// Etapa 1 do fluxo de 2 etapas:
+// Recebe foto bruta do app, alinha via OMR (/crop-gabarito) e devolve
+// a imagem alinhada como base64 para o professor confirmar antes de ler bolhas.
+// NÃO faz leitura de bolhas. NÃO persiste nada.
+router.post("/scan-mobile/preview", verificarEscola, upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Nenhuma imagem enviada (campo 'file')." });
+  }
+
+  try {
+    const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
+
+    // Health check rápido
+    try {
+      const hResp = await fetch(`${OMR_URL}/health`, { signal: AbortSignal.timeout(5000) });
+      if (!hResp.ok) throw new Error("OMR health check falhou");
+    } catch (omrErr) {
+      console.error(`[scan-preview] OMR indisponível em ${OMR_URL}:`, omrErr.code || omrErr.message);
+      return res.status(503).json({ error: "Serviço OMR indisponível. Tente novamente em alguns minutos." });
+    }
+
+    // Enviar para /crop-gabarito (só alinhamento)
+    const formCrop = new FormData();
+    formCrop.append("file", req.file.buffer, { filename: "gabarito_preview.jpg" });
+
+    const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
+      method: "POST",
+      body: formCrop,
+      headers: formCrop.getHeaders(),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!respCrop.ok) {
+      const errText = await respCrop.text().catch(() => "");
+      console.error(`[scan-preview] crop falhou: ${respCrop.status} ${errText}`);
+      return res.status(422).json({
+        error: "Não foi possível alinhar o gabarito. Certifique-se de que os 4 cantos estejam visíveis na foto.",
+        detail: errText,
+      });
+    }
+
+    // Converte a imagem PNG alinhada em base64
+    const cropBuffer = Buffer.from(await respCrop.arrayBuffer());
+    const base64 = cropBuffer.toString("base64");
+
+    console.log(`[scan-preview] OK — imagem alinhada ${cropBuffer.length} bytes → base64 ${base64.length} chars`);
+
+    return res.json({
+      ok: true,
+      alignedImage: `data:image/png;base64,${base64}`,
+    });
+  } catch (err) {
+    console.error("[scan-preview] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro interno ao processar preview." });
+  }
+});
+
 // ─── POST /api/gabarito-lotes/scan-mobile ────────────────────────────────────
 // Proxy OMR para o app mobile: recebe foto, crop, lê bolhas, compara gabarito
 // Retorna resultado completo (respostas, acertos, nota, confiança)
