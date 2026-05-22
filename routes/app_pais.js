@@ -642,6 +642,179 @@ router.post("/consentimento/confirmar", authAppPais, async (req, res) => {
 
 
 // ============================================================================
+// GET /consentimento/pre-login?cpf=...
+// Rota pré-autenticação: carrega os alunos do responsável pelo CPF (sem token).
+// Usado pela ConsentimentoScreen quando o responsável ainda não está logado.
+// ============================================================================
+router.get("/consentimento/pre-login", async (req, res) => {
+  const db = pool;
+  const cpf = normalizarCpf(req.query?.cpf);
+  if (!cpf) return res.status(400).json({ ok: false, message: "CPF obrigatório." });
+
+  try {
+    const [[resp]] = await db.query(
+      "SELECT id, nome, cpf FROM responsaveis WHERE cpf = ? LIMIT 1",
+      [cpf]
+    );
+    if (!resp) return res.status(404).json({ ok: false, message: "Responsável não encontrado." });
+
+    const [alunos] = await db.query(
+      `SELECT ra.aluno_id, a.estudante AS nome, ra.consentimento_imagem
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       WHERE ra.responsavel_id = ? AND ra.ativo = 1
+       ORDER BY a.estudante ASC`,
+      [resp.id]
+    );
+
+    return res.json({
+      ok: true,
+      responsavel: { id: resp.id, nome: resp.nome, cpf: resp.cpf },
+      alunos: alunos.map(a => ({
+        aluno_id: a.aluno_id,
+        nome: a.nome,
+        consentimento_imagem: !!a.consentimento_imagem,
+      })),
+    });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /consentimento/pre-login GET:", error);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar dados." });
+  }
+});
+
+// ============================================================================
+// POST /consentimento/pre-login
+// Rota pré-autenticação: salva consentimento usando CPF (sem token JWT).
+// Idêntica ao /consentimento/confirmar, mas aceita CPF em vez de token.
+// Usada quando o responsável assina o termo ANTES do primeiro login.
+// ============================================================================
+router.post("/consentimento/pre-login", async (req, res) => {
+  const db = pool;
+  const cpf = normalizarCpf(req.body?.cpf);
+  if (!cpf) return res.status(400).json({ ok: false, message: "CPF obrigatório." });
+
+  const {
+    aluno_ids     = [],
+    checkboxes    = {},
+    versao_termo  = "3.0",
+    device_id     = null,
+    plataforma    = null,
+    termo_lido_em = null,
+  } = req.body;
+
+  if (!Array.isArray(aluno_ids) || aluno_ids.length === 0) {
+    return res.status(400).json({ ok: false, message: "aluno_ids é obrigatório." });
+  }
+
+  const requiredBoxes = [
+    "fotografia_cadastro", "imagem_sistema", "template_biometrico",
+    "sistemas_seguranca", "app_educa_mobile", "captura_educa_capture",
+  ];
+  const faltando = requiredBoxes.filter(k => !checkboxes[k]);
+  if (faltando.length > 0) {
+    return res.status(400).json({ ok: false, message: `Todos os 6 checkboxes são obrigatórios.` });
+  }
+
+  try {
+    const [[resp]] = await db.query(
+      "SELECT id, nome, cpf FROM responsaveis WHERE cpf = ? LIMIT 1",
+      [cpf]
+    );
+    if (!resp) return res.status(404).json({ ok: false, message: "Responsável não encontrado." });
+
+    const responsavel_id = resp.id;
+    const ipAddress  = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null;
+    const userAgent   = req.headers["user-agent"] || null;
+    const alunoIdsNum = aluno_ids.map(Number);
+
+    const [vinculos] = await db.query(
+      `SELECT ra.aluno_id, ra.escola_id, ra.consentimento_imagem, a.estudante AS aluno_nome
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       WHERE ra.responsavel_id = ?
+         AND ra.aluno_id IN (${alunoIdsNum.map(() => "?").join(",")})
+         AND ra.ativo = 1`,
+      [responsavel_id, ...alunoIdsNum]
+    );
+
+    if (vinculos.length === 0) {
+      return res.status(403).json({ ok: false, message: "Nenhum vínculo ativo encontrado." });
+    }
+
+    const pendentes = vinculos.filter(v => !v.consentimento_imagem);
+    if (pendentes.length === 0) {
+      return res.json({ ok: true, message: "Consentimento já registrado.", registrados: 0 });
+    }
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      const registrados = [];
+
+      for (const vinculo of pendentes) {
+        const { aluno_id: alunoId, escola_id: escolaId, aluno_nome: alunoNome } = vinculo;
+
+        const [logResult] = await conn.query(
+          `INSERT INTO consentimentos_log (
+            responsavel_id, aluno_id, escola_id,
+            responsavel_nome, responsavel_cpf, aluno_nome,
+            acao, canal, versao_termo,
+            ip_address, user_agent, device_id, plataforma, termo_lido_em,
+            chk_fotografia_cadastro, chk_imagem_sistema, chk_template_biometrico,
+            chk_sistemas_seguranca, chk_app_educa_mobile, chk_captura_educa_capture
+          ) VALUES (?, ?, ?, ?, ?, ?, 'CONCEDER', 'DIGITAL_APP', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            responsavel_id, alunoId, escolaId,
+            resp.nome, resp.cpf || "", alunoNome,
+            versao_termo, ipAddress, userAgent, device_id, plataforma,
+            termo_lido_em ? new Date(termo_lido_em) : null,
+            checkboxes.fotografia_cadastro   ? 1 : 0,
+            checkboxes.imagem_sistema        ? 1 : 0,
+            checkboxes.template_biometrico   ? 1 : 0,
+            checkboxes.sistemas_seguranca    ? 1 : 0,
+            checkboxes.app_educa_mobile      ? 1 : 0,
+            checkboxes.captura_educa_capture ? 1 : 0,
+          ]
+        );
+
+        await conn.query(
+          `UPDATE responsaveis_alunos
+           SET consentimento_imagem        = 1,
+               consentimento_imagem_em     = NOW(),
+               consentimento_imagem_por    = NULL,
+               consentimento_canal         = 'DIGITAL_APP',
+               consentimento_versao_termo  = ?,
+               consentimento_log_id        = ?
+           WHERE responsavel_id = ? AND escola_id = ? AND aluno_id = ? AND ativo = 1`,
+          [versao_termo, logResult.insertId, responsavel_id, escolaId, alunoId]
+        );
+
+        registrados.push(alunoId);
+      }
+
+      await conn.commit();
+      console.log(`[APP_PAIS][PRE-LOGIN-CONSENT] CPF=${cpf} registrou consentimento para ${registrados.length} aluno(s)`);
+
+      return res.json({
+        ok: true,
+        message: "Consentimento digital registrado com sucesso.",
+        registrados: registrados.length,
+        aluno_ids: registrados,
+      });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /consentimento/pre-login POST:", error);
+    return res.status(500).json({ ok: false, message: "Erro ao registrar consentimento." });
+  }
+});
+
+
+// ============================================================================
 // GET /alunos (Home)
 // ============================================================================
 router.get("/alunos", authAppPais, async (req, res) => {
@@ -1593,6 +1766,28 @@ router.post("/solicitar-codigo", async (req, res) => {
           "Seu credenciamento ainda não foi liberado. Procure a secretaria da escola do estudante ou solicite ao responsável já credenciado para liberar seu acesso.",
       });
     }
+
+    // ── Verifica se o responsável já assinou o Termo de Consentimento Específico ──────
+    // O consentimento pode ser dado:
+    //   a) Digitalmente via app (DIGITAL_APP) — pelo próprio responsável
+    //   b) Fisicamente na escola (FISICO) — direção marca consentimento_imagem = 1 no portal
+    // Se nenhum aluno tiver consentimento_imagem = 1, bloqueia com TERMO_PENDENTE.
+    const [[{ comConsentimento }]] = await db.query(
+      `SELECT COUNT(*) AS comConsentimento
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND ativo = 1 AND consentimento_imagem = 1`,
+      [responsavel.id]
+    );
+
+    if (comConsentimento === 0) {
+      return res.status(403).json({
+        code: "TERMO_PENDENTE",
+        message:
+          "Para acessar o EDUCA MOBILE, você precisa assinar o Termo de Consentimento Específico. " +
+          "Você pode assinar digitalmente agora, ou comparecer à escola para assinar fisicamente.",
+      });
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // ── Sem e-mail e canal email: pede o e-mail ao usuário ──────────────────
     if (canal === "email" && !email) {
