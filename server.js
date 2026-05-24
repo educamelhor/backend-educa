@@ -95,6 +95,7 @@ import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
 import disciplinarAtasRouter from "./routes/disciplinar-atas.js";
+import disciplinarLiberacoesRouter from "./routes/disciplinar-liberacoes.js";
 import relatorioDisciplinarRouter from "./routes/relatorio-disciplinar.js";
 import disciplinarMetadadosRouter from "./routes/disciplinar-metadados.js";
 import listasImpressaoRouter from "./routes/listas-impressao.js";
@@ -113,6 +114,7 @@ import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js
 import pedagogicoRelatoriosRouter from "./routes/pedagogico_relatorios.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
+import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -670,6 +672,39 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration updated_at (não crítico):", migErr.message);
   }
 
+  // [2026-05-23] Módulo Liberação Antecipada — tabela liberacoes_alunos
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS liberacoes_alunos (
+        id                              INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+        escola_id                       INT           NOT NULL,
+        aluno_id                        INT           NOT NULL,
+        turma_id                        INT           DEFAULT NULL,
+        data_hora_saida                 DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        motivo                          VARCHAR(255)  NOT NULL,
+        observacao                      TEXT          DEFAULT NULL,
+        responsavel_cadastrado_id       INT           DEFAULT NULL
+          COMMENT 'FK responsaveis.id — preenchido quando o responsável é cadastrado',
+        responsavel_nome_avulso         VARCHAR(255)  DEFAULT NULL
+          COMMENT 'Nome quando não é responsável cadastrado',
+        responsavel_parentesco_avulso   VARCHAR(50)   DEFAULT NULL,
+        responsavel_telefone_avulso     VARCHAR(30)   DEFAULT NULL,
+        registrado_por                  VARCHAR(255)  DEFAULT NULL,
+        criado_em                       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola        (escola_id),
+        INDEX idx_aluno         (aluno_id),
+        INDEX idx_turma         (turma_id),
+        INDEX idx_data          (data_hora_saida),
+        INDEX idx_escola_data   (escola_id, data_hora_saida)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Registro de liberações antecipadas de alunos — Módulo Disciplinar'
+    `);
+    console.log("[MIGRATION] Tabela liberacoes_alunos garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar liberacoes_alunos (não crítico):", migErr.message);
+  }
+
   // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
   try {
     // Verifica se 'scan_mobile' já está no ENUM antes de alterar
@@ -850,6 +885,154 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar plano_avaliacao (não crítico):", migErr.message);
   }
 
+  // ============================================================================
+  // [2026-05-23 v2] MÓDULO BIBLIOTECA — Acervo Universal + Estoque por Escola
+  //   biblioteca_acervo       → catálogo universal (sem escola_id)
+  //   biblioteca_acervo_escola → exemplares por escola
+  // ============================================================================
+
+  // Remove tabela antiga (acervo por escola) para rebuild limpo
+  // Seguro: usuário autorizou descartar os 2 livros de teste
+  try {
+    await pool.query(`DROP TABLE IF EXISTS biblioteca_acervo_escola`);
+    await pool.query(`DROP TABLE IF EXISTS biblioteca_acervo`);
+    console.log('[MIGRATION] Tabelas biblioteca antigas removidas para rebuild ✅');
+  } catch (migErr) {
+    console.warn('[MIGRATION] Drop biblioteca (não crítico):', migErr.message);
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_acervo (
+        id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        isbn           VARCHAR(20)  DEFAULT NULL,
+        titulo         VARCHAR(500) NOT NULL,
+        autor          VARCHAR(500) DEFAULT NULL,
+        editora        VARCHAR(300) DEFAULT NULL,
+        ano_publicacao INT          DEFAULT NULL COMMENT 'Apenas o ano (4 dígitos)',
+        genero         VARCHAR(200) DEFAULT NULL,
+        categoria      ENUM('infantil','juvenil','adulto','didatico','paradidatico','referencia','outro')
+                       NOT NULL DEFAULT 'juvenil',
+        sinopse        TEXT         DEFAULT NULL,
+        num_paginas    INT          DEFAULT NULL,
+        capa_url       TEXT         DEFAULT NULL,
+        criado_em      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_isbn (isbn),
+        INDEX idx_titulo (titulo(100))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Catálogo universal de livros — compartilhado entre todas as escolas'
+    `);
+    console.log('[MIGRATION] Tabela biblioteca_acervo (universal) garantida ✅');
+  } catch (migErr) {
+    console.warn('[MIGRATION] Erro ao criar biblioteca_acervo (não crítico):', migErr.message);
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_acervo_escola (
+        id                     INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        acervo_id              INT UNSIGNED NOT NULL,
+        escola_id              INT          NOT NULL,
+        exemplares             INT          NOT NULL DEFAULT 1,
+        exemplares_disponiveis INT          NOT NULL DEFAULT 1,
+        ativo                  TINYINT(1)   NOT NULL DEFAULT 1,
+        criado_em              DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_acervo_escola (acervo_id, escola_id),
+        INDEX idx_escola (escola_id),
+        CONSTRAINT fk_bae_acervo FOREIGN KEY (acervo_id)
+          REFERENCES biblioteca_acervo(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Estoque de exemplares por escola — acervo escolar'
+    `);
+    console.log('[MIGRATION] Tabela biblioteca_acervo_escola garantida ✅');
+  } catch (migErr) {
+    console.warn('[MIGRATION] Erro ao criar biblioteca_acervo_escola (não crítico):', migErr.message);
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_emprestimos (
+        id                        INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id                 INT NOT NULL,
+        livro_id                  INT UNSIGNED NOT NULL,
+        aluno_id                  INT NOT NULL,
+        data_emprestimo           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        data_prevista_devolucao   DATE DEFAULT NULL,
+        data_devolucao            DATETIME DEFAULT NULL,
+        status                    ENUM('ativo','devolvido','atrasado') NOT NULL DEFAULT 'ativo',
+        registrado_por            VARCHAR(255) DEFAULT NULL,
+        observacao                TEXT DEFAULT NULL,
+        PRIMARY KEY (id),
+        INDEX idx_escola (escola_id),
+        INDEX idx_livro (livro_id),
+        INDEX idx_aluno (aluno_id),
+        INDEX idx_status (status),
+        INDEX idx_escola_aluno (escola_id, aluno_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Controle de empréstimos da biblioteca escolar'
+    `);
+    console.log("[MIGRATION] Tabela biblioteca_emprestimos garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar biblioteca_emprestimos (não crítico):", migErr.message);
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_resenhas (
+        id               INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id        INT NOT NULL,
+        livro_id         INT UNSIGNED NOT NULL,
+        aluno_id         INT NOT NULL,
+        turma_id         INT DEFAULT NULL,
+        resumo           TEXT DEFAULT NULL,
+        resenha          TEXT DEFAULT NULL,
+        favorito         VARCHAR(1000) DEFAULT NULL,
+        avaliacao        TINYINT DEFAULT NULL COMMENT '1-5 estrelas',
+        respostas_json   JSON DEFAULT NULL COMMENT 'Perguntas respondidas [{pergunta, resposta}]',
+        status           ENUM('rascunho','enviado','aprovado','destaque') NOT NULL DEFAULT 'enviado',
+        pontuacao        DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+        aprovado_por     VARCHAR(255) DEFAULT NULL,
+        criado_em        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola (escola_id),
+        INDEX idx_livro (livro_id),
+        INDEX idx_aluno (aluno_id),
+        INDEX idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Resenhas e atividades do Leitor Destaque'
+    `);
+    console.log("[MIGRATION] Tabela biblioteca_resenhas garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar biblioteca_resenhas (não crítico):", migErr.message);
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_concurso (
+        id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id   INT NOT NULL,
+        titulo      VARCHAR(500) NOT NULL,
+        descricao   TEXT DEFAULT NULL,
+        data_inicio DATE DEFAULT NULL,
+        data_fim    DATE DEFAULT NULL,
+        status      ENUM('rascunho','ativo','encerrado') NOT NULL DEFAULT 'rascunho',
+        regras_json JSON DEFAULT NULL,
+        criado_em   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola (escola_id),
+        INDEX idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Concursos e culminâncias de leitura'
+    `);
+    console.log("[MIGRATION] Tabela biblioteca_concurso garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar biblioteca_concurso (não crítico):", migErr.message);
+  }
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
@@ -945,6 +1128,9 @@ async function bootstrap() {
 
   app.use("/api/escolas", autenticarToken, verificarEscola, escolasRouter);
 
+  // ✅ MÓDULO BIBLIOTECA
+  app.use("/api/biblioteca", bibliotecaRouter);
+
   if (ocrRouter) {
     app.use("/api/ocr", autenticarToken, verificarEscola, ocrRouter);
   } else {
@@ -1009,6 +1195,7 @@ async function bootstrap() {
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/disciplinar-atas", autenticarToken, verificarEscola, disciplinarAtasRouter);
+  app.use("/api/disciplinar-liberacoes", autenticarToken, verificarEscola, disciplinarLiberacoesRouter);
   app.use("/api/relatorio-disciplinar", autenticarToken, verificarEscola, relatorioDisciplinarRouter);
   app.use("/api/disciplinar-metadados", autenticarToken, verificarEscola, disciplinarMetadadosRouter);
   app.use("/api/listas-impressao", autenticarToken, verificarEscola, listasImpressaoRouter);

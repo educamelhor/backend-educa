@@ -659,7 +659,18 @@ router.post("/login", async (req, res) => {
 
     console.log("[AUTH/login] otp gravado no DB =", rowOtp);
 
-    if (usuario.email) await enviarCodigoEmail(usuario.email, codigo);
+    if (usuario.email) {
+      try {
+        await enviarCodigoEmail(usuario.email, codigo);
+      } catch (smtpErr) {
+        if (smtpErr.message === "SMTP_NAO_CONFIGURADO" && process.env.NODE_ENV !== "production") {
+          // ✅ DEV: SMTP não configurado — código disponível no terminal
+          console.warn(`\n🔑 [DEV] OTP para ${usuario.email}: *** ${codigo} *** (use este código para fazer login)\n`);
+        } else {
+          throw smtpErr;
+        }
+      }
+    }
 
     return res.json({ message: "Código enviado para confirmação.", usuarioId: usuario.id });
   } catch (err) {
