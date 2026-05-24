@@ -1,4 +1,4 @@
-// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
+﻿// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
@@ -2490,49 +2490,66 @@ router.get("/conteudos", authAppPais, async (req, res) => {
   try {
     const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
-    const alunoId = Number(req.query.aluno_id);
+    const alunoId      = Number(req.query.aluno_id);
     const disciplinaId = Number(req.query.disciplina_id);
-    const bimestre = Number(req.query.bimestre);
+    const bimestre     = Number(req.query.bimestre);
 
-    // ano_letivo opcional: se não vier, usamos o ano corrente
+    // ano_letivo opcional: se nao vier, usamos o ano corrente
     const anoLetivo = req.query.ano_letivo ? Number(req.query.ano_letivo) : new Date().getFullYear();
 
     if (!alunoId || Number.isNaN(alunoId)) {
-      return res.status(400).json({ message: "Parâmetro aluno_id inválido." });
+      return res.status(400).json({ message: "Parametro aluno_id invalido." });
     }
     if (!disciplinaId || Number.isNaN(disciplinaId)) {
-      return res.status(400).json({ message: "Parâmetro disciplina_id inválido." });
+      return res.status(400).json({ message: "Parametro disciplina_id invalido." });
     }
 
-    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
+    // DEMO-APPLE bypass - retorna objetivos de exemplo com topicos e subitens
     if (cpfAuth === '00000000019') {
-      return res.json({ ok: true,
+      const DEMO_OBJETIVOS = {
+        1: [
+          { texto: "Compreender os diferentes generos textuais e suas funcoes comunicativas", subitens: ["Narrativo: conto, cronica, fabula", "Descritivo: descricao de pessoas e lugares", "Argumentativo: artigo de opiniao"] },
+          { texto: "Desenvolver habilidades de leitura e interpretacao de texto", subitens: ["Identificacao de tema central", "Inferencias e conclusoes"] },
+        ],
+        2: [
+          { texto: "Dominar as operacoes fundamentais com numeros naturais e inteiros", subitens: ["Adicao e subtracao de inteiros", "Multiplicacao e divisao", "Potenciacao e radiciacao"] },
+          { texto: "Resolver situacoes-problema do cotidiano usando operacoes basicas", subitens: [] },
+        ],
+        3: [
+          { texto: "Analisar fenomenos naturais e suas relacoes com o cotidiano", subitens: ["Ciclo da agua e clima", "Ecossistemas brasileiros", "Biodiversidade e preservacao"] },
+        ],
+        4: [
+          { texto: "Consolidar os aprendizados do ano letivo com foco em revisao e aplicacao", subitens: ["Revisao dos principais conteudos", "Avaliacao pratica e contextualizada"] },
+        ],
+      };
+      const objetivosDemo = DEMO_OBJETIVOS[bimestre] || DEMO_OBJETIVOS[1];
+      return res.json({
+        ok: true,
         ref: { escola_id: null, turma_id: null, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-        itens: [],
+        objetivos: objetivosDemo,
       });
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
     if (!bimestre || Number.isNaN(bimestre) || bimestre < 1 || bimestre > 4) {
-      return res.status(400).json({ message: "Parâmetro bimestre inválido (1..4)." });
+      return res.status(400).json({ message: "Parametro bimestre invalido (1..4)." });
     }
     if (!anoLetivo || Number.isNaN(anoLetivo)) {
-      return res.status(400).json({ message: "Parâmetro ano_letivo inválido." });
+      return res.status(400).json({ message: "Parametro ano_letivo invalido." });
     }
 
-    // 1) Resolve escola_id e turma_id com validação do vínculo
+    // 1) Resolve escola_id, turma_id e serie com validacao do vinculo
     const [ctx] = await db.query(
-      `
-      SELECT
-        ra.escola_id,
-        a.turma_id
-      FROM responsaveis_alunos ra
-      INNER JOIN alunos a ON a.id = ra.aluno_id
-      WHERE ra.responsavel_id = ?
-        AND ra.aluno_id = ?
-        AND ra.ativo = 1
-      LIMIT 1
-      `,
+      `SELECT
+         ra.escola_id,
+         a.turma_id,
+         t.serie
+       FROM responsaveis_alunos ra
+       INNER JOIN alunos a ON a.id = ra.aluno_id
+       LEFT  JOIN turmas  t ON t.id = a.turma_id
+       WHERE ra.responsavel_id = ?
+         AND ra.aluno_id = ?
+         AND ra.ativo = 1
+       LIMIT 1`,
       [responsavel_id, alunoId]
     );
 
@@ -2541,67 +2558,75 @@ router.get("/conteudos", authAppPais, async (req, res) => {
     }
 
     const escolaId = ctx[0].escola_id;
-    const turmaId = ctx[0].turma_id;
+    const turmaId  = ctx[0].turma_id;
+    const serie    = String(ctx[0].serie || "").trim().toUpperCase();
 
-    if (!turmaId) {
+    if (!turmaId || !serie) {
       return res.json({
         ok: true,
         ref: { escola_id: escolaId, turma_id: null, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-        itens: [],
+        objetivos: [],
       });
     }
 
-    // 2) Busca o plano (cabeçalho)
-    const [planos] = await db.query(
-      `
-      SELECT id
-      FROM conteudos_planos
-      WHERE escola_id = ?
-        AND turma_id = ?
-        AND disciplina_id = ?
-        AND ano_letivo = ?
-        AND bimestre = ?
-        AND status = 'ATIVO'
-      LIMIT 1
-      `,
-      [escolaId, turmaId, disciplinaId, anoLetivo, bimestre]
-    );
-
-    if (!planos.length) {
-      return res.json({
-        ok: true,
-        ref: { escola_id: escolaId, turma_id: turmaId, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-        itens: [],
-      });
-    }
-
-    const planoId = planos[0].id;
-
-    // 3) Busca itens (ordenados) — formato pronto para renderizar em lista
+    // 2) Busca objetivo_texto em conteudos_plano_itens
+    //    Filtro: escola + serie + disciplina + bimestre + ano_letivo
+    //    Pode haver multiplas linhas (um por Conteudo SEEDF) -- agrega todas
     const [itensRows] = await db.query(
-      `
-      SELECT ordem, texto
-      FROM conteudos_itens
-      WHERE plano_id = ?
-        AND status = 'ATIVO'
-      ORDER BY ordem ASC
-      `,
-      [planoId]
+      `SELECT objetivo_texto
+       FROM conteudos_plano_itens
+       WHERE escola_id   = ?
+         AND serie       = ?
+         AND disciplina_id = ?
+         AND ano_letivo  = ?
+         AND bimestre    = ?
+         AND objetivo_texto IS NOT NULL
+         AND TRIM(objetivo_texto) != ''
+       ORDER BY id ASC
+       LIMIT 100`,
+      [escolaId, serie, disciplinaId, anoLetivo, bimestre]
     );
 
-    const itens = itensRows.map((x) => x.texto);
+    // 3) Helper: parse do texto estruturado "1. Topico\n   - Subitem" em [{texto, subitens}]
+    function parseObjetivoTexto(texto) {
+      if (!texto) return [];
+      const topicos = [];
+      let atual = null;
+      for (const linha of texto.split('\n')) {
+        const tMatch = linha.match(/^\s*\d+[.)]\s+(.+)/);
+        const sMatch = linha.match(/^\s*[*\-]\s+(.+)/) || linha.match(/^\s*\u2022\s+(.+)/);
+        if (tMatch) {
+          atual = { texto: tMatch[1].trim(), subitens: [] };
+          topicos.push(atual);
+        } else if (sMatch && atual) {
+          const sub = sMatch[1].trim();
+          if (sub) atual.subitens.push(sub);
+        } else {
+          const raw = linha.replace(/^[*\-\u2022]\s*/, '').trim();
+          if (raw && !atual) {
+            atual = { texto: raw, subitens: [] };
+            topicos.push(atual);
+          } else if (raw && atual && raw !== atual.texto && /^\s{2,}/.test(linha)) {
+            atual.subitens.push(raw);
+          }
+        }
+      }
+      return topicos;
+    }
+
+    // 4) Agrega topicos de todas as linhas
+    const objetivos = itensRows.flatMap(row => parseObjetivoTexto(row.objetivo_texto));
 
     return res.json({
       ok: true,
       ref: { escola_id: escolaId, turma_id: turmaId, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-      itens,
+      objetivos,
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em GET /conteudos:", error);
-    return res.status(500).json({ message: "Erro ao carregar conteúdos." });
+    return res.status(500).json({ message: "Erro ao carregar conteudos." });
   }
 });
-
 
 // ============================================================================
 // PASSO 3 — POST /device-token
