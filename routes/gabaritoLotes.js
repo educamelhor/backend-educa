@@ -1890,26 +1890,34 @@ router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) =
   try {
     const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
 
-    // 1. Alinhar imagem via OMR /crop-gabarito (sem leitura de bolhas)
-    const formCrop = new FormData();
-    formCrop.append("file", req.file.buffer, { filename: "gabarito.jpg" });
+    // 1. Tentar alinhar via OMR — com fallback para imagem original do app
+    // SE o OMR falhar (marcadores não detectados), usa o recorte client-side:
+    // o app já remove o fundo e enquadra o gabarito, então é preferível a um erro.
+    let alignedBuffer = req.file.buffer;  // fallback: recorte client-side
+    let alignmentMethod = "client_crop";
 
-    const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
-      method: "POST",
-      body: formCrop,
-      headers: formCrop.getHeaders(),
-      signal: AbortSignal.timeout(30000),
-    });
+    try {
+      const formCrop = new FormData();
+      formCrop.append("file", req.file.buffer, { filename: "gabarito.jpg" });
 
-    if (!respCrop.ok) {
-      const errText = await respCrop.text().catch(() => "");
-      console.error(`[save-image] crop falhou: ${respCrop.status} ${errText}`);
-      return res.status(422).json({
-        error: "Não foi possível alinhar o gabarito. Certifique-se de que os 4 cantos estejam visíveis.",
+      const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
+        method: "POST",
+        body: formCrop,
+        headers: formCrop.getHeaders(),
+        signal: AbortSignal.timeout(25000),
       });
-    }
 
-    const alignedBuffer = Buffer.from(await respCrop.arrayBuffer());
+      if (respCrop.ok) {
+        alignedBuffer    = Buffer.from(await respCrop.arrayBuffer());
+        alignmentMethod  = "omr_perspective";
+        console.log(`[save-image] OMR alignment OK — ${alignedBuffer.length} bytes`);
+      } else {
+        const errText = await respCrop.text().catch(() => "");
+        console.warn(`[save-image] OMR crop falhou (${respCrop.status}) → usando client crop: ${errText.slice(0, 120)}`);
+      }
+    } catch (cropErr) {
+      console.warn(`[save-image] OMR crop erro → usando client crop: ${cropErr.message}`);
+    }
 
     // 2. Upload para DigitalOcean Spaces
     const apelido = escola_apelido || `escola_${escola_id}`;
@@ -1995,13 +2003,45 @@ router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) =
       };
     }
 
-    console.log(`[save-image] codigo=${codigo_aluno} arqId=${arqId} url=${objectKey}`);
+    // 5. Leitura de bolhas na imagem alinhada (best-effort — não bloqueia o save)
+    let omrResult = null;
+    try {
+      const formBolhas = new FormData();
+      formBolhas.append("file", alignedBuffer, { filename: "aligned.png" });
+
+      const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
+        method: "POST",
+        body: formBolhas,
+        headers: formBolhas.getHeaders(),
+        signal: AbortSignal.timeout(25000),
+      });
+
+      if (respBolhas.ok) {
+        const bd = await respBolhas.json();
+        omrResult = {
+          respostas:     bd.respostas     || [],
+          totalQuestoes: bd.totalQuestoes || 0,
+          confianca:     bd.confianca     || 0,
+          avisos:        bd.avisos        || [],
+        };
+        console.log(`[save-image] OMR bolhas OK — confianca=${omrResult.confianca}% method=${alignmentMethod}`);
+      } else {
+        const be = await respBolhas.text().catch(() => "");
+        console.warn(`[save-image] OMR bolhas status=${respBolhas.status}: ${be.slice(0, 120)}`);
+      }
+    } catch (omrErr) {
+      console.warn("[save-image] OMR bolhas falhou (não fatal):", omrErr.message);
+    }
+
+    console.log(`[save-image] codigo=${codigo_aluno} arqId=${arqId} url=${objectKey} align=${alignmentMethod}`);
 
     res.json({
-      success:  true,
+      success:   true,
       arquivoId: arqId,
       imagemUrl,
       sessionProgress,
+      omrResult,
+      alignmentMethod,
     });
   } catch (err) {
     console.error("[save-image] Erro:", err);
