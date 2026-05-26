@@ -1715,7 +1715,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
 
     // 2. Buscar turma
     const [turmaRows] = await pool.query(
-      `SELECT id, nome_turma FROM turmas WHERE id = ? AND escola_id = ?`,
+      `SELECT id, nome FROM turmas WHERE id = ? AND escola_id = ?`,
       [turma_id, escola_id]
     );
     if (turmaRows.length === 0) {
@@ -1741,7 +1741,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
            (avaliacao_id, escola_id, turma_nome, turma_id, status)
          VALUES (?, ?, ?, ?, 'pendente')
          ON DUPLICATE KEY UPDATE turma_id = VALUES(turma_id), updated_at = NOW()`,
-        [avaliacao_id, escola_id, turma.nome_turma, turma_id]
+        [avaliacao_id, escola_id, turma.nome, turma_id]
       );
       loteId = ins.insertId || ins.insertId;
 
@@ -1778,7 +1778,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
       numAlternativas: av.num_alternativas,
       notaTotal: av.nota_total,
       turmaId: turma.id,
-      turmaNome: turma.nome_turma,
+      turmaNome: turma.nome,
       loteId,
       progresso: {
         total:      Number(prog?.total      || 0),
@@ -1807,8 +1807,8 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
   try {
     // 1. Buscar aluno
     const [alunoRows] = await pool.query(
-      `SELECT a.id, a.estudante AS nome, a.re, a.codigo,
-              t.nome_turma AS turma
+      `SELECT a.id, a.estudante AS nome, a.codigo,
+              t.nome AS turma
        FROM alunos a
        LEFT JOIN turmas t ON a.turma_id = t.id
        WHERE a.codigo = ? AND a.escola_id = ?
