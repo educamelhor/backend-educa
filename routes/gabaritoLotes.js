@@ -9,6 +9,7 @@
 // ============================================================================
 
 import { Router } from "express";
+import QRCode from "qrcode";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -1684,4 +1685,420 @@ router.post("/scan-mobile/confirmar", verificarEscola, async (req, res) => {
   }
 });
 
+
+// ═════════════════════════════════════════════════════════════════════════════
+// EDUCA SCAN — FLUXO DE SESSÃO DE CAPTURA (sem OMR imediato)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/gabarito-lotes/scan-mobile/sessao-info ─────────────────────────
+// Chamado ao escanear o QR da CAPA DA PROVA (inicio da sessão).
+// Decodificado: { tipo:"prova", avaliacao_id, turma_id, escola_id }
+// Retorna: nome da avaliação, turma, N alunos, loteId (cria se não existir)
+router.get("/scan-mobile/sessao-info", async (req, res) => {
+  const { avaliacao_id, turma_id } = req.query;
+  const { escola_id } = req.user;
+
+  if (!avaliacao_id || !turma_id) {
+    return res.status(400).json({ error: "avaliacao_id e turma_id são obrigatórios." });
+  }
+
+  try {
+    // 1. Buscar avaliação
+    const [avRows] = await pool.query(
+      `SELECT id, titulo, num_questoes, num_alternativas, nota_total
+       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      [avaliacao_id, escola_id]
+    );
+    if (avRows.length === 0) {
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    // 2. Buscar turma
+    const [turmaRows] = await pool.query(
+      `SELECT id, nome_turma FROM turmas WHERE id = ? AND escola_id = ?`,
+      [turma_id, escola_id]
+    );
+    if (turmaRows.length === 0) {
+      return res.status(404).json({ error: "Turma não encontrada." });
+    }
+
+    const av = avRows[0];
+    const turma = turmaRows[0];
+
+    // 3. Buscar ou criar lote para essa avaliação+turma
+    let [loteRows] = await pool.query(
+      `SELECT id, status FROM gabarito_lotes
+       WHERE avaliacao_id = ? AND turma_id = ? AND escola_id = ?
+       LIMIT 1`,
+      [avaliacao_id, turma_id, escola_id]
+    );
+
+    let loteId;
+    if (loteRows.length === 0) {
+      // Cria lote automaticamente ao iniciar sessão
+      const [ins] = await pool.query(
+        `INSERT INTO gabarito_lotes
+           (avaliacao_id, escola_id, turma_nome, turma_id, status)
+         VALUES (?, ?, ?, ?, 'pendente')
+         ON DUPLICATE KEY UPDATE turma_id = VALUES(turma_id), updated_at = NOW()`,
+        [avaliacao_id, escola_id, turma.nome_turma, turma_id]
+      );
+      loteId = ins.insertId || ins.insertId;
+
+      // Re-buscar se foi duplicate key (update)
+      if (!loteId) {
+        const [relook] = await pool.query(
+          `SELECT id FROM gabarito_lotes
+           WHERE avaliacao_id = ? AND turma_id = ? AND escola_id = ? LIMIT 1`,
+          [avaliacao_id, turma_id, escola_id]
+        );
+        loteId = relook[0]?.id;
+      }
+    } else {
+      loteId = loteRows[0].id;
+    }
+
+    // 4. Progresso da sessão
+    const [[prog]] = await pool.query(
+      `SELECT
+         COUNT(*) as total,
+         SUM(status IN ('identificado','corrigido')) as capturados,
+         SUM(status = 'ausente') as ausentes,
+         SUM(status = 'pendente') as pendentes
+       FROM gabarito_arquivos WHERE lote_id = ?`,
+      [loteId]
+    );
+
+    console.log(`[sessao-info] av=${avaliacao_id} turma=${turma_id} lote=${loteId}`);
+
+    res.json({
+      avaliacaoId: av.id,
+      titulo: av.titulo,
+      numQuestoes: av.num_questoes,
+      numAlternativas: av.num_alternativas,
+      notaTotal: av.nota_total,
+      turmaId: turma.id,
+      turmaNome: turma.nome_turma,
+      loteId,
+      progresso: {
+        total:      Number(prog?.total      || 0),
+        capturados: Number(prog?.capturados || 0),
+        ausentes:   Number(prog?.ausentes   || 0),
+        pendentes:  Number(prog?.pendentes  || 0),
+      },
+    });
+  } catch (err) {
+    console.error("[sessao-info] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao buscar informações da sessão." });
+  }
+});
+
+// ─── GET /api/gabarito-lotes/scan-mobile/aluno-by-codigo ─────────────────────
+// Chamado ao escanear o QR do GABARITO DO ALUNO.
+// Busca aluno pelo código, retorna dados e arquivo_id do lote.
+router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
+  const { codigo, avaliacao_id, lote_id } = req.query;
+  const { escola_id } = req.user;
+
+  if (!codigo) {
+    return res.status(400).json({ error: "codigo é obrigatório." });
+  }
+
+  try {
+    // 1. Buscar aluno
+    const [alunoRows] = await pool.query(
+      `SELECT a.id, a.estudante AS nome, a.re, a.codigo,
+              t.nome_turma AS turma
+       FROM alunos a
+       LEFT JOIN turmas t ON a.turma_id = t.id
+       WHERE a.codigo = ? AND a.escola_id = ?
+       LIMIT 1`,
+      [codigo, escola_id]
+    );
+    if (alunoRows.length === 0) {
+      return res.status(404).json({ error: "Aluno não encontrado com esse código." });
+    }
+    const aluno = alunoRows[0];
+
+    // 2. Buscar arquivo no lote (se lote_id fornecido)
+    let arquivoId = null;
+    let jaCapturado = false;
+    let statusAtual = null;
+
+    if (lote_id) {
+      const [arqRows] = await pool.query(
+        `SELECT id, status FROM gabarito_arquivos
+         WHERE lote_id = ? AND codigo_aluno = ?
+         LIMIT 1`,
+        [lote_id, codigo]
+      );
+      if (arqRows.length > 0) {
+        arquivoId  = arqRows[0].id;
+        statusAtual = arqRows[0].status;
+        jaCapturado = !['pendente'].includes(arqRows[0].status);
+      }
+    }
+
+    // 3. Progresso da sessão
+    let sessionProgress = { total: 0, capturados: 0, ausentes: 0 };
+    if (lote_id) {
+      const [[prog]] = await pool.query(
+        `SELECT
+           COUNT(*) as total,
+           SUM(status IN ('identificado','corrigido')) as capturados,
+           SUM(status = 'ausente') as ausentes
+         FROM gabarito_arquivos WHERE lote_id = ?`,
+        [lote_id]
+      );
+      sessionProgress = {
+        total:      Number(prog?.total      || 0),
+        capturados: Number(prog?.capturados || 0),
+        ausentes:   Number(prog?.ausentes   || 0),
+      };
+    }
+
+    console.log(`[aluno-by-codigo] codigo=${codigo} aluno=${aluno.nome} arquivo=${arquivoId}`);
+
+    res.json({
+      alunoId:   aluno.id,
+      nome:      aluno.nome,
+      re:        aluno.re,
+      codigo:    aluno.codigo,
+      turma:     aluno.turma,
+      arquivoId,
+      jaCapturado,
+      statusAtual,
+      sessionProgress,
+    });
+  } catch (err) {
+    console.error("[aluno-by-codigo] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao buscar aluno." });
+  }
+});
+
+// ─── POST /api/gabarito-lotes/scan-mobile/save-image ─────────────────────────
+// Salva a imagem alinhada do gabarito no Spaces SEM executar OMR.
+// Atualiza gabarito_arquivos: arquivo_path + status='identificado' + capturado_em
+router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) => {
+  const { escola_id, escola_apelido } = req.user;
+  const { avaliacao_id, lote_id, codigo_aluno, arquivo_id } = req.body;
+
+  if (!req.file)      return res.status(400).json({ error: "Imagem não enviada (campo 'file')." });
+  if (!avaliacao_id)  return res.status(400).json({ error: "avaliacao_id é obrigatório." });
+  if (!codigo_aluno)  return res.status(400).json({ error: "codigo_aluno é obrigatório." });
+
+  try {
+    const OMR_URL = process.env.OMR_URL || "http://localhost:8500";
+
+    // 1. Alinhar imagem via OMR /crop-gabarito (sem leitura de bolhas)
+    const formCrop = new FormData();
+    formCrop.append("file", req.file.buffer, { filename: "gabarito.jpg" });
+
+    const respCrop = await fetch(`${OMR_URL}/crop-gabarito`, {
+      method: "POST",
+      body: formCrop,
+      headers: formCrop.getHeaders(),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!respCrop.ok) {
+      const errText = await respCrop.text().catch(() => "");
+      console.error(`[save-image] crop falhou: ${respCrop.status} ${errText}`);
+      return res.status(422).json({
+        error: "Não foi possível alinhar o gabarito. Certifique-se de que os 4 cantos estejam visíveis.",
+      });
+    }
+
+    const alignedBuffer = Buffer.from(await respCrop.arrayBuffer());
+
+    // 2. Upload para DigitalOcean Spaces
+    const apelido = escola_apelido || `escola_${escola_id}`;
+    const loteFolder = lote_id || avaliacao_id;
+    const objectKey = `uploads/${apelido}/gabaritos/${loteFolder}/${codigo_aluno}_${Date.now()}.jpg`;
+
+    await uploadFileBufferToSpaces({
+      buffer: alignedBuffer,
+      contentType: "image/jpeg",
+      objectKey,
+    });
+
+    const DO_BUCKET = process.env.DO_SPACES_BUCKET;
+    const DO_REGION = process.env.DO_SPACES_REGION || "nyc3";
+    const imagemUrl = `https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com/${objectKey}`;
+
+    // 3. Atualizar ou criar gabarito_arquivo
+    let arqId = arquivo_id ? Number(arquivo_id) : null;
+
+    if (arqId) {
+      // Atualizar arquivo existente
+      await pool.query(
+        `UPDATE gabarito_arquivos SET
+           arquivo_path = ?, codigo_aluno = ?,
+           status = 'identificado', capturado_em = NOW()
+         WHERE id = ? AND escola_id = ?`,
+        [imagemUrl, codigo_aluno, arqId, escola_id]
+      );
+    } else if (lote_id) {
+      // Buscar arquivo por codigo_aluno no lote
+      const [existente] = await pool.query(
+        `SELECT id FROM gabarito_arquivos
+         WHERE lote_id = ? AND codigo_aluno = ?
+         LIMIT 1`,
+        [lote_id, codigo_aluno]
+      );
+
+      if (existente.length > 0) {
+        arqId = existente[0].id;
+        await pool.query(
+          `UPDATE gabarito_arquivos SET
+             arquivo_path = ?, status = 'identificado', capturado_em = NOW()
+           WHERE id = ?`,
+          [imagemUrl, arqId]
+        );
+      } else {
+        // Criar novo arquivo no lote
+        const [ins] = await pool.query(
+          `INSERT INTO gabarito_arquivos
+             (lote_id, escola_id, arquivo_nome, arquivo_path, codigo_aluno, status, capturado_em)
+           VALUES (?, ?, ?, ?, ?, 'identificado', NOW())`,
+          [lote_id, escola_id, `${codigo_aluno}.jpg`, imagemUrl, codigo_aluno]
+        );
+        arqId = ins.insertId;
+
+        // Incrementar total_arquivos do lote
+        await pool.query(
+          `UPDATE gabarito_lotes SET
+             total_arquivos = total_arquivos + 1, updated_at = NOW()
+           WHERE id = ?`,
+          [lote_id]
+        );
+      }
+    }
+
+    // 4. Progresso atualizado
+    let sessionProgress = { total: 0, capturados: 0, ausentes: 0, pendentes: 0 };
+    if (lote_id) {
+      const [[prog]] = await pool.query(
+        `SELECT
+           COUNT(*) as total,
+           SUM(status IN ('identificado','corrigido')) as capturados,
+           SUM(status = 'ausente') as ausentes,
+           SUM(status = 'pendente') as pendentes
+         FROM gabarito_arquivos WHERE lote_id = ?`,
+        [lote_id]
+      );
+      sessionProgress = {
+        total:      Number(prog?.total      || 0),
+        capturados: Number(prog?.capturados || 0),
+        ausentes:   Number(prog?.ausentes   || 0),
+        pendentes:  Number(prog?.pendentes  || 0),
+      };
+    }
+
+    console.log(`[save-image] codigo=${codigo_aluno} arqId=${arqId} url=${objectKey}`);
+
+    res.json({
+      success:  true,
+      arquivoId: arqId,
+      imagemUrl,
+      sessionProgress,
+    });
+  } catch (err) {
+    console.error("[save-image] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao salvar imagem do gabarito." });
+  }
+});
+
+// ─── PATCH /api/gabarito-lotes/arquivos/:id/ausente ──────────────────────────
+// Marca aluno como ausente (ou desfaz voltando para 'pendente')
+router.patch("/arquivos/:id/ausente", async (req, res) => {
+  const { id } = req.params;
+  const { desfazer } = req.body;   // true = restaurar para 'pendente'
+  const { escola_id } = req.user;
+
+  try {
+    const novoStatus = desfazer ? "pendente" : "ausente";
+
+    const [result] = await pool.query(
+      `UPDATE gabarito_arquivos SET status = ?, updated_at = NOW()
+       WHERE id = ? AND escola_id = ?`,
+      [novoStatus, id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    // Buscar lote_id para retornar progresso
+    const [[arq]] = await pool.query(
+      `SELECT lote_id FROM gabarito_arquivos WHERE id = ?`, [id]
+    );
+
+    let sessionProgress = null;
+    if (arq?.lote_id) {
+      const [[prog]] = await pool.query(
+        `SELECT
+           COUNT(*) as total,
+           SUM(status IN ('identificado','corrigido')) as capturados,
+           SUM(status = 'ausente') as ausentes,
+           SUM(status = 'pendente') as pendentes
+         FROM gabarito_arquivos WHERE lote_id = ?`,
+        [arq.lote_id]
+      );
+      sessionProgress = {
+        total:      Number(prog?.total      || 0),
+        capturados: Number(prog?.capturados || 0),
+        ausentes:   Number(prog?.ausentes   || 0),
+        pendentes:  Number(prog?.pendentes  || 0),
+      };
+    }
+
+    console.log(`[ausente] arqId=${id} status=${novoStatus}`);
+    res.json({ ok: true, status: novoStatus, sessionProgress });
+  } catch (err) {
+    console.error("[ausente] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao atualizar status." });
+  }
+});
+
+// ─── GET /api/gabarito-lotes/scan-mobile/sessao-qr ───────────────────────────
+// Gera um QR Code PNG para a capa da prova — identificação de sessão.
+// O professor escaneia este QR com o app para iniciar a sessão.
+// Query: avaliacao_id, turma_id
+router.get("/scan-mobile/sessao-qr", async (req, res) => {
+  const { avaliacao_id, turma_id } = req.query;
+  const { escola_id } = req.user;
+
+  if (!avaliacao_id || !turma_id) {
+    return res.status(400).json({ error: "avaliacao_id e turma_id são obrigatórios." });
+  }
+
+  try {
+    const payload = JSON.stringify({
+      tipo: "prova",
+      avaliacao_id: Number(avaliacao_id),
+      turma_id:     Number(turma_id),
+      escola_id:    Number(escola_id),
+    });
+
+    const qrPng = await QRCode.toBuffer(payload, {
+      type:           "png",
+      width:          300,
+      margin:         2,
+      color:          { dark: "#000000", light: "#FFFFFF" },
+      errorCorrectionLevel: "M",
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");  // 24h cache
+    res.send(qrPng);
+
+    console.log(`[sessao-qr] gerado para av=${avaliacao_id} turma=${turma_id}`);
+  } catch (err) {
+    console.error("[sessao-qr] Erro:", err);
+    res.status(500).json({ error: "Erro ao gerar QR da sessão." });
+  }
+});
+
 export default router;
+
