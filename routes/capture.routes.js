@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import pool from "../db.js";
 
 const router = express.Router();
@@ -494,9 +494,19 @@ router.get("/alunos", autenticarDeviceCapture, async (req, res) => {
         a.estudante,
         a.status,
         a.foto,
-        a.turma_id
+        a.turma_id,
+        -- consentimento de imagem: 1 se qualquer responsável ativo autorizou
+        COALESCE(
+          MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END),
+          0
+        ) AS consentimento_imagem
       FROM alunos a
+      LEFT JOIN responsaveis_alunos ra
+        ON ra.aluno_id = a.id
+        AND ra.escola_id = a.escola_id
+        AND ra.ativo = 1
       WHERE ${where.join(" AND ")}
+      GROUP BY a.id, a.codigo, a.estudante, a.status, a.foto, a.turma_id
       ORDER BY a.estudante
     `;
 
