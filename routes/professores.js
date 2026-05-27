@@ -394,9 +394,8 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = req.user?.escola_id;
     const disciplinaFiltrada = req.query.disciplina;
-    const anoLetivo = req.query.ano ? Number(req.query.ano) : new Date().getFullYear();
 
-    // Obtém o CPF
+    // Obtém o CPF do professor logado
     let cpf = req.user?.cpf;
     const userId =
       req.user?.id ||
@@ -417,6 +416,35 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
+    // ─── Ano letivo ──────────────────────────────────────────────────────────
+    // Usa ?ano= se fornecido; caso contrário calcula via MAX(t.ano) da modulação,
+    // idêntico ao que faz /me/disciplinas — garante consistência entre os dois
+    // e robustez quando o ano letivo ≠ ano do calendário.
+    let anoLetivo = req.query.ano ? Number(req.query.ano) : null;
+
+    if (!anoLetivo) {
+      const [[maxRow]] = await pool.query(
+        `SELECT MAX(t.ano) AS max_ano
+         FROM turmas t
+         JOIN modulacao m ON m.turma_id = t.id
+         JOIN professores p ON p.id = m.professor_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?`,
+        [Number(escolaId), cleanCpf]
+      );
+      anoLetivo = maxRow?.max_ano || new Date().getFullYear();
+    }
+
+    // ─── Query principal ─────────────────────────────────────────────────────
+    // FONTE ÚNICA: tabela modulacao (via JOIN com professores).
+    //
+    // ⚠️ REMOVIDO (era a causa do bug de turmas erradas nos Planos):
+    //   professores.turma_id — campo legado do pré-cadastro. Estava sendo
+    //   usado como FONTE 1 via OR, fazendo o professor ver turmas do cadastro
+    //   antigo que não constavam mais na sua modulação atual.
+    //
+    // A modulacao é a única fonte de verdade para o vínculo professor↔turma.
+
     let sql = `
       SELECT DISTINCT
         t.id,
@@ -428,32 +456,28 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
       FROM turmas t
       WHERE t.escola_id = ?
         AND t.ano = ?
-        AND (
-          t.id IN (
-            SELECT p.turma_id FROM professores p WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-          )
-          OR
-          t.id IN (
-            SELECT m.turma_id FROM modulacao m
-            JOIN professores p ON p.id = m.professor_id
-            `;
-            
+        AND t.id IN (
+          SELECT m.turma_id
+          FROM modulacao m
+          JOIN professores p ON p.id = m.professor_id
+    `;
+
     if (disciplinaFiltrada) {
       sql += ` JOIN disciplinas d ON d.id = m.disciplina_id AND d.nome = ? `;
     }
-            
+
     sql += `
-            WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-          )
+          WHERE p.escola_id = ?
+            AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
         )
       ORDER BY
-        t.ano DESC,
+        t.ano  DESC,
         t.etapa ASC,
         t.serie ASC,
-        t.nome ASC
-      `;
+        t.nome  ASC
+    `;
 
-    let params = [Number(escolaId), anoLetivo, Number(escolaId), cleanCpf];
+    const params = [Number(escolaId), anoLetivo];
     if (disciplinaFiltrada) params.push(disciplinaFiltrada);
     params.push(Number(escolaId), cleanCpf);
 
