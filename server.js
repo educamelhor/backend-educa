@@ -408,6 +408,18 @@ app.get("/__build-info", (_req, res) =>
   })
 );
 
+// ✅ Diagnóstico público: estado do conteudosAdminRouter
+app.get("/__diag/conteudos", (_req, res) =>
+  res.json({
+    ok: true,
+    FF_CONTEUDOS_ADMIN,
+    conteudosAdminRouterLoaded: !!conteudosAdminRouter,
+    routerType: conteudosAdminRouter ? typeof conteudosAdminRouter : null,
+    stackLength: conteudosAdminRouter?.stack?.length ?? null,
+    ts: new Date().toISOString(),
+  })
+);
+
 // Health check público (root) — inclui /ping para DigitalOcean App Platform
 app.get(["/ping", "/health", "/healthz"], (_req, res) =>
   res.json({
