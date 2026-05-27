@@ -276,7 +276,7 @@ router.post(
  */
 router.get(
   "/conteudos/admin/planejamento/check",
-  autorizarPermissao("conteudos.ver"),
+  autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
   try {
     if (!assertAuthEscola(req, res)) return;
@@ -1168,7 +1168,7 @@ router.get(
  */
 router.get(
   "/conteudos/admin/relatorio/pdf-data",
-  autorizarPermissao("conteudos.ver"),
+  autorizarPermissao("conteudos.visualizar"),
   async (req, res) => {
   try {
     if (!assertAuthEscola(req, res)) return;
