@@ -4,6 +4,11 @@ import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
 
 const router = Router();
 
+// ✅ PING público (diagnóstico) — sem auth, confirma que o módulo está ativo
+router.get("/conteudos/admin/ping", (_req, res) =>
+  res.json({ ok: true, module: "conteudos_admin", ts: new Date().toISOString(), routes: router.stack?.length })
+);
+
 /**
  * =========================================================
  * EDUCA.MELHOR — MÓDULO CONTEÚDOS (Admin)
