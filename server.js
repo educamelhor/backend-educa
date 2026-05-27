@@ -321,6 +321,12 @@ const defaultWhitelist = [
   "https://sistemaeducamelhor.com.br",
 ];
 
+// Padrões dinâmicos aceitos (regex) — cobre previews do Vercel e domínio da escola
+const corsAllowedPatterns = [
+  /^https:\/\/.*\.vercel\.app$/,           // qualquer preview/deploy Vercel
+  /^https:\/\/sistemaeducamelhor\.com\.br$/, // domínio principal
+];
+
 const extra = (process.env.FRONTEND_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -330,7 +336,9 @@ const whitelist = [...new Set([...defaultWhitelist, ...extra])];
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || whitelist.includes(origin)) return cb(null, true);
+      if (!origin) return cb(null, true);
+      if (whitelist.includes(origin)) return cb(null, true);
+      if (corsAllowedPatterns.some((re) => re.test(origin))) return cb(null, true);
 
       const err = new Error(`Não permitido por CORS: ${origin}`);
       err.status = 403;
