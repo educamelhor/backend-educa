@@ -1178,13 +1178,14 @@ router.get(
   try {
     if (!assertAuthEscola(req, res)) return;
 
-    const escola_id    = Number(req.user.escola_id);
+    const escola_id     = Number(req.user.escola_id);
     const disciplina_id = Number(req.query.disciplina_id);
-    const bimestre     = Number(req.query.bimestre);
-    const ano_letivo   = Number(req.query.ano_letivo) || 2026;
+    const bimestre      = req.query.bimestre ? Number(req.query.bimestre) : null;
+    const serie         = req.query.serie    ? String(req.query.serie).trim() : null;
+    const ano_letivo    = Number(req.query.ano_letivo) || 2026;
 
-    if (!disciplina_id || !bimestre) {
-      return res.status(400).json({ ok: false, message: "disciplina_id e bimestre são obrigatórios." });
+    if (!disciplina_id) {
+      return res.status(400).json({ ok: false, message: "disciplina_id é obrigatório." });
     }
 
     const db = req.db;
@@ -1197,7 +1198,25 @@ router.get(
       `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escola_id]
     );
 
-    // Todos os itens de todas as séries
+    // Filtros opcionais
+    const params = [escola_id, disciplina_id, ano_letivo];
+    let where = `
+      WHERE coe.escola_id    = ?
+        AND coe.disciplina_id = ?
+        AND coe.ano_letivo   = ?
+        AND coe.ativo        = 1
+        AND coe.texto IS NOT NULL
+        AND coe.texto != ''
+    `;
+    if (bimestre) {
+      where += " AND coe.bimestre = ?";
+      params.push(bimestre);
+    }
+    if (serie) {
+      where += " AND UPPER(coe.serie) = UPPER(?)";
+      params.push(serie);
+    }
+
     const [rows] = await db.query(
       `SELECT
          coe.id,
@@ -1211,16 +1230,10 @@ router.get(
        FROM conteudos_objetivos_escola coe
        LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
        LEFT JOIN seedf_conteudos sc ON sc.id = coe.seedf_conteudo_id
-       WHERE coe.escola_id    = ?
-         AND coe.disciplina_id = ?
-         AND coe.bimestre     = ?
-         AND coe.ano_letivo   = ?
-         AND coe.ativo        = 1
-         AND coe.texto IS NOT NULL
-         AND coe.texto != ''
-       ORDER BY coe.serie ASC, bt.nome ASC, coe.id ASC
-       LIMIT 1000`,
-      [escola_id, disciplina_id, bimestre, ano_letivo]
+       ${where}
+       ORDER BY coe.bimestre ASC, coe.serie ASC, bt.nome ASC, coe.id ASC
+       LIMIT 2000`,
+      params
     );
 
     return res.json({
@@ -1228,7 +1241,8 @@ router.get(
       disciplina_nome: disc?.nome || "Disciplina",
       escola_nome:     escola?.apelido || escola?.nome || "Escola",
       ano_letivo,
-      bimestre,
+      bimestre:        bimestre || null,
+      serie:           serie || null,
       itens:           rows || [],
     });
   } catch (err) {
