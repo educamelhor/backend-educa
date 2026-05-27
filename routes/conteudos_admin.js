@@ -273,6 +273,99 @@ router.post(
 
 
 /**
+ * GET /api/conteudos/admin/lista
+ *
+ * Listagem geral dos conteúdos programáticos da escola.
+ * Todos os parâmetros são opcionais (filtros).
+ *
+ * Query: serie?, disciplina_id?, bimestre?, status?, ano_letivo?
+ * Retorna: { ok, total, registros: [...] }
+ */
+router.get(
+  "/conteudos/admin/lista",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const db = req.db;
+
+    const { serie, disciplina_id, disciplina_nome, bimestre, status, ano_letivo } = req.query;
+
+    const params = [escola_id];
+    let where = "WHERE coe.escola_id = ? AND coe.ativo = 1";
+
+    if (serie)           { where += " AND coe.serie = ?";         params.push(normSerie(serie)); }
+    if (disciplina_id)   { where += " AND coe.disciplina_id = ?"; params.push(Number(disciplina_id)); }
+    else if (disciplina_nome) {
+      // Busca pelo nome da disciplina da escola
+      const [discRow] = await db.query(
+        "SELECT id FROM disciplinas WHERE escola_id = ? AND nome = ? LIMIT 1",
+        [escola_id, disciplina_nome]
+      );
+      if (discRow && discRow.length > 0) {
+        where += " AND coe.disciplina_id = ?";
+        params.push(Number(discRow[0].id));
+      }
+    }
+    if (bimestre)        { where += " AND coe.bimestre = ?";      params.push(Number(bimestre)); }
+    if (status)          { where += " AND coe.status = ?";        params.push(String(status).toUpperCase()); }
+    if (ano_letivo)      { where += " AND coe.ano_letivo = ?";    params.push(Number(ano_letivo)); }
+
+
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         d.nome          AS disciplina,
+         coe.disciplina_id,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.status,
+         bt.nome         AS unidade,
+         sc.texto        AS conteudo,
+         coe.texto       AS objetivo_texto,
+         coe.created_at
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN disciplinas d        ON d.id  = coe.disciplina_id
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc   ON sc.id = coe.seedf_conteudo_id
+       ${where}
+       ORDER BY coe.serie, coe.bimestre, d.nome, coe.id DESC
+       LIMIT 1000`,
+      params
+    );
+
+    const registros = (rows || []).map(r => {
+      // Conta quantos tópicos/objetivos existem no texto
+      const linhas = (r.objetivo_texto || "").split("\n")
+        .filter(l => l.match(/^\s*\d+\.\s/));
+      return {
+        id:               Number(r.id),
+        serie:            r.serie || "",
+        disciplina:       r.disciplina || "",
+        disciplina_id:    Number(r.disciplina_id),
+        bimestre:         Number(r.bimestre),
+        bimestre_label:   `${r.bimestre}º Bimestre`,
+        ano_letivo:       Number(r.ano_letivo),
+        status:           r.status || "RASCUNHO",
+        unidade:          r.unidade || "",
+        conteudo:         r.conteudo || "",
+        objetivo_preview: (r.objetivo_texto || "").substring(0, 120),
+        itens:            linhas.length || 1,
+        created_at:       r.created_at,
+      };
+    });
+
+    return res.json({ ok: true, total: registros.length, registros });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/lista:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar lista de conteúdos." });
+  }
+});
+
+
+/**
  * GET /api/conteudos/admin/planejamento/check
  *
  * Verifica se já existe um registro de objetivo para a combinação
