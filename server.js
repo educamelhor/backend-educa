@@ -149,7 +149,9 @@ const DEFAULT_ON_DEV = process.env.NODE_ENV !== "production";
 
 const FF_APP_PAIS = ff("FF_APP_PAIS", DEFAULT_ON_DEV);
 const FF_CONFIG_PEDAGOGICA = ff("FF_CONFIG_PEDAGOGICA", DEFAULT_ON_DEV);
-const FF_CONTEUDOS_ADMIN = ff("FF_CONTEUDOS_ADMIN", true); // Habilitado em DEV e PROD (feature em uso)
+// ✅ CONTEÚDOS ADMIN: módulo em produção — força true independente da variável de ambiente
+// (variável FF_CONTEUDOS_ADMIN=false no DO estava bloqueando o carregamento)
+const FF_CONTEUDOS_ADMIN = true;
 
 const FF_EDUCA_CAPTURE = ff("FF_EDUCA_CAPTURE", DEFAULT_ON_DEV);
 
@@ -211,19 +213,16 @@ if (FF_CONFIG_PEDAGOGICA) {
   );
 }
 
-if (FF_CONTEUDOS_ADMIN) {
-  conteudosAdminRouter =
-    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./routes/conteudos_admin.js")) ||
-    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./conteudos_admin.js")) ||
-    (await safeImportDefault("FF_CONTEUDOS_ADMIN", "./api/routes/conteudos_admin.js"));
+// ✅ CONTEÚDOS ADMIN: carregamento obrigatório (módulo em produção)
+conteudosAdminRouter =
+  (await safeImportDefault("CONTEUDOS_ADMIN", "./routes/conteudos_admin.js")) ||
+  (await safeImportDefault("CONTEUDOS_ADMIN", "./conteudos_admin.js")) ||
+  (await safeImportDefault("CONTEUDOS_ADMIN", "./api/routes/conteudos_admin.js"));
 
-  if (conteudosAdminRouter) {
-    console.log("[FF] Conteúdos Admin: router carregado com sucesso.");
-  } else {
-    console.warn(
-      "[FF] Conteúdos Admin: router NÃO carregado (verifique caminho/arquivo). Rotas /api/conteudos/* ficarão 404."
-    );
-  }
+if (conteudosAdminRouter) {
+  console.log("[FF] Conteúdos Admin: router carregado com sucesso. Rotas:", conteudosAdminRouter?.stack?.length);
+} else {
+  console.warn("[FF] Conteúdos Admin: FALHA ao carregar. Rotas /api/conteudos/* ficarão com 404.");
 }
 
 // ✅ Ingest do Worker deve ser independente do FF_MONITORAMENTO (canal básico)
