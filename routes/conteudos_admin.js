@@ -268,6 +268,58 @@ router.post(
 
 
 /**
+ * GET /api/conteudos/admin/planejamento/check
+ *
+ * Verifica se já existe um registro de objetivo para a combinação
+ * (escola, disciplina, serie, bimestre, ano_letivo, UT, conteúdo SEEDF).
+ * Retorna { ok, found, registro } — usado pelo modal para pré-carregar edição.
+ */
+router.get(
+  "/conteudos/admin/planejamento/check",
+  autorizarPermissao("conteudos.ver"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const { disciplina_id, serie, bimestre, ano_letivo, bncc_unidade_tematica_id, seedf_conteudo_id } = req.query;
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo || !seedf_conteudo_id) {
+      return res.status(400).json({ ok: false, message: "Parâmetros insuficientes." });
+    }
+
+    const db = req.db;
+    const [[row]] = await db.query(
+      `SELECT id, texto, status, bncc_unidade_tematica_id, seedf_conteudo_id
+       FROM conteudos_objetivos_escola
+       WHERE escola_id = ?
+         AND disciplina_id = ?
+         AND serie = ?
+         AND bimestre = ?
+         AND ano_letivo = ?
+         AND (seedf_conteudo_id = ? OR (seedf_conteudo_id IS NULL AND ? IS NULL))
+         AND ativo = 1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        seedf_conteudo_id ? Number(seedf_conteudo_id) : null,
+        seedf_conteudo_id ? Number(seedf_conteudo_id) : null,
+      ]
+    );
+
+    return res.json({ ok: true, found: !!row, registro: row || null });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/planejamento/check:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao verificar registro." });
+  }
+});
+
+
+/**
  * POST /api/conteudos/admin/planejamento
  *
  * SALVAR do modal Conteúdos:
@@ -1100,6 +1152,85 @@ router.get(
 });
 
 
+/**
+ * GET /api/conteudos/admin/relatorio/pdf-data
+ *
+ * Retorna dados para geração do PDF de Conteúdo Programático.
+ * Agrupa por série (todas), filtrado por disciplina_id + bimestre + ano_letivo.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - bimestre
+ * - ano_letivo
+ *
+ * Retorna:
+ * { ok:true, disciplina_nome, escola_nome, itens:[...] }
+ */
+router.get(
+  "/conteudos/admin/relatorio/pdf-data",
+  autorizarPermissao("conteudos.ver"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id    = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
+    const bimestre     = Number(req.query.bimestre);
+    const ano_letivo   = Number(req.query.ano_letivo) || 2026;
+
+    if (!disciplina_id || !bimestre) {
+      return res.status(400).json({ ok: false, message: "disciplina_id e bimestre são obrigatórios." });
+    }
+
+    const db = req.db;
+
+    // Nome da disciplina e da escola
+    const [[disc]] = await db.query(
+      `SELECT nome FROM disciplinas WHERE id = ? LIMIT 1`, [disciplina_id]
+    );
+    const [[escola]] = await db.query(
+      `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escola_id]
+    );
+
+    // Todos os itens de todas as séries
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.texto AS objetivo_texto,
+         bt.nome  AS unidade_tematica,
+         sc.texto AS conteudo_seedf,
+         coe.status
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc ON sc.id = coe.seedf_conteudo_id
+       WHERE coe.escola_id    = ?
+         AND coe.disciplina_id = ?
+         AND coe.bimestre     = ?
+         AND coe.ano_letivo   = ?
+         AND coe.ativo        = 1
+         AND coe.texto IS NOT NULL
+         AND coe.texto != ''
+       ORDER BY coe.serie ASC, bt.nome ASC, coe.id ASC
+       LIMIT 1000`,
+      [escola_id, disciplina_id, bimestre, ano_letivo]
+    );
+
+    return res.json({
+      ok:              true,
+      disciplina_nome: disc?.nome || "Disciplina",
+      escola_nome:     escola?.apelido || escola?.nome || "Escola",
+      ano_letivo,
+      bimestre,
+      itens:           rows || [],
+    });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/relatorio/pdf-data:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar dados do relatório." });
+  }
+});
 
 
 

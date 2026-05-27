@@ -1404,11 +1404,15 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               o.dias_suspensao,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
               o.status,
-              ur.nome AS nome_usuario_registro,
-              uf.nome AS nome_usuario_finalizacao
+              ur.nome  AS nome_usuario_registro,
+              uf.nome  AS nome_usuario_finalizacao,
+              ui.nome  AS nome_usuario_impressao,
+              ue.nome  AS nome_usuario_edicao
        FROM ocorrencias_disciplinares o
        LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
        LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
+       LEFT JOIN usuarios ui ON ui.id = o.usuario_impressao_id
+       LEFT JOIN usuarios ue ON ue.id = o.usuario_edicao_id
        LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`,
@@ -1517,13 +1521,15 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
   try {
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
+    const usuarioEdicaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
     const { descricao, registroInterno, convocarResponsavel } = req.body;
 
     await pool.query(
       `UPDATE ocorrencias_disciplinares 
-       SET descricao = ?, registro_interno = ?, convocar_responsavel = ? 
+       SET descricao = ?, registro_interno = ?, convocar_responsavel = ?,
+           usuario_edicao_id = ?
        WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
-      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
+      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, usuarioEdicaoId, ocorrenciaId, id, escola_id]
     );
 
     res.json({ message: "Ocorrência atualizada com sucesso." });

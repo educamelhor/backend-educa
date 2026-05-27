@@ -83,28 +83,56 @@ router.get(
   }
 );
 
+// Mapa: nome da disciplina (normalizado) → disciplina_id real da tabela disciplinas
+// Deve coincidir com o mapeamento usado no import da planilha SEEDF.
+function resolveDiscipinlaId(nome) {
+  const n = normTxt(nome);
+  if (n.includes("geometri"))                        return 29; // disciplina interna da escola
+  if (n.includes("matemat"))                         return 21;
+  if (n.includes("portugues") || n.includes("lingua portuguesa")) return 48;
+  if (n.includes("cienc"))                           return 25;
+  if (n.includes("histor"))                          return 24;
+  if (n.includes("geograf"))                         return 23;
+  if (n.includes("arte"))                            return 26;
+  if ((n.includes("educa") && n.includes("fis")) || n.includes("ed. fis")) return 27;
+  if (n.includes("ingl"))                            return 30;
+  return null;
+}
+
 /**
  * GET /api/conteudos/admin/seedf/conteudos
- * ?disciplina_nome=PORTUGUÊS&serie=6º ANO[&unidade_tematica_id=Z]
+ * ?disciplina_nome=Matemática&serie=6º ANO[&unidade_tematica_id=Z]
+ *
+ * Retorna os conteúdos do Currículo em Movimento - SEEDF
+ * filtrados por disciplina + série e, opcionalmente, por Unidade Temática BNCC.
  */
 router.get(
   "/conteudos/admin/seedf/conteudos",
   async (req, res) => {
     try {
-      const disciplina_nome = req.query.disciplina_nome || "";
-      const serie = String(req.query.serie || "").trim();
-      const unidade_tematica_id = req.query.unidade_tematica_id ? Number(req.query.unidade_tematica_id) : null;
+      const disciplina_nome      = req.query.disciplina_nome || "";
+      const serie                = String(req.query.serie || "").trim().toUpperCase();
+      const unidade_tematica_id  = req.query.unidade_tematica_id ? Number(req.query.unidade_tematica_id) : null;
+
       if (!disciplina_nome || !serie)
         return res.status(400).json({ ok: false, message: "disciplina_nome e serie são obrigatórios." });
+
+      const disciplinaId = resolveDiscipinlaId(disciplina_nome);
+      if (!disciplinaId)
+        return res.json({ ok: true, conteudos: [] });
+
       const db = req.db;
-      const comp = await resolveComponenteByNome(db, disciplina_nome);
-      if (!comp) return res.json({ ok: true, conteudos: [] });
-      const params = [comp.id, serie]; // usa bncc_componentes.id como chave do SEE-DF
+      const params = [disciplinaId, serie];
       let whereExtra = "";
-      if (unidade_tematica_id) { whereExtra = " AND bncc_unidade_tematica_id = ?"; params.push(unidade_tematica_id); }
+
+      if (unidade_tematica_id) {
+        whereExtra = " AND bncc_unidade_tematica_id = ?";
+        params.push(unidade_tematica_id);
+      }
+
       const [rows] = await db.query(
         `SELECT id, texto FROM seedf_conteudos
-         WHERE disciplina_id = ? AND serie = ? AND ativo = 1 ${whereExtra}
+         WHERE disciplina_id = ? AND UPPER(serie) = ? AND ativo = 1 ${whereExtra}
          ORDER BY texto ASC LIMIT 800`,
         params
       );

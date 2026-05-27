@@ -51,7 +51,6 @@ async function ensureTable() {
     if (add.length) await pool.query(`ALTER TABLE disciplinar_atas ${add.join(', ')}`);
   } catch (e) { console.warn("[DISCIPLINAR-ATAS] migration ctx:", e.message); }
 }
-ensureTable().catch(err => console.error("[DISCIPLINAR-ATAS] Erro ao criar tabela:", err));
 
 // ── Correção retroativa de nomes ──────────────────────────────────────────
 async function fixNomesUsuario() {
@@ -65,7 +64,23 @@ async function fixNomesUsuario() {
     }
   } catch (e) { console.warn("[DISCIPLINAR-ATAS] fixNomes:", e.message); }
 }
-fixNomesUsuario();
+
+// ── Retry com backoff — banco remoto pode demorar no startup ──────────────
+async function withRetry(fn, label, maxTries = 3, delayMs = 4000) {
+  for (let i = 1; i <= maxTries; i++) {
+    try { await fn(); return; } catch (err) {
+      if (i < maxTries) {
+        console.warn(`[DISCIPLINAR-ATAS] ${label} falhou (tentativa ${i}/${maxTries}), retentando em ${delayMs / 1000}s...`);
+        await new Promise(r => setTimeout(r, delayMs * i));
+      } else {
+        console.warn(`[DISCIPLINAR-ATAS] ${label} não concluído após ${maxTries} tentativas — sistema funciona normalmente, tabela será criada na próxima requisição.`);
+      }
+    }
+  }
+}
+withRetry(ensureTable,      "ensureTable");
+withRetry(fixNomesUsuario,  "fixNomes", 2, 6000);
+
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function hoje() {

@@ -672,6 +672,43 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration updated_at (não crítico):", migErr.message);
   }
 
+  // [2026-05-26] Rastreabilidade Disciplinar — usuario_impressao_id + usuario_edicao_id
+  try {
+    const [colsRastreio] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'ocorrencias_disciplinares'
+        AND COLUMN_NAME IN ('usuario_impressao_id', 'usuario_edicao_id')
+    `);
+    const existentes = new Set(colsRastreio.map(c => c.COLUMN_NAME));
+    const adds = [];
+    if (!existentes.has('usuario_impressao_id'))
+      adds.push(`ADD COLUMN usuario_impressao_id INT NULL DEFAULT NULL
+        COMMENT 'ID do usuario que imprimiu o PDF do registro (rastreabilidade)'`);
+    if (!existentes.has('usuario_edicao_id'))
+      adds.push(`ADD COLUMN usuario_edicao_id INT NULL DEFAULT NULL
+        COMMENT 'ID do usuario que editou o registro pela ultima vez (rastreabilidade)'`);
+    if (adds.length > 0) {
+      await pool.query(`ALTER TABLE ocorrencias_disciplinares ${adds.join(', ')}`);
+      console.log("[MIGRATION] Colunas de rastreabilidade disciplinar adicionadas ✅");
+    }
+    // Índices (idempotentes — ignora ER_DUP_KEYNAME)
+    for (const [col, idx] of [
+      ['usuario_impressao_id', 'idx_usuario_impressao'],
+      ['usuario_edicao_id',    'idx_usuario_edicao'],
+    ]) {
+      if (!existentes.has(col)) {
+        try {
+          await pool.query(`ALTER TABLE ocorrencias_disciplinares ADD INDEX ${idx} (${col})`);
+        } catch (e) {
+          if (e.code !== 'ER_DUP_KEYNAME') throw e;
+        }
+      }
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration rastreabilidade disciplinar (não crítico):", migErr.message);
+  }
+
   // [2026-05-23] Módulo Liberação Antecipada — tabela liberacoes_alunos
   try {
     await pool.query(`

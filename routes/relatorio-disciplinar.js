@@ -709,15 +709,21 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       });
     doc.y = resumoY + resumoH + 4;
 
-    // Busca nome do militar que está imprimindo
-    const nomeUsuario = await (async () => {
+    // Busca nome do militar que REGISTROU a ocorrência (não quem está imprimindo)
+    const nomeUsuarioRegistro = await (async () => {
       try {
-        const uid = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
-        if (!uid) return null;
-        const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [uid]);
+        const [[oc]] = await pool.query(
+          "SELECT usuario_registro_id FROM ocorrencias_disciplinares WHERE id = ? LIMIT 1",
+          [ocorrenciaId]
+        );
+        if (!oc?.usuario_registro_id) return null;
+        const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [oc.usuario_registro_id]);
         return u?.nome || null;
       } catch { return null; }
     })();
+
+    // ID de quem está imprimindo (para gravar rastreabilidade)
+    const uidImpressao = req.user?.usuarioId || req.user?.id || req.user?.usuario_id;
 
     // Verifica se há convocação do responsável neste registro
     const temConvocacao = Number(registros[0]?.convocar_responsavel) === 1;
@@ -776,22 +782,30 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       .text(`${cidadeEscola} — DF, ${hoje()}.`, L, doc.y, { width: PW, align: "right" });
     doc.y += 20;
 
-    // Assinaturas: Responsável Legal (esquerda) + Militar (direita)
+    // Assinaturas: Responsável Legal (esquerda) + Quem Registrou (direita)
     const sigW = PW * 0.42;
     const sigGap = PW * 0.16;
     const ySig = doc.y;
     drawSigLine(L,                   ySig, sigW, resp?.nome || "—", "Responsável Legal");
-    drawSigLine(L + sigW + sigGap,   ySig, sigW, nomeUsuario || "", "Militar Responsável pelo Registro");
+    drawSigLine(L + sigW + sigGap,   ySig, sigW, nomeUsuarioRegistro || "", "Militar Responsável pelo Registro");
     doc.y = ySig + 52;
 
     // Rodapé da última página
     drawFooter();
 
     // Aguardar finalização e enviar buffer completo
-    passThrough.on("end", () => {
+    passThrough.on("end", async () => {
       const pdfBuffer = Buffer.concat(pdfChunks);
       res.setHeader("Content-Length", pdfBuffer.length);
       res.end(pdfBuffer);
+
+      // ── Rastreabilidade: grava quem imprimiu (não bloqueia a resposta) ──
+      if (uidImpressao) {
+        pool.query(
+          `UPDATE ocorrencias_disciplinares SET usuario_impressao_id = ? WHERE id = ?`,
+          [uidImpressao, ocorrenciaId]
+        ).catch(e => console.warn("[RASTREABILIDADE] Falha ao gravar impressão:", e.message));
+      }
     });
     doc.end();
 
@@ -835,7 +849,8 @@ router.get("/:alunoId", async (req, res) => {
 
     // Registros disciplinares — FINALIZADOS + MERITO (exclui cancelados)
     const [rows] = await pool.query(
-      `SELECT LPAD(o.id, 4, '0') AS registro,
+      `SELECT o.id,
+              LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
               CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 'Mérito'
                    ELSE COALESCE(r.tipo_ocorrencia, 'N/D') END AS tipo,
@@ -1221,15 +1236,20 @@ router.get("/:alunoId", async (req, res) => {
       });
     doc.y = resumoY + resumoH + 4;
 
-    // Busca nome do militar que está imprimindo
+    // Busca nome do militar que está gerando o relatório completo (quem solicitou)
+    // No relatório completo não há um único "quem registrou" (são vários registros),
+    // portanto o campo exibe quem gerou/imprimiu o relatório.
     const nomeUsuarioRelatorio = await (async () => {
       try {
-        const uid = req.user?.usuario_id || req.user?.usuarioId || req.user?.id;
+        const uid = req.user?.usuarioId || req.user?.id || req.user?.usuario_id;
         if (!uid) return null;
         const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [uid]);
         return u?.nome || null;
       } catch { return null; }
     })();
+
+    // ID de quem está imprimindo o relatório completo
+    const uidImpressaoRelatorio = req.user?.usuarioId || req.user?.id || req.user?.usuario_id;
 
     drawLine(); doc.y += 6;
 
@@ -1255,7 +1275,7 @@ router.get("/:alunoId", async (req, res) => {
       .text(`${cidadeEscola} — DF, ${hoje()}.`, L, doc.y, { width: PW, align: "right" });
     doc.y += 20;
 
-    // Assinaturas: Responsável Legal (esquerda) + Militar (direita)
+    // Assinaturas: Responsável Legal (esquerda) + Quem gerou o relatório (direita)
     const sigWR = PW * 0.42;
     const sigGapR = PW * 0.16;
     const ySigR = doc.y;
@@ -1267,10 +1287,24 @@ router.get("/:alunoId", async (req, res) => {
     drawFooter();
 
     // Aguardar finalização e enviar buffer completo
-    passThrough.on("end", () => {
+    passThrough.on("end", async () => {
       const pdfBuffer = Buffer.concat(pdfChunks);
       res.setHeader("Content-Length", pdfBuffer.length);
       res.end(pdfBuffer);
+
+      // ── Rastreabilidade: grava quem imprimiu em todos os registros FINALIZADOS do relatório
+      if (uidImpressaoRelatorio && registros.length > 0) {
+        const ids = registros
+          .filter(r => r.tipo_raw !== 'MERITO' && r.status === 'FINALIZADA')
+          .map(r => r.id || null)
+          .filter(Boolean);
+        if (ids.length > 0) {
+          pool.query(
+            `UPDATE ocorrencias_disciplinares SET usuario_impressao_id = ? WHERE id IN (?)`,
+            [uidImpressaoRelatorio, ids]
+          ).catch(e => console.warn("[RASTREABILIDADE] Falha ao gravar impressão:", e.message));
+        }
+      }
     });
     doc.end();
 
