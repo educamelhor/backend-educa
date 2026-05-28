@@ -1881,17 +1881,24 @@ router.get("/conteudos/professor/meus-conteudos", async (req, res) => {
       `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`,
       [escola_id]
     );
+    const discNome = disc?.nome || "";
 
     // ── Query principal dos conteúdos ─────────────────────────────────────────
-    const params = [escola_id, disciplina_id, ano_letivo];
+    // Busca por disciplina_id E por nome da disciplina (fallback de mismatch de IDs)
+    const params = [escola_id, disciplina_id, escola_id, discNome, ano_letivo];
     let where = `
       WHERE coe.escola_id    = ?
-        AND coe.disciplina_id = ?
+        AND (
+          coe.disciplina_id = ?
+          OR coe.disciplina_id IN (
+            SELECT id FROM disciplinas
+            WHERE escola_id = ? AND LOWER(nome) = LOWER(?) LIMIT 10
+          )
+        )
         AND coe.ano_letivo   = ?
         AND coe.ativo        = 1
         AND coe.texto IS NOT NULL
         AND coe.texto != ''
-        AND coe.status IN ('APROVADO', 'ENVIADO')
     `;
 
     if (bimestre) {
@@ -1922,9 +1929,11 @@ router.get("/conteudos/professor/meus-conteudos", async (req, res) => {
       params
     );
 
+    console.log(`[professor/meus-conteudos] escola=${escola_id} disc=${disciplina_id}(${discNome}) bim=${bimestre} => ${rows?.length ?? 0} itens`);
+
     return res.json({
       ok:              true,
-      disciplina_nome: disc?.nome || "Disciplina",
+      disciplina_nome: discNome || "Disciplina",
       escola_nome:     escola?.apelido || escola?.nome || "Escola",
       ano_letivo,
       bimestre:        bimestre || null,
