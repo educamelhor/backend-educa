@@ -1785,5 +1785,157 @@ router.post(
   }
 });
 
-export default router;
+/**
+ * =========================================================
+ * GET /api/conteudos/professor/meus-conteudos
+ *
+ * Endpoint para PROFESSORES consultarem os conteúdos programáticos
+ * das suas próprias disciplinas (sem permissão de admin).
+ *
+ * Já passa por autenticarToken + verificarEscola (via server.js).
+ * NÃO usa autorizarPermissao — qualquer professor autenticado pode acessar.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ *
+ * Query (opcional):
+ * - bimestre (1|2|3|4)
+ * - serie
+ * - ano_letivo (default: 2026)
+ *
+ * Validação de segurança:
+ * - Confirma que a disciplina_id pertence ao professor logado via CPF + modulação.
+ * - Impede acesso a disciplinas de outros professores.
+ *
+ * Retorna: { ok, disciplina_nome, escola_nome, itens: [...] }
+ * =========================================================
+ */
+router.get("/conteudos/professor/meus-conteudos", async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
 
+    const escola_id     = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
+    const bimestre      = req.query.bimestre ? Number(req.query.bimestre) : null;
+    const serie         = req.query.serie    ? String(req.query.serie).trim() : null;
+    const ano_letivo    = Number(req.query.ano_letivo) || 2026;
+
+    if (!disciplina_id) {
+      return res.status(400).json({ ok: false, message: "disciplina_id é obrigatório." });
+    }
+
+    const db = req.db;
+
+    // ── Resolve CPF do professor logado ──────────────────────────────────────
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id         ||
+      req.user?.usuario_id ||
+      req.user?.userId     ||
+      req.user?.user_id    ||
+      req.user?.id_usuario ||
+      req.user?.sub;
+
+    if (!cpf && userId) {
+      const [urows] = await db.query(
+        "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+        [userId]
+      );
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!cpf) {
+      return res.status(403).json({ ok: false, message: "CPF do professor não identificado no token." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    // ── Valida que a disciplina_id pertence ao professor via modulação ───────
+    // (professor só pode consultar disciplinas que ele leciona)
+    const [modRows] = await db.query(
+      `SELECT COUNT(*) AS cnt
+       FROM modulacao m
+       JOIN professores p  ON p.id = m.professor_id
+       JOIN turmas t        ON t.id = m.turma_id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND m.disciplina_id = ?
+         AND t.escola_id = ?
+       LIMIT 1`,
+      [escola_id, cleanCpf, disciplina_id, escola_id]
+    );
+
+    if (!modRows?.[0]?.cnt || Number(modRows[0].cnt) === 0) {
+      return res.status(403).json({
+        ok: false,
+        message: "Você não tem permissão para acessar conteúdos desta disciplina.",
+      });
+    }
+
+    // ── Nome da disciplina e da escola ───────────────────────────────────────
+    const [[disc]] = await db.query(
+      `SELECT nome FROM disciplinas WHERE id = ? LIMIT 1`,
+      [disciplina_id]
+    );
+    const [[escola]] = await db.query(
+      `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`,
+      [escola_id]
+    );
+
+    // ── Query principal dos conteúdos ─────────────────────────────────────────
+    const params = [escola_id, disciplina_id, ano_letivo];
+    let where = `
+      WHERE coe.escola_id    = ?
+        AND coe.disciplina_id = ?
+        AND coe.ano_letivo   = ?
+        AND coe.ativo        = 1
+        AND coe.texto IS NOT NULL
+        AND coe.texto != ''
+        AND coe.status IN ('APROVADO', 'ENVIADO')
+    `;
+
+    if (bimestre) {
+      where += " AND coe.bimestre = ?";
+      params.push(bimestre);
+    }
+    if (serie) {
+      where += " AND UPPER(coe.serie) = UPPER(?)";
+      params.push(serie);
+    }
+
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.texto       AS objetivo_texto,
+         bt.nome         AS unidade_tematica,
+         sc.texto        AS conteudo_seedf,
+         coe.status
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc         ON sc.id = coe.seedf_conteudo_id
+       ${where}
+       ORDER BY coe.bimestre ASC, coe.serie ASC, bt.nome ASC, coe.id ASC
+       LIMIT 2000`,
+      params
+    );
+
+    return res.json({
+      ok:              true,
+      disciplina_nome: disc?.nome || "Disciplina",
+      escola_nome:     escola?.apelido || escola?.nome || "Escola",
+      ano_letivo,
+      bimestre:        bimestre || null,
+      serie:           serie || null,
+      itens:           rows || [],
+    });
+
+  } catch (err) {
+    console.error("Erro GET /conteudos/professor/meus-conteudos:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar conteúdos." });
+  }
+});
+
+export default router;
