@@ -1892,7 +1892,7 @@ router.get("/conteudos/professor/meus-conteudos", async (req, res) => {
           coe.disciplina_id = ?
           OR coe.disciplina_id IN (
             SELECT id FROM disciplinas
-            WHERE escola_id = ? AND LOWER(nome) = LOWER(?) LIMIT 10
+            WHERE escola_id = ? AND LOWER(nome) = LOWER(?)
           )
         )
         AND coe.ano_letivo   = ?
