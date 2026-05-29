@@ -844,6 +844,7 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
         a.id AS aluno_id,
         a.estudante AS nome,
         a.codigo AS matricula,
+        a.foto,
         n.nota,
         n.faltas
       FROM matriculas m
