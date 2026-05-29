@@ -106,7 +106,7 @@ import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
-import governancaRouter from "./routes/governanca.js";
+import governancaRouter, { syncPlanosAvaliacao } from "./routes/governanca.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
@@ -1106,6 +1106,36 @@ async function bootstrap() {
     }
   } catch (migErr) {
     console.warn("[MIGRATION] Erro ao aplicar migration 'escola.permitir_boletim_manual' (nao critico):", migErr.message);
+  }
+
+  // [2026-05-29] Item de governanca para Excecoes de Avaliacao Bimestral por disciplina
+  try {
+    const [[existItemExc]] = await pool.query(
+      "SELECT 1 FROM governanca_itens WHERE chave = 'escola.avaliacao_padrao_bimestral.excecoes' LIMIT 1"
+    );
+    if (!existItemExc) {
+      await pool.query(`
+        INSERT INTO governanca_itens 
+          (categoria_id, chave, descricao, tipo, opcoes_json, valor_padrao, ordem, ativo)
+        VALUES 
+          (7, 'escola.avaliacao_padrao_bimestral.excecoes', 'Disciplinas de excecao que nao adotam avaliacao padrao bimestral', 'text', NULL, '[]', 8, 1)
+      `);
+      console.log("[MIGRATION] Item de governanca 'escola.avaliacao_padrao_bimestral.excecoes' inserido em 'governanca_itens' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration 'escola.avaliacao_padrao_bimestral.excecoes' (nao critico):", migErr.message);
+  }
+
+  // [2026-05-29] One-time Sync: Sincroniza todos os planos de avaliação de todas as escolas ativas no boot
+  try {
+    const [escolas] = await pool.query("SELECT id FROM escolas");
+    console.log(`[BOOT-SYNC-PAPs] Iniciando sincronizacao em lote para ${escolas.length} escolas...`);
+    for (const esc of escolas) {
+      await syncPlanosAvaliacao(pool, esc.id);
+    }
+    console.log("[BOOT-SYNC-PAPs] Sincronizacao em lote concluida com sucesso! ");
+  } catch (syncErr) {
+    console.warn("[BOOT-SYNC-PAPs] Falha na sincronizacao em lote no boot:", syncErr.message);
   }
 
 

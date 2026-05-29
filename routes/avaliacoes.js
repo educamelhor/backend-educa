@@ -519,11 +519,12 @@ router.post("/", async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // AUTO-ITEM: Prova Bimestral padronizada
-    // Se a escola adota avaliação bimestral padronizada (governança),
-    // garante que cada plano criado/salvo tenha um item fixo_direcao=1
-    // com atividade='Prova Bimestral' e tipo_avaliacao='PROVA'.
-    // A DATA será preenchida pela direção ao criar o gabarito.
+    // AUTO-ITEM: Prova Bimestral padronizada (com Governança de Exceções)
+    // Se a escola adota avaliação bimestral padronizada (governança) e a
+    // disciplina NÃO é uma exceção configurada pela direção, garante que
+    // cada plano tenha um item fixo_direcao=1 com atividade='Prova Bimestral'
+    // e tipo_avaliacao='PROVA'.
+    // Caso contrário (desativada ou exceção), removemos o item de forma segura.
     // ════════════════════════════════════════════════════════════════════
     try {
       const [[config]] = await conn.query(
@@ -532,7 +533,32 @@ router.post("/", async (req, res) => {
         [escola_id]
       );
 
-      if (config?.valor === '1') {
+      const [[configExc]] = await conn.query(
+        `SELECT valor FROM configuracoes_escola
+         WHERE escola_id = ? AND chave = 'escola.avaliacao_padrao_bimestral.excecoes' LIMIT 1`,
+        [escola_id]
+      );
+
+      let isException = false;
+      if (config?.valor === '1' && configExc?.valor) {
+        try {
+          const excIds = JSON.parse(configExc.valor);
+          if (Array.isArray(excIds) && excIds.length > 0) {
+            const [rowsExcNames] = await conn.query(
+              `SELECT nome FROM disciplinas WHERE escola_id = ? AND id IN (?)`,
+              [escola_id, excIds]
+            );
+            const excNames = rowsExcNames.map(r => String(r.nome).trim().toLowerCase());
+            if (excNames.includes(String(disciplina).trim().toLowerCase())) {
+              isException = true;
+            }
+          }
+        } catch (excErr) {
+          console.warn('[avaliacoes] Erro ao verificar exceções de disciplinas:', excErr.message);
+        }
+      }
+
+      if (config?.valor === '1' && !isException) {
         for (const planoId of planoIds) {
           // Verifica se já existe item fixo_direcao nesse plano
           const [[jaExiste]] = await conn.query(
@@ -557,6 +583,35 @@ router.post("/", async (req, res) => {
                WHERE plano_id = ? AND fixo_direcao = 1`,
               [planoId]
             );
+          }
+        }
+      } else {
+        // Se a escola não adota ou se a disciplina é exceção, removemos a Prova Bimestral (fixo_direcao = 1) de forma segura
+        for (const planoId of planoIds) {
+          const [[jaExiste]] = await conn.query(
+            `SELECT id FROM itens_avaliacao WHERE plano_id = ? AND fixo_direcao = 1 LIMIT 1`,
+            [planoId]
+          );
+          if (jaExiste) {
+            // Verifica se tem notas no diário para esse item específico
+            const [itensAtuais] = await conn.query(
+              `SELECT id FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC`,
+              [planoId]
+            );
+            const idx = itensAtuais.findIndex(i => i.id === jaExiste.id);
+            if (idx !== -1) {
+              const [[{ count_notas }]] = await conn.query(
+                `SELECT COUNT(*) AS count_notas FROM notas_diario WHERE plano_id = ? AND item_idx = ?`,
+                [planoId, idx]
+              );
+              if (count_notas === 0) {
+                await conn.query(
+                  `DELETE FROM itens_avaliacao WHERE id = ?`,
+                  [jaExiste.id]
+                );
+                console.log(`[avaliacoes] Auto-item Prova Bimestral removido com segurança do plano ${planoId} (disciplina de exceção ou desativada)`);
+              }
+            }
           }
         }
       }

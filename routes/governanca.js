@@ -187,6 +187,7 @@ const AVALIACAO_DEFAULTS = {
   "coordenador.acessa_gabarito": "0",
   "supervisor.acessa_gabarito": "0",
   "escola.permitir_boletim_manual": "0",
+  "escola.avaliacao_padrao_bimestral.excecoes": "[]",
 };
 
 router.get("/avaliacao-config", async (req, res) => {
@@ -341,23 +342,157 @@ router.put("/:id", guardDiretor, async (req, res) => {
   }
 });
 
+// ── Sincroniza todos os PAPs da escola com a regra bimestral e exceções ──
+export async function syncPlanosAvaliacao(db, escolaId) {
+  try {
+    const anoAtual = new Date().getFullYear();
+
+    // 1) Busca configurações
+    const [[configBimestral]] = await db.query(
+      `SELECT valor FROM configuracoes_escola WHERE escola_id = ? AND chave = 'escola.avaliacao_padrao_bimestral' LIMIT 1`,
+      [escolaId]
+    );
+
+    const [[configExcecoes]] = await db.query(
+      `SELECT valor FROM configuracoes_escola WHERE escola_id = ? AND chave = 'escola.avaliacao_padrao_bimestral.excecoes' LIMIT 1`,
+      [escolaId]
+    );
+
+    const adotaBimestral = configBimestral?.valor === "1";
+    let exceptionNames = [];
+
+    if (adotaBimestral && configExcecoes?.valor) {
+      try {
+        const excIds = JSON.parse(configExcecoes.valor);
+        if (Array.isArray(excIds) && excIds.length > 0) {
+          const [disciplinasExc] = await db.query(
+            `SELECT nome FROM disciplinas WHERE escola_id = ? AND id IN (?)`,
+            [escolaId, excIds]
+          );
+          exceptionNames = disciplinasExc.map(d => String(d.nome).trim().toLowerCase());
+        }
+      } catch (e) {
+        console.warn("[GOVERNANCA][SYNC-PAPs] Erro ao parsear exceções:", e.message);
+      }
+    }
+
+    // 2) Busca todos os planos do ano corrente
+    const [planos] = await db.query(
+      `SELECT id, disciplina FROM planos_avaliacao WHERE escola_id = ? AND ano = ?`,
+      [escolaId, anoAtual]
+    );
+
+    console.log(`[GOVERNANCA][SYNC-PAPs] Sincronizando ${planos.length} planos para a escola ${escolaId} (${anoAtual})`);
+
+    for (const plano of planos) {
+      const planoId = plano.id;
+      const isException = exceptionNames.includes(String(plano.disciplina).trim().toLowerCase());
+
+      if (adotaBimestral && !isException) {
+        // --- DEVE ter Prova Bimestral ---
+        const [[jaExiste]] = await db.query(
+          `SELECT id FROM itens_avaliacao WHERE plano_id = ? AND fixo_direcao = 1 LIMIT 1`,
+          [planoId]
+        );
+
+        if (!jaExiste) {
+          await db.query(
+            `INSERT INTO itens_avaliacao
+              (plano_id, atividade, tipo_avaliacao, data_inicio, data_final,
+               nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
+             VALUES (?, 'Prova Bimestral', 'PROVA', NULL, NULL, 5, 1, 0, NULL, 1)`,
+            [planoId]
+          );
+          console.log(`[GOVERNANCA][SYNC-PAPs] Inserido auto-item Prova Bimestral no plano ${planoId}`);
+        } else {
+          await db.query(
+            `UPDATE itens_avaliacao
+             SET atividade = 'Prova Bimestral', tipo_avaliacao = 'PROVA'
+             WHERE plano_id = ? AND fixo_direcao = 1`,
+            [planoId]
+          );
+        }
+      } else {
+        // --- NÃO deve ter Prova Bimestral ---
+        const [[jaExiste]] = await db.query(
+          `SELECT id FROM itens_avaliacao WHERE plano_id = ? AND fixo_direcao = 1 LIMIT 1`,
+          [planoId]
+        );
+
+        if (jaExiste) {
+          // Verifica se existem notas cadastradas para este item no plano
+          const [itensAtuais] = await db.query(
+            `SELECT id FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC`,
+            [planoId]
+          );
+          const idx = itensAtuais.findIndex(i => i.id === jaExiste.id);
+
+          if (idx !== -1) {
+            const [[{ count_notas }]] = await db.query(
+              `SELECT COUNT(*) AS count_notas FROM notas_diario WHERE plano_id = ? AND item_idx = ?`,
+              [planoId, idx]
+            );
+
+            if (count_notas === 0) {
+              await db.query(
+                `DELETE FROM itens_avaliacao WHERE id = ?`,
+                [jaExiste.id]
+              );
+              console.log(`[GOVERNANCA][SYNC-PAPs] Removida Prova Bimestral do plano ${planoId} (exceção ou inativo)`);
+            } else {
+              console.log(`[GOVERNANCA][SYNC-PAPs] Prova Bimestral preservada no plano ${planoId} pois já possui ${count_notas} nota(s)`);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[GOVERNANCA][SYNC-PAPs] Erro geral ao sincronizar:", err);
+  }
+}
+
 // ── PUT /api/governanca/batch/update — Atualizar múltiplas de uma vez ──
 router.put("/batch/update", guardDiretor, async (req, res) => {
   const db = req.db;
   const { items } = req.body;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
 
   if (!Array.isArray(items) || items.length === 0)
     return res.status(400).json({ ok: false, message: "items é obrigatório (array)." });
 
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
   try {
     let updated = 0;
+    let hasBimestralOrExcChange = false;
+
     for (const item of items) {
       if (!item.id || item.valor === undefined) continue;
+
+      // Busca a chave correspondente ao ID para saber se é bimestral ou exceções
+      const [[cfg]] = await db.query(
+        "SELECT chave, valor FROM configuracoes_escola WHERE id = ?",
+        [Number(item.id)]
+      );
+      if (cfg && (cfg.chave === "escola.avaliacao_padrao_bimestral" || cfg.chave === "escola.avaliacao_padrao_bimestral.excecoes")) {
+        if (String(cfg.valor) !== String(item.valor)) {
+          hasBimestralOrExcChange = true;
+        }
+      }
+
       const [result] = await db.query(
         "UPDATE configuracoes_escola SET valor = ? WHERE id = ?",
         [String(item.valor), Number(item.id)]
       );
       updated += result.affectedRows;
+    }
+
+    if (hasBimestralOrExcChange) {
+      // Dispara a sincronização de planos existentes em segundo plano para não travar a resposta
+      syncPlanosAvaliacao(db, escolaId).catch(err => {
+        console.error("[GOVERNANCA] Erro na sync de planos:", err);
+      });
     }
 
     return res.json({ ok: true, message: `${updated} configurações atualizadas.` });
