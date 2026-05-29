@@ -115,6 +115,7 @@ import pedagogicoRelatoriosRouter from "./routes/pedagogico_relatorios.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
 import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
+import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agente Secretaria (SEEDF PDF Parser)
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -1300,6 +1301,9 @@ async function bootstrap() {
 
   // ✅ PDF RELATÓRIOS DA SECRETARIA
   app.use("/api/secretaria/relatorios/pdf", autenticarToken, verificarEscola, secretariaRelatoriosPdfRouter);
+
+  // ✅ AGENTE AUTÔNOMO DA SECRETARIA (SEEDF PDF Parser real)
+  app.use("/api/secretaria/agente", autenticarToken, verificarEscola, secretariaAgenteRouter);
 
   // ✅ Relatórios Pedagógicos (Plano de Avaliação, etc.)
   app.use("/api/pedagogico/relatorios", autenticarToken, verificarEscola, pedagogicoRelatoriosRouter);
