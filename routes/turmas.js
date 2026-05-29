@@ -31,6 +31,7 @@ router.get("/", verificarEscola, async (req, res) => {
       SELECT
         t.id,
         t.nome AS turma,
+        t.nome_oficial,
         t.etapa,
         t.ano,
         t.serie,
@@ -189,6 +190,30 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("Erro ao listar alunos da turma:", err);
     return res.status(500).json({ ok: false, error: "Não foi possível carregar os alunos da turma." });
+  }
+});
+
+/**
+ * ==========================================
+ * ATUALIZAR NOME OFICIAL DA TURMA (Mapeamento)
+ * PATCH /api/turmas/:id/nome-oficial
+ * ==========================================
+ */
+router.patch("/:id/nome-oficial", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nome_oficial } = req.body;
+    const { escola_id } = req.user;
+
+    await pool.query(
+      "UPDATE turmas SET nome_oficial = ? WHERE id = ? AND escola_id = ?",
+      [nome_oficial, id, escola_id]
+    );
+
+    return res.status(200).json({ success: true, message: "Nome oficial da turma atualizado com sucesso." });
+  } catch (err) {
+    console.error("Erro ao atualizar nome oficial da turma:", err);
+    return res.status(500).json({ error: "Não foi possível atualizar o nome oficial da turma." });
   }
 });
 

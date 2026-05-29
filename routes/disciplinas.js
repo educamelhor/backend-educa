@@ -28,6 +28,7 @@ router.get("/", verificarEscola, async (req, res) => {
       SELECT 
         id,
         nome AS disciplina,
+        nome_oficial,
         etapa,
         turno,
         carga,
@@ -182,7 +183,28 @@ router.put("/:id", verificarEscola, async (req, res) => {
   }
 });
 
+/**
+ * ===============================================
+ * ATUALIZAR NOME OFICIAL DA DISCIPLINA (Mapeamento)
+ * PATCH /api/disciplinas/:id/nome-oficial
+ * ===============================================
+ */
+router.patch("/:id/nome-oficial", verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nome_oficial } = req.body;
+    const { escola_id } = req.user;
 
+    await pool.query(
+      "UPDATE disciplinas SET nome_oficial = ? WHERE id = ? AND escola_id = ?",
+      [nome_oficial, id, escola_id]
+    );
 
+    return res.status(200).json({ success: true, message: "Nome oficial da disciplina atualizado com sucesso." });
+  } catch (err) {
+    console.error("Erro ao atualizar nome oficial da disciplina:", err);
+    return res.status(500).json({ error: "Não foi possível atualizar o nome oficial da disciplina." });
+  }
+});
 
 export default router;
