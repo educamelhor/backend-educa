@@ -1089,6 +1089,24 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar biblioteca_concurso (não crítico):", migErr.message);
   }
 
+  // [2026-05-29] Item de governanca para o Boletim Manual do Professor
+  try {
+    const [[existItem]] = await pool.query(
+      "SELECT 1 FROM governanca_itens WHERE chave = 'escola.permitir_boletim_manual' LIMIT 1"
+    );
+    if (!existItem) {
+      await pool.query(`
+        INSERT INTO governanca_itens 
+          (categoria_id, chave, descricao, tipo, opcoes_json, valor_padrao, ordem, ativo)
+        VALUES 
+          (2, 'escola.permitir_boletim_manual', 'Professor pode lancar notas e faltas no boletim manualmente', 'boolean', NULL, '0', 4, 1)
+      `);
+      console.log("[MIGRATION] Item de governanca 'escola.permitir_boletim_manual' inserido em 'governanca_itens' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration 'escola.permitir_boletim_manual' (nao critico):", migErr.message);
+  }
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
