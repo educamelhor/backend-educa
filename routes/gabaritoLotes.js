@@ -1793,7 +1793,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
   }
 });
 
-// ─── GET /api/gabarito-lotes/scan-mobile/aluno-by-codigo ─────────────────────
+// ─── GET /api/gabarito-lotes/scan-mobile/aluno-by-codigo ───────────────────────────
 // Chamado ao escanear o QR do GABARITO DO ALUNO.
 // Busca aluno pelo código, retorna dados e arquivo_id do lote.
 router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
@@ -1873,6 +1873,102 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
   } catch (err) {
     console.error("[aluno-by-codigo] Erro:", err);
     res.status(500).json({ error: err?.message || "Erro ao buscar aluno." });
+  }
+});
+
+// ─── GET /api/gabarito-lotes/scan-mobile/lote-imagens ───────────────────────────────
+// Carrega (UMA VEZ por sessão) o mapa de alunos que já têm imagem no BD.
+// Usado pelo EDUCA-SCAN para não re-capturar quem já foi digitalizado via portal.
+router.get("/scan-mobile/lote-imagens", async (req, res) => {
+  const { lote_id } = req.query;
+  const { escola_id } = req.user;
+  if (!lote_id) return res.status(400).json({ error: "lote_id é obrigatório" });
+  try {
+    const [rows] = await pool.query(
+      `SELECT codigo_aluno, id AS arquivoId, status,
+              (arquivo_path IS NOT NULL AND arquivo_path != '') AS temImagem,
+              (respostas_aluno IS NOT NULL) AS temRespostas
+       FROM gabarito_arquivos WHERE lote_id = ? AND escola_id = ?`,
+      [lote_id, escola_id]
+    );
+    const imagens = {};
+    for (const r of rows) {
+      imagens[r.codigo_aluno] = {
+        arquivoId:    r.arquivoId,
+        status:       r.status,
+        temImagem:    !!r.temImagem,
+        temRespostas: !!r.temRespostas,
+      };
+    }
+    res.json({ imagens });
+  } catch (err) {
+    console.error("[lote-imagens]", err);
+    res.status(500).json({ error: err?.message || "Erro ao carregar imagens" });
+  }
+});
+
+// ─── POST /api/gabarito-lotes/scan-mobile/ler-imagem-existente ──────────────────
+// Retorna bolhas já lidas (DB) ou roda OMR na imagem do portal.
+router.post("/scan-mobile/ler-imagem-existente", async (req, res) => {
+  const { arquivo_id } = req.body;
+  const { escola_id }  = req.user;
+  if (!arquivo_id) return res.status(400).json({ error: "arquivo_id é obrigatório" });
+  try {
+    const [[arq]] = await pool.query(
+      `SELECT id, arquivo_path, respostas_aluno FROM gabarito_arquivos
+       WHERE id = ? AND escola_id = ?`,
+      [arquivo_id, escola_id]
+    );
+    if (!arq) return res.status(404).json({ error: "Arquivo não encontrado" });
+
+    // Caminho rápido: já tem respostas
+    if (arq.respostas_aluno) {
+      const respostas = JSON.parse(arq.respostas_aluno);
+      const nDet = respostas.filter(r => r && r !== 'N').length;
+      const conf = Math.round(nDet / Math.max(1, respostas.length) * 100);
+      return res.json({
+        arquivoId: arq.id, source: 'db_respostas',
+        omrResult: { respostas, totalQuestoes: respostas.length,
+                     totalAlternativas: 4, confianca: conf, avisos: [] },
+      });
+    }
+
+    // Caminho OMR: baixar imagem do Spaces e processar
+    if (!arq.arquivo_path) return res.status(400).json({ error: "Sem imagem associada" });
+
+    const imgResp = await fetch(arq.arquivo_path, { signal: AbortSignal.timeout(15000) });
+    if (!imgResp.ok) throw new Error(`Download falhou: ${imgResp.status}`);
+    const imgBuf  = Buffer.from(await imgResp.arrayBuffer());
+
+    const FormDataNode = require('form-data');
+    const formBolhas   = new FormDataNode();
+    formBolhas.append("file", imgBuf, { filename: "gabarito.jpg", contentType: "image/jpeg" });
+
+    const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
+      method: "POST", body: formBolhas,
+      headers: formBolhas.getHeaders(),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!respBolhas.ok) {
+      const e = await respBolhas.text().catch(() => "");
+      return res.status(502).json({ error: `OMR falhou: ${e.slice(0,200)}` });
+    }
+
+    const bd = await respBolhas.json();
+    const omrResult = {
+      respostas: bd.respostas || [], totalQuestoes: bd.totalQuestoes || 0,
+      totalAlternativas: bd.totalAlternativas || 4,
+      confianca: bd.confianca || 0, avisos: bd.avisos || [],
+    };
+    if (omrResult.respostas.length > 0) {
+      pool.query(`UPDATE gabarito_arquivos SET respostas_aluno = ? WHERE id = ?`,
+        [JSON.stringify(omrResult.respostas), arquivo_id]).catch(() => {});
+    }
+    console.log(`[ler-imagem-existente] arqId=${arquivo_id} conf=${omrResult.confianca}%`);
+    res.json({ arquivoId: arq.id, omrResult, source: 'omr' });
+  } catch (err) {
+    console.error("[ler-imagem-existente]", err);
+    res.status(500).json({ error: err?.message || "Erro ao ler imagem" });
   }
 });
 
@@ -2019,12 +2115,21 @@ router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) =
       if (respBolhas.ok) {
         const bd = await respBolhas.json();
         omrResult = {
-          respostas:     bd.respostas     || [],
-          totalQuestoes: bd.totalQuestoes || 0,
-          confianca:     bd.confianca     || 0,
-          avisos:        bd.avisos        || [],
+          respostas:         bd.respostas         || [],
+          totalQuestoes:     bd.totalQuestoes     || 0,
+          totalAlternativas: bd.totalAlternativas || 4,
+          confianca:         bd.confianca         || 0,
+          avisos:            bd.avisos            || [],
         };
         console.log(`[save-image] OMR bolhas OK — confianca=${omrResult.confianca}% method=${alignmentMethod}`);
+
+        // Persistir leitura inicial no BD (best-effort)
+        if (arqId && omrResult.respostas.length > 0) {
+          pool.query(
+            `UPDATE gabarito_arquivos SET respostas_aluno = ? WHERE id = ?`,
+            [JSON.stringify(omrResult.respostas), arqId]
+          ).catch(e => console.warn(`[save-image] respostas_aluno não salvo: ${e.message}`));
+        }
       } else {
         const be = await respBolhas.text().catch(() => "");
         console.warn(`[save-image] OMR bolhas status=${respBolhas.status}: ${be.slice(0, 120)}`);
@@ -2049,7 +2154,40 @@ router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) =
   }
 });
 
-// ─── PATCH /api/gabarito-lotes/arquivos/:id/ausente ──────────────────────────
+// ─── POST /api/gabarito-lotes/scan-mobile/confirmar-leitura ───────────────────────────
+// Salva as respostas finais (OMR + correções manuais do professor) no BD.
+// Chamado ao confirmar a tela de leitura no EDUCA-SCAN.
+router.post("/scan-mobile/confirmar-leitura", async (req, res) => {
+  const { arquivo_id, respostas, origem } = req.body;
+  const { escola_id } = req.user;
+
+  if (!arquivo_id || !Array.isArray(respostas)) {
+    return res.status(400).json({ error: "arquivo_id e respostas são obrigatórios" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      `UPDATE gabarito_arquivos
+         SET respostas_aluno = ?,
+             status          = CASE WHEN status = 'pendente' THEN 'identificado' ELSE status END,
+             updated_at      = NOW()
+       WHERE id = ? AND escola_id = ?`,
+      [JSON.stringify(respostas), arquivo_id, escola_id]
+    );
+
+    if (result.affectedRows === 0) {
+      console.warn(`[confirmar-leitura] arqId=${arquivo_id} não encontrado para escola_id=${escola_id}`);
+    }
+
+    console.log(`[confirmar-leitura] arqId=${arquivo_id} origem=${origem || 'omr'} n=${respostas.length}`);
+    res.json({ success: true, affectedRows: result.affectedRows });
+  } catch (err) {
+    console.error("[confirmar-leitura] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao confirmar leitura" });
+  }
+});
+
+// ─── PATCH /api/gabarito-lotes/arquivos/:id/ausente ─────────────────────────────
 // Marca aluno como ausente (ou desfaz voltando para 'pendente')
 router.patch("/arquivos/:id/ausente", async (req, res) => {
   const { id } = req.params;

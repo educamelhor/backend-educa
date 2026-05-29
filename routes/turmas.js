@@ -25,7 +25,7 @@ function verificarEscola(req, res, next) {
 router.get("/", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { filtro = "" } = req.query;
+    const { filtro = "", ano = "" } = req.query;
 
     let sql = `
       SELECT
@@ -42,6 +42,11 @@ router.get("/", verificarEscola, async (req, res) => {
       WHERE t.escola_id = ?
     `;
     const params = [escola_id];
+
+    if (ano) {
+      sql += " AND t.ano = ?";
+      params.push(ano);
+    }
 
     if (filtro) {
       sql += " AND (t.nome LIKE ? OR t.serie LIKE ? OR t.turno LIKE ?)";
