@@ -186,6 +186,7 @@ const AVALIACAO_DEFAULTS = {
   "nota.avaliacao_padrao.bimestral": "0",
   "coordenador.acessa_gabarito": "0",
   "supervisor.acessa_gabarito": "0",
+  "escola.permitir_boletim_manual": "0",
 };
 
 router.get("/avaliacao-config", async (req, res) => {
@@ -202,6 +203,7 @@ router.get("/avaliacao-config", async (req, res) => {
          OR chave LIKE 'nota.avaliacao%'
          OR chave LIKE 'coordenador.acessa%'
          OR chave LIKE 'supervisor.acessa%'
+         OR chave = 'escola.permitir_boletim_manual'
        )`,
       [escolaId]
     );

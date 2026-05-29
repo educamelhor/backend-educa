@@ -734,6 +734,229 @@ router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", verificarEscola, async (
 });
 
 // ────────────────────────────────────────────────
+// GET: Disciplinas do professor logado em uma turma específica
+// URL: GET /api/professores/me/turmas/:turmaId/disciplinas
+// ────────────────────────────────────────────────
+router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+    const turmaId = Number(req.params.turmaId);
+
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf || !turmaId) {
+      return res.status(400).json({ ok: false, message: "Parâmetros inválidos." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    const [rows] = await pool.query(
+      `SELECT DISTINCT d.id AS id, d.nome AS nome
+       FROM professores p
+       JOIN modulacao m   ON m.professor_id = p.id
+       JOIN disciplinas d ON d.id = m.disciplina_id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND m.turma_id = ?
+       ORDER BY d.nome ASC`,
+      [escolaId, cleanCpf, turmaId]
+    );
+
+    const disciplinas = Array.isArray(rows)
+      ? rows.map((r) => ({
+          id: Number(r?.id),
+          nome: String(r?.nome || "").trim(),
+        }))
+      : [];
+
+    return res.json({ ok: true, disciplinas });
+  } catch (err) {
+    console.error("Erro ao buscar disciplinas da turma (me/turmas/:turmaId/disciplinas):", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar disciplinas." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// GET: Alunos de uma turma com notas/faltas manuais no boletim
+// URL: GET /api/professores/boletim/alunos
+// Query params: turma_id, disciplina_id, bimestre, ano (opcional)
+// ────────────────────────────────────────────────
+router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = req.user?.escola_id;
+    const turmaId = Number(req.query.turma_id);
+    const disciplinaId = Number(req.query.disciplina_id);
+    const bimestre = Number(req.query.bimestre);
+    const ano = Number(req.query.ano) || new Date().getFullYear();
+
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf || !turmaId || !disciplinaId || !bimestre) {
+      return res.status(400).json({ ok: false, message: "Parâmetros de consulta inválidos." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    // 1. Validar se o professor está modulado para esta turma e disciplina
+    const [[modValidation]] = await pool.query(
+      `SELECT 1
+       FROM professores p
+       JOIN modulacao m ON m.professor_id = p.id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND m.turma_id = ?
+         AND m.disciplina_id = ?
+       LIMIT 1`,
+      [escolaId, cleanCpf, turmaId, disciplinaId]
+    );
+
+    if (!modValidation) {
+      return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+    }
+
+    // 2. Buscar alunos ativos com suas respectivas notas e faltas se existirem
+    const [rows] = await pool.query(
+      `SELECT
+        a.id AS aluno_id,
+        a.estudante AS nome,
+        a.codigo AS matricula,
+        n.nota,
+        n.faltas
+      FROM matriculas m
+      INNER JOIN alunos a ON a.id = m.aluno_id
+      LEFT JOIN notas n ON n.aluno_id = a.id
+        AND n.disciplina_id = ?
+        AND n.bimestre = ?
+        AND n.ano = ?
+        AND n.escola_id = ?
+      WHERE m.turma_id = ?
+        AND m.escola_id = ?
+        AND m.ano_letivo = ?
+        AND m.status = 'ativo'
+      ORDER BY a.estudante ASC`,
+      [disciplinaId, bimestre, ano, escolaId, turmaId, escolaId, ano]
+    );
+
+    return res.json({ ok: true, alunos: rows });
+  } catch (err) {
+    console.error("Erro ao buscar alunos com notas do boletim:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar lista de alunos." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// POST: Salvar/atualizar notas e faltas do boletim em lote
+// URL: POST /api/professores/boletim/salvar
+// Body: turma_id, disciplina_id, bimestre, ano, lancamentos: [{ aluno_id, nota, faltas }]
+// ────────────────────────────────────────────────
+router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const escolaId = req.user?.escola_id;
+    const { turma_id, disciplina_id, bimestre, ano = new Date().getFullYear(), lancamentos } = req.body;
+
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario;
+
+    if (!cpf && userId) {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!escolaId || !cpf || !turma_id || !disciplina_id || !bimestre || !Array.isArray(lancamentos)) {
+      return res.status(400).json({ ok: false, message: "Dados de requisição inválidos ou incompletos." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    // 1. Validar se o professor está modulado para esta turma e disciplina
+    const [[modValidation]] = await pool.query(
+      `SELECT 1
+       FROM professores p
+       JOIN modulacao m ON m.professor_id = p.id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND m.turma_id = ?
+         AND m.disciplina_id = ?
+       LIMIT 1`,
+      [escolaId, cleanCpf, turma_id, disciplina_id]
+    );
+
+    if (!modValidation) {
+      return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+    }
+
+    // 2. Iniciar transação para garantir integridade dos dados
+    await conn.beginTransaction();
+
+    for (const l of lancamentos) {
+      const { aluno_id, nota, faltas } = l;
+
+      // Validação básica por aluno
+      let notaValue = nota === "" || nota === null || nota === undefined ? null : parseFloat(String(nota).replace(",", "."));
+      let faltasValue = faltas === "" || faltas === null || faltas === undefined ? null : parseInt(faltas, 10);
+
+      if (notaValue !== null && (Number.isNaN(notaValue) || notaValue < 0 || notaValue > 10)) {
+        throw new Error(`Nota inválida para o aluno ID ${aluno_id}. Deve ser entre 0.0 e 10.0.`);
+      }
+      if (faltasValue !== null && (Number.isNaN(faltasValue) || faltasValue < 0)) {
+        throw new Error(`Faltas inválidas para o aluno ID ${aluno_id}. Deve ser um número inteiro maior ou igual a 0.`);
+      }
+
+      await conn.query(
+        `INSERT INTO notas
+          (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+          nota = VALUES(nota),
+          faltas = VALUES(faltas),
+          data_lancamento = NOW()`,
+        [escolaId, aluno_id, ano, bimestre, disciplina_id, notaValue, faltasValue]
+      );
+    }
+
+    await conn.commit();
+    return res.json({ ok: true, message: "Notas e faltas do boletim salvas com sucesso." });
+  } catch (err) {
+    await conn.rollback();
+    console.error("Erro ao salvar notas do boletim:", err);
+    return res.status(500).json({ ok: false, message: err.message || "Erro interno ao salvar notas." });
+  } finally {
+    conn.release();
+  }
+});
+
+// ────────────────────────────────────────────────
 // GET: Buscar professor por ID
 // - Retorna p.turno (campo da própria tabela)
 // ────────────────────────────────────────────────
