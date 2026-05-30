@@ -26,6 +26,7 @@ for (const area of ['EXATAS', 'HUMANAS', 'LINGUAGENS', 'NATUREZA', 'GERAL']) {
 }
 
 // ── Area definitions ────────────────────────────────────────────────────────
+// IMPORTANT: always use HEX strings for PDFKit colors — never 'rgb(r,g,b)'
 const AREAS = {
   EXATAS:     { label: 'EXATAS',     cor: '#1e40af', corClaro: '#dbeafe', disciplinas: 'Ciências · Matemática · Geometria' },
   HUMANAS:    { label: 'HUMANAS',    cor: '#c2410c', corClaro: '#ffedd5', disciplinas: 'História · Geografia' },
@@ -38,11 +39,11 @@ const TEMPLATES = { 1: 'Clássico', 2: 'Moderno', 3: 'Formal', 4: 'Colorido', 5:
 
 // ── Default instructions per area ───────────────────────────────────────────
 const INSTRUCOES_PADRAO = {
-  EXATAS: `1. Este CADERNO DE QUESTÕES contém 25 questões dispostas da seguinte maneira:\na) questões de número 1 a 12, relativas à área de Ciências e suas Tecnologias;\nb) questões de número 13 a 22, relativas à área de Matemática e suas Tecnologias;\nc) questões de número 23 a 25, relativas à área de Geometria e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto ou com defeito, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
-  HUMANAS: `1. Este CADERNO DE QUESTÕES contém 25 questões numeradas de 01 a 25 dispostas da seguinte maneira:\na) questões de número 01 a 12, relativas à área de História e suas Tecnologias;\nb) questões de número 13 a 25, relativas à área de Geografia e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto ou com defeito, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
-  LINGUAGENS: `1. Este CADERNO DE QUESTÕES contém 25 questões numeradas de 01 a 25 dispostas da seguinte maneira:\na) questões de número 01 a 10, relativas à área de Língua Portuguesa;\nb) questões de número 11 a 15, relativas à área de Educação Artística;\nc) questões de número 16 a 20, relativas à área de Língua Inglesa;\nd) questões de número 21 a 25, relativas à área de Educação Física.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto ou com defeito, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
-  NATUREZA: `1. Este CADERNO DE QUESTÕES contém 25 questões objetivas de Ciências da Natureza e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto ou com defeito, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
-  GERAL: `1. Este CADERNO DE QUESTÕES contém questões de diversas áreas do conhecimento.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto ou com defeito, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
+  EXATAS: `1. Este CADERNO DE QUESTÕES contém 25 questões dispostas da seguinte maneira:\na) questões de número 1 a 12, relativas à área de Ciências e suas Tecnologias;\nb) questões de número 13 a 22, relativas à área de Matemática e suas Tecnologias;\nc) questões de número 23 a 25, relativas à área de Geometria e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
+  HUMANAS: `1. Este CADERNO DE QUESTÕES contém 25 questões numeradas de 01 a 25 dispostas da seguinte maneira:\na) questões de número 01 a 12, relativas à área de História e suas Tecnologias;\nb) questões de número 13 a 25, relativas à área de Geografia e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
+  LINGUAGENS: `1. Este CADERNO DE QUESTÕES contém 25 questões numeradas de 01 a 25 dispostas da seguinte maneira:\na) questões de número 01 a 10, relativas à área de Língua Portuguesa;\nb) questões de número 11 a 15, relativas à área de Educação Artística;\nc) questões de número 16 a 20, relativas à área de Língua Inglesa;\nd) questões de número 21 a 25, relativas à área de Educação Física.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
+  NATUREZA: `1. Este CADERNO DE QUESTÕES contém 25 questões objetivas de Ciências da Natureza e suas Tecnologias.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
+  GERAL: `1. Este CADERNO DE QUESTÕES contém questões de diversas áreas do conhecimento.\n\n2. Confira se a quantidade e a ordem das questões estão de acordo. Caso o caderno esteja incompleto, comunique ao aplicador da sala.\n\n3. Para cada questão objetiva, são apresentadas 4 opções. Apenas uma responde corretamente à questão.\n\n4. O tempo disponível para estas provas é de 3h00. Reserve tempo suficiente para preencher o CARTÃO-RESPOSTA.\n\n5. Rascunhos e marcações no CADERNO DE QUESTÕES não serão considerados na avaliação.\n\n6. Proibido porte e uso de qualquer aparelho eletrônico ou digital (celular, fone, smartwatch, etc.)\n\n7. Você poderá deixar o local de prova somente após decorrido 1h00 de prova.`,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -62,446 +63,454 @@ async function gerarQRBuffer(dados) {
   });
 }
 
-function hexToRgb(hex) {
-  const r = parseInt(hex.slice(1,3),16);
-  const g = parseInt(hex.slice(3,5),16);
-  const b = parseInt(hex.slice(5,7),16);
-  return [r,g,b];
-}
-
 // A4 page constants
 const A4W = 595.28;
 const A4H = 841.89;
 const MARGIN = 28;
-const IMG_H = 140; // height of themed image strip at bottom
+const LOGO_SIZE = 88;   // logo dimensions
+const QR_SIZE   = 82;   // QR code size
+const HEADER_H  = 108;  // fixed header block height
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHARED: Draw the institutional header (same structure as relatorio-disciplinar)
-// escola: { nome, apelido, cidade, endereco }
-// Logos: logoEsqBuf / logoDirBuf as image buffers (from escola_logos table)
-// qrBuf: QR code buffer positioned top-right
-// Returns: Y position after the header (including golden separator line)
+// SHARED: Draw institutional header identical to Relatório Disciplinar
+// All colors must be HEX strings or PDFKit won't render them
+// Returns: Y coordinate immediately after the header (after separator lines)
 // ─────────────────────────────────────────────────────────────────────────────
-function drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
+function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const {
-    bgColor = '#ffffff',   // header background
-    textColor = '#1e3a5f', // institutional text color
-    lineColor = '#b8860b', // golden separator
-    lineColor2 = '#1e3a5f',// thin blue line below gold
-    logoSize = 88,         // logo width & height
-    startY = MARGIN + 4,
+    startY     = 4,
+    bgColor    = '#ffffff',
+    textColor  = '#1e3a5f',
+    sepColor1  = '#b8860b',
+    sepColor2  = '#1e3a5f',
+    logoOffX   = MARGIN,       // X of left logo
+    contentX   = MARGIN,       // X start of center text
+    pageW      = A4W,
   } = opts;
 
-  const headerH = logoSize + 18; // total header height
-
   // Header background
-  doc.rect(0, 0, A4W, headerH + startY).fill(bgColor);
+  doc.fillColor(bgColor).rect(0, startY, pageW, HEADER_H).fill();
 
-  // Logos — left
+  // ── Left logo ──────────────────────────────────────────────────────────────
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, MARGIN, startY + (logoSize > 60 ? 4 : 8), {
-      fit: [logoSize, logoSize],
-      align: 'center',
-      valign: 'center',
-    });
+    doc.image(logoEsqBuf, logoOffX, startY + 6, { width: LOGO_SIZE, height: LOGO_SIZE });
   }
 
-  // QR code — top right
-  const qrSize = 82;
-  if (qrBuf) {
-    doc.image(qrBuf, A4W - MARGIN - qrSize, startY + 4, { width: qrSize, height: qrSize });
-  }
-
-  // Logo right — placed left of QR
+  // ── Right logo (left of QR) ────────────────────────────────────────────────
+  const qrX = pageW - MARGIN - QR_SIZE;
   if (logoDirBuf) {
-    const rightLogoX = qrBuf
-      ? A4W - MARGIN - qrSize - logoSize - 6
-      : A4W - MARGIN - logoSize;
-    doc.image(logoDirBuf, rightLogoX, startY + (logoSize > 60 ? 4 : 8), {
-      fit: [logoSize, logoSize],
-      align: 'center',
-      valign: 'center',
-    });
+    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : pageW - MARGIN - LOGO_SIZE;
+    doc.image(logoDirBuf, logoRX, startY + 6, { width: LOGO_SIZE, height: LOGO_SIZE });
   }
 
-  // Center text block
-  const leftEdge  = MARGIN + (logoEsqBuf ? logoSize + 8 : 0);
-  const rightEdge = A4W - MARGIN - (qrBuf ? qrSize + 8 : 0) - (logoDirBuf ? logoSize + 8 : 0);
-  const textW     = rightEdge - leftEdge;
-  const textX     = leftEdge;
-  let textY       = startY + 6;
+  // ── QR code ────────────────────────────────────────────────────────────────
+  if (qrBuf) {
+    doc.image(qrBuf, qrX, startY + 4, { width: QR_SIZE, height: QR_SIZE });
+  }
 
-  // Line 1: Secretaria
-  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
-  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(textColor)
-     .text(secretaria, textX, textY, { width: textW, align: 'center', lineBreak: false });
-  textY += 13;
+  // ── Center text block ──────────────────────────────────────────────────────
+  const leftEdge = contentX + (logoEsqBuf ? LOGO_SIZE + 10 : 0);
+  const rightEdge = qrX - (logoDirBuf ? LOGO_SIZE + 12 : 0) - 4;
+  const tw = Math.max(60, rightEdge - leftEdge);
+  let ty = startY + 10;
 
-  // Line 2: Coordenação Regional
-  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
-  const coordenacao = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
-  doc.font('Helvetica-Bold').fontSize(8).fillColor(textColor)
-     .text(coordenacao, textX, textY, { width: textW, align: 'center', lineBreak: false });
-  textY += 12;
+  // Line 1 — Secretaria
+  const secText = 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
+  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
+     .text(secText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+  ty += 13;
 
-  // Line 3: School name + apelido
+  // Line 2 — Coordenação Regional
+  const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
+  const coordText = `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
+  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(7.5)
+     .text(coordText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+  ty += 13;
+
+  // Line 3 — School name + apelido
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  const nomeCompleto = `${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`;
-  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(textColor)
-     .text(nomeCompleto, textX, textY, { width: textW, align: 'center', lineBreak: false });
-  textY += 12;
+  const nameText = `${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`;
+  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8.5)
+     .text(nameText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+  ty += 13;
 
-  // Line 4: Address (smaller, grey)
+  // Line 4 — Endereco (grey, smaller)
   if (escola.endereco) {
-    doc.font('Helvetica').fontSize(7.5).fillColor('#555555')
-       .text(escola.endereco, textX, textY, { width: textW, align: 'center', lineBreak: false });
+    doc.fillColor('#555555').font('Helvetica').fontSize(7.5)
+       .text(escola.endereco, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   }
 
-  // Golden separator line (thick + thin, like relatorio-disciplinar)
-  const sepY = startY + logoSize + 6;
-  doc.moveTo(MARGIN, sepY).lineTo(A4W - MARGIN, sepY).strokeColor(lineColor).lineWidth(2.5).stroke();
-  const sepY2 = sepY + 4;
-  doc.moveTo(MARGIN, sepY2).lineTo(A4W - MARGIN, sepY2).strokeColor(lineColor2).lineWidth(0.8).stroke();
+  // ── Double separator line (thick gold + thin blue) ─────────────────────────
+  const sepY1 = startY + HEADER_H - 10;
+  const sepY2 = sepY1 + 4;
+  doc.moveTo(MARGIN, sepY1).lineTo(A4W - MARGIN, sepY1)
+     .strokeColor(sepColor1).lineWidth(2.5).stroke();
+  doc.moveTo(MARGIN, sepY2).lineTo(A4W - MARGIN, sepY2)
+     .strokeColor(sepColor2).lineWidth(0.8).stroke();
 
   return sepY2 + 6; // Y after header
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHARED: Draw the themed image at bottom (centered, no crop)
+// SHARED: Measure instruction text height using PDFKit's heightOfString
 // ─────────────────────────────────────────────────────────────────────────────
-function drawBottomImage(doc, temaBuf, area, opts = {}) {
-  if (!temaBuf) return;
-  const {
-    x = 0,
-    w = A4W,
-    imgH = IMG_H,
-    overlayRgb = null,
-    overlayOpacity = 0.18,
-  } = opts;
-
-  const imgY = A4H - imgH;
-
-  // Use fit with center/center alignment to avoid cropping
-  doc.image(temaBuf, x, imgY, {
-    fit: [w, imgH],
-    align: 'center',
-    valign: 'center',
-  });
-
-  // Color tint overlay using fillColor with low opacity simulation
-  // (PDFKit doesn't support rgba natively; we use a workaround with fillOpacity)
-  if (overlayRgb) {
-    const [r, g, b] = overlayRgb;
-    doc.save();
-    doc.fillOpacity(overlayOpacity);
-    doc.rect(x, imgY, w, imgH).fill(`rgb(${r},${g},${b})`);
-    doc.restore();
-  }
+function measureInstrHeight(doc, instrText, textWidth) {
+  return doc.font('Helvetica').fontSize(8.8)
+    .heightOfString(instrText, { width: textWidth, lineGap: 1.5, paragraphGap: 3 });
 }
 
-// ── PDF Renderers ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED: Draw themed image filling ALL available space from imgY to bottom
+// The image always covers (x, imgY) to (x+w, A4H) — no fixed height
+// ─────────────────────────────────────────────────────────────────────────────
+function drawBottomImage(doc, temaBuf, x, w, imgY) {
+  if (!temaBuf || imgY >= A4H - 10) return;
+  const imgH = A4H - imgY;
+  if (imgH < 20) return;
+  // width: w, height: imgH forces image to fill the exact area (stretches if needed)
+  // For panoramic decorative images, slight stretching is visually imperceptible
+  doc.image(temaBuf, x, imgY, { width: w, height: imgH });
+}
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 1 — CLÁSSICO
+// Fundo suave com bordas duplas na cor da área
+// ═══════════════════════════════════════════════════════════════════════════════
 async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
-  const [r,g,b] = hexToRgb(area.cor);
-  const [rl,gl,bl] = hexToRgb(area.corClaro);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
-  // Background
-  doc.rect(0, 0, A4W, A4H).fill(`rgb(${rl},${gl},${bl})`);
-  // Outer border
-  doc.rect(MARGIN, MARGIN, A4W-MARGIN*2, A4H-MARGIN*2).lineWidth(3).stroke(`rgb(${r},${g},${b})`);
-  doc.rect(MARGIN+4, MARGIN+4, A4W-(MARGIN+4)*2, A4H-(MARGIN+4)*2).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
+  // Page background (light tint of area color)
+  doc.fillColor(area.corClaro).rect(0, 0, A4W, A4H).fill();
+
+  // Double border
+  doc.strokeColor(area.cor).lineWidth(3)
+     .rect(MARGIN, MARGIN, A4W - MARGIN * 2, A4H - MARGIN * 2).stroke();
+  doc.strokeColor(area.cor).lineWidth(1)
+     .rect(MARGIN + 4, MARGIN + 4, A4W - (MARGIN + 4) * 2, A4H - (MARGIN + 4) * 2).stroke();
 
   // Header
-  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
-    bgColor: `rgb(${rl},${gl},${bl})`,
-    textColor: `rgb(${r},${g},${b})`,
-    lineColor: `rgb(${r},${g},${b})`,
-    lineColor2: '#888888',
-    logoSize: 88,
+  const afterHeader = drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
     startY: MARGIN + 6,
+    bgColor: area.corClaro,
+    textColor: area.cor,
+    sepColor1: area.cor,
+    sepColor2: '#666666',
   });
 
   // Title block
-  const titleY = afterHeader + 8;
-  doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
-     .text('PROVÃO DE', MARGIN+8, titleY, { width: A4W-MARGIN*2-16, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(64).fillColor('#111111')
-     .text(area.label, MARGIN+8, titleY + 26, { width: A4W-MARGIN*2-16, align: 'center' });
+  const titleY = afterHeader + 6;
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(20)
+     .text('PROVÃO DE', MARGIN + 8, titleY, { width: A4W - MARGIN * 2 - 16, align: 'center' });
+  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(64)
+     .text(area.label, MARGIN + 8, titleY + 24, { width: A4W - MARGIN * 2 - 16, align: 'center' });
   const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - ');
-  doc.font('Helvetica-Bold').fontSize(24).fillColor(`rgb(${r},${g},${b})`)
-     .text(serieText, MARGIN+8, titleY + 100, { width: A4W-MARGIN*2-16, align: 'center' });
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(24)
+     .text(serieText, MARGIN + 8, titleY + 98, { width: A4W - MARGIN * 2 - 16, align: 'center' });
 
-  // Instructions box
-  const instrY = titleY + 136;
-  const instrBottom = A4H - IMG_H - 12;
-  const instrH = instrBottom - instrY;
-  doc.rect(MARGIN+8, instrY, A4W-MARGIN*2-16, instrH).fill(`rgb(${rl},${gl},${bl})`);
-  doc.rect(MARGIN+8, instrY, A4W-MARGIN*2-16, instrH).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000000')
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+16, instrY+8, { width: A4W-MARGIN*2-32, align: 'center' });
+  // Instructions block — measure text height first for dynamic sizing
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
-     .text(instrText, MARGIN+16, instrY+24, { width: A4W-MARGIN*2-32, lineGap:1.5, paragraphGap:3, height: instrH-32 });
+  const instrInnerW = A4W - MARGIN * 2 - 32;
+  const instrTextH = measureInstrHeight(doc, instrText, instrInnerW);
+  const instrBoxH = instrTextH + 38; // padding: 10 + 24(title) + 4 bottom
 
-  // Bottom image
-  drawBottomImage(doc, temaBuf, capa.area, {
-    x: MARGIN+8, w: A4W-MARGIN*2-16,
-    overlayRgb: [r,g,b], overlayOpacity: 0.15,
-  });
+  const instrY = titleY + 132;
+  doc.fillColor(area.corClaro).rect(MARGIN + 8, instrY, A4W - MARGIN * 2 - 16, instrBoxH).fill();
+  doc.strokeColor(area.cor).lineWidth(1)
+     .rect(MARGIN + 8, instrY, A4W - MARGIN * 2 - 16, instrBoxH).stroke();
+  doc.fillColor('#000000').font('Helvetica-Bold').fontSize(10)
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 16, instrY + 8,
+       { width: instrInnerW, align: 'center' });
+  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+     .text(instrText, MARGIN + 16, instrY + 28, { width: instrInnerW, lineGap: 1.5, paragraphGap: 3 });
 
-  // Footer text
-  doc.font('Helvetica').fontSize(7).fillColor('#666666')
-     .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN+8, A4H - MARGIN - 10, { width: A4W-MARGIN*2-16, align: 'center' });
+  // Themed image fills ALL remaining space below instructions
+  const imageStartY = instrY + instrBoxH + 6;
+  drawBottomImage(doc, temaBuf, MARGIN + 8, A4W - MARGIN * 2 - 16, imageStartY);
+
+  // Footer
+  doc.fillColor('#666666').font('Helvetica').fontSize(7)
+     .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN + 8, A4H - 14,
+       { width: A4W - MARGIN * 2 - 16, align: 'center' });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 2 — MODERNO
+// Faixa lateral colorida + layout clean e bold
+// ═══════════════════════════════════════════════════════════════════════════════
 async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
-  const [r,g,b] = hexToRgb(area.cor);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
-  const STRIPE = 62; // width of left color stripe
+  const STRIPE = 62;
 
-  // === 1. White full-page background FIRST ===
-  doc.rect(0, 0, A4W, A4H).fill('#ffffff');
+  // ── Step 1: White page background ──────────────────────────────────────────
+  doc.fillColor('#ffffff').rect(0, 0, A4W, A4H).fill();
 
-  // === 2. Left color stripe (drawn on top of white) ===
-  doc.rect(0, 0, STRIPE, A4H).fill(`rgb(${r},${g},${b})`);
+  // ── Step 2: Left color stripe (MUST use fillColor then fill separately) ─────
+  doc.fillColor(area.cor).rect(0, 0, STRIPE, A4H).fill();
 
-  // === 3. Top accent bar (right of stripe) ===
-  doc.rect(STRIPE, 0, A4W - STRIPE, 8).fill(`rgb(${r},${g},${b})`);
+  // ── Step 3: Top accent bar (right portion) ──────────────────────────────────
+  doc.fillColor(area.cor).rect(STRIPE, 0, A4W - STRIPE, 8).fill();
 
-  // === 4. Header logos on the stripe ===
+  // ── Step 4: Left logo — sits ON the colored stripe ──────────────────────────
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, 4, 14, { fit: [STRIPE - 8, STRIPE - 8], align: 'center', valign: 'center' });
+    doc.image(logoEsqBuf, 4, 12, { width: STRIPE - 8, height: STRIPE - 8 });
   }
 
-  // QR code — top right
-  const qrSize = 82;
+  // ── Step 5: QR code top-right ───────────────────────────────────────────────
+  const qrX = A4W - MARGIN - QR_SIZE;
   if (qrBuf) {
-    doc.image(qrBuf, A4W - MARGIN - qrSize, 10, { width: qrSize, height: qrSize });
-  }
-  // Logo direita
-  if (logoDirBuf) {
-    const rightLogoX = qrBuf ? A4W - MARGIN - qrSize - 90 - 6 : A4W - MARGIN - 88;
-    doc.image(logoDirBuf, rightLogoX, 12, { fit: [88, 88], align: 'center', valign: 'center' });
+    doc.image(qrBuf, qrX, 10, { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // Institutional text — 4 lines in the center column
+  // ── Step 6: Right logo (left of QR) ─────────────────────────────────────────
+  if (logoDirBuf) {
+    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : A4W - MARGIN - LOGO_SIZE;
+    doc.image(logoDirBuf, logoRX, 12, { width: LOGO_SIZE, height: LOGO_SIZE });
+  }
+
+  // ── Step 7: Institutional text (center column) ──────────────────────────────
   const hx = STRIPE + 10;
-  const hw = A4W - hx - MARGIN - (qrBuf ? qrSize + 8 : 0) - (logoDirBuf ? 96 : 0);
-  const COR_AZUL = `rgb(${r},${g},${b})`;
-  let hty = 14;
-  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
-  doc.font('Helvetica-Bold').fontSize(8).fillColor(COR_AZUL)
-     .text(secretaria, hx, hty, { width: hw, align: 'center', lineBreak: false });
-  hty += 12;
-  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
-  const coord = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor(COR_AZUL)
-     .text(coord, hx, hty, { width: hw, align: 'center', lineBreak: false });
-  hty += 12;
+  const rightStop = qrBuf ? qrX - 4 : A4W - MARGIN;
+  const rightLogoStop = logoDirBuf ? (qrBuf ? qrX - LOGO_SIZE - 10 : A4W - MARGIN - LOGO_SIZE - 6) : rightStop;
+  const hw = Math.max(50, rightLogoStop - hx - 4);
+  let hty = 12;
+
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8)
+     .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hty,
+       { width: hw, align: 'center', lineBreak: false });
+  hty += 13;
+  const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
+     .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`, hx, hty,
+       { width: hw, align: 'center', lineBreak: false });
+  hty += 13;
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COR_AZUL)
-     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, hty, { width: hw, align: 'center', lineBreak: false });
-  hty += 12;
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8.5)
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, hty,
+       { width: hw, align: 'center', lineBreak: false });
+  hty += 13;
   if (escola.endereco) {
-    doc.font('Helvetica').fontSize(7).fillColor('#555555')
+    doc.fillColor('#555555').font('Helvetica').fontSize(7.5)
        .text(escola.endereco, hx, hty, { width: hw, align: 'center', lineBreak: false });
   }
 
-  // Golden separator (right of stripe only)
-  const sepY = 100;
-  doc.moveTo(STRIPE, sepY).lineTo(A4W - MARGIN, sepY).strokeColor('#b8860b').lineWidth(2.5).stroke();
-  doc.moveTo(STRIPE, sepY + 4).lineTo(A4W - MARGIN, sepY + 4).strokeColor(COR_AZUL).lineWidth(0.8).stroke();
+  // ── Step 8: Double separator (starts after header) ──────────────────────────
+  const sepY1 = HEADER_H + 4;
+  const sepY2 = sepY1 + 4;
+  doc.moveTo(STRIPE, sepY1).lineTo(A4W - MARGIN, sepY1)
+     .strokeColor('#b8860b').lineWidth(2.5).stroke();
+  doc.moveTo(STRIPE, sepY2).lineTo(A4W - MARGIN, sepY2)
+     .strokeColor(area.cor).lineWidth(0.8).stroke();
 
-  // Title block
-  const titleY = sepY + 14;
-  doc.font('Helvetica-Bold').fontSize(13).fillColor('#888888')
+  // ── Step 9: Title block ──────────────────────────────────────────────────────
+  const titleY = sepY2 + 10;
+  const titleW = A4W - STRIPE - MARGIN - 10;
+  doc.fillColor('#888888').font('Helvetica-Bold').fontSize(14)
      .text('PROVÃO DE', STRIPE + 10, titleY);
-  doc.font('Helvetica-Bold').fontSize(68).fillColor(COR_AZUL)
-     .text(area.label, STRIPE + 10, titleY + 16);
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(68)
+     .text(area.label, STRIPE + 10, titleY + 18);
   const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — ');
-  doc.font('Helvetica-Bold').fontSize(22).fillColor('#1a1a1a')
+  doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(22)
      .text(serieText, STRIPE + 10, titleY + 94);
 
-  // Instructions separator
+  // ── Step 10: Instructions separator ─────────────────────────────────────────
   const instrSepY = titleY + 128;
-  doc.moveTo(STRIPE, instrSepY).lineTo(A4W - MARGIN, instrSepY).strokeColor(COR_AZUL).lineWidth(2).stroke();
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a')
+  doc.moveTo(STRIPE, instrSepY).lineTo(A4W - MARGIN, instrSepY)
+     .strokeColor(area.cor).lineWidth(2).stroke();
+  doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(10)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', STRIPE + 10, instrSepY + 8);
 
-  // Instructions text
+  // ── Step 11: Instructions — dynamic height ───────────────────────────────────
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  const instrBottom = A4H - IMG_H - 12;
-  doc.font('Helvetica').fontSize(8.8).fillColor('#222222')
-     .text(instrText, STRIPE + 10, instrSepY + 26,
-       { width: A4W - STRIPE - MARGIN - 10, lineGap:1.5, paragraphGap:3, height: instrBottom - instrSepY - 30 });
+  const instrW = A4W - STRIPE - MARGIN - 20;
+  const instrTextH = measureInstrHeight(doc, instrText, instrW);
+  const instrStartY = instrSepY + 26;
+  doc.fillColor('#222222').font('Helvetica').fontSize(8.8)
+     .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
 
-  // Bottom image (starts at x=STRIPE to keep the left stripe clean)
-  drawBottomImage(doc, temaBuf, capa.area, {
-    x: STRIPE, w: A4W - STRIPE,
-    overlayRgb: [r,g,b], overlayOpacity: 0.18,
-  });
+  // ── Step 12: Themed image fills ALL remaining space ─────────────────────────
+  const imageStartY = instrStartY + instrTextH + 10;
+  drawBottomImage(doc, temaBuf, STRIPE, A4W - STRIPE, imageStartY);
 
   // Footer
-  doc.font('Helvetica').fontSize(7).fillColor('#999999')
-     .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12, { width: A4W - STRIPE - MARGIN - 10 });
+  doc.fillColor('#999999').font('Helvetica').fontSize(7)
+     .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12,
+       { width: A4W - STRIPE - MARGIN - 10 });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 3 — FORMAL
+// Bordas duplas + header colorido sólido
+// ═══════════════════════════════════════════════════════════════════════════════
 async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
-  const [r,g,b] = hexToRgb(area.cor);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
-  doc.rect(0, 0, A4W, A4H).fill('#f9f9f9');
-  doc.rect(15, 15, A4W-30, A4H-30).lineWidth(4).stroke(`rgb(${r},${g},${b})`);
-  doc.rect(22, 22, A4W-44, A4H-44).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
+  doc.fillColor('#f9f9f9').rect(0, 0, A4W, A4H).fill();
+  doc.strokeColor(area.cor).lineWidth(4).rect(15, 15, A4W - 30, A4H - 30).stroke();
+  doc.strokeColor(area.cor).lineWidth(1).rect(22, 22, A4W - 44, A4H - 44).stroke();
 
-  // Header box
-  doc.rect(22, 22, A4W-44, 104).fill(`rgb(${r},${g},${b})`);
+  // Colored header band
+  doc.fillColor(area.cor).rect(22, 22, A4W - 44, 106).fill();
 
-  // Logos large on colored header
-  if (logoEsqBuf) doc.image(logoEsqBuf, 30, 28, { fit: [88, 88], align: 'center', valign: 'center' });
-  if (qrBuf)      doc.image(qrBuf, A4W - 28 - 82, 24, { width: 82, height: 82 });
-  if (logoDirBuf) doc.image(logoDirBuf, A4W - 28 - 82 - 92, 28, { fit: [86, 86], align: 'center', valign: 'center' });
+  // Large logos on header band
+  if (logoEsqBuf)  doc.image(logoEsqBuf, 30, 28, { width: LOGO_SIZE, height: LOGO_SIZE });
+  if (qrBuf)       doc.image(qrBuf, A4W - 28 - QR_SIZE, 24, { width: QR_SIZE, height: QR_SIZE });
+  if (logoDirBuf)  doc.image(logoDirBuf, A4W - 28 - QR_SIZE - LOGO_SIZE - 6, 28, { width: LOGO_SIZE, height: LOGO_SIZE });
 
-  // Header text (white on colored bg)
-  const hx = 30 + 92;
-  const hw = A4W - hx - 82 - 92 - 28;
-  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff')
-     .text(secretaria, hx, 32, { width: hw, align: 'center', lineBreak: false });
-  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
-  const coord = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
-  doc.font('Helvetica-Bold').fontSize(7).fillColor('rgba(255,255,255,0.9)')
-     .text(coord, hx, 46, { width: hw, align: 'center', lineBreak: false });
+  // Header text — white on colored background
+  const hx = 30 + LOGO_SIZE + 8;
+  const hw = A4W - hx - QR_SIZE - LOGO_SIZE - 36;
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7.5)
+     .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, 32,
+       { width: hw, align: 'center', lineBreak: false });
+  const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
+  doc.fillColor('#ffffffcc').font('Helvetica-Bold').fontSize(7)
+     .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`, hx, 46,
+       { width: hw, align: 'center', lineBreak: false });
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff')
-     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, 60, { width: hw, align: 'center', lineBreak: false });
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8)
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, 60,
+       { width: hw, align: 'center', lineBreak: false });
   if (escola.endereco) {
-    doc.font('Helvetica').fontSize(7).fillColor('rgba(255,255,255,0.75)')
+    doc.fillColor('#ffffff99').font('Helvetica').fontSize(7)
        .text(escola.endereco, hx, 74, { width: hw, align: 'center', lineBreak: false });
   }
 
-  // Title
-  doc.font('Helvetica-Bold').fontSize(18).fillColor(`rgb(${r},${g},${b})`)
-     .text('PROVÃO DE', 30, 140, { width: A4W-60, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(60).fillColor('#111111')
-     .text(area.label, 30, 160, { width: A4W-60, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), 30, 232, { width: A4W-60, align: 'center' });
+  // Title block
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(18)
+     .text('PROVÃO DE', 30, 144, { width: A4W - 60, align: 'center' });
+  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(60)
+     .text(area.label, 30, 164, { width: A4W - 60, align: 'center' });
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(22)
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), 30, 236,
+       { width: A4W - 60, align: 'center' });
 
-  doc.rect(30, 270, A4W-60, 2).fill(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000000')
-     .text('INSTRUÇÕES AO ESTUDANTE:', 35, 280, { width: A4W-70, align: 'center' });
-
+  // Instructions
+  doc.fillColor(area.cor).rect(30, 270, A4W - 60, 2).fill();
+  doc.fillColor('#000000').font('Helvetica-Bold').fontSize(10)
+     .text('INSTRUÇÕES AO ESTUDANTE:', 35, 280, { width: A4W - 70, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  const instrBottom = A4H - IMG_H - 18;
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
-     .text(instrText, 35, 298, { width: A4W-70, lineGap:1.5, paragraphGap:3, height: instrBottom-298 });
+  const instrW = A4W - 70;
+  const instrTextH = measureInstrHeight(doc, instrText, instrW);
+  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+     .text(instrText, 35, 298, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
 
-  // Bottom image inside border
-  drawBottomImage(doc, temaBuf, capa.area, {
-    x: 23, w: A4W-46,
-    overlayRgb: [r,g,b], overlayOpacity: 0.15,
-  });
-  doc.font('Helvetica').fontSize(7).fillColor('#aaaaaa')
-     .text('EDUCA.MELHOR', 30, A4H-20, { width: A4W-60, align: 'center' });
+  // Image fills rest
+  const imageStartY = 298 + instrTextH + 8;
+  drawBottomImage(doc, temaBuf, 23, A4W - 46, imageStartY);
+
+  doc.fillColor('#aaaaaa').font('Helvetica').fontSize(7)
+     .text('EDUCA.MELHOR', 30, A4H - 20, { width: A4W - 60, align: 'center' });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 4 — COLORIDO
+// Topo na cor sólida da área + zona branca inferior
+// ═══════════════════════════════════════════════════════════════════════════════
 async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
-  const [r,g,b] = hexToRgb(area.cor);
-  const [rl,gl,bl] = hexToRgb(area.corClaro);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
   // Two-zone background
-  doc.rect(0, 0, A4W, A4H).fill(`rgb(${r},${g},${b})`);
-  doc.rect(0, 192, A4W, A4H-192).fill('#ffffff');
+  doc.fillColor(area.cor).rect(0, 0, A4W, A4H).fill();
+  doc.fillColor('#ffffff').rect(0, 192, A4W, A4H - 192).fill();
 
   // Header on colored zone
-  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
-    bgColor: `rgb(${r},${g},${b})`,
-    textColor: '#ffffff',
-    lineColor: 'rgba(255,255,255,0.7)',
-    lineColor2: 'rgba(255,255,255,0.3)',
-    logoSize: 88,
+  const afterHeader = drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
     startY: MARGIN - 10,
+    bgColor: area.cor,
+    textColor: '#ffffff',
+    sepColor1: '#ffffff88',
+    sepColor2: '#ffffff44',
   });
 
   // Title on colored zone
-  doc.font('Helvetica-Bold').fontSize(15).fillColor(`rgb(${rl},${gl},${bl})`)
-     .text('PROVÃO DE', MARGIN, afterHeader + 4, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(62).fillColor('#ffffff')
-     .text(area.label, MARGIN, afterHeader + 22, { width: A4W-MARGIN*2, align: 'center' });
+  doc.fillColor(area.corClaro).font('Helvetica-Bold').fontSize(15)
+     .text('PROVÃO DE', MARGIN, afterHeader + 4, { width: A4W - MARGIN * 2, align: 'center' });
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(62)
+     .text(area.label, MARGIN, afterHeader + 22, { width: A4W - MARGIN * 2, align: 'center' });
 
   // Series on white zone
-  doc.font('Helvetica-Bold').fontSize(26).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), MARGIN, 200, { width: A4W-MARGIN*2, align: 'center' });
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(26)
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), MARGIN, 200,
+       { width: A4W - MARGIN * 2, align: 'center' });
 
-  // Instructions box
+  // Instructions box on white zone
   const instrTop = 244;
-  const instrBottom = A4H - IMG_H - 10;
-  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).fill(`rgb(${rl},${gl},${bl})`);
-  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).lineWidth(1.5).stroke(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor(`rgb(${r},${g},${b})`)
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+10, instrTop+8, { width: A4W-MARGIN*2-20, align: 'center' });
+  doc.fillColor(area.corClaro).font('Helvetica-Bold').fontSize(10)
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 10, instrTop + 8,
+       { width: A4W - MARGIN * 2 - 20, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
-     .text(instrText, MARGIN+12, instrTop+26, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-instrTop-34 });
+  const instrW = A4W - MARGIN * 2 - 24;
+  const instrTextH = measureInstrHeight(doc, instrText, instrW);
+  const instrBoxH = instrTextH + 36;
 
-  // Bottom image (full width)
-  drawBottomImage(doc, temaBuf, capa.area, {
-    x: 0, w: A4W,
-    overlayRgb: [r,g,b], overlayOpacity: 0.2,
-  });
+  doc.fillColor(area.corClaro).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).fill();
+  doc.strokeColor(area.cor).lineWidth(1.5).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).stroke();
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(10)
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 10, instrTop + 8,
+       { width: instrW + 4, align: 'center' });
+  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+
+  // Image fills rest
+  const imageStartY = instrTop + instrBoxH + 8;
+  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 5 — DARK
+// Fundo escuro (#0f172a) com texto claro
+// ═══════════════════════════════════════════════════════════════════════════════
 async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
-  const [r,g,b] = hexToRgb(area.cor);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
-  doc.rect(0, 0, A4W, A4H).fill('#0f172a');
-  doc.rect(0, 0, A4W, 6).fill(`rgb(${r},${g},${b})`);
+  doc.fillColor('#0f172a').rect(0, 0, A4W, A4H).fill();
+  doc.fillColor(area.cor).rect(0, 0, A4W, 6).fill();
 
   // Header
-  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
+  const afterHeader = drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
+    startY: 8,
     bgColor: '#0f172a',
     textColor: '#e2e8f0',
-    lineColor: `rgb(${r},${g},${b})`,
-    lineColor2: '#334155',
-    logoSize: 88,
-    startY: 10,
+    sepColor1: area.cor,
+    sepColor2: '#334155',
   });
 
   // Title
-  doc.font('Helvetica-Bold').fontSize(13).fillColor(`rgb(${r},${g},${b})`)
-     .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(62).fillColor('#f1f5f9')
-     .text(area.label, MARGIN, afterHeader + 26, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — '), MARGIN, afterHeader + 100, { width: A4W-MARGIN*2, align: 'center' });
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(13)
+     .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W - MARGIN * 2, align: 'center' });
+  doc.fillColor('#f1f5f9').font('Helvetica-Bold').fontSize(62)
+     .text(area.label, MARGIN, afterHeader + 26, { width: A4W - MARGIN * 2, align: 'center' });
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(22)
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — '), MARGIN, afterHeader + 100,
+       { width: A4W - MARGIN * 2, align: 'center' });
 
   // Instructions dark card
-  const instrTop = afterHeader + 138;
-  const instrBottom = A4H - IMG_H - 10;
-  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).fill('#1e293b');
-  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#e2e8f0')
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+12, instrTop+8, { width: A4W-MARGIN*2-24, align: 'center' });
+  const instrTop = afterHeader + 140;
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  doc.font('Helvetica').fontSize(8.8).fillColor('#cbd5e1')
-     .text(instrText, MARGIN+12, instrTop+26, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-instrTop-34 });
+  const instrW = A4W - MARGIN * 2 - 24;
+  const instrTextH = measureInstrHeight(doc, instrText, instrW);
+  const instrBoxH = instrTextH + 36;
 
-  // Bottom image with dark overlay
-  drawBottomImage(doc, temaBuf, capa.area, {
-    x: 0, w: A4W,
-    overlayRgb: [15, 23, 42], overlayOpacity: 0.5,
-  });
+  doc.fillColor('#1e293b').rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).fill();
+  doc.strokeColor(area.cor).lineWidth(1).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).stroke();
+  doc.fillColor('#e2e8f0').font('Helvetica-Bold').fontSize(10)
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 12, instrTop + 8,
+       { width: instrW + 12, align: 'center' });
+  doc.fillColor('#cbd5e1').font('Helvetica').fontSize(8.8)
+     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+
+  // Image fills rest
+  const imageStartY = instrTop + instrBoxH + 8;
+  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY);
+
   // Accent line above image
-  doc.moveTo(0, A4H - IMG_H).lineTo(A4W, A4H - IMG_H).strokeColor(`rgb(${r},${g},${b})`).lineWidth(2).stroke();
+  doc.moveTo(0, imageStartY).lineTo(A4W, imageStartY)
+     .strokeColor(area.cor).lineWidth(2).stroke();
 }
 
 const RENDERERS = { 1: renderClassico, 2: renderModerno, 3: renderFormal, 4: renderColorido, 5: renderDark };
@@ -591,21 +600,20 @@ router.get('/:id/pdf', async (req, res) => {
     );
     if (!capa) return res.status(404).json({ ok: false, message: 'Capa não encontrada.' });
 
-    // Fetch escola data — robust: only use confirmed columns
-    let escola = { nome: 'ESCOLA', apelido: '', cidade: '', endereco: '', secretaria: '', coordenacao: '' };
+    // Fetch escola data (only confirmed columns)
+    let escola = { nome: 'ESCOLA', apelido: '', cidade: 'PLANALTINA', endereco: '' };
     try {
       const [[row]] = await db.query(
-        'SELECT nome, apelido, endereco, cidade, estado FROM escolas WHERE id=? LIMIT 1',
-        [escolaId]
+        'SELECT nome, apelido, endereco, cidade FROM escolas WHERE id=? LIMIT 1', [escolaId]
       );
-      if (row) {
-        escola.nome      = row.nome      || 'ESCOLA';
-        escola.apelido   = row.apelido   || '';
-        escola.cidade    = row.cidade    || 'PLANALTINA';
-        escola.endereco  = row.endereco  || '';
-      }
+      if (row) Object.assign(escola, {
+        nome:     row.nome     || 'ESCOLA',
+        apelido:  row.apelido  || '',
+        cidade:   row.cidade   || 'PLANALTINA',
+        endereco: row.endereco || '',
+      });
     } catch (e) {
-      console.warn('[CAPA_PROVAS][PDF] Erro ao buscar escola (não crítico):', e.message);
+      console.warn('[CAPA_PROVAS][PDF] escola query:', e.message);
     }
 
     // Logos from escola_logos
@@ -613,25 +621,24 @@ router.get('/:id/pdf', async (req, res) => {
       "SELECT posicao, url_header FROM escola_logos WHERE escola_id=? AND ativo=1 AND posicao IN ('esquerda','direita') LIMIT 2",
       [escolaId]
     );
-    const logoEsqRow = logoRows.find(l => l.posicao === 'esquerda');
-    const logoDirRow = logoRows.find(l => l.posicao === 'direita');
     const [logoEsqBuf, logoDirBuf] = await Promise.all([
-      logoEsqRow?.url_header ? fetchImageBuffer(logoEsqRow.url_header) : Promise.resolve(null),
-      logoDirRow?.url_header ? fetchImageBuffer(logoDirRow.url_header) : Promise.resolve(null),
+      logoRows.find(l => l.posicao === 'esquerda')?.url_header
+        ? fetchImageBuffer(logoRows.find(l => l.posicao === 'esquerda').url_header) : Promise.resolve(null),
+      logoRows.find(l => l.posicao === 'direita')?.url_header
+        ? fetchImageBuffer(logoRows.find(l => l.posicao === 'direita').url_header)  : Promise.resolve(null),
     ]);
 
     // QR
     const qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
     const qrBuf = await gerarQRBuffer(qrPayload);
 
-    // Create PDF
+    // Render PDF
     const doc = new PDFDocument({ size: 'A4', margin: 0, info: { Title: capa.titulo, Author: 'EDUCA.MELHOR' } });
     const renderer = RENDERERS[capa.template_id] || RENDERERS[1];
     await renderer(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf);
 
     const filename = `capa-${capa.area.toLowerCase()}-${capa.bimestre}bim-${capa.ano}.pdf`
       .replace(/[^a-z0-9\-\.]/gi, '_');
-
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     doc.pipe(res);
