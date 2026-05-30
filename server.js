@@ -107,6 +107,7 @@ import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
 import governancaRouter, { syncPlanosAvaliacao } from "./routes/governanca.js";
+import escolaLogosRouter from "./routes/escola_logos.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
@@ -762,6 +763,34 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar liberacoes_alunos (não crítico):", migErr.message);
   }
 
+  // [2026-05-30] Logos institucionais das escolas
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS escola_logos (
+        id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id     INT NOT NULL,
+        label         VARCHAR(100) NOT NULL,
+        posicao       ENUM('esquerda','direita','nenhuma') NOT NULL DEFAULT 'nenhuma',
+        usos          JSON,
+        key_original  VARCHAR(300),
+        key_header    VARCHAR(300),
+        key_thumb     VARCHAR(300),
+        url_header    VARCHAR(500),
+        url_thumb     VARCHAR(500),
+        ordem         TINYINT DEFAULT 0,
+        ativo         TINYINT(1) DEFAULT 1,
+        criado_em     DATETIME DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola (escola_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Logos institucionais das escolas gerenciadas pelo Diretor'
+    `);
+    console.log('[MIGRATION] Tabela escola_logos garantida ✅');
+  } catch (migErr) {
+    console.warn('[MIGRATION] Erro ao criar escola_logos (nao critico):', migErr.message);
+  }
+
   // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
   try {
     // Verifica se 'scan_mobile' já está no ENUM antes de alterar
@@ -1319,6 +1348,9 @@ async function bootstrap() {
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
   app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
+
+  // ✅ Logos institucionais — Gerenciamento pelo Diretor / Vice-Diretor
+  app.use("/api/escola-logos", autenticarToken, verificarEscola, escolaLogosRouter);
 
   // ✅ BNCC cascade — import estático, sem feature flag, sem risco de 404 por falha de módulo
   app.use("/api", autenticarToken, verificarEscola, bnccCascadeRouter);
