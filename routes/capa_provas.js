@@ -94,7 +94,7 @@ const MARGIN    = 28;
 const LOGO_H    = 90;   // target logo HEIGHT — url_thumb(120x80) at height:90 → ~135x90px
 const LOGO_ZONE = 138;  // horizontal space allocated per logo in header
 const QR_SIZE   = 82;   // QR code size
-const HEADER_H  = 130;  // header block height (increased to fit taller logos)
+const HEADER_H  = 145;  // header height — 145px gives room for 2-line school names
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED: Draw institutional header identical to Relatório Disciplinar
@@ -113,67 +113,65 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
     pageW      = A4W,
   } = opts;
 
-  // Header background
+  // Header background + geometry
   doc.fillColor(bgColor).rect(0, startY, pageW, HEADER_H).fill();
-
-  // ── Geometry ────────────────────────────────────────────────────────────────
-  const contentH = HEADER_H - 16;           // usable height before separator
-  const logoY    = startY + (contentH - LOGO_H) / 2;  // vertically centred
+  const contentH = HEADER_H - 16;
+  const logoY    = startY + (contentH - LOGO_H) / 2;
   const qrX      = pageW - MARGIN - QR_SIZE;
 
-  // ── Left logo — height:LOGO_H keeps native proportions (url_thumb 120×80) ──
+  // Left logo
   if (logoEsqBuf) {
     doc.image(logoEsqBuf, logoOffX, logoY, { height: LOGO_H });
   }
 
-  // ── QR code — top-right corner ─────────────────────────────────────────────
+  // QR code — top-right corner
   if (qrBuf) {
     doc.image(qrBuf, qrX, startY + (contentH - QR_SIZE) / 2,
       { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Right logo — left of QR ─────────────────────────────────────────────────
+  // Right logo — left of QR
   if (logoDirBuf) {
     const logoRX = qrBuf ? qrX - LOGO_ZONE - 6 : pageW - MARGIN - LOGO_ZONE;
     doc.image(logoDirBuf, logoRX, logoY, { height: LOGO_H });
   }
 
-  // ── Center text — horizontally between the two logo zones ──────────────────
+  // Center text block
   const leftEdge  = contentX + (logoEsqBuf ? LOGO_ZONE + 8 : 0);
-  const rightStop = (logoDirBuf ? qrX - LOGO_ZONE - 10 : qrX - 4);
+  const rightStop = logoDirBuf ? qrX - LOGO_ZONE - 10 : qrX - 4;
   const tw = Math.max(60, rightStop - leftEdge);
 
-  // 4 lines × 13px = 52px total; centre vertically
-  const TEXT_BLOCK_H = 52;
-  let ty = startY + Math.max(8, (contentH - TEXT_BLOCK_H) / 2);
+  // Start position — vertically centred (estimate 4 lines × 13px = 52px)
+  let ty = startY + Math.max(8, (contentH - 52) / 2);
 
-  // Line 1 — Secretaria
+  // Line 1 — Secretaria (clips if too long — lineBreak:false)
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL',
        leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
-  ty += 13;
+  ty = doc.y + 1;
 
   // Line 2 — Coordenação Regional
   const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(7.5)
      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`,
        leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
-  ty += 13;
+  ty = doc.y + 1;
 
-  // Line 3 — Nome + Apelido
+  // Line 3 — Nome + Apelido — WRAPPING ALLOWED so address never overlaps
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8.5)
+  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`,
-       leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
-  ty += 13;
+       leftEdge, ty, { width: tw, align: 'center' });
+  ty = doc.y + 1;  // advances past ALL wrapped lines of school name
 
-  // Line 4 — Endereço (grey)
+  // Line 4 — Endereço — always below line 3, never overlaps
   if (escola.endereco) {
-    doc.fillColor('#555555').font('Helvetica').fontSize(7.5)
-       .text(escola.endereco, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+    doc.fillColor('#555555').font('Helvetica').fontSize(7)
+       .text(escola.endereco, leftEdge, ty,
+         { width: tw, align: 'center', lineBreak: false });
   }
 
-  // ── Double separator (thick gold + thin secondary) ──────────────────────────
+  // Double separator
   const sepY1 = startY + HEADER_H - 10;
   const sepY2 = sepY1 + 4;
   doc.moveTo(MARGIN, sepY1).lineTo(A4W - MARGIN, sepY1)
@@ -181,7 +179,7 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
   doc.moveTo(MARGIN, sepY2).lineTo(A4W - MARGIN, sepY2)
      .strokeColor(sepColor2).lineWidth(0.8).stroke();
 
-  return sepY2 + 6; // Y after header
+  return sepY2 + 6;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
