@@ -92,55 +92,63 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
   doc.fillColor(bgColor).rect(0, startY, pageW, HEADER_H).fill();
 
   // ── Left logo ──────────────────────────────────────────────────────────────
+  // ── Compute usable header height (above separator) ──────────────────────────
+  const contentH  = HEADER_H - 16;         // height available before separator
+  const logoY     = startY + (contentH - LOGO_SIZE) / 2;  // vertically centered
+  const qrX       = pageW - MARGIN - QR_SIZE;
+
+  // ── Left logo — fit[] preserves aspect ratio, no distortion ───────────────
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, logoOffX, startY + 6, { width: LOGO_SIZE, height: LOGO_SIZE });
+    doc.image(logoEsqBuf, logoOffX, logoY, { fit: [LOGO_SIZE, LOGO_SIZE] });
   }
 
-  // ── Right logo (left of QR) ────────────────────────────────────────────────
-  const qrX = pageW - MARGIN - QR_SIZE;
-  if (logoDirBuf) {
-    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : pageW - MARGIN - LOGO_SIZE;
-    doc.image(logoDirBuf, logoRX, startY + 6, { width: LOGO_SIZE, height: LOGO_SIZE });
-  }
-
-  // ── QR code ────────────────────────────────────────────────────────────────
+  // ── QR code — always top-right ─────────────────────────────────────────────
   if (qrBuf) {
     doc.image(qrBuf, qrX, startY + 4, { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Center text block ──────────────────────────────────────────────────────
-  const leftEdge = contentX + (logoEsqBuf ? LOGO_SIZE + 10 : 0);
-  const rightEdge = qrX - (logoDirBuf ? LOGO_SIZE + 12 : 0) - 4;
-  const tw = Math.max(60, rightEdge - leftEdge);
-  let ty = startY + 10;
+  // ── Right logo — fit[] preserves aspect ratio ──────────────────────────────
+  if (logoDirBuf) {
+    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : pageW - MARGIN - LOGO_SIZE;
+    doc.image(logoDirBuf, logoRX, logoY, { fit: [LOGO_SIZE, LOGO_SIZE] });
+  }
+
+  // ── Center text block — vertically centered in header ─────────────────────
+  const leftEdge  = contentX + (logoEsqBuf ? LOGO_SIZE + 10 : 0);
+  const rightStop = qrX - (logoDirBuf ? LOGO_SIZE + 10 : 0) - 4;
+  const tw = Math.max(60, rightStop - leftEdge);
+
+  // Text block: 4 lines × ~12px + gaps ≈ 54px total
+  const TEXT_BLOCK_H = 54;
+  let ty = startY + Math.max(6, (contentH - TEXT_BLOCK_H) / 2);
 
   // Line 1 — Secretaria
-  const secText = 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
-     .text(secText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+     .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL',
+       leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty += 13;
 
   // Line 2 — Coordenação Regional
   const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
-  const coordText = `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(7.5)
-     .text(coordText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+     .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`,
+       leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty += 13;
 
-  // Line 3 — School name + apelido
+  // Line 3 — Nome da escola — Apelido
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  const nameText = `${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`;
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8.5)
-     .text(nameText, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`,
+       leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty += 13;
 
-  // Line 4 — Endereco (grey, smaller)
+  // Line 4 — Endereço (grey)
   if (escola.endereco) {
     doc.fillColor('#555555').font('Helvetica').fontSize(7.5)
        .text(escola.endereco, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   }
 
-  // ── Double separator line (thick gold + thin blue) ─────────────────────────
+  // ── Double separator line (thick gold + thin secondary) ────────────────────
   const sepY1 = startY + HEADER_H - 10;
   const sepY2 = sepY1 + 4;
   doc.moveTo(MARGIN, sepY1).lineTo(A4W - MARGIN, sepY1)
@@ -252,42 +260,46 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // ── Step 3: Top accent bar (right portion) ──────────────────────────────────
   doc.fillColor(area.cor).rect(STRIPE, 0, A4W - STRIPE, 8).fill();
 
-  // ── Step 4: Left logo — sits ON the colored stripe ──────────────────────────
+  // ── Step 4: Left logo — centered on the colored stripe, fit[] preserves ratio ──────
+  const STRIPE_LOGO = STRIPE - 8;  // max logo dim within stripe
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, 4, 12, { width: STRIPE - 8, height: STRIPE - 8 });
+    doc.image(logoEsqBuf, 4, 10, { fit: [STRIPE_LOGO, STRIPE_LOGO] });
   }
 
-  // ── Step 5: QR code top-right ───────────────────────────────────────────────
+  // ── Step 5: QR code top-right ─────────────────────────────────────────────────
   const qrX = A4W - MARGIN - QR_SIZE;
   if (qrBuf) {
     doc.image(qrBuf, qrX, 10, { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Step 6: Right logo (left of QR) ─────────────────────────────────────────
+  // ── Step 6: Right logo — fit[] preserves aspect ratio ──────────────────────────
   if (logoDirBuf) {
     const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : A4W - MARGIN - LOGO_SIZE;
-    doc.image(logoDirBuf, logoRX, 12, { width: LOGO_SIZE, height: LOGO_SIZE });
+    doc.image(logoDirBuf, logoRX, 10, { fit: [LOGO_SIZE, LOGO_SIZE] });
   }
 
-  // ── Step 7: Institutional text (center column) ──────────────────────────────
-  const hx = STRIPE + 10;
-  const rightStop = qrBuf ? qrX - 4 : A4W - MARGIN;
-  const rightLogoStop = logoDirBuf ? (qrBuf ? qrX - LOGO_SIZE - 10 : A4W - MARGIN - LOGO_SIZE - 6) : rightStop;
-  const hw = Math.max(50, rightLogoStop - hx - 4);
-  let hty = 12;
+  // ── Step 7: Institutional text — vertically centered in header zone ─────────────
+  const hx        = STRIPE + 10;
+  const rightStop = qrBuf     ? qrX - 4                         : A4W - MARGIN;
+  const logoStop  = logoDirBuf ? (qrBuf ? qrX - LOGO_SIZE - 10 : A4W - MARGIN - LOGO_SIZE - 6) : rightStop;
+  const hw        = Math.max(50, logoStop - hx - 4);
 
+  // 4 text lines × 13px ≈ 52px; center in HEADER_H (108px)
+  const TEXT_H = 52;
+  let hty = Math.max(10, (HEADER_H - TEXT_H) / 2);
+
+  const cidadeM = (escola.cidade || 'PLANALTINA').toUpperCase();
+  const apelidoM = escola.apelido ? ` — ${escola.apelido}` : '';
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty += 13;
-  const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
-     .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`, hx, hty,
+     .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidadeM}`, hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty += 13;
-  const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8.5)
-     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, hty,
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelidoM}`, hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty += 13;
   if (escola.endereco) {
