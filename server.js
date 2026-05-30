@@ -108,6 +108,7 @@ import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
 import governancaRouter, { syncPlanosAvaliacao } from "./routes/governanca.js";
 import escolaLogosRouter from "./routes/escola_logos.js";
+import capaProvasRouter from "./routes/capa_provas.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
@@ -791,6 +792,35 @@ async function bootstrap() {
     console.warn('[MIGRATION] Erro ao criar escola_logos (nao critico):', migErr.message);
   }
 
+  // [2026-05-30] Capas de provas para geração de PDF
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS capa_provas (
+        id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id    INT NOT NULL,
+        titulo       VARCHAR(200) NOT NULL,
+        area         ENUM('EXATAS','HUMANAS','LINGUAGENS','NATUREZA','GERAL') NOT NULL DEFAULT 'GERAL',
+        serie        VARCHAR(50),
+        turno        VARCHAR(50),
+        bimestre     TINYINT NOT NULL DEFAULT 1,
+        ano          YEAR NOT NULL,
+        template_id  TINYINT NOT NULL DEFAULT 1,
+        instrucoes   TEXT,
+        qr_token     VARCHAR(64) NOT NULL,
+        criado_por   INT,
+        ativo        TINYINT(1) DEFAULT 1,
+        criado_em    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_qr_token (qr_token),
+        INDEX idx_escola (escola_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Capas de provas geradas por escola'
+    `);
+    console.log('[MIGRATION] Tabela capa_provas garantida ✅');
+  } catch (migErr) {
+    console.warn('[MIGRATION] Erro ao criar capa_provas:', migErr.message);
+  }
+
   // [2026-04-26] EDUCA-SCAN: expandir ENUM 'origem' em gabarito_respostas
   try {
     // Verifica se 'scan_mobile' já está no ENUM antes de alterar
@@ -1351,6 +1381,9 @@ async function bootstrap() {
 
   // ✅ Logos institucionais — Gerenciamento pelo Diretor / Vice-Diretor
   app.use("/api/escola-logos", autenticarToken, verificarEscola, escolaLogosRouter);
+
+  // ✅ Capas de Provas — Geração de PDF com templates e QR Code
+  app.use("/api/capa-provas", autenticarToken, verificarEscola, capaProvasRouter);
 
   // ✅ BNCC cascade — import estático, sem feature flag, sem risco de 404 por falha de módulo
   app.use("/api", autenticarToken, verificarEscola, bnccCascadeRouter);
