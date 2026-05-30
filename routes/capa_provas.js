@@ -2,6 +2,7 @@
 import express from 'express';
 import PDFDocument from 'pdfkit';
 import QRCode from 'qrcode';
+import sharp from 'sharp';            // needed for WebP → PNG conversion
 import crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -54,6 +55,29 @@ async function fetchImageBuffer(url) {
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   } catch { return null; }
+}
+
+// PDFKit only supports JPEG and PNG natively.
+// url_thumb images are WebP (sharp .webp() output) — must convert to PNG first.
+// url_header images are already PNG — no conversion needed.
+async function fetchLogoBuffer(url) {
+  if (!url) return null;
+  const buf = await fetchImageBuffer(url);
+  if (!buf) return null;
+  // Detect format by magic bytes
+  const isWebP = buf.length > 12 &&
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && // RIFF
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;  // WEBP
+  if (isWebP) {
+    try {
+      // Convert WebP → PNG so PDFKit can parse it
+      return await sharp(buf).png().toBuffer();
+    } catch (e) {
+      console.warn('[CAPA_PROVAS] WebP→PNG conversion failed:', e.message);
+      return null;
+    }
+  }
+  return buf; // JPEG/PNG — already compatible with PDFKit
 }
 
 async function gerarQRBuffer(dados) {
@@ -629,18 +653,15 @@ router.get('/:id/pdf', async (req, res) => {
     }
 
     // Logos — prefer url_thumb (120×80, ~1.5:1) over url_header (400×120, ~3.3:1)
-    // url_thumb renders at height:90 → ~135×90px (visually large)
-    // url_header at height:90 → ~300×90px (too wide) — avoid
+    // fetchLogoBuffer auto-converts WebP → PNG so PDFKit can read it
     const [logoRows] = await db.query(
       "SELECT posicao, url_thumb, url_header FROM escola_logos WHERE escola_id=? AND ativo=1 AND posicao IN ('esquerda','direita') LIMIT 2",
       [escolaId]
     );
     const pickUrl = (row) => row?.url_thumb || row?.url_header || null;
     const [logoEsqBuf, logoDirBuf] = await Promise.all([
-      pickUrl(logoRows.find(l => l.posicao === 'esquerda'))
-        ? fetchImageBuffer(pickUrl(logoRows.find(l => l.posicao === 'esquerda'))) : Promise.resolve(null),
-      pickUrl(logoRows.find(l => l.posicao === 'direita'))
-        ? fetchImageBuffer(pickUrl(logoRows.find(l => l.posicao === 'direita')))  : Promise.resolve(null),
+      fetchLogoBuffer(pickUrl(logoRows.find(l => l.posicao === 'esquerda'))),
+      fetchLogoBuffer(pickUrl(logoRows.find(l => l.posicao === 'direita'))),
     ]);
 
     // QR
