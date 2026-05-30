@@ -366,14 +366,14 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // Colored header band
   doc.fillColor(area.cor).rect(22, 22, A4W - 44, 106).fill();
 
-  // Large logos on header band
-  if (logoEsqBuf)  doc.image(logoEsqBuf, 30, 28, { width: LOGO_SIZE, height: LOGO_SIZE });
+  // Large logos on header band — use LOGO_H height constraint (url_thumb 120x80 → ~135x90)
+  if (logoEsqBuf)  doc.image(logoEsqBuf, 30, 28, { height: LOGO_H });
   if (qrBuf)       doc.image(qrBuf, A4W - 28 - QR_SIZE, 24, { width: QR_SIZE, height: QR_SIZE });
-  if (logoDirBuf)  doc.image(logoDirBuf, A4W - 28 - QR_SIZE - LOGO_SIZE - 6, 28, { width: LOGO_SIZE, height: LOGO_SIZE });
+  if (logoDirBuf)  doc.image(logoDirBuf, A4W - 28 - QR_SIZE - LOGO_ZONE - 6, 28, { height: LOGO_H });
 
   // Header text — white on colored background
-  const hx = 30 + LOGO_SIZE + 8;
-  const hw = A4W - hx - QR_SIZE - LOGO_SIZE - 36;
+  const hx = 30 + LOGO_ZONE + 8;
+  const hw = A4W - hx - QR_SIZE - LOGO_ZONE - 36;
   doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7.5)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, 32,
        { width: hw, align: 'center', lineBreak: false });
