@@ -69,15 +69,137 @@ function hexToRgb(hex) {
   return [r,g,b];
 }
 
-// Page size A4 in points
+// A4 page constants
 const A4W = 595.28;
 const A4H = 841.89;
 const MARGIN = 28;
+const IMG_H = 140; // height of themed image strip at bottom
 
-// Height reserved for the themed image at the bottom of each template
-const IMG_H = 130;
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED: Draw the institutional header (same structure as relatorio-disciplinar)
+// escola: { nome, apelido, cidade, endereco }
+// Logos: logoEsqBuf / logoDirBuf as image buffers (from escola_logos table)
+// qrBuf: QR code buffer positioned top-right
+// Returns: Y position after the header (including golden separator line)
+// ─────────────────────────────────────────────────────────────────────────────
+function drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
+  const {
+    bgColor = '#ffffff',   // header background
+    textColor = '#1e3a5f', // institutional text color
+    lineColor = '#b8860b', // golden separator
+    lineColor2 = '#1e3a5f',// thin blue line below gold
+    logoSize = 88,         // logo width & height
+    startY = MARGIN + 4,
+  } = opts;
 
-// ── Template renderers ───────────────────────────────────────────────────────
+  const headerH = logoSize + 18; // total header height
+
+  // Header background
+  doc.rect(0, 0, A4W, headerH + startY).fill(bgColor);
+
+  // Logos — left
+  if (logoEsqBuf) {
+    doc.image(logoEsqBuf, MARGIN, startY + (logoSize > 60 ? 4 : 8), {
+      fit: [logoSize, logoSize],
+      align: 'center',
+      valign: 'center',
+    });
+  }
+
+  // QR code — top right
+  const qrSize = 82;
+  if (qrBuf) {
+    doc.image(qrBuf, A4W - MARGIN - qrSize, startY + 4, { width: qrSize, height: qrSize });
+  }
+
+  // Logo right — placed left of QR
+  if (logoDirBuf) {
+    const rightLogoX = qrBuf
+      ? A4W - MARGIN - qrSize - logoSize - 6
+      : A4W - MARGIN - logoSize;
+    doc.image(logoDirBuf, rightLogoX, startY + (logoSize > 60 ? 4 : 8), {
+      fit: [logoSize, logoSize],
+      align: 'center',
+      valign: 'center',
+    });
+  }
+
+  // Center text block
+  const leftEdge  = MARGIN + (logoEsqBuf ? logoSize + 8 : 0);
+  const rightEdge = A4W - MARGIN - (qrBuf ? qrSize + 8 : 0) - (logoDirBuf ? logoSize + 8 : 0);
+  const textW     = rightEdge - leftEdge;
+  const textX     = leftEdge;
+  let textY       = startY + 6;
+
+  // Line 1: Secretaria
+  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(textColor)
+     .text(secretaria, textX, textY, { width: textW, align: 'center', lineBreak: false });
+  textY += 13;
+
+  // Line 2: Coordenação Regional
+  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
+  const coordenacao = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(textColor)
+     .text(coordenacao, textX, textY, { width: textW, align: 'center', lineBreak: false });
+  textY += 12;
+
+  // Line 3: School name + apelido
+  const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
+  const nomeCompleto = `${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`;
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(textColor)
+     .text(nomeCompleto, textX, textY, { width: textW, align: 'center', lineBreak: false });
+  textY += 12;
+
+  // Line 4: Address (smaller, grey)
+  if (escola.endereco) {
+    doc.font('Helvetica').fontSize(7.5).fillColor('#555555')
+       .text(escola.endereco, textX, textY, { width: textW, align: 'center', lineBreak: false });
+  }
+
+  // Golden separator line (thick + thin, like relatorio-disciplinar)
+  const sepY = startY + logoSize + 6;
+  doc.moveTo(MARGIN, sepY).lineTo(A4W - MARGIN, sepY).strokeColor(lineColor).lineWidth(2.5).stroke();
+  const sepY2 = sepY + 4;
+  doc.moveTo(MARGIN, sepY2).lineTo(A4W - MARGIN, sepY2).strokeColor(lineColor2).lineWidth(0.8).stroke();
+
+  return sepY2 + 6; // Y after header
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED: Draw the themed image at bottom (centered, no crop)
+// ─────────────────────────────────────────────────────────────────────────────
+function drawBottomImage(doc, temaBuf, area, opts = {}) {
+  if (!temaBuf) return;
+  const {
+    x = 0,
+    w = A4W,
+    imgH = IMG_H,
+    overlayRgb = null,
+    overlayOpacity = 0.18,
+  } = opts;
+
+  const imgY = A4H - imgH;
+
+  // Use fit with center/center alignment to avoid cropping
+  doc.image(temaBuf, x, imgY, {
+    fit: [w, imgH],
+    align: 'center',
+    valign: 'center',
+  });
+
+  // Color tint overlay using fillColor with low opacity simulation
+  // (PDFKit doesn't support rgba natively; we use a workaround with fillOpacity)
+  if (overlayRgb) {
+    const [r, g, b] = overlayRgb;
+    doc.save();
+    doc.fillOpacity(overlayOpacity);
+    doc.rect(x, imgY, w, imgH).fill(`rgb(${r},${g},${b})`);
+    doc.restore();
+  }
+}
+
+// ── PDF Renderers ─────────────────────────────────────────────────────────────
 
 async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
@@ -89,94 +211,142 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   doc.rect(0, 0, A4W, A4H).fill(`rgb(${rl},${gl},${bl})`);
   // Outer border
   doc.rect(MARGIN, MARGIN, A4W-MARGIN*2, A4H-MARGIN*2).lineWidth(3).stroke(`rgb(${r},${g},${b})`);
-  // Inner border
   doc.rect(MARGIN+4, MARGIN+4, A4W-(MARGIN+4)*2, A4H-(MARGIN+4)*2).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
 
   // Header
-  const headerY = MARGIN + 10;
-  if (qrBuf)     doc.image(qrBuf,    A4W-MARGIN-10-80, headerY+5, { width:80, height:80 });
-  if (logoEsqBuf) doc.image(logoEsqBuf, MARGIN+10, headerY+5, { width:80, height:80, fit:[80,80] });
-  const textX = MARGIN + (logoEsqBuf ? 100 : 10);
-  const textW = A4W - textX - (qrBuf ? 100 : 10) - MARGIN;
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#000')
-     .text(escola.nome || 'ESCOLA', textX, headerY+18, { width: textW, align: 'center' });
+  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
+    bgColor: `rgb(${rl},${gl},${bl})`,
+    textColor: `rgb(${r},${g},${b})`,
+    lineColor: `rgb(${r},${g},${b})`,
+    lineColor2: '#888888',
+    logoSize: 88,
+    startY: MARGIN + 6,
+  });
 
-  // Separator
-  const sepY = MARGIN + 10 + 90;
-  doc.moveTo(MARGIN+8, sepY).lineTo(A4W-MARGIN-8, sepY).lineWidth(2).stroke(`rgb(${r},${g},${b})`);
-
-  // Title
-  const titleY = sepY + 10;
-  doc.font('Helvetica-Bold').fontSize(42).fillColor(`rgb(${r},${g},${b})`)
+  // Title block
+  const titleY = afterHeader + 8;
+  doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
      .text('PROVÃO DE', MARGIN+8, titleY, { width: A4W-MARGIN*2-16, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(54).fillColor('#000')
-     .text(area.label, MARGIN+8, titleY+50, { width: A4W-MARGIN*2-16, align: 'center' });
+  doc.font('Helvetica-Bold').fontSize(64).fillColor('#111111')
+     .text(area.label, MARGIN+8, titleY + 26, { width: A4W-MARGIN*2-16, align: 'center' });
   const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - ');
-  doc.font('Helvetica-Bold').fontSize(28).fillColor(`rgb(${r},${g},${b})`)
-     .text(serieText, MARGIN+8, titleY+115, { width: A4W-MARGIN*2-16, align: 'center' });
+  doc.font('Helvetica-Bold').fontSize(24).fillColor(`rgb(${r},${g},${b})`)
+     .text(serieText, MARGIN+8, titleY + 100, { width: A4W-MARGIN*2-16, align: 'center' });
 
-  // Instructions box (shorter to make room for image)
-  const instrY = titleY + 155;
-  const instrBottom = A4H - MARGIN - 20 - IMG_H - 8;
+  // Instructions box
+  const instrY = titleY + 136;
+  const instrBottom = A4H - IMG_H - 12;
   const instrH = instrBottom - instrY;
   doc.rect(MARGIN+8, instrY, A4W-MARGIN*2-16, instrH).fill(`rgb(${rl},${gl},${bl})`);
   doc.rect(MARGIN+8, instrY, A4W-MARGIN*2-16, instrH).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000')
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000000')
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+16, instrY+8, { width: A4W-MARGIN*2-32, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111')
-     .text(instrText, MARGIN+16, instrY+24, { width: A4W-MARGIN*2-32, lineGap:1.5, paragraphGap:3 });
+  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
+     .text(instrText, MARGIN+16, instrY+24, { width: A4W-MARGIN*2-32, lineGap:1.5, paragraphGap:3, height: instrH-32 });
 
-  // Themed image strip at bottom
-  if (temaBuf) {
-    const imgY = A4H - MARGIN - 20 - IMG_H;
-    doc.image(temaBuf, MARGIN+8, imgY, { width: A4W-MARGIN*2-16, height: IMG_H, cover: [A4W-MARGIN*2-16, IMG_H] });
-    // Color overlay for branding
-    doc.rect(MARGIN+8, imgY, A4W-MARGIN*2-16, IMG_H).opacity(0.18).fill(`rgb(${r},${g},${b})`).opacity(1);
-  }
-  // Footer
-  doc.font('Helvetica').fontSize(7).fillColor('#555')
-     .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN+8, A4H-MARGIN-12, { width: A4W-MARGIN*2-16, align: 'center' });
+  // Bottom image
+  drawBottomImage(doc, temaBuf, capa.area, {
+    x: MARGIN+8, w: A4W-MARGIN*2-16,
+    overlayRgb: [r,g,b], overlayOpacity: 0.15,
+  });
+
+  // Footer text
+  doc.font('Helvetica').fontSize(7).fillColor('#666666')
+     .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN+8, A4H - MARGIN - 10, { width: A4W-MARGIN*2-16, align: 'center' });
 }
 
 async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const area = AREAS[capa.area] || AREAS.GERAL;
   const [r,g,b] = hexToRgb(area.cor);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
+  const STRIPE = 62; // width of left color stripe
 
+  // === 1. White full-page background FIRST ===
   doc.rect(0, 0, A4W, A4H).fill('#ffffff');
-  doc.rect(0, 0, 60, A4H).fill(`rgb(${r},${g},${b})`);
-  doc.rect(60, 0, A4W-60, 8).fill(`rgb(${r},${g},${b})`);
 
-  if (logoEsqBuf) doc.image(logoEsqBuf, 5, 20, { width:50, height:50, fit:[50,50] });
-  if (qrBuf)      doc.image(qrBuf, A4W-95, 15, { width:80, height:80 });
-  if (logoDirBuf) doc.image(logoDirBuf, A4W-175, 20, { width:70, height:50, fit:[70,50] });
+  // === 2. Left color stripe (drawn on top of white) ===
+  doc.rect(0, 0, STRIPE, A4H).fill(`rgb(${r},${g},${b})`);
 
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a')
-     .text(escola.nome || 'ESCOLA', 75, 20, { width: A4W-75-100, align: 'left' });
+  // === 3. Top accent bar (right of stripe) ===
+  doc.rect(STRIPE, 0, A4W - STRIPE, 8).fill(`rgb(${r},${g},${b})`);
 
-  doc.rect(60, 105, A4W-60, 3).fill(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(14).fillColor('#666').text('PROVÃO DE', 75, 120);
-  doc.font('Helvetica-Bold').fontSize(58).fillColor(`rgb(${r},${g},${b})`).text(area.label, 75, 132);
-  const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — ');
-  doc.font('Helvetica-Bold').fontSize(22).fillColor('#1a1a1a').text(serieText, 75, 205);
-
-  doc.rect(60, 240, A4W-60-MARGIN, 2).fill(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a').text('LEIA ATENTAMENTE AS INSTRUÇÕES:', 75, 250);
-  const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  // Instructions shorter to leave room for image
-  const instrBottom = A4H - IMG_H - 16;
-  doc.font('Helvetica').fontSize(8.8).fillColor('#222')
-     .text(instrText, 75, 268, { width: A4W-75-MARGIN, lineGap:1.5, paragraphGap:3, height: instrBottom-268 });
-
-  // Themed image at bottom
-  if (temaBuf) {
-    const imgY = A4H - IMG_H;
-    doc.image(temaBuf, 60, imgY, { width: A4W-60, height: IMG_H, cover: [A4W-60, IMG_H] });
-    doc.rect(60, imgY, A4W-60, IMG_H).opacity(0.2).fill(`rgb(${r},${g},${b})`).opacity(1);
+  // === 4. Header logos on the stripe ===
+  if (logoEsqBuf) {
+    doc.image(logoEsqBuf, 4, 14, { fit: [STRIPE - 8, STRIPE - 8], align: 'center', valign: 'center' });
   }
-  doc.font('Helvetica').fontSize(7).fillColor('#aaa')
-     .text(`EDUCA.MELHOR · ${capa.ano}`, 75, A4H-12, { width: A4W-75-MARGIN });
+
+  // QR code — top right
+  const qrSize = 82;
+  if (qrBuf) {
+    doc.image(qrBuf, A4W - MARGIN - qrSize, 10, { width: qrSize, height: qrSize });
+  }
+  // Logo direita
+  if (logoDirBuf) {
+    const rightLogoX = qrBuf ? A4W - MARGIN - qrSize - 90 - 6 : A4W - MARGIN - 88;
+    doc.image(logoDirBuf, rightLogoX, 12, { fit: [88, 88], align: 'center', valign: 'center' });
+  }
+
+  // Institutional text — 4 lines in the center column
+  const hx = STRIPE + 10;
+  const hw = A4W - hx - MARGIN - (qrBuf ? qrSize + 8 : 0) - (logoDirBuf ? 96 : 0);
+  const COR_AZUL = `rgb(${r},${g},${b})`;
+  let hty = 14;
+  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(COR_AZUL)
+     .text(secretaria, hx, hty, { width: hw, align: 'center', lineBreak: false });
+  hty += 12;
+  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
+  const coord = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor(COR_AZUL)
+     .text(coord, hx, hty, { width: hw, align: 'center', lineBreak: false });
+  hty += 12;
+  const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COR_AZUL)
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, hty, { width: hw, align: 'center', lineBreak: false });
+  hty += 12;
+  if (escola.endereco) {
+    doc.font('Helvetica').fontSize(7).fillColor('#555555')
+       .text(escola.endereco, hx, hty, { width: hw, align: 'center', lineBreak: false });
+  }
+
+  // Golden separator (right of stripe only)
+  const sepY = 100;
+  doc.moveTo(STRIPE, sepY).lineTo(A4W - MARGIN, sepY).strokeColor('#b8860b').lineWidth(2.5).stroke();
+  doc.moveTo(STRIPE, sepY + 4).lineTo(A4W - MARGIN, sepY + 4).strokeColor(COR_AZUL).lineWidth(0.8).stroke();
+
+  // Title block
+  const titleY = sepY + 14;
+  doc.font('Helvetica-Bold').fontSize(13).fillColor('#888888')
+     .text('PROVÃO DE', STRIPE + 10, titleY);
+  doc.font('Helvetica-Bold').fontSize(68).fillColor(COR_AZUL)
+     .text(area.label, STRIPE + 10, titleY + 16);
+  const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — ');
+  doc.font('Helvetica-Bold').fontSize(22).fillColor('#1a1a1a')
+     .text(serieText, STRIPE + 10, titleY + 94);
+
+  // Instructions separator
+  const instrSepY = titleY + 128;
+  doc.moveTo(STRIPE, instrSepY).lineTo(A4W - MARGIN, instrSepY).strokeColor(COR_AZUL).lineWidth(2).stroke();
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a')
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', STRIPE + 10, instrSepY + 8);
+
+  // Instructions text
+  const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
+  const instrBottom = A4H - IMG_H - 12;
+  doc.font('Helvetica').fontSize(8.8).fillColor('#222222')
+     .text(instrText, STRIPE + 10, instrSepY + 26,
+       { width: A4W - STRIPE - MARGIN - 10, lineGap:1.5, paragraphGap:3, height: instrBottom - instrSepY - 30 });
+
+  // Bottom image (starts at x=STRIPE to keep the left stripe clean)
+  drawBottomImage(doc, temaBuf, capa.area, {
+    x: STRIPE, w: A4W - STRIPE,
+    overlayRgb: [r,g,b], overlayOpacity: 0.18,
+  });
+
+  // Footer
+  doc.font('Helvetica').fontSize(7).fillColor('#999999')
+     .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12, { width: A4W - STRIPE - MARGIN - 10 });
 }
 
 async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
@@ -187,36 +357,57 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   doc.rect(0, 0, A4W, A4H).fill('#f9f9f9');
   doc.rect(15, 15, A4W-30, A4H-30).lineWidth(4).stroke(`rgb(${r},${g},${b})`);
   doc.rect(22, 22, A4W-44, A4H-44).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
-  doc.rect(22, 22, A4W-44, 100).fill(`rgb(${r},${g},${b})`);
 
-  if (logoEsqBuf) doc.image(logoEsqBuf, 30, 30, { width:70, height:70, fit:[70,70] });
-  if (qrBuf)      doc.image(qrBuf, A4W-105, 25, { width:80, height:80 });
-  doc.font('Helvetica-Bold').fontSize(12).fillColor('#fff')
-     .text(escola.nome || 'ESCOLA', 110, 40, { width: A4W-220, align: 'center' });
+  // Header box
+  doc.rect(22, 22, A4W-44, 104).fill(`rgb(${r},${g},${b})`);
 
+  // Logos large on colored header
+  if (logoEsqBuf) doc.image(logoEsqBuf, 30, 28, { fit: [88, 88], align: 'center', valign: 'center' });
+  if (qrBuf)      doc.image(qrBuf, A4W - 28 - 82, 24, { width: 82, height: 82 });
+  if (logoDirBuf) doc.image(logoDirBuf, A4W - 28 - 82 - 92, 28, { fit: [86, 86], align: 'center', valign: 'center' });
+
+  // Header text (white on colored bg)
+  const hx = 30 + 92;
+  const hw = A4W - hx - 82 - 92 - 28;
+  const secretaria = escola.secretaria || 'SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL';
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff')
+     .text(secretaria, hx, 32, { width: hw, align: 'center', lineBreak: false });
+  const cidade = escola.cidade ? escola.cidade.toUpperCase() : 'PLANALTINA';
+  const coord = escola.coordenacao || `COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`;
+  doc.font('Helvetica-Bold').fontSize(7).fillColor('rgba(255,255,255,0.9)')
+     .text(coord, hx, 46, { width: hw, align: 'center', lineBreak: false });
+  const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff')
+     .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, 60, { width: hw, align: 'center', lineBreak: false });
+  if (escola.endereco) {
+    doc.font('Helvetica').fontSize(7).fillColor('rgba(255,255,255,0.75)')
+       .text(escola.endereco, hx, 74, { width: hw, align: 'center', lineBreak: false });
+  }
+
+  // Title
   doc.font('Helvetica-Bold').fontSize(18).fillColor(`rgb(${r},${g},${b})`)
      .text('PROVÃO DE', 30, 140, { width: A4W-60, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(52).fillColor('#111')
+  doc.font('Helvetica-Bold').fontSize(60).fillColor('#111111')
      .text(area.label, 30, 160, { width: A4W-60, align: 'center' });
   doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), 30, 225, { width: A4W-60, align: 'center' });
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), 30, 232, { width: A4W-60, align: 'center' });
 
-  doc.rect(30, 260, A4W-60, 2).fill(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000')
-     .text('INSTRUÇÕES AO ESTUDANTE:', 35, 270, { width: A4W-70, align: 'center' });
+  doc.rect(30, 270, A4W-60, 2).fill(`rgb(${r},${g},${b})`);
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#000000')
+     .text('INSTRUÇÕES AO ESTUDANTE:', 35, 280, { width: A4W-70, align: 'center' });
+
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  const instrBottom = A4H - IMG_H - 20;
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111')
-     .text(instrText, 35, 288, { width: A4W-70, lineGap:1.5, paragraphGap:3, height: instrBottom-288 });
+  const instrBottom = A4H - IMG_H - 18;
+  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
+     .text(instrText, 35, 298, { width: A4W-70, lineGap:1.5, paragraphGap:3, height: instrBottom-298 });
 
-  // Themed image
-  if (temaBuf) {
-    const imgY = A4H - 15 - IMG_H;
-    doc.image(temaBuf, 23, imgY, { width: A4W-46, height: IMG_H, cover: [A4W-46, IMG_H] });
-    doc.rect(23, imgY, A4W-46, IMG_H).opacity(0.2).fill(`rgb(${r},${g},${b})`).opacity(1);
-  }
-  doc.font('Helvetica').fontSize(7).fillColor('#aaa')
-     .text('EDUCA.MELHOR', 30, A4H-18, { width: A4W-60, align: 'center' });
+  // Bottom image inside border
+  drawBottomImage(doc, temaBuf, capa.area, {
+    x: 23, w: A4W-46,
+    overlayRgb: [r,g,b], overlayOpacity: 0.15,
+  });
+  doc.font('Helvetica').fontSize(7).fillColor('#aaaaaa')
+     .text('EDUCA.MELHOR', 30, A4H-20, { width: A4W-60, align: 'center' });
 }
 
 async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
@@ -225,36 +416,46 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   const [rl,gl,bl] = hexToRgb(area.corClaro);
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
+  // Two-zone background
   doc.rect(0, 0, A4W, A4H).fill(`rgb(${r},${g},${b})`);
-  doc.rect(0, 180, A4W, A4H-180).fill('#ffffff');
+  doc.rect(0, 192, A4W, A4H-192).fill('#ffffff');
 
-  if (logoEsqBuf) doc.image(logoEsqBuf, MARGIN, 15, { width:80, height:80, fit:[80,80] });
-  if (qrBuf)      doc.image(qrBuf, A4W-MARGIN-85, 15, { width:80, height:80 });
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#fff')
-     .text(escola.nome || 'ESCOLA', MARGIN+90, 25, { width: A4W-MARGIN*2-180, align: 'center' });
+  // Header on colored zone
+  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
+    bgColor: `rgb(${r},${g},${b})`,
+    textColor: '#ffffff',
+    lineColor: 'rgba(255,255,255,0.7)',
+    lineColor2: 'rgba(255,255,255,0.3)',
+    logoSize: 88,
+    startY: MARGIN - 10,
+  });
 
-  doc.font('Helvetica-Bold').fontSize(16).fillColor(`rgb(${rl},${gl},${bl})`)
-     .text('PROVÃO DE', MARGIN, 108, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(58).fillColor('#ffffff')
-     .text(area.label, MARGIN, 122, { width: A4W-MARGIN*2, align: 'center' });
+  // Title on colored zone
+  doc.font('Helvetica-Bold').fontSize(15).fillColor(`rgb(${rl},${gl},${bl})`)
+     .text('PROVÃO DE', MARGIN, afterHeader + 4, { width: A4W-MARGIN*2, align: 'center' });
+  doc.font('Helvetica-Bold').fontSize(62).fillColor('#ffffff')
+     .text(area.label, MARGIN, afterHeader + 22, { width: A4W-MARGIN*2, align: 'center' });
+
+  // Series on white zone
   doc.font('Helvetica-Bold').fontSize(26).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), MARGIN, 195, { width: A4W-MARGIN*2, align: 'center' });
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), MARGIN, 200, { width: A4W-MARGIN*2, align: 'center' });
 
   // Instructions box
-  const instrBottom = A4H - IMG_H - 8;
-  doc.rect(MARGIN, 240, A4W-MARGIN*2, instrBottom-240).fill(`rgb(${rl},${gl},${bl})`);
-  doc.rect(MARGIN, 240, A4W-MARGIN*2, instrBottom-240).lineWidth(1.5).stroke(`rgb(${r},${g},${b})`);
+  const instrTop = 244;
+  const instrBottom = A4H - IMG_H - 10;
+  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).fill(`rgb(${rl},${gl},${bl})`);
+  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).lineWidth(1.5).stroke(`rgb(${r},${g},${b})`);
   doc.font('Helvetica-Bold').fontSize(10).fillColor(`rgb(${r},${g},${b})`)
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+10, 250, { width: A4W-MARGIN*2-20, align: 'center' });
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+10, instrTop+8, { width: A4W-MARGIN*2-20, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  doc.font('Helvetica').fontSize(8.8).fillColor('#111')
-     .text(instrText, MARGIN+12, 268, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-268-10 });
+  doc.font('Helvetica').fontSize(8.8).fillColor('#111111')
+     .text(instrText, MARGIN+12, instrTop+26, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-instrTop-34 });
 
-  // Themed image
-  if (temaBuf) {
-    doc.image(temaBuf, 0, A4H-IMG_H, { width: A4W, height: IMG_H, cover: [A4W, IMG_H] });
-    doc.rect(0, A4H-IMG_H, A4W, IMG_H).opacity(0.25).fill(`rgb(${r},${g},${b})`).opacity(1);
-  }
+  // Bottom image (full width)
+  drawBottomImage(doc, temaBuf, capa.area, {
+    x: 0, w: A4W,
+    overlayRgb: [r,g,b], overlayOpacity: 0.2,
+  });
 }
 
 async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
@@ -265,35 +466,42 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   doc.rect(0, 0, A4W, A4H).fill('#0f172a');
   doc.rect(0, 0, A4W, 6).fill(`rgb(${r},${g},${b})`);
 
-  if (logoEsqBuf) doc.image(logoEsqBuf, MARGIN, 18, { width:75, height:75, fit:[75,75] });
-  if (qrBuf)      doc.image(qrBuf, A4W-MARGIN-85, 12, { width:82, height:82 });
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#e2e8f0')
-     .text(escola.nome || 'ESCOLA', MARGIN+85, 25, { width: A4W-MARGIN*2-170, align: 'center' });
+  // Header
+  const afterHeader = drawHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
+    bgColor: '#0f172a',
+    textColor: '#e2e8f0',
+    lineColor: `rgb(${r},${g},${b})`,
+    lineColor2: '#334155',
+    logoSize: 88,
+    startY: 10,
+  });
 
-  doc.moveTo(MARGIN, 102).lineTo(A4W-MARGIN, 102).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
-  doc.font('Helvetica-Bold').fontSize(14).fillColor(`rgb(${r},${g},${b})`)
-     .text('PROVÃO DE', MARGIN, 112, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(54).fillColor('#f1f5f9')
-     .text(area.label, MARGIN, 126, { width: A4W-MARGIN*2, align: 'center' });
-  doc.font('Helvetica-Bold').fontSize(20).fillColor(`rgb(${r},${g},${b})`)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — '), MARGIN, 202, { width: A4W-MARGIN*2, align: 'center' });
+  // Title
+  doc.font('Helvetica-Bold').fontSize(13).fillColor(`rgb(${r},${g},${b})`)
+     .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W-MARGIN*2, align: 'center' });
+  doc.font('Helvetica-Bold').fontSize(62).fillColor('#f1f5f9')
+     .text(area.label, MARGIN, afterHeader + 26, { width: A4W-MARGIN*2, align: 'center' });
+  doc.font('Helvetica-Bold').fontSize(22).fillColor(`rgb(${r},${g},${b})`)
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — '), MARGIN, afterHeader + 100, { width: A4W-MARGIN*2, align: 'center' });
 
   // Instructions dark card
+  const instrTop = afterHeader + 138;
   const instrBottom = A4H - IMG_H - 10;
-  doc.rect(MARGIN, 238, A4W-MARGIN*2, instrBottom-238).fill('#1e293b');
-  doc.rect(MARGIN, 238, A4W-MARGIN*2, instrBottom-238).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
+  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).fill('#1e293b');
+  doc.rect(MARGIN, instrTop, A4W-MARGIN*2, instrBottom-instrTop).lineWidth(1).stroke(`rgb(${r},${g},${b})`);
   doc.font('Helvetica-Bold').fontSize(10).fillColor('#e2e8f0')
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+12, 248, { width: A4W-MARGIN*2-24, align: 'center' });
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN+12, instrTop+8, { width: A4W-MARGIN*2-24, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
   doc.font('Helvetica').fontSize(8.8).fillColor('#cbd5e1')
-     .text(instrText, MARGIN+12, 266, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-266-10 });
+     .text(instrText, MARGIN+12, instrTop+26, { width: A4W-MARGIN*2-24, lineGap:1.5, paragraphGap:3, height: instrBottom-instrTop-34 });
 
-  // Themed image with dark overlay
-  if (temaBuf) {
-    doc.image(temaBuf, 0, A4H-IMG_H, { width: A4W, height: IMG_H, cover: [A4W, IMG_H] });
-    doc.rect(0, A4H-IMG_H, A4W, IMG_H).opacity(0.55).fill('#0f172a').opacity(1);
-    doc.rect(0, A4H-IMG_H, A4W, 2).fill(`rgb(${r},${g},${b})`);
-  }
+  // Bottom image with dark overlay
+  drawBottomImage(doc, temaBuf, capa.area, {
+    x: 0, w: A4W,
+    overlayRgb: [15, 23, 42], overlayOpacity: 0.5,
+  });
+  // Accent line above image
+  doc.moveTo(0, A4H - IMG_H).lineTo(A4W, A4H - IMG_H).strokeColor(`rgb(${r},${g},${b})`).lineWidth(2).stroke();
 }
 
 const RENDERERS = { 1: renderClassico, 2: renderModerno, 3: renderFormal, 4: renderColorido, 5: renderDark };
@@ -383,13 +591,22 @@ router.get('/:id/pdf', async (req, res) => {
     );
     if (!capa) return res.status(404).json({ ok: false, message: 'Capa não encontrada.' });
 
-    // Fetch escola name only (no inep column dependency)
-    let escolaNome = 'ESCOLA';
+    // Fetch escola data — robust: only use confirmed columns
+    let escola = { nome: 'ESCOLA', apelido: '', cidade: '', endereco: '', secretaria: '', coordenacao: '' };
     try {
-      const [[escolaRow]] = await db.query('SELECT nome FROM escolas WHERE id=? LIMIT 1', [escolaId]);
-      if (escolaRow?.nome) escolaNome = escolaRow.nome;
-    } catch { /* keep default */ }
-    const escola = { nome: escolaNome, subtitulo: '' };
+      const [[row]] = await db.query(
+        'SELECT nome, apelido, endereco, cidade, estado FROM escolas WHERE id=? LIMIT 1',
+        [escolaId]
+      );
+      if (row) {
+        escola.nome      = row.nome      || 'ESCOLA';
+        escola.apelido   = row.apelido   || '';
+        escola.cidade    = row.cidade    || 'PLANALTINA';
+        escola.endereco  = row.endereco  || '';
+      }
+    } catch (e) {
+      console.warn('[CAPA_PROVAS][PDF] Erro ao buscar escola (não crítico):', e.message);
+    }
 
     // Logos from escola_logos
     const [logoRows] = await db.query(
