@@ -66,10 +66,11 @@ async function gerarQRBuffer(dados) {
 // A4 page constants
 const A4W = 595.28;
 const A4H = 841.89;
-const MARGIN = 28;
-const LOGO_SIZE = 88;   // logo dimensions
+const MARGIN    = 28;
+const LOGO_H    = 90;   // target logo HEIGHT — url_thumb(120x80) at height:90 → ~135x90px
+const LOGO_ZONE = 138;  // horizontal space allocated per logo in header
 const QR_SIZE   = 82;   // QR code size
-const HEADER_H  = 108;  // fixed header block height
+const HEADER_H  = 130;  // header block height (increased to fit taller logos)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED: Draw institutional header identical to Relatório Disciplinar
@@ -91,36 +92,36 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
   // Header background
   doc.fillColor(bgColor).rect(0, startY, pageW, HEADER_H).fill();
 
-  // ── Left logo ──────────────────────────────────────────────────────────────
-  // ── Compute usable header height (above separator) ──────────────────────────
-  const contentH  = HEADER_H - 16;         // height available before separator
-  const logoY     = startY + (contentH - LOGO_SIZE) / 2;  // vertically centered
-  const qrX       = pageW - MARGIN - QR_SIZE;
+  // ── Geometry ────────────────────────────────────────────────────────────────
+  const contentH = HEADER_H - 16;           // usable height before separator
+  const logoY    = startY + (contentH - LOGO_H) / 2;  // vertically centred
+  const qrX      = pageW - MARGIN - QR_SIZE;
 
-  // ── Left logo — fit[] preserves aspect ratio, no distortion ───────────────
+  // ── Left logo — height:LOGO_H keeps native proportions (url_thumb 120×80) ──
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, logoOffX, logoY, { fit: [LOGO_SIZE, LOGO_SIZE] });
+    doc.image(logoEsqBuf, logoOffX, logoY, { height: LOGO_H });
   }
 
-  // ── QR code — always top-right ─────────────────────────────────────────────
+  // ── QR code — top-right corner ─────────────────────────────────────────────
   if (qrBuf) {
-    doc.image(qrBuf, qrX, startY + 4, { width: QR_SIZE, height: QR_SIZE });
+    doc.image(qrBuf, qrX, startY + (contentH - QR_SIZE) / 2,
+      { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Right logo — fit[] preserves aspect ratio ──────────────────────────────
+  // ── Right logo — left of QR ─────────────────────────────────────────────────
   if (logoDirBuf) {
-    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : pageW - MARGIN - LOGO_SIZE;
-    doc.image(logoDirBuf, logoRX, logoY, { fit: [LOGO_SIZE, LOGO_SIZE] });
+    const logoRX = qrBuf ? qrX - LOGO_ZONE - 6 : pageW - MARGIN - LOGO_ZONE;
+    doc.image(logoDirBuf, logoRX, logoY, { height: LOGO_H });
   }
 
-  // ── Center text block — vertically centered in header ─────────────────────
-  const leftEdge  = contentX + (logoEsqBuf ? LOGO_SIZE + 10 : 0);
-  const rightStop = qrX - (logoDirBuf ? LOGO_SIZE + 10 : 0) - 4;
+  // ── Center text — horizontally between the two logo zones ──────────────────
+  const leftEdge  = contentX + (logoEsqBuf ? LOGO_ZONE + 8 : 0);
+  const rightStop = (logoDirBuf ? qrX - LOGO_ZONE - 10 : qrX - 4);
   const tw = Math.max(60, rightStop - leftEdge);
 
-  // Text block: 4 lines × ~12px + gaps ≈ 54px total
-  const TEXT_BLOCK_H = 54;
-  let ty = startY + Math.max(6, (contentH - TEXT_BLOCK_H) / 2);
+  // 4 lines × 13px = 52px total; centre vertically
+  const TEXT_BLOCK_H = 52;
+  let ty = startY + Math.max(8, (contentH - TEXT_BLOCK_H) / 2);
 
   // Line 1 — Secretaria
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
@@ -135,7 +136,7 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
        leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty += 13;
 
-  // Line 3 — Nome da escola — Apelido
+  // Line 3 — Nome + Apelido
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
   doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8.5)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`,
@@ -148,7 +149,7 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
        .text(escola.endereco, leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   }
 
-  // ── Double separator line (thick gold + thin secondary) ────────────────────
+  // ── Double separator (thick gold + thin secondary) ──────────────────────────
   const sepY1 = startY + HEADER_H - 10;
   const sepY2 = sepY1 + 4;
   doc.moveTo(MARGIN, sepY1).lineTo(A4W - MARGIN, sepY1)
@@ -269,26 +270,25 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // ── Step 5: QR code top-right ─────────────────────────────────────────────────
   const qrX = A4W - MARGIN - QR_SIZE;
   if (qrBuf) {
-    doc.image(qrBuf, qrX, 10, { width: QR_SIZE, height: QR_SIZE });
+    doc.image(qrBuf, qrX, (HEADER_H - QR_SIZE) / 2, { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Step 6: Right logo — fit[] preserves aspect ratio ──────────────────────────
+  // ── Step 6: Right logo — height:LOGO_H keeps native proportions ────────────────
   if (logoDirBuf) {
-    const logoRX = qrBuf ? qrX - LOGO_SIZE - 6 : A4W - MARGIN - LOGO_SIZE;
-    doc.image(logoDirBuf, logoRX, 10, { fit: [LOGO_SIZE, LOGO_SIZE] });
+    const logoRX = qrBuf ? qrX - LOGO_ZONE - 6 : A4W - MARGIN - LOGO_ZONE;
+    doc.image(logoDirBuf, logoRX, (HEADER_H - LOGO_H) / 2, { height: LOGO_H });
   }
 
   // ── Step 7: Institutional text — vertically centered in header zone ─────────────
-  const hx        = STRIPE + 10;
-  const rightStop = qrBuf     ? qrX - 4                         : A4W - MARGIN;
-  const logoStop  = logoDirBuf ? (qrBuf ? qrX - LOGO_SIZE - 10 : A4W - MARGIN - LOGO_SIZE - 6) : rightStop;
+  const hx       = STRIPE + 10;
+  const rightStop = qrBuf      ? qrX - 4                          : A4W - MARGIN;
+  const logoStop  = logoDirBuf ? (qrBuf ? qrX - LOGO_ZONE - 10   : A4W - MARGIN - LOGO_ZONE - 6) : rightStop;
   const hw        = Math.max(50, logoStop - hx - 4);
 
-  // 4 text lines × 13px ≈ 52px; center in HEADER_H (108px)
   const TEXT_H = 52;
   let hty = Math.max(10, (HEADER_H - TEXT_H) / 2);
 
-  const cidadeM = (escola.cidade || 'PLANALTINA').toUpperCase();
+  const cidadeM  = (escola.cidade || 'PLANALTINA').toUpperCase();
   const apelidoM = escola.apelido ? ` — ${escola.apelido}` : '';
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hty,
@@ -628,16 +628,19 @@ router.get('/:id/pdf', async (req, res) => {
       console.warn('[CAPA_PROVAS][PDF] escola query:', e.message);
     }
 
-    // Logos from escola_logos
+    // Logos — prefer url_thumb (120×80, ~1.5:1) over url_header (400×120, ~3.3:1)
+    // url_thumb renders at height:90 → ~135×90px (visually large)
+    // url_header at height:90 → ~300×90px (too wide) — avoid
     const [logoRows] = await db.query(
-      "SELECT posicao, url_header FROM escola_logos WHERE escola_id=? AND ativo=1 AND posicao IN ('esquerda','direita') LIMIT 2",
+      "SELECT posicao, url_thumb, url_header FROM escola_logos WHERE escola_id=? AND ativo=1 AND posicao IN ('esquerda','direita') LIMIT 2",
       [escolaId]
     );
+    const pickUrl = (row) => row?.url_thumb || row?.url_header || null;
     const [logoEsqBuf, logoDirBuf] = await Promise.all([
-      logoRows.find(l => l.posicao === 'esquerda')?.url_header
-        ? fetchImageBuffer(logoRows.find(l => l.posicao === 'esquerda').url_header) : Promise.resolve(null),
-      logoRows.find(l => l.posicao === 'direita')?.url_header
-        ? fetchImageBuffer(logoRows.find(l => l.posicao === 'direita').url_header)  : Promise.resolve(null),
+      pickUrl(logoRows.find(l => l.posicao === 'esquerda'))
+        ? fetchImageBuffer(pickUrl(logoRows.find(l => l.posicao === 'esquerda'))) : Promise.resolve(null),
+      pickUrl(logoRows.find(l => l.posicao === 'direita'))
+        ? fetchImageBuffer(pickUrl(logoRows.find(l => l.posicao === 'direita')))  : Promise.resolve(null),
     ]);
 
     // QR
