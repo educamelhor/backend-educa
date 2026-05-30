@@ -127,7 +127,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
     } else {
       // Sem turno: remove direto da modulacao
       const sql = `
-        DELETE FROM modulacao m
+        DELETE m FROM modulacao m
          WHERE m.escola_id = ?
            AND (${cond})
       `;
