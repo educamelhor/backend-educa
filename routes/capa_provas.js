@@ -194,13 +194,17 @@ function measureInstrHeight(doc, instrText, textWidth) {
 // SHARED: Draw themed image filling ALL available space from imgY to bottom
 // The image always covers (x, imgY) to (x+w, A4H) — no fixed height
 // ─────────────────────────────────────────────────────────────────────────────
-function drawBottomImage(doc, temaBuf, x, w, imgY) {
-  if (!temaBuf || imgY >= A4H - 10) return;
-  const imgH = A4H - imgY;
+function drawBottomImage(doc, temaBuf, x, w, imgY, maxY) {
+  if (!temaBuf) return;
+  const bottom = (maxY != null) ? maxY : A4H;
+  if (imgY >= bottom - 10) return;
+  const imgH = bottom - imgY;
   if (imgH < 20) return;
-  // width: w, height: imgH forces image to fill the exact area (stretches if needed)
-  // For panoramic decorative images, slight stretching is visually imperceptible
+  // Clipping rect prevents image from bleeding outside the allocated space
+  doc.save();
+  doc.rect(x, imgY, w, imgH).clip();
   doc.image(temaBuf, x, imgY, { width: w, height: imgH });
+  doc.restore();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -257,7 +261,9 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
 
   // Themed image fills ALL remaining space below instructions
   const imageStartY = instrY + instrBoxH + 6;
-  drawBottomImage(doc, temaBuf, MARGIN + 8, A4W - MARGIN * 2 - 16, imageStartY);
+  // maxY = inner border bottom (A4H - MARGIN - 4) so image stays inside double border
+  const imgMaxY = A4H - MARGIN - 6;
+  drawBottomImage(doc, temaBuf, MARGIN + 8, A4W - MARGIN * 2 - 16, imageStartY, imgMaxY);
 
   // Footer
   doc.fillColor('#666666').font('Helvetica').fontSize(7)
@@ -380,7 +386,8 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
 
   // ── Step 12: Themed image fills ALL remaining space ────────────────────────
   const imageStartY = instrStartY + instrTextH + 10;
-  drawBottomImage(doc, temaBuf, STRIPE, A4W - STRIPE, imageStartY);
+  // Moderno: no border, but leave 18px at bottom for footer text
+  drawBottomImage(doc, temaBuf, STRIPE, A4W - STRIPE, imageStartY, A4H - 18);
 
   // Footer
   doc.fillColor('#999999').font('Helvetica').fontSize(7)
@@ -460,7 +467,8 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
 
   // Image fills rest
   const imageStartY = instrBaseY + 28 + instrTextH + 8;
-  drawBottomImage(doc, temaBuf, 23, A4W - 46, imageStartY);
+  // maxY = inner border bottom (A4H - 24) so image stays inside double border
+  drawBottomImage(doc, temaBuf, 24, A4W - 48, imageStartY, A4H - 24);
 
   doc.fillColor('#aaaaaa').font('Helvetica').fontSize(7)
      .text('EDUCA.MELHOR', 30, A4H - 20, { width: A4W - 60, align: 'center' });
@@ -518,7 +526,8 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
 
   // Image fills rest
   const imageStartY = instrTop + instrBoxH + 8;
-  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY);
+  // Colorido: leave 18px at bottom for footer
+  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -567,7 +576,8 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
 
   // Image fills rest
   const imageStartY = instrTop + instrBoxH + 8;
-  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY);
+  // Dark: leave 18px at bottom for footer
+  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
 
   // Accent line above image
   doc.moveTo(0, imageStartY).lineTo(A4W, imageStartY)
