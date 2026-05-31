@@ -274,72 +274,87 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const temaBuf = TEMA_IMAGES[capa.area] || null;
   const STRIPE = 62;
 
+  // ── Local sizing — smaller logos so header text has more room ──────────────
+  // url_thumb 120×80 at height 55 → ~82×55px (logo fits comfortably in header)
+  // LOGO_ZONE_M = 87: text width = 485 - 2×87 - 62 - 28 = 221px
+  //   → "SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL" fits in 1 line at 8pt
+  const LOGO_H_M    = 55;   // logo height for Moderno
+  const LOGO_ZONE_M = 87;   // horizontal space reserved per logo
+  const HEADER_H_M  = 95;   // header height (55px logo + ~20px padding each side)
+  const qrX = A4W - MARGIN - QR_SIZE;
+
   // ── Step 1: White page background ──────────────────────────────────────────
   doc.fillColor('#ffffff').rect(0, 0, A4W, A4H).fill();
 
-  // ── Step 2: Left color stripe (MUST use fillColor then fill separately) ─────
+  // ── Step 2: Left color stripe ──────────────────────────────────────────────
   doc.fillColor(area.cor).rect(0, 0, STRIPE, A4H).fill();
 
-  // ── Step 3: Top accent bar (right portion) ──────────────────────────────────
-  doc.fillColor(area.cor).rect(STRIPE, 0, A4W - STRIPE, 8).fill();
+  // ── Step 3: Top accent bar (right portion) ─────────────────────────────────
+  doc.fillColor(area.cor).rect(STRIPE, 0, A4W - STRIPE, 6).fill();
 
-  // ── Step 4: Left logo — in the WHITE header area (right of stripe), same height as right logo
-  const logoEsqX  = STRIPE + 10;
-  const logoEsqY  = (HEADER_H - LOGO_H) / 2;
+  // ── Step 4: Left logo — vertically centred in header ──────────────────────
+  const logoY_M = Math.round((HEADER_H_M - LOGO_H_M) / 2);
   if (logoEsqBuf) {
-    doc.image(logoEsqBuf, logoEsqX, logoEsqY, { height: LOGO_H });
+    doc.image(logoEsqBuf, STRIPE + 10, logoY_M, { height: LOGO_H_M });
   }
 
-  // ── Step 5: QR code top-right ─────────────────────────────────────────────────
-  const qrX = A4W - MARGIN - QR_SIZE;
+  // ── Step 5: QR code — right side ──────────────────────────────────────────
   if (qrBuf) {
-    doc.image(qrBuf, qrX, (HEADER_H - QR_SIZE) / 2, { width: QR_SIZE, height: QR_SIZE });
+    doc.image(qrBuf, qrX, Math.round((HEADER_H_M - QR_SIZE) / 2),
+      { width: QR_SIZE, height: QR_SIZE });
   }
 
-  // ── Step 6: Right logo — height:LOGO_H keeps native proportions ────────────────
+  // ── Step 6: Right logo — left of QR ───────────────────────────────────────
   if (logoDirBuf) {
-    const logoRX = qrBuf ? qrX - LOGO_ZONE - 6 : A4W - MARGIN - LOGO_ZONE;
-    doc.image(logoDirBuf, logoRX, (HEADER_H - LOGO_H) / 2, { height: LOGO_H });
+    const logoRX = qrBuf ? qrX - LOGO_ZONE_M - 6 : A4W - MARGIN - LOGO_ZONE_M;
+    doc.image(logoDirBuf, logoRX, logoY_M, { height: LOGO_H_M });
   }
 
-  // ── Step 7: Institutional text — between left-logo zone and right-logo zone ────────
-  const hx       = STRIPE + 10 + LOGO_ZONE + 8;  // left of logo + logo width + gap
-  const rightStop = logoDirBuf ? qrX - LOGO_ZONE - 10 : qrX - 4;
-  const hw        = Math.max(50, rightStop - hx);
+  // ── Step 7: Institutional text — centred between logo zones ───────────────
+  const hx       = STRIPE + 10 + LOGO_ZONE_M + 8;
+  const rightStop = logoDirBuf ? qrX - LOGO_ZONE_M - 10 : qrX - 4;
+  const hw        = Math.max(60, rightStop - hx);
 
-  // Vertically center 4 lines in header
-  let hty = Math.max(10, (HEADER_H - 52) / 2);
+  // 4 text lines ≈ 45px; centre vertically
+  let hty = Math.max(8, (HEADER_H_M - 45) / 2);
 
   const cidadeM  = (escola.cidade || 'PLANALTINA').toUpperCase();
   const apelidoM = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8)
+
+  // Line 1 — MUST fit in 1 line (lineBreak:false clips gracefully)
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty = doc.y + 1;
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
+
+  // Line 2 — Coordenação
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7)
      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidadeM}`, hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty = doc.y + 1;
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8)
+
+  // Line 3 — School name (allow wrap — doc.y tracks actual position)
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelidoM}`, hx, hty,
        { width: hw, align: 'center' });
   hty = doc.y + 1;
+
+  // Line 4 — Address
   if (escola.endereco) {
-    doc.fillColor('#555555').font('Helvetica').fontSize(7)
+    doc.fillColor('#444444').font('Helvetica').fontSize(6.5)
        .text(escola.endereco, hx, hty, { width: hw, align: 'center', lineBreak: false });
   }
 
-  // ── Step 8: Double separator (starts after header) ──────────────────────────
-  const sepY1 = HEADER_H + 4;
+  // ── Step 8: Double separator ───────────────────────────────────────────────
+  const sepY1 = HEADER_H_M + 4;
   const sepY2 = sepY1 + 4;
   doc.moveTo(STRIPE, sepY1).lineTo(A4W - MARGIN, sepY1)
      .strokeColor('#b8860b').lineWidth(2.5).stroke();
   doc.moveTo(STRIPE, sepY2).lineTo(A4W - MARGIN, sepY2)
      .strokeColor(area.cor).lineWidth(0.8).stroke();
 
-  // ── Step 9: Title block ──────────────────────────────────────────────────────
+  // ── Step 9: Title block ────────────────────────────────────────────────────
   const titleY = sepY2 + 10;
-  const titleW = A4W - STRIPE - MARGIN - 10;
   doc.fillColor('#888888').font('Helvetica-Bold').fontSize(14)
      .text('PROVÃO DE', STRIPE + 10, titleY);
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(68)
@@ -348,14 +363,14 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(22)
      .text(serieText, STRIPE + 10, titleY + 94);
 
-  // ── Step 10: Instructions separator ─────────────────────────────────────────
+  // ── Step 10: Instructions separator ───────────────────────────────────────
   const instrSepY = titleY + 128;
   doc.moveTo(STRIPE, instrSepY).lineTo(A4W - MARGIN, instrSepY)
      .strokeColor(area.cor).lineWidth(2).stroke();
   doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(10)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', STRIPE + 10, instrSepY + 8);
 
-  // ── Step 11: Instructions — dynamic height ───────────────────────────────────
+  // ── Step 11: Instructions ──────────────────────────────────────────────────
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
   const instrW = A4W - STRIPE - MARGIN - 20;
   const instrTextH = measureInstrHeight(doc, instrText, instrW);
@@ -363,7 +378,7 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   doc.fillColor('#222222').font('Helvetica').fontSize(8.8)
      .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
 
-  // ── Step 12: Themed image fills ALL remaining space ─────────────────────────
+  // ── Step 12: Themed image fills ALL remaining space ────────────────────────
   const imageStartY = instrStartY + instrTextH + 10;
   drawBottomImage(doc, temaBuf, STRIPE, A4W - STRIPE, imageStartY);
 
