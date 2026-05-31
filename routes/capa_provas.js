@@ -482,11 +482,9 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   const area = AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
-  // Two-zone background
-  doc.fillColor(area.cor).rect(0, 0, A4W, A4H).fill();
-  doc.fillColor('#ffffff').rect(0, 192, A4W, A4H - 192).fill();
+  // ── Header (colored zone) ──────────────────────────────────────────────────
+  doc.fillColor(area.cor).rect(0, 0, A4W, A4H).fill();  // full colored bg first
 
-  // Header on colored zone
   const afterHeader = drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, {
     startY: MARGIN - 10,
     bgColor: area.cor,
@@ -495,22 +493,25 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
     sepColor2: '#ffffff44',
   });
 
-  // Title on colored zone
+  // ── Title on colored zone ─────────────────────────────────────────────────
+  const titleY = afterHeader + 6;
   doc.fillColor(area.corClaro).font('Helvetica-Bold').fontSize(15)
-     .text('PROVÃO DE', MARGIN, afterHeader + 4, { width: A4W - MARGIN * 2, align: 'center' });
+     .text('PROVÃO DE', MARGIN, titleY, { width: A4W - MARGIN * 2, align: 'center' });
   doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(62)
-     .text(area.label, MARGIN, afterHeader + 22, { width: A4W - MARGIN * 2, align: 'center' });
+     .text(area.label, MARGIN, titleY + 20, { width: A4W - MARGIN * 2, align: 'center' });
 
-  // Series on white zone
+  // ── White zone starts AFTER the big area label ────────────────────────────
+  // fontSize 62 ≈ 75px tall; add 10px breathing room
+  const whiteZoneY = titleY + 20 + 75 + 10;
+  doc.fillColor('#ffffff').rect(0, whiteZoneY, A4W, A4H - whiteZoneY).fill();
+
+  // ── Series/grade on white zone ────────────────────────────────────────────
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(26)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), MARGIN, 200,
-       { width: A4W - MARGIN * 2, align: 'center' });
+     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '),
+       MARGIN, whiteZoneY + 10, { width: A4W - MARGIN * 2, align: 'center' });
 
-  // Instructions box on white zone
-  const instrTop = 244;
-  doc.fillColor(area.corClaro).font('Helvetica-Bold').fontSize(10)
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 10, instrTop + 8,
-       { width: A4W - MARGIN * 2 - 20, align: 'center' });
+  // ── Instructions box ──────────────────────────────────────────────────────
+  const instrTop = whiteZoneY + 52;  // 10 (gap) + 26px fontSize + 16px line height
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
   const instrW = A4W - MARGIN * 2 - 24;
   const instrTextH = measureInstrHeight(doc, instrText, instrW);
@@ -524,7 +525,7 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
      .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
 
-  // Image fills rest
+  // ── Image fills rest ──────────────────────────────────────────────────────
   const imageStartY = instrTop + instrBoxH + 8;
   // Colorido: leave 18px at bottom for footer
   drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
