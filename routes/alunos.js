@@ -849,6 +849,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             [e.dataBr, atual.id, escola_id]
           );
         }
+        // Vincula responsável APENAS se o PDF trouxer CPF (chave de identificação)
+        // Regra: se BD já tem nome, preserva; só preenche se BD estiver vazio.
         if (e.cpfResponsavel && e.responsavel) {
           try {
             const [respResult] = await pool.query(
@@ -856,7 +858,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
                VALUES (?, ?)
                ON DUPLICATE KEY UPDATE
                  id = LAST_INSERT_ID(id),
-                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
               [e.responsavel, e.cpfResponsavel]
             );
             const responsavelId = respResult.insertId;
@@ -937,7 +939,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         }
 
         // ── RESPONSÁVEL (background) ──
-        // Insere/atualiza responsável e cria vínculo com o aluno
+        // Insere/atualiza responsável e cria vínculo com o aluno.
+        // Regra de proteção: se o BD já tem nome preenchido, não sobrescreve.
+        // Só preenche nome se o BD estiver NULL ou vazio.
         if (e.cpfResponsavel && e.responsavel) {
           try {
             // INSERT ou UPDATE pelo CPF (chave natural)
@@ -946,7 +950,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
                VALUES (?, ?)
                ON DUPLICATE KEY UPDATE
                  id = LAST_INSERT_ID(id),
-                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
               [e.responsavel, e.cpfResponsavel]
             );
             const responsavelId = respResult.insertId;
@@ -1009,6 +1013,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         }
 
         // ── RESPONSÁVEL (background — reativação) ──
+        // Regra de proteção: se BD já tem nome, preserva; só preenche se BD vazio.
         if (e.cpfResponsavel && e.responsavel) {
           try {
             const [respResult] = await pool.query(
@@ -1016,7 +1021,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
                VALUES (?, ?)
                ON DUPLICATE KEY UPDATE
                  id = LAST_INSERT_ID(id),
-                 nome = IF(VALUES(nome) != '', VALUES(nome), nome)`,
+                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
               [e.responsavel, e.cpfResponsavel]
             );
             const responsavelId = respResult.insertId;
