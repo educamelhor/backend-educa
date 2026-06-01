@@ -1,4 +1,4 @@
-﻿import crypto from "crypto";
+import crypto from "crypto";
 import sharp from "sharp";
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -78,6 +78,7 @@ export async function uploadImageBufferToSpaces({
   kind = "alunos",
   cacheControl = null,
   objectKey: forcedObjectKey = null,
+  skipCrop = false,
 }) {
   assertBuffer(buffer);
 
@@ -89,22 +90,24 @@ export async function uploadImageBufferToSpaces({
 
   const ext = guessExtFromMime(mimeType);
   if (!ext) {
-    throw new Error(`Tipo de arquivo n├úo permitido: ${mimeType}`);
+    throw new Error(`Tipo de arquivo não permitido: ${mimeType}`);
   }
 
-  // PASSO 2.3 ÔÇö crop/centraliza├º├úo autom├ítica (avatar)
-  const cropped = await cropAvatarBuffer(buffer, mimeType);
+  // PASSO 2.3 — crop/centralização automática (avatar)
+  if (!skipCrop) {
+    const cropped = await cropAvatarBuffer(buffer, mimeType);
 
-  // Revalida limites ap├│s processamento (defesa)
-  if (!cropped.buffer || !(cropped.buffer instanceof Buffer) || cropped.buffer.length === 0) {
-    throw new Error("Falha ao processar imagem (crop retornou buffer vazio).");
-  }
-  if (cropped.buffer.length > maxBytes) {
-    throw new Error(`Arquivo processado excede limite (${cropped.buffer.length} > ${maxBytes} bytes).`);
-  }
+    // Revalida limites após processamento (defesa)
+    if (!cropped.buffer || !(cropped.buffer instanceof Buffer) || cropped.buffer.length === 0) {
+      throw new Error("Falha ao processar imagem (crop retornou buffer vazio).");
+    }
+    if (cropped.buffer.length > maxBytes) {
+      throw new Error(`Arquivo processado excede limite (${cropped.buffer.length} > ${maxBytes} bytes).`);
+    }
 
-  buffer = cropped.buffer;
-  mimeType = cropped.mimeType;
+    buffer = cropped.buffer;
+    mimeType = cropped.mimeType;
+  }
 
   const { bucket, endpoint } = getSpacesConfig();
   const s3 = getSpacesClient();

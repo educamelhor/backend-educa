@@ -722,21 +722,22 @@ router.post(
 
 
 
-      // garante que o aluno pertence Ã  escola (multi-escola) + pega o CODIGO (para nome do arquivo)
+      // garante que o aluno pertence à escola (multi-escola) + pega o CODIGO e a FOTO antiga
       const [chk] = await conn.query(
-        `SELECT id, escola_id, codigo FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1`,
+        `SELECT id, escola_id, codigo, foto FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1`,
         [aluno_id, escola_id]
       );
 
       if (!chk || chk.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, message: "Aluno nÃ£o encontrado nesta escola." });
+        return res.status(404).json({ ok: false, message: "Aluno não encontrado nesta escola." });
       }
 
       const alunoCodigo = String(chk[0]?.codigo || "").trim();
+      const oldFotoUrl = String(chk[0]?.foto || "").trim();
       if (!alunoCodigo) {
         await conn.rollback();
-        return res.status(400).json({ ok: false, message: "Aluno sem CODIGO vÃ¡lido (necessÃ¡rio para nome do arquivo)." });
+        return res.status(400).json({ ok: false, message: "Aluno sem CODIGO válido (necessário para nome do arquivo)." });
       }
 
       // resolve apelido real da escola (ex.: CEF04_PLAN). fallback seguro: escola_<id>
@@ -751,10 +752,11 @@ router.post(
 
       escolaApelido = escolaApelido || `escola_${escola_id}`;
 
-      // ðŸ”¥ objectKey fixo (sem subpastas): uploads/<APELIDO>/alunos/<CODIGO>.jpg
-      const objectKey = `uploads/${escolaApelido}/alunos/${alunoCodigo}.jpg`;
+      // 🔥 objectKey dinâmico (com timestamp): uploads/<APELIDO>/alunos/<CODIGO>_<timestamp>.jpg
+      const ts = Date.now();
+      const objectKey = `uploads/${escolaApelido}/alunos/${alunoCodigo}_${ts}.jpg`;
 
-      // upload Spaces (buffer normalizado)
+      // upload Spaces (buffer normalizado, desabilitando o crop para respeitar o enquadramento manual do app)
       const up = await uploadImageBufferToSpaces({
         buffer: normalizedBuffer,
         mimeType: "image/jpeg",
@@ -764,11 +766,12 @@ router.post(
         kind: "alunos",
         objectKey,
         cacheControl: CAPTURE_CACHE_CONTROL,
+        skipCrop: true,
       });
 
       uploaded = up;
 
-      // atualiza alunos.foto com URL do Spaces (App Pais jÃ¡ aceita http/https)
+      // atualiza alunos.foto com URL do Spaces (App Pais já aceita http/https)
       await conn.query(
         `UPDATE alunos SET foto = ? WHERE id = ? AND escola_id = ?`,
         [up.publicUrl, aluno_id, escola_id]
@@ -786,6 +789,20 @@ router.post(
       );
 
       await conn.commit();
+
+      // Deletar de forma assíncrona/segura a foto antiga do Spaces (se houver) para evitar lixo órfão
+      if (oldFotoUrl) {
+        const idx = oldFotoUrl.indexOf("/uploads/");
+        if (idx !== -1) {
+          const oldObjectKey = oldFotoUrl.substring(idx + 1);
+          try {
+            await deleteObjectFromSpaces(oldObjectKey);
+            console.log("[CAPTURE] Foto antiga deletada com sucesso:", oldObjectKey);
+          } catch (e) {
+            console.error("[CAPTURE] Falha ao deletar foto antiga:", oldObjectKey, e?.message || e);
+          }
+        }
+      }
 
       return res.status(200).json({
         ok: true,
