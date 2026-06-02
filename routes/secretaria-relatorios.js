@@ -335,4 +335,131 @@ router.get('/anos-letivos', async (req, res) => {
   }
 });
 
+// ============================================================================
+// 6) ACOMPANHAMENTO DE LANÇAMENTO DE NOTAS
+// ============================================================================
+router.get('/acompanhamento-notas', async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { ano_letivo, turno, disciplina_id, turma_id, bimestre } = req.query;
+    const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
+    const bimEfetivo = bimestre ? Number(bimestre) : 1;
+
+    let extraFilter = '';
+    const params = [escola_id, escola_id, anoEfetivo, bimEfetivo, escola_id, anoEfetivo];
+
+    if (turno && turno !== 'todos') {
+      extraFilter += ' AND UPPER(t.turno) = UPPER(?)';
+      params.push(turno);
+    }
+    if (disciplina_id && disciplina_id !== 'todas') {
+      extraFilter += ' AND d.id = ?';
+      params.push(Number(disciplina_id));
+    }
+    if (turma_id && turma_id !== 'todas') {
+      extraFilter += ' AND t.id = ?';
+      params.push(Number(turma_id));
+    }
+
+    const sql = `
+      SELECT 
+        p.id AS professor_id,
+        p.nome AS professor_nome,
+        t.id AS turma_id,
+        t.nome AS turma_nome,
+        t.turno AS turno,
+        d.id AS disciplina_id,
+        d.nome AS disciplina_nome,
+        (
+          SELECT COUNT(a.id) 
+          FROM alunos a 
+          WHERE a.turma_id = t.id AND a.status = 'ativo' AND a.escola_id = ?
+        ) AS total_alunos,
+        (
+          SELECT COUNT(n.id)
+          FROM notas n
+          JOIN alunos a ON a.id = n.aluno_id
+          WHERE a.turma_id = t.id 
+            AND a.status = 'ativo' 
+            AND a.escola_id = ?
+            AND n.disciplina_id = d.id
+            AND n.ano = ?
+            AND n.bimestre = ?
+            AND n.nota IS NOT NULL
+        ) AS alunos_com_nota
+      FROM modulacao m
+      JOIN professores p ON p.id = m.professor_id
+      JOIN turmas t ON t.id = m.turma_id
+      JOIN disciplinas d ON d.id = m.disciplina_id
+      WHERE p.escola_id = ?
+        AND t.ano = ?
+        ${extraFilter}
+      ORDER BY p.nome, t.nome, d.nome
+    `;
+
+    const [rows] = await pool.query(sql, params);
+    return res.json({
+      ano_letivo: anoEfetivo,
+      bimestre: bimEfetivo,
+      dados: rows
+    });
+  } catch (err) {
+    console.error('[relatorios] acompanhamento-notas:', err);
+    return res.status(500).json({ message: 'Erro ao gerar acompanhamento de notas.' });
+  }
+});
+
+// ============================================================================
+// 7) VISUALIZAÇÃO DE ALUNOS E NOTAS DO ACOMPANHAMENTO (SEM EDIÇÃO)
+// ============================================================================
+router.get('/acompanhamento-notas/alunos', async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { turma_id, disciplina_id, bimestre, ano_letivo } = req.query;
+
+    if (!turma_id || !disciplina_id || !bimestre) {
+      return res.status(400).json({ message: "turma_id, disciplina_id e bimestre são obrigatórios." });
+    }
+
+    const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
+
+    const sql = `
+      SELECT
+        a.id AS aluno_id,
+        a.estudante AS nome,
+        a.codigo AS matricula,
+        a.foto,
+        n.nota,
+        n.faltas
+      FROM matriculas m
+      INNER JOIN alunos a ON a.id = m.aluno_id
+      LEFT JOIN notas n ON n.aluno_id = a.id
+        AND n.disciplina_id = ?
+        AND n.bimestre = ?
+        AND n.ano = ?
+        AND n.escola_id = ?
+      WHERE m.turma_id = ?
+        AND m.escola_id = ?
+        AND m.ano_letivo = ?
+        AND m.status = 'ativo'
+      ORDER BY a.estudante
+    `;
+
+    const [rows] = await pool.query(sql, [
+      Number(disciplina_id),
+      Number(bimestre),
+      anoEfetivo,
+      escola_id,
+      Number(turma_id),
+      escola_id,
+      anoEfetivo
+    ]);
+
+    return res.json(rows);
+  } catch (err) {
+    console.error('[relatorios] acompanhamento-notas-alunos:', err);
+    return res.status(500).json({ message: 'Erro ao listar alunos do acompanhamento.' });
+  }
+});
+
 export default router;
