@@ -1335,79 +1335,66 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid
-      // REGRA CRÍTICA: se já existe um registro ATIVO com este device_uid e MESMA escola,
-      // NÃO sobrescrevemos seu device_secret_hash — isso desvincularia o dispositivo anterior.
-      // Apenas fazemos UPDATE quando o registro está INATIVO (reabilitando o mesmo aparelho).
-      // Quando ativo, inserimos um NOVO registro, permitindo múltiplos aparelhos simultâneos.
+      // 3) Gerenciar capture_devices respeitando UNIQUE constraint em device_uid
+      //
+      // Lógica:
+      //  a) Se device_uid NÃO existe → INSERT direto (primeiro pareamento)
+      //  b) Se device_uid existe e está INATIVO → UPDATE para reativar (mesmo aparelho)
+      //  c) Se device_uid existe e está ATIVO → gerar UID único automático para o NOVO
+      //     aparelho (o DB tem UNIQUE constraint; não podemos duplicar o UID).
+      //     O novo UID é retornado via pair/status e o app o armazena automaticamente.
       const [devRows] = await conn.query(
         "SELECT id, ativo, escola_id FROM capture_devices WHERE device_uid = ? ORDER BY id DESC LIMIT 5",
         [device_uid]
       );
 
       let device_id = null;
+      let effective_device_uid = device_uid; // pode ser substituído se houver conflito
 
-      // Procura um registro INATIVO para este device_uid + escola (re-ativação segura)
-      const inactiveRow = devRows?.find(
-        (row) => Number(row.ativo) === 0 && Number(row.escola_id) === Number(escola_id)
-      );
-      // Também verifica se há registro ativo da MESMA escola (não pode sobrescrever)
-      const activeRowSameEscola = devRows?.find(
-        (row) => Number(row.ativo) === 1 && Number(row.escola_id) === Number(escola_id)
-      );
+      const inactiveRow  = devRows?.find(r => Number(r.ativo) === 0 && Number(r.escola_id) === Number(escola_id));
+      const activeRow    = devRows?.find(r => Number(r.ativo) === 1 && Number(r.escola_id) === Number(escola_id));
 
-      if (inactiveRow && !activeRowSameEscola) {
-        // Re-ativação de dispositivo desativado — UPDATE é seguro (não há ativo para a mesma escola)
+      if (!devRows || devRows.length === 0) {
+        // (a) Primeiro pareamento deste device_uid — INSERT direto
+        const [ins] = await conn.query(
+          `INSERT INTO capture_devices
+             (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
+          [escola_id, nome_dispositivo, plataforma, effective_device_uid, device_secret_hash, app_version, usuario_id]
+        );
+        device_id = Number(ins.insertId);
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_ENROLL", ip: approved_ip, user_agent: approved_user_agent });
+
+      } else if (inactiveRow && !activeRow) {
+        // (b) Dispositivo inativo — reativar com novo token (seguro, não há ativo concorrente)
         device_id = Number(inactiveRow.id);
-
         await conn.query(
-          `
-          UPDATE capture_devices
-             SET escola_id = ?,
-                 nome_dispositivo = ?,
-                 plataforma = ?,
-                 device_secret_hash = ?,
-                 app_version = ?,
-                 ativo = 1,
-                 enrolled_by_usuario_id = ?,
-                 last_seen_at = NOW()
-           WHERE id = ?
-          `,
+          `UPDATE capture_devices
+              SET escola_id = ?, nome_dispositivo = ?, plataforma = ?,
+                  device_secret_hash = ?, app_version = ?, ativo = 1,
+                  enrolled_by_usuario_id = ?, last_seen_at = NOW()
+            WHERE id = ?`,
           [escola_id, nome_dispositivo, plataforma, device_secret_hash, app_version, usuario_id, device_id]
         );
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_REENROLL", ip: approved_ip, user_agent: approved_user_agent });
 
-        await safeInsertCaptureAuditoria(conn, {
-          escola_id,
-          aluno_id: null,
-          device_id,
-          usuario_id,
-          acao: "DEVICE_REENROLL",
-          ip: approved_ip,
-          user_agent: approved_user_agent,
-        });
       } else {
-        // Nenhum registro inativo reutilizável OU já existe ativo:
-        // SEMPRE insere novo registro para não derrubar dispositivos existentes.
+        // (c) Já existe um dispositivo ATIVO com este UID (incluindo o caso TAB_APPLE_DEMO legado).
+        //     UNIQUE constraint impede duplicata → geramos um UID único para o NOVO aparelho.
+        //     O app receberá o novo UID via /pair/status e atualizará seu AsyncStorage.
+        const r1 = crypto.randomBytes(4).toString("hex").toUpperCase();
+        const r2 = crypto.randomBytes(3).toString("hex").toUpperCase();
+        effective_device_uid = `AUTO-${Date.now()}-${r1}-${r2}`;
+        console.log(`[CAPTURE][PAIR] Conflito de device_uid '${device_uid}' — novo UID gerado: ${effective_device_uid}`);
+
         const [ins] = await conn.query(
-          `
-          INSERT INTO capture_devices
-            (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
-          VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())
-          `,
-          [escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, usuario_id]
+          `INSERT INTO capture_devices
+             (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
+          [escola_id, nome_dispositivo, plataforma, effective_device_uid, device_secret_hash, app_version, usuario_id]
         );
-
         device_id = Number(ins.insertId);
-
-        await safeInsertCaptureAuditoria(conn, {
-          escola_id,
-          aluno_id: null,
-          device_id,
-          usuario_id,
-          acao: "DEVICE_ENROLL",
-          ip: approved_ip,
-          user_agent: approved_user_agent,
-        });
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_ENROLL", ip: approved_ip, user_agent: approved_user_agent });
       }
 
 
@@ -1547,73 +1534,57 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid
-      // REGRA CRÍTICA: não sobrescrever hash de dispositivo ATIVO — inserir novo registro.
+      // 3) Gerenciar capture_devices respeitando UNIQUE constraint em device_uid
       const [devRows] = await conn.query(
         "SELECT id, ativo, escola_id FROM capture_devices WHERE device_uid = ? ORDER BY id DESC LIMIT 5",
         [device_uid]
       );
 
       let device_id = null;
+      let effective_device_uid = device_uid;
 
-      const inactiveRow = devRows?.find(
-        (row) => Number(row.ativo) === 0 && Number(row.escola_id) === Number(escola_id)
-      );
-      const activeRowSameEscola = devRows?.find(
-        (row) => Number(row.ativo) === 1 && Number(row.escola_id) === Number(escola_id)
-      );
+      const inactiveRow = devRows?.find(row => Number(row.ativo) === 0 && Number(row.escola_id) === Number(escola_id));
+      const activeRow   = devRows?.find(row => Number(row.ativo) === 1 && Number(row.escola_id) === Number(escola_id));
 
-      if (inactiveRow && !activeRowSameEscola) {
-        // Re-ativação de dispositivo desativado — UPDATE seguro
+      if (!devRows || devRows.length === 0) {
+        // (a) Primeiro pareamento
+        const [ins] = await conn.query(
+          `INSERT INTO capture_devices
+             (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
+          [escola_id, nome_dispositivo, plataforma, effective_device_uid, device_secret_hash, app_version, usuario_id]
+        );
+        device_id = Number(ins.insertId);
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_ENROLL", ip: approved_ip, user_agent: approved_user_agent });
+
+      } else if (inactiveRow && !activeRow) {
+        // (b) Reativar dispositivo inativo
         device_id = Number(inactiveRow.id);
-
         await conn.query(
-          `
-          UPDATE capture_devices
-             SET escola_id = ?,
-                 nome_dispositivo = ?,
-                 plataforma = ?,
-                 device_secret_hash = ?,
-                 app_version = ?,
-                 ativo = 1,
-                 enrolled_by_usuario_id = ?,
-                 last_seen_at = NOW()
-           WHERE id = ?
-          `,
+          `UPDATE capture_devices
+              SET escola_id = ?, nome_dispositivo = ?, plataforma = ?,
+                  device_secret_hash = ?, app_version = ?, ativo = 1,
+                  enrolled_by_usuario_id = ?, last_seen_at = NOW()
+            WHERE id = ?`,
           [escola_id, nome_dispositivo, plataforma, device_secret_hash, app_version, usuario_id, device_id]
         );
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_REENROLL", ip: approved_ip, user_agent: approved_user_agent });
 
-        await safeInsertCaptureAuditoria(conn, {
-          escola_id,
-          aluno_id: null,
-          device_id,
-          usuario_id,
-          acao: "DEVICE_REENROLL",
-          ip: approved_ip,
-          user_agent: approved_user_agent,
-        });
       } else {
-        // Já existe ativo ou nenhum inativo reutilizável — INSERT novo registro
+        // (c) Conflito UNIQUE — gerar UID único para o novo aparelho
+        const r1 = crypto.randomBytes(4).toString("hex").toUpperCase();
+        const r2 = crypto.randomBytes(3).toString("hex").toUpperCase();
+        effective_device_uid = `AUTO-${Date.now()}-${r1}-${r2}`;
+        console.log(`[CAPTURE][PAIR] Conflito de device_uid '${device_uid}' — novo UID gerado: ${effective_device_uid}`);
+
         const [ins] = await conn.query(
-          `
-          INSERT INTO capture_devices
-            (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
-          VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())
-          `,
-          [escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, usuario_id]
+          `INSERT INTO capture_devices
+             (escola_id, nome_dispositivo, plataforma, device_uid, device_secret_hash, app_version, ativo, enrolled_by_usuario_id, created_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
+          [escola_id, nome_dispositivo, plataforma, effective_device_uid, device_secret_hash, app_version, usuario_id]
         );
-
         device_id = Number(ins.insertId);
-
-        await safeInsertCaptureAuditoria(conn, {
-          escola_id,
-          aluno_id: null,
-          device_id,
-          usuario_id,
-          acao: "DEVICE_ENROLL",
-          ip: approved_ip,
-          user_agent: approved_user_agent,
-        });
+        await safeInsertCaptureAuditoria(conn, { escola_id, aluno_id: null, device_id, usuario_id, acao: "DEVICE_ENROLL", ip: approved_ip, user_agent: approved_user_agent });
       }
 
 
