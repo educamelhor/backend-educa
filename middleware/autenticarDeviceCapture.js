@@ -83,7 +83,9 @@ export async function autenticarDeviceCapture(req, res, next) {
       SELECT id, escola_id, device_uid, device_secret_hash, ativo
         FROM capture_devices
        WHERE device_uid = ?
-       LIMIT 1
+         AND ativo = 1
+       ORDER BY id DESC
+       LIMIT 10
       `,
       [device_uid]
     );
@@ -92,14 +94,18 @@ export async function autenticarDeviceCapture(req, res, next) {
       return res.status(401).json({ ok: false, message: "Dispositivo não encontrado." });
     }
 
-    const device = rows[0];
-
-    if (!device.ativo) {
-      return res.status(401).json({ ok: false, message: "Dispositivo revogado/inativo." });
+    // Suporte a múltiplos registros ativos com o mesmo device_uid (dispositivos legados que
+    // compartilhavam o mesmo UID, ex: TAB_APPLE_DEMO). Testa o bcrypt em todos e usa o match.
+    let device = null;
+    for (const row of rows) {
+      const match = await bcrypt.compare(deviceToken, String(row.device_secret_hash || ""));
+      if (match) {
+        device = row;
+        break;
+      }
     }
 
-    const ok = await bcrypt.compare(deviceToken, String(device.device_secret_hash || ""));
-    if (!ok) {
+    if (!device) {
       return res.status(401).json({ ok: false, message: "device_token inválido." });
     }
 

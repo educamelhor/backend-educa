@@ -1335,16 +1335,30 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid (mantÃ©m o comportamento do /enroll)
+      // 3) Upsert em capture_devices por device_uid
+      // REGRA CRÍTICA: se já existe um registro ATIVO com este device_uid e MESMA escola,
+      // NÃO sobrescrevemos seu device_secret_hash — isso desvincularia o dispositivo anterior.
+      // Apenas fazemos UPDATE quando o registro está INATIVO (reabilitando o mesmo aparelho).
+      // Quando ativo, inserimos um NOVO registro, permitindo múltiplos aparelhos simultâneos.
       const [devRows] = await conn.query(
-        "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
+        "SELECT id, ativo, escola_id FROM capture_devices WHERE device_uid = ? ORDER BY id DESC LIMIT 5",
         [device_uid]
       );
 
       let device_id = null;
 
-      if (devRows && devRows.length > 0) {
-        device_id = Number(devRows[0].id);
+      // Procura um registro INATIVO para este device_uid + escola (re-ativação segura)
+      const inactiveRow = devRows?.find(
+        (row) => Number(row.ativo) === 0 && Number(row.escola_id) === Number(escola_id)
+      );
+      // Também verifica se há registro ativo da MESMA escola (não pode sobrescrever)
+      const activeRowSameEscola = devRows?.find(
+        (row) => Number(row.ativo) === 1 && Number(row.escola_id) === Number(escola_id)
+      );
+
+      if (inactiveRow && !activeRowSameEscola) {
+        // Re-ativação de dispositivo desativado — UPDATE é seguro (não há ativo para a mesma escola)
+        device_id = Number(inactiveRow.id);
 
         await conn.query(
           `
@@ -1372,6 +1386,8 @@ router.post(
           user_agent: approved_user_agent,
         });
       } else {
+        // Nenhum registro inativo reutilizável OU já existe ativo:
+        // SEMPRE insere novo registro para não derrubar dispositivos existentes.
         const [ins] = await conn.query(
           `
           INSERT INTO capture_devices
@@ -1393,6 +1409,7 @@ router.post(
           user_agent: approved_user_agent,
         });
       }
+
 
       // 4) Marca o pair_code como usado + aprovado + vinculando escola e device_id
       // device_token_plain Ã© guardado temporariamente para entrega via /pair/status (polling do app).
@@ -1530,16 +1547,25 @@ router.post(
       const device_token = crypto.randomBytes(32).toString("hex");
       const device_secret_hash = await bcrypt.hash(device_token, 10);
 
-      // 3) Upsert em capture_devices por device_uid (mantÃ©m o comportamento do /enroll)
+      // 3) Upsert em capture_devices por device_uid
+      // REGRA CRÍTICA: não sobrescrever hash de dispositivo ATIVO — inserir novo registro.
       const [devRows] = await conn.query(
-        "SELECT id FROM capture_devices WHERE device_uid = ? LIMIT 1",
+        "SELECT id, ativo, escola_id FROM capture_devices WHERE device_uid = ? ORDER BY id DESC LIMIT 5",
         [device_uid]
       );
 
       let device_id = null;
 
-      if (devRows && devRows.length > 0) {
-        device_id = Number(devRows[0].id);
+      const inactiveRow = devRows?.find(
+        (row) => Number(row.ativo) === 0 && Number(row.escola_id) === Number(escola_id)
+      );
+      const activeRowSameEscola = devRows?.find(
+        (row) => Number(row.ativo) === 1 && Number(row.escola_id) === Number(escola_id)
+      );
+
+      if (inactiveRow && !activeRowSameEscola) {
+        // Re-ativação de dispositivo desativado — UPDATE seguro
+        device_id = Number(inactiveRow.id);
 
         await conn.query(
           `
@@ -1567,6 +1593,7 @@ router.post(
           user_agent: approved_user_agent,
         });
       } else {
+        // Já existe ativo ou nenhum inativo reutilizável — INSERT novo registro
         const [ins] = await conn.query(
           `
           INSERT INTO capture_devices
@@ -1588,6 +1615,7 @@ router.post(
           user_agent: approved_user_agent,
         });
       }
+
 
       // 4) Marca como usado + aprovado + vinculando escola e device_id
       await conn.query(
