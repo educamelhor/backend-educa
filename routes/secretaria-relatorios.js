@@ -385,7 +385,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
             AND n.disciplina_id = d.id
             AND n.ano = ?
             AND n.bimestre = ?
-            AND n.nota IS NOT NULL
+            AND (n.nota IS NOT NULL OR n.faltas IS NOT NULL)
         ) AS alunos_com_nota
       FROM modulacao m
       JOIN professores p ON p.id = m.professor_id
