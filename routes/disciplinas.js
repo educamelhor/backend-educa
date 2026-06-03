@@ -22,11 +22,14 @@ function verificarEscola(req, res, next) {
  */
 router.get("/", verificarEscola, async (req, res) => {
   try {
-    const { escola_id } = req.user;
-    const [rows] = await pool.query(
-      `
+    const userEscolaId = req.user.escola_id;
+    const targetEscolaId = req.query.escola_id ? Number(req.query.escola_id) : userEscolaId;
+    const { etapa } = req.query;
+
+    let sql = `
       SELECT 
         id,
+        nome AS nome,
         nome AS disciplina,
         nome_oficial,
         etapa,
@@ -35,10 +38,17 @@ router.get("/", verificarEscola, async (req, res) => {
         escola_id
       FROM disciplinas
       WHERE escola_id = ?
-      ORDER BY nome, etapa, turno
-      `,
-      [escola_id]
-    );
+    `;
+    const params = [targetEscolaId];
+
+    if (etapa) {
+      sql += " AND UPPER(TRIM(etapa)) = ?";
+      params.push(String(etapa).trim().toUpperCase());
+    }
+
+    sql += " ORDER BY nome, etapa, turno";
+
+    const [rows] = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     console.error("Erro ao listar disciplinas:", err);

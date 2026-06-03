@@ -451,7 +451,8 @@ router.get("/:id", async (req, res) => {
         a.foto,
         a.status,
         t.nome AS turma,
-        t.turno
+        t.turno,
+        t.etapa AS etapa
       FROM alunos AS a
       LEFT JOIN turmas AS t ON t.id = a.turma_id
       WHERE a.codigo = ?

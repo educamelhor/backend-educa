@@ -62,7 +62,8 @@ router.get("/impressao/boletins", async (req, res) => {
         t.turno,
         t.id AS turma_id,
         a.status,
-        a.escola_id
+        a.escola_id,
+        t.etapa
       FROM alunos a
       INNER JOIN turmas t ON a.turma_id = t.id
       WHERE a.turma_id = ?
@@ -107,6 +108,7 @@ router.get("/impressao/boletins", async (req, res) => {
       return {
         id: aluno.id,
         escola_id: aluno.escola_id,
+        etapa: aluno.etapa,
         codigo: aluno.codigo,
         nome: aluno.nome,
         turma: aluno.turma,
@@ -154,7 +156,8 @@ async function montaBoletins(pool, { codigos }) {
       t.turno,
       t.id AS turma_id,
       a.status,
-      a.escola_id
+      a.escola_id,
+      t.etapa
     FROM alunos a
     INNER JOIN turmas t ON a.turma_id = t.id
     WHERE a.codigo IN (?)
@@ -193,6 +196,7 @@ async function montaBoletins(pool, { codigos }) {
     return {
       codigo: aluno.codigo,
       escola_id: aluno.escola_id,
+      etapa: aluno.etapa,
       nome: aluno.nome,
       turma: aluno.turma,
       turno: aluno.turno,
