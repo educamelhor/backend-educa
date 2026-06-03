@@ -183,7 +183,16 @@ router.get("/", verificarEscola, async (req, res) => {
              t.nome  AS turma,
              t.turno,
              m.turma_id,
-             m.ano_letivo
+             m.ano_letivo,
+
+             -- LGPD: consentimento de imagem pelo responsável
+             COALESCE(
+               (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
+                  FROM responsaveis_alunos ra
+                 WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+               0
+             ) AS consentimento_imagem
+
       FROM alunos AS a
       -- JOIN via matriculas (fonte canônica de turma/ano a partir de 2026-03)
       INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
@@ -199,7 +208,20 @@ router.get("/", verificarEscola, async (req, res) => {
     console.log("🔎 /api/alunos → params:", params);
 
     const [rows] = await pool.query(sql, params);
-    res.json({ alunos: rows, total });
+
+    // LGPD: oculta foto quando não há consentimento
+    const alunosComConsentimento = rows.map((a) => {
+      const ok = Number(a.consentimento_imagem) === 1;
+      return {
+        ...a,
+        foto:     ok ? a.foto     : null,
+        foto_url: ok ? a.foto_url : null,
+        consentimento_imagem: ok,
+      };
+    });
+
+    res.json({ alunos: alunosComConsentimento, total });
+
   } catch (err) {
     console.error("Erro ao listar alunos:", err);
     res.status(500).json({ message: "Erro ao listar alunos." });
@@ -452,7 +474,14 @@ router.get("/:id", async (req, res) => {
         a.status,
         t.nome AS turma,
         t.turno,
-        t.etapa AS etapa
+        t.etapa AS etapa,
+        -- Verifica se algum responsável ativo concedeu consentimento de imagem
+        COALESCE(
+          (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
+             FROM responsaveis_alunos ra
+            WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+          0
+        ) AS consentimento_imagem
       FROM alunos AS a
       LEFT JOIN turmas AS t ON t.id = a.turma_id
       WHERE a.codigo = ?
@@ -462,12 +491,20 @@ router.get("/:id", async (req, res) => {
     if (!aluno) {
       return res.status(404).json({ message: "Aluno não encontrado." });
     }
-    return res.json(aluno);
+
+    // LGPD/Consentimento: só expõe a foto se o responsável autorizou
+    const consentimento_ok = Number(aluno.consentimento_imagem) === 1;
+    return res.json({
+      ...aluno,
+      foto: consentimento_ok ? aluno.foto : null,
+      consentimento_imagem: consentimento_ok,
+    });
   } catch (err) {
     console.error("Erro ao buscar aluno:", err);
     return res.status(500).json({ message: "Erro no servidor ao buscar aluno." });
   }
 });
+
 
 /* ============================================================================
  * 10) RECEBER FOTO RECORTADA
