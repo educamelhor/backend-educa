@@ -106,6 +106,7 @@ router.get("/impressao/boletins", async (req, res) => {
     const boletins = alunosDados.map((aluno) => {
       return {
         id: aluno.id,
+        escola_id: aluno.escola_id,
         codigo: aluno.codigo,
         nome: aluno.nome,
         turma: aluno.turma,
@@ -191,6 +192,7 @@ async function montaBoletins(pool, { codigos }) {
   return alunosDados.map((aluno) => {
     return {
       codigo: aluno.codigo,
+      escola_id: aluno.escola_id,
       nome: aluno.nome,
       turma: aluno.turma,
       turno: aluno.turno,

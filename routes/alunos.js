@@ -443,6 +443,7 @@ router.get("/:id", async (req, res) => {
       `
       SELECT
         a.id,
+        a.escola_id,
         a.codigo,
         a.estudante AS estudante,
         DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
