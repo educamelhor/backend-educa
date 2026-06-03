@@ -65,6 +65,13 @@ export const RBAC_MATRIX = Object.freeze({
     "professores:ver",
   ],
 
+  secretaria: [
+    "usuarios:ver",
+    "usuarios:criar",
+    "usuarios:editar",
+    "professores:ver",
+  ],
+
   admin: [
     "usuarios:ver",
     "usuarios:criar",
@@ -78,6 +85,7 @@ export const RBAC_MATRIX = Object.freeze({
 });
 
 export function getPermissoesPorPerfil(perfil) {
-  const p = String(perfil || "visitante").toLowerCase();
+  let p = String(perfil || "visitante").toLowerCase().trim();
+  if (p === 'secretaria') p = 'secretario';
   return RBAC_MATRIX[p] ? [...RBAC_MATRIX[p]] : [];
 }
