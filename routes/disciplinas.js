@@ -24,7 +24,7 @@ router.get("/", verificarEscola, async (req, res) => {
   try {
     const userEscolaId = req.user.escola_id;
     const targetEscolaId = req.query.escola_id ? Number(req.query.escola_id) : userEscolaId;
-    const { etapa } = req.query;
+    const { etapa, turno } = req.query;
 
     let sql = `
       SELECT 
@@ -44,6 +44,11 @@ router.get("/", verificarEscola, async (req, res) => {
     if (etapa) {
       sql += " AND UPPER(TRIM(etapa)) = ?";
       params.push(String(etapa).trim().toUpperCase());
+    }
+
+    if (turno) {
+      sql += " AND (UPPER(TRIM(turno)) = ? OR UPPER(TRIM(turno)) IN ('DIURNO', 'GERAL', 'INTEGRAL'))";
+      params.push(String(turno).trim().toUpperCase());
     }
 
     sql += " ORDER BY nome, etapa, turno";
