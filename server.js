@@ -1005,18 +1005,12 @@ async function bootstrap() {
   // [2026-05-23 v2] MÓDULO BIBLIOTECA — Acervo Universal + Estoque por Escola
   //   biblioteca_acervo       → catálogo universal (sem escola_id)
   //   biblioteca_acervo_escola → exemplares por escola
+  //
+  // ⚠️ NUNCA usar DROP TABLE aqui — essa migration roda a cada restart/deploy!
+  //    Usar apenas CREATE TABLE IF NOT EXISTS + ALTER TABLE para evoluir schema.
   // ============================================================================
 
-  // Remove tabela antiga (acervo por escola) para rebuild limpo
-  // Seguro: usuário autorizou descartar os 2 livros de teste
-  try {
-    await pool.query(`DROP TABLE IF EXISTS biblioteca_acervo_escola`);
-    await pool.query(`DROP TABLE IF EXISTS biblioteca_acervo`);
-    console.log('[MIGRATION] Tabelas biblioteca antigas removidas para rebuild ✅');
-  } catch (migErr) {
-    console.warn('[MIGRATION] Drop biblioteca (não crítico):', migErr.message);
-  }
-
+  // ── Garante tabela universal de livros ──────────────────────────────────────
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS biblioteca_acervo (
@@ -1035,16 +1029,58 @@ async function bootstrap() {
         criado_em      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
         atualizado_em  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
-        UNIQUE KEY uk_isbn (isbn),
         INDEX idx_titulo (titulo(100))
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         COMMENT='Catálogo universal de livros — compartilhado entre todas as escolas'
     `);
-    console.log('[MIGRATION] Tabela biblioteca_acervo (universal) garantida ✅');
+    console.log('[MIGRATION] Tabela biblioteca_acervo garantida ✅');
   } catch (migErr) {
     console.warn('[MIGRATION] Erro ao criar biblioteca_acervo (não crítico):', migErr.message);
   }
 
+  // ── Evolução de schema: remover escola_id se ainda existir (versão antiga) ──
+  try {
+    const [[cols]] = await pool.query(`
+      SELECT COUNT(*) AS tem
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME   = 'biblioteca_acervo'
+        AND COLUMN_NAME  = 'escola_id'
+    `);
+    if (cols.tem > 0) {
+      // Remove índices dependentes antes de dropar a coluna
+      await pool.query(`ALTER TABLE biblioteca_acervo DROP INDEX IF EXISTS idx_escola`).catch(() => {});
+      await pool.query(`ALTER TABLE biblioteca_acervo DROP COLUMN escola_id`);
+      console.log('[MIGRATION] biblioteca_acervo: coluna escola_id removida (migração para universal) ✅');
+    }
+  } catch (migErr) {
+    console.warn('[MIGRATION] biblioteca_acervo evolução schema (não crítico):', migErr.message);
+  }
+
+  // ── Garante UNIQUE em isbn (se não existir) ──────────────────────────────────
+  try {
+    const [[ukRow]] = await pool.query(`
+      SELECT COUNT(*) AS tem
+      FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME   = 'biblioteca_acervo'
+        AND INDEX_NAME   = 'uk_isbn'
+    `);
+    if (ukRow.tem === 0) {
+      // Remove duplicatas por isbn antes de criar o unique (segurança)
+      await pool.query(`
+        DELETE ba1 FROM biblioteca_acervo ba1
+        INNER JOIN biblioteca_acervo ba2
+          ON ba1.isbn = ba2.isbn AND ba1.isbn IS NOT NULL AND ba1.id > ba2.id
+      `).catch(() => {});
+      await pool.query(`ALTER TABLE biblioteca_acervo ADD UNIQUE KEY uk_isbn (isbn)`);
+      console.log('[MIGRATION] biblioteca_acervo: índice uk_isbn adicionado ✅');
+    }
+  } catch (migErr) {
+    console.warn('[MIGRATION] biblioteca_acervo uk_isbn (não crítico):', migErr.message);
+  }
+
+  // ── Garante tabela de estoque por escola ─────────────────────────────────────
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS biblioteca_acervo_escola (
