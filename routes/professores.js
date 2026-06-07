@@ -899,22 +899,26 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
     }
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
+    const perfil = String(req.user?.perfil || "").toLowerCase().trim();
+    const isDirecao = perfil === "diretor" || perfil === "vice_diretor";
 
-    // 1. Validar se o professor está modulado para esta turma e disciplina
-    const [[modValidation]] = await pool.query(
-      `SELECT 1
-       FROM professores p
-       JOIN modulacao m ON m.professor_id = p.id
-       WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-         AND m.turma_id = ?
-         AND m.disciplina_id = ?
-       LIMIT 1`,
-      [escolaId, cleanCpf, turma_id, disciplina_id]
-    );
+    if (!isDirecao) {
+      // 1. Validar se o professor está modulado para esta turma e disciplina
+      const [[modValidation]] = await pool.query(
+        `SELECT 1
+         FROM professores p
+         JOIN modulacao m ON m.professor_id = p.id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+           AND m.turma_id = ?
+           AND m.disciplina_id = ?
+         LIMIT 1`,
+        [escolaId, cleanCpf, turma_id, disciplina_id]
+      );
 
-    if (!modValidation) {
-      return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+      if (!modValidation) {
+        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+      }
     }
 
     // 2. Iniciar transação para garantir integridade dos dados
