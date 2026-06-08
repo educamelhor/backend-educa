@@ -27,7 +27,7 @@ router.get("/registros", async (req, res) => {
     const [rows] = await (req.db || pool).query(
       `SELECT id, aluno_codigo, turma_id, texto,
               usuario_id, usuario_nome, usuario_perfil,
-              criado_em
+              criado_em, editado_em, editado_por_nome
        FROM registro_conselho
        ${where}
        ORDER BY criado_em DESC
@@ -52,8 +52,8 @@ router.post("/registros", async (req, res) => {
     const escola_id = req.escola_id ?? req.user?.escola_id;
     if (!escola_id) return res.status(400).json({ ok: false, error: "Escola não identificada." });
 
-    const usuario_id   = req.user?.id || null;
-    const usuario_nome = req.user?.nome || req.user?.name || "Usuário";
+    const usuario_id    = req.user?.id || req.user?.usuario_id || null;
+    const usuario_nome  = req.user?.nome || req.user?.name || "Usuário";
     const usuario_perfil = req.user?.perfil || req.user?.role || "professor";
 
     const { aluno_codigo, turma_id, texto } = req.body;
@@ -72,12 +72,71 @@ router.post("/registros", async (req, res) => {
     res.status(201).json({
       ok: true,
       id: result.insertId,
+      usuario_id,
       usuario_nome,
       usuario_perfil,
       criado_em: new Date().toISOString(),
     });
   } catch (err) {
     console.error("[CONSELHO] Erro ao criar registro:", err);
+    res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
+
+// ============================================================================
+// PUT /api/conselho/registros/:id
+// Edita um registro existente — somente pelo autor original
+// Body: { texto }
+// Rastreabilidade: atualiza editado_em e editado_por_nome
+// ============================================================================
+router.put("/registros/:id", async (req, res) => {
+  try {
+    const escola_id = req.escola_id ?? req.user?.escola_id;
+    if (!escola_id) return res.status(400).json({ ok: false, error: "Escola não identificada." });
+
+    const { id } = req.params;
+    const { texto } = req.body;
+
+    if (!texto || !String(texto).trim()) {
+      return res.status(400).json({ ok: false, error: "texto é obrigatório." });
+    }
+
+    const usuario_id   = req.user?.id || req.user?.usuario_id || null;
+    const usuario_nome = req.user?.nome || req.user?.name || "Usuário";
+    const db = req.db || pool;
+
+    // ── Verificar existência e propriedade ──────────────────────────────
+    const [[registro]] = await db.query(
+      `SELECT id, usuario_id FROM registro_conselho
+       WHERE id = ? AND escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (!registro) {
+      return res.status(404).json({ ok: false, error: "Registro não encontrado." });
+    }
+
+    // Somente o autor original pode editar
+    if (Number(registro.usuario_id) !== Number(usuario_id)) {
+      return res.status(403).json({ ok: false, error: "Sem permissão para editar este registro." });
+    }
+
+    const editado_em = new Date();
+
+    await db.query(
+      `UPDATE registro_conselho
+       SET texto = ?, editado_em = ?, editado_por_nome = ?
+       WHERE id = ?`,
+      [String(texto).trim(), editado_em, usuario_nome, id]
+    );
+
+    res.json({
+      ok: true,
+      editado_em: editado_em.toISOString(),
+      editado_por_nome: usuario_nome,
+    });
+  } catch (err) {
+    console.error("[CONSELHO] Erro ao editar registro:", err);
     res.status(500).json({ ok: false, error: "Erro interno." });
   }
 });

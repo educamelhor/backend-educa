@@ -1190,15 +1190,17 @@ async function bootstrap() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS registro_conselho (
-        id              INT UNSIGNED  NOT NULL AUTO_INCREMENT,
-        escola_id       INT           NOT NULL,
-        aluno_codigo    VARCHAR(30)   NOT NULL,
-        turma_id        INT           DEFAULT NULL,
-        texto           TEXT          NOT NULL,
-        usuario_id      INT           DEFAULT NULL,
-        usuario_nome    VARCHAR(255)  NOT NULL DEFAULT 'Usuário',
-        usuario_perfil  VARCHAR(100)  NOT NULL DEFAULT 'professor',
-        criado_em       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        id               INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+        escola_id        INT           NOT NULL,
+        aluno_codigo     VARCHAR(30)   NOT NULL,
+        turma_id         INT           DEFAULT NULL,
+        texto            TEXT          NOT NULL,
+        usuario_id       INT           DEFAULT NULL,
+        usuario_nome     VARCHAR(255)  NOT NULL DEFAULT 'Usuário',
+        usuario_perfil   VARCHAR(100)  NOT NULL DEFAULT 'professor',
+        criado_em        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        editado_em       DATETIME      DEFAULT NULL,
+        editado_por_nome VARCHAR(255)  DEFAULT NULL,
         PRIMARY KEY (id),
         INDEX idx_escola_aluno (escola_id, aluno_codigo),
         INDEX idx_turma        (turma_id),
@@ -1209,6 +1211,21 @@ async function bootstrap() {
     console.log("[MIGRATION] Tabela registro_conselho garantida ✅");
   } catch (migErr) {
     console.warn("[MIGRATION] Erro ao criar registro_conselho (não crítico):", migErr.message);
+  }
+
+  // [2026-06-08 v2] Evolução: adiciona colunas de edição em registro_conselho (se já existia)
+  try {
+    const [[colEditadoEm]] = await pool.query(`
+      SELECT COUNT(*) AS tem FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'registro_conselho' AND COLUMN_NAME = 'editado_em'
+    `);
+    if (colEditadoEm.tem === 0) {
+      await pool.query(`ALTER TABLE registro_conselho ADD COLUMN editado_em DATETIME DEFAULT NULL AFTER criado_em`);
+      await pool.query(`ALTER TABLE registro_conselho ADD COLUMN editado_por_nome VARCHAR(255) DEFAULT NULL AFTER editado_em`);
+      console.log("[MIGRATION] registro_conselho: colunas editado_em + editado_por_nome adicionadas ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] registro_conselho evolução schema (não crítico):", migErr.message);
   }
 
   // [2026-05-29] Item de governanca para o Boletim Manual do Professor
