@@ -91,6 +91,7 @@ import alunosImpressaoRouter from "./routes/alunos_impressao.js";
 import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
 import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
+import conselhoRouter from "./routes/conselho.js";
 import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
@@ -1185,6 +1186,31 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao criar biblioteca_concurso (não crítico):", migErr.message);
   }
 
+  // [2026-06-08] Registro de Conselho de Classe — comentários por aluno com rastreabilidade
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS registro_conselho (
+        id              INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+        escola_id       INT           NOT NULL,
+        aluno_codigo    VARCHAR(30)   NOT NULL,
+        turma_id        INT           DEFAULT NULL,
+        texto           TEXT          NOT NULL,
+        usuario_id      INT           DEFAULT NULL,
+        usuario_nome    VARCHAR(255)  NOT NULL DEFAULT 'Usuário',
+        usuario_perfil  VARCHAR(100)  NOT NULL DEFAULT 'professor',
+        criado_em       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola_aluno (escola_id, aluno_codigo),
+        INDEX idx_turma        (turma_id),
+        INDEX idx_criado       (criado_em)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Registros de Conselho de Classe por aluno — rastreabilidade por usuário'
+    `);
+    console.log("[MIGRATION] Tabela registro_conselho garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar registro_conselho (não crítico):", migErr.message);
+  }
+
   // [2026-05-29] Item de governanca para o Boletim Manual do Professor
   try {
     const [[existItem]] = await pool.query(
@@ -1392,6 +1418,9 @@ async function bootstrap() {
   app.use("/api/codigos", autenticarToken, verificarEscola, codigosRouter);
   app.use("/api/registros-ocorrencias", autenticarToken, verificarEscola, registrosOcorrenciasRouter);
   app.use("/api/responsaveis", autenticarToken, verificarEscola, responsaveisRouter);
+
+  // ✅ Registros de Conselho de Classe — comentários rastreáveis por aluno
+  app.use("/api/conselho", autenticarToken, verificarEscola, conselhoRouter);
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/disciplinar-atas", autenticarToken, verificarEscola, disciplinarAtasRouter);
