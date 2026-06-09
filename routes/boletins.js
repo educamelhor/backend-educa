@@ -78,10 +78,15 @@ async function robustGoto(page, url) {
  * para estabilizar o layout antes de imprimir.
  */
 async function waitRenderComplete(page) {
-  // aguarda o seletor de “pronto para imprimir”
-  await page.waitForSelector("#render-completo", { timeout: 120_000 });
-  // pequeno grace period para fontes/imagens
-  await new Promise((r) => setTimeout(r, 800));
+  // Aguarda o elemento #render-completo ser inserido no DOM.
+  // Usamos state:'attached' porque o elemento tem display:none por design
+  // (o padrão 'visible' nunca seria satisfeito e causaria timeout).
+  await page.waitForSelector("#render-completo", {
+    state: "attached",
+    timeout: 120_000,
+  });
+  // Grace period para fontes/imagens terminarem de renderizar
+  await new Promise((r) => setTimeout(r, 1200));
 }
 
 /**
