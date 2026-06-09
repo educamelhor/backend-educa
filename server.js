@@ -1422,8 +1422,10 @@ async function bootstrap() {
   app.use("/api/agente-planos", autenticarToken, verificarEscola, agentePlanosRouter);
 
 
-  // ⚠️ BOLETINS (Migrado para Playwright)
   app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
+
+  // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...)
+  app.use("/api", autenticarToken, verificarEscola, alunosImpressaoRouter);
 
   // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
   app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);
