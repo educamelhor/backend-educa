@@ -3,6 +3,20 @@ import pool from "../db.js";
 
 const router = express.Router();
 
+// ── Helper: busca nome do usuário no banco (JWT não carrega `nome`) ─────────
+async function buscarNomeUsuario(db, usuario_id) {
+  if (!usuario_id) return "Usuário";
+  try {
+    const [[row]] = await db.query(
+      "SELECT nome FROM usuarios WHERE id = ? LIMIT 1",
+      [Number(usuario_id)]
+    );
+    return row?.nome || "Usuário";
+  } catch {
+    return "Usuário";
+  }
+}
+
 // ============================================================================
 // GET /api/conselho/registros
 // Lista registros de conselho de classe de um aluno
@@ -24,7 +38,8 @@ router.get("/registros", async (req, res) => {
       params.push(turma_id);
     }
 
-    const [rows] = await (req.db || pool).query(
+    const db = req.db || pool;
+    const [rows] = await db.query(
       `SELECT id, aluno_codigo, turma_id, texto,
               usuario_id, usuario_nome, usuario_perfil,
               criado_em, editado_em, editado_por_nome
@@ -52,16 +67,21 @@ router.post("/registros", async (req, res) => {
     const escola_id = req.escola_id ?? req.user?.escola_id;
     if (!escola_id) return res.status(400).json({ ok: false, error: "Escola não identificada." });
 
-    const usuario_id    = req.user?.id || req.user?.usuario_id || null;
-    const usuario_nome  = req.user?.nome || req.user?.name || "Usuário";
-    const usuario_perfil = req.user?.perfil || req.user?.role || "professor";
+    // usuario_id vem do JWT como `usuario_id` ou `usuarioId`
+    const usuario_id     = req.user?.usuario_id || req.user?.usuarioId || req.user?.id || null;
+    const usuario_perfil = req.user?.perfil || "professor";
+
+    const db = req.db || pool;
+
+    // Busca o nome real do banco (JWT não carrega `nome`)
+    const usuario_nome = await buscarNomeUsuario(db, usuario_id);
 
     const { aluno_codigo, turma_id, texto } = req.body;
 
     if (!aluno_codigo) return res.status(400).json({ ok: false, error: "aluno_codigo é obrigatório." });
     if (!texto || !String(texto).trim()) return res.status(400).json({ ok: false, error: "texto é obrigatório." });
 
-    const [result] = await (req.db || pool).query(
+    const [result] = await db.query(
       `INSERT INTO registro_conselho
          (escola_id, aluno_codigo, turma_id, texto, usuario_id, usuario_nome, usuario_perfil)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -87,7 +107,6 @@ router.post("/registros", async (req, res) => {
 // PUT /api/conselho/registros/:id
 // Edita um registro existente — somente pelo autor original
 // Body: { texto }
-// Rastreabilidade: atualiza editado_em e editado_por_nome
 // ============================================================================
 router.put("/registros/:id", async (req, res) => {
   try {
@@ -101,11 +120,13 @@ router.put("/registros/:id", async (req, res) => {
       return res.status(400).json({ ok: false, error: "texto é obrigatório." });
     }
 
-    const usuario_id   = req.user?.id || req.user?.usuario_id || null;
-    const usuario_nome = req.user?.nome || req.user?.name || "Usuário";
+    const usuario_id = req.user?.usuario_id || req.user?.usuarioId || req.user?.id || null;
     const db = req.db || pool;
 
-    // ── Verificar existência e propriedade ──────────────────────────────
+    // Busca nome real do banco
+    const usuario_nome = await buscarNomeUsuario(db, usuario_id);
+
+    // ── Verifica existência e autoria ──────────────────────────────────────
     const [[registro]] = await db.query(
       `SELECT id, usuario_id FROM registro_conselho
        WHERE id = ? AND escola_id = ?`,
@@ -116,7 +137,6 @@ router.put("/registros/:id", async (req, res) => {
       return res.status(404).json({ ok: false, error: "Registro não encontrado." });
     }
 
-    // Somente o autor original pode editar
     if (Number(registro.usuario_id) !== Number(usuario_id)) {
       return res.status(403).json({ ok: false, error: "Sem permissão para editar este registro." });
     }
