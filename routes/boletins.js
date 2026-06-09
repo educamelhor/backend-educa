@@ -55,9 +55,9 @@ async function launchBrowser() {
  */
 async function robustGoto(page, url) {
   const TIMEOUT = 180_000; // 180s
-  // 1) Primeira tentativa: 'networkidle'
+  // 1) Primeira tentativa: 'domcontentloaded'
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: TIMEOUT });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT });
     return;
   } catch (_) {
     // continua para fallback
@@ -69,8 +69,8 @@ async function robustGoto(page, url) {
   } catch (_) {
     // continua para fallback
   }
-  // 3) Terceira tentativa: 'domcontentloaded'
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT });
+  // 3) Terceira tentativa: 'networkidle'
+  await page.goto(url, { waitUntil: "networkidle", timeout: TIMEOUT });
 }
 
 /**
