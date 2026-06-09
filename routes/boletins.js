@@ -156,7 +156,7 @@ router.post("/gerar", verificarEscola, async (req, res) => {
     }
   } catch (error) {
     console.error("Erro ao gerar PDF com Playwright:", error);
-    return res.status(500).json({ error: "Erro ao gerar PDF" });
+    return res.status(500).json({ error: "Erro ao gerar PDF", message: error.message, stack: error.stack });
   }
 });
 
@@ -229,7 +229,7 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
     }
   } catch (error) {
     console.error("Erro ao gerar PDF de turma com Playwright:", error);
-    return res.status(500).json({ error: "Erro ao gerar PDF da turma" });
+    return res.status(500).json({ error: "Erro ao gerar PDF da turma", message: error.message, stack: error.stack });
   }
 });
 
