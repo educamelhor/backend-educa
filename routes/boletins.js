@@ -126,7 +126,11 @@ router.post("/gerar", verificarEscola, async (req, res) => {
       });
     }
 
-    // 2) Monta a URL de impressão
+    // 2) Token do header (Authorization: Bearer <token>)
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+
+    // 3) Monta a URL de impressão
     const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
     const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
     const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
@@ -135,18 +139,29 @@ router.post("/gerar", verificarEscola, async (req, res) => {
 
     let browser;
     try {
-      // 3) Browser + Página
+      // 4) Browser + Página
       browser = await launchBrowser();
       const page = await browser.newPage();
 
-      // 4) Navega com robustez e espera sinal de render
+      // 5) Injeta token e escola_id no localStorage ANTES de navegar
+      //    → Evita que o React redirecione para /login por falta de autenticação
+      await page.addInitScript(({ token, escola_id }) => {
+        try {
+          localStorage.setItem("token", token || "");
+          if (escola_id) localStorage.setItem("escola_id", String(escola_id));
+        } catch (e) {
+          // ignore storage errors (sandboxed environments)
+        }
+      }, { token, escola_id });
+
+      // 6) Navega com robustez e espera sinal de render
       await robustGoto(page, url);
       await waitRenderComplete(page);
 
-      // 5) Gera o PDF
+      // 7) Gera o PDF
       const pdfBuffer = await makePDF(page);
 
-      // 6) Envia resposta
+      // 8) Envia resposta
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
           "Content-Disposition",
