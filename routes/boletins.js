@@ -127,7 +127,9 @@ router.post("/gerar", verificarEscola, async (req, res) => {
     }
 
     // 2) Monta a URL de impressão
-    const url = `${BASE_URL}/print/boletins?turma_id=${encodeURIComponent(
+    const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
+    const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
+    const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
       turma_id
     )}&secret=${encodeURIComponent(PRINT_SECRET)}`;
 
@@ -190,7 +192,9 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
     const token = authHeader.replace(/^Bearer\s+/i, "");
 
     // 3) URL de impressão
-    const url = `${BASE_URL}/print/boletins?turma_id=${encodeURIComponent(
+    const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
+    const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
+    const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
       turma_id
     )}&secret=${encodeURIComponent(PRINT_SECRET)}`;
 
