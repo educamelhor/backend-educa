@@ -5,6 +5,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
+import { getEscolaLogos } from "../utils/logoHelper.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -234,8 +235,7 @@ router.get("/:id/pdf", async (req, res) => {
       }
     }
 
-    const logoLeft  = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     const L = 40, R = 40, PW = 595.28 - L - R;
     const PAGE_H = 841.89, FOOTER_Y = PAGE_H - 25, MAX_Y = FOOTER_Y - 15;
@@ -273,8 +273,8 @@ router.get("/:id/pdf", async (req, res) => {
     // ── CABEÇALHO INSTITUCIONAL ─────────────────────────────────────────
     const headerTop = doc.y;
     const logoSize = 58;
-    if (existsSync(logoLeft))  doc.image(logoLeft,  L, headerTop, { width: logoSize, height: logoSize });
-    if (existsSync(logoRight)) doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
+    if (hasLogoLeft)  doc.image(logoLeft,  L, headerTop, { width: logoSize, height: logoSize });
+    if (hasLogoRight) doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
 
     const hx = L + logoSize + 8, hw = PW - (logoSize + 8) * 2;
     doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)

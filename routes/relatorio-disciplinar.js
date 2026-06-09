@@ -14,6 +14,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
+import { getEscolaLogos } from "../utils/logoHelper.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -395,10 +396,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     const pontosRegistro = Number(registros[0].pontos || 0);
 
     // ── Logos ────────────────────────────────────────────────────────
-    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-    const hasLogoLeft = existsSync(logoLeft);
-    const hasLogoRight = existsSync(logoRight);
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     // ══════════════════════════════════════════════════════════════════
     // GERAR PDF
@@ -907,10 +905,7 @@ router.get("/:alunoId", async (req, res) => {
     const conceito = getConceito(pontuacaoFinal);
 
     // ── Logos ────────────────────────────────────────────────────────
-    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-    const hasLogoLeft = existsSync(logoLeft);
-    const hasLogoRight = existsSync(logoRight);
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     // ══════════════════════════════════════════════════════════════════
     // GERAR PDF

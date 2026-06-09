@@ -10,6 +10,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
+import { getEscolaLogos } from "../utils/logoHelper.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -92,10 +93,7 @@ router.get("/por-turno/:turno", async (req, res) => {
     const qtdLinhas = Number(linhasParam) || 30;
 
     // ── Logos ──
-    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-    const hasLogoLeft = existsSync(logoLeft);
-    const hasLogoRight = existsSync(logoRight);
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     // ══════════════════════════════════════════════════════════════════
     // GERAR PDF UNIFICADO
@@ -608,10 +606,7 @@ router.get("/:turmaId", async (req, res) => {
     const qtdLinhas = Number(linhasParam) || 30;
 
     // ── Logos ────────────────────────────────────────────────────────
-    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-    const hasLogoLeft = existsSync(logoLeft);
-    const hasLogoRight = existsSync(logoRight);
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     // ══════════════════════════════════════════════════════════════════
     // GERAR PDF
@@ -1190,10 +1185,7 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
     }
 
     // ── Logos ──
-    const logoLeft = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-    const logoRight = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-    const hasLogoLeft = existsSync(logoLeft);
-    const hasLogoRight = existsSync(logoRight);
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
 
     // ══════════════════════════════════════════════════════════════════
     // GERAR PDF

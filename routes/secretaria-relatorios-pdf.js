@@ -1,10 +1,11 @@
-﻿// routes/secretaria-relatorios-pdf.js
+// routes/secretaria-relatorios-pdf.js
 import { Router } from "express";
 import PDFDocument from "pdfkit";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
+import { getEscolaLogos } from "../utils/logoHelper.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,10 +21,8 @@ const DOURADO = "#b8860b";
 const CINZA = "#555";
 
 // Logos
-function getLogos() {
-  const left = join(__dirname, "..", "assets", "images", "brasao-gdf.png");
-  const right = join(__dirname, "..", "assets", "images", "logo-escola-right.png");
-  return { left, right, hasLeft: existsSync(left), hasRight: existsSync(right) };
+async function getLogos(escolaId) {
+  return await getEscolaLogos(escolaId);
 }
 
 // Cabeçalho institucional
@@ -87,7 +86,7 @@ router.get("/sintetico-matriculas", async (req, res) => {
 
     const L = 40, R = 40, PW = 595.28 - L - R;
     const PAGE_H = 841.89, FOOTER_Y = PAGE_H - 25;
-    const logos = getLogos();
+    const logos = await getLogos(escola_id);
 
     const doc = new PDFDocument({ size: "A4", margins: { top: 30, bottom: 0, left: L, right: R }, autoFirstPage: true,
       info: { Title: "Relatório Sintético de Matrículas", Author: "EDUCA.MELHOR" } });
@@ -217,7 +216,7 @@ router.get("/idades", async (req, res) => {
     ].map(f => ({ ...f, total: alunos.filter(a => Number(a.idade) >= f.min && Number(a.idade) <= f.max).length }));
 
     const L = 40, PW = 595.28 - 80, PAGE_H = 841.89, FOOTER_Y = PAGE_H - 25, MAX_Y = FOOTER_Y - 15;
-    const logos = getLogos();
+    const logos = await getLogos(escola_id);
     const doc = new PDFDocument({ size:"A4", margins:{top:30,bottom:0,left:L,right:40}, autoFirstPage:true,
       info:{Title:"Relatório de Idades",Author:"EDUCA.MELHOR"} });
     res.setHeader("Content-Type","application/pdf");
@@ -311,7 +310,7 @@ router.get("/turmas", async (req, res) => {
 
     const total = rows.reduce((a, r) => a + Number(r.total_alunos), 0);
     const L = 40, PW = 595.28 - 80, PAGE_H = 841.89, FOOTER_Y = PAGE_H - 25, MAX_Y = FOOTER_Y - 15;
-    const logos = getLogos();
+    const logos = await getLogos(escola_id);
     const doc = new PDFDocument({ size:"A4", margins:{top:30,bottom:0,left:L,right:40}, autoFirstPage:true,
       info:{Title:"Relatório de Turmas",Author:"EDUCA.MELHOR"} });
     res.setHeader("Content-Type","application/pdf");
@@ -427,7 +426,7 @@ router.get("/genero", async (req, res) => {
     const total=totM+totF+totO;
 
     const L=40,PW=595.28-80,PAGE_H=841.89,FOOTER_Y=PAGE_H-25,MAX_Y=FOOTER_Y-15;
-    const logos=getLogos();
+    const logos=await getLogos(escola_id);
     const doc=new PDFDocument({size:"A4",margins:{top:30,bottom:0,left:L,right:40},autoFirstPage:true,
       info:{Title:"Relatório de Gênero",Author:"EDUCA.MELHOR"}});
     res.setHeader("Content-Type","application/pdf");
