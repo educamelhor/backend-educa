@@ -71,10 +71,8 @@ import agentePlanosRouter from "./routes/agente-planos.js";
 import ferramentasIndexRouter from "./routes/ferramentas/index.js";
 
 
-// ⚠️ BOLETINS (temporariamente OFF)
-// Motivo: dependência pesada (puppeteer) — evitar quebrar boot em produção.
-// Reativar quando o ambiente de produção estiver preparado para puppeteer/Chromium.
-//// import boletinsRouter from "./routes/boletins.js";
+// ⚠️ BOLETINS (Migrado para Playwright)
+import boletinsRouter from "./routes/boletins.js";
 
 import alunosRouter from "./routes/alunos.js";
 import matriculasRouter from "./routes/matriculas.js";
@@ -1424,8 +1422,8 @@ async function bootstrap() {
   app.use("/api/agente-planos", autenticarToken, verificarEscola, agentePlanosRouter);
 
 
-  // ⚠️ BOLETINS (temporariamente OFF)
-  // app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
+  // ⚠️ BOLETINS (Migrado para Playwright)
+  app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
   // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
   app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);

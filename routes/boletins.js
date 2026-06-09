@@ -1,6 +1,6 @@
 // api/routes/boletins.js
 // ============================================================================
-// Geração de PDF dos BOLETINS via Puppeteer
+// Geração de PDF dos BOLETINS via Playwright
 // - Rotas:
 //     POST /api/boletins/gerar        → (fluxo clássico, com validação de escola)
 //     POST /api/boletins/gerar-turma  → (boletins da turma inteira, injeta token/localStorage)
@@ -14,7 +14,7 @@
 // ============================================================================
 
 import express from "express";
-import puppeteer from "puppeteer";
+import { chromium } from "playwright";
 import pool from "../db.js";
 
 const router = express.Router();
@@ -35,17 +35,16 @@ function verificarEscola(req, res, next) {
 // -----------------------------------------------------------------------------
 
 /**
- * Lança o Puppeteer com flags seguras no ambiente do servidor.
+ * Lança o Chromium com flags seguras no ambiente do servidor.
  */
 async function launchBrowser() {
-  return puppeteer.launch({
+  return chromium.launch({
     headless: true,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--font-render-hinting=medium",
     ],
   });
 }
@@ -56,16 +55,16 @@ async function launchBrowser() {
  */
 async function robustGoto(page, url) {
   const TIMEOUT = 180_000; // 180s
-  // 1) Primeira tentativa: 'networkidle0'
+  // 1) Primeira tentativa: 'networkidle'
   try {
-    await page.goto(url, { waitUntil: "networkidle0", timeout: TIMEOUT });
+    await page.goto(url, { waitUntil: "networkidle", timeout: TIMEOUT });
     return;
   } catch (_) {
     // continua para fallback
   }
-  // 2) Segunda tentativa: 'networkidle2'
+  // 2) Segunda tentativa: 'load'
   try {
-    await page.goto(url, { waitUntil: "networkidle2", timeout: TIMEOUT });
+    await page.goto(url, { waitUntil: "load", timeout: TIMEOUT });
     return;
   } catch (_) {
     // continua para fallback
@@ -148,15 +147,15 @@ router.post("/gerar", verificarEscola, async (req, res) => {
       // 6) Envia resposta
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=Boletins_Turma_${turma_id}.pdf`
+          "Content-Disposition",
+          `attachment; filename=Boletins_Turma_${turma_id}.pdf`
       );
       res.send(pdfBuffer);
     } finally {
       if (browser) await browser.close();
     }
   } catch (error) {
-    console.error("Erro ao gerar PDF com Puppeteer:", error);
+    console.error("Erro ao gerar PDF com Playwright:", error);
     return res.status(500).json({ error: "Erro ao gerar PDF" });
   }
 });
@@ -202,14 +201,14 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
       const page = await browser.newPage();
 
       // 5) Injeta token/escola_id no localStorage ANTES do app montar
-      await page.evaluateOnNewDocument((tkn, escolaId) => {
+      await page.addInitScript(({ token, escola_id }) => {
         try {
-          localStorage.setItem("token", tkn || "");
-          if (escolaId) localStorage.setItem("escola_id", String(escolaId));
-        } catch {
+          localStorage.setItem("token", token || "");
+          if (escola_id) localStorage.setItem("escola_id", String(escola_id));
+        } catch (e) {
           // ignore storage errors
         }
-      }, token, escola_id);
+      }, { token, escola_id });
 
       // 6) Navega com robustez e espera render final
       await robustGoto(page, url);
@@ -221,15 +220,15 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
       // 8) Envia resultado
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=Boletins_Turma_${turma_id}.pdf`
+          "Content-Disposition",
+          `attachment; filename=Boletins_Turma_${turma_id}.pdf`
       );
       res.send(pdfBuffer);
     } finally {
       if (browser) await browser.close();
     }
   } catch (error) {
-    console.error("Erro ao gerar PDF de turma:", error);
+    console.error("Erro ao gerar PDF de turma com Playwright:", error);
     return res.status(500).json({ error: "Erro ao gerar PDF da turma" });
   }
 });
