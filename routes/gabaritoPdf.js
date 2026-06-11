@@ -353,13 +353,11 @@ function renderPaginaOMR(doc, opts) {
     ellipsis: true,
   });
 
-  // DATA
+  // DATA — lineBreak: false garante que fica em UMA única linha
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("DATA:", colDataX, linha2Y, { width: 34 });
+  doc.text("DATA:", colDataX, linha2Y, { lineBreak: false });
   doc.font("Helvetica").fontSize(9).fillColor("#444");
-  doc.text("____/____/______", colDataX + 36, linha2Y, {
-    width: linhaFimX - colDataX - 36,
-  });
+  doc.text("  __/__/____", colDataX + 34, linha2Y, { lineBreak: false });
   y += 16;
 
   // Linha 3: ASSINATURA (ocupa largura total até linhaFimX)
