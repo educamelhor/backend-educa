@@ -14,6 +14,18 @@ import { Router } from "express";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import pool from "../db.js";
+import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import sharp from "sharp";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const SPACES_PUBLIC_BASE = String(
+  process.env.SPACES_PUBLIC_BASE || "https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/"
+).replace(/\/+$/, "") + "/";
 
 const router = Router();
 
@@ -40,14 +52,30 @@ function anoLetivoAtual() {
 async function buscarAlunosDaTurma(turmaId, escolaId) {
   const anoLetivo = anoLetivoAtual();
   const [rows] = await pool.query(
-    `SELECT a.id, a.estudante AS nome, a.codigo AS matricula
+    `SELECT a.id, a.estudante AS nome, a.codigo AS matricula,
+            a.foto,
+            CASE
+              WHEN a.foto LIKE 'http%' THEN a.foto
+              ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
+            END AS foto_url,
+            COALESCE(
+              (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
+                 FROM responsaveis_alunos ra
+                WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+              0
+            ) AS consentimento_imagem
      FROM matriculas m
      INNER JOIN alunos a ON a.id = m.aluno_id
+     LEFT JOIN  escolas e ON e.id = a.escola_id
      WHERE m.turma_id = ? AND m.escola_id = ? AND m.ano_letivo = ? AND m.status = 'ativo'
      ORDER BY a.estudante ASC`,
-    [turmaId, escolaId, anoLetivo]
+    [SPACES_PUBLIC_BASE, turmaId, escolaId, anoLetivo]
   );
-  return rows;
+  // Aplica LGPD: oculta foto se não há consentimento
+  return rows.map(a => ({
+    ...a,
+    foto_url: Number(a.consentimento_imagem) === 1 ? a.foto_url : null,
+  }));
 }
 
 async function buscarTurma(turmaId, escolaId) {
@@ -77,6 +105,81 @@ async function gerarQRBuffer(dados) {
   });
 }
 
+// ─── Fetch + processo da foto do aluno ──────────────────────────────────────
+// Retorna um Buffer JPEG pronto para renderizar no PDF, ou null se falhar.
+const FOTO_CACHE = new Map(); // cache em memória por URL (vida útil da requisição do PDF)
+
+async function buscarFotoBuffer(fotoUrl) {
+  if (!fotoUrl) return null;
+
+  // Normaliza URL relativa (caminho local do servidor)
+  let url = fotoUrl;
+  if (!url.startsWith("http")) {
+    // Caminho relativo ao servidor — tenta ler do filesystem
+    const localPath = path.resolve(__dirname, "..", url.replace(/^\//, ""));
+    if (!fs.existsSync(localPath)) return null;
+    try {
+      const raw = fs.readFileSync(localPath);
+      return await sharp(raw)
+        .resize(120, 120, { fit: "cover", position: "centre" })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+    } catch {
+      return null;
+    }
+  }
+
+  if (FOTO_CACHE.has(url)) return FOTO_CACHE.get(url);
+
+  try {
+    const resp = await fetch(url, { timeout: 6000 });
+    if (!resp.ok) return null;
+    const raw = Buffer.from(await resp.arrayBuffer());
+    const buf = await sharp(raw)
+      .resize(120, 120, { fit: "cover", position: "centre" })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    FOTO_CACHE.set(url, buf);
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
+// Desenha a foto do aluno no PDF com moldura circular premium
+function renderFotoAluno(doc, fotoBuffer, cx, cy, radius) {
+  if (!fotoBuffer) return;
+  try {
+    // Salva o estado gráfico
+    doc.save();
+
+    // Clipping circular
+    doc.circle(cx, cy, radius).clip();
+
+    // Renderiza a imagem dentro do clip
+    const size = radius * 2;
+    doc.image(fotoBuffer, cx - radius, cy - radius, { width: size, height: size });
+
+    // Restaura estado antes do clip
+    doc.restore();
+
+    // Borda externa do círculo — anel branco
+    doc.circle(cx, cy, radius + 1.5)
+      .lineWidth(3)
+      .strokeColor("#ffffff")
+      .stroke();
+
+    // Borda externa do círculo — anel escuro
+    doc.circle(cx, cy, radius + 3)
+      .lineWidth(1.2)
+      .strokeColor("#1a1a2e")
+      .stroke();
+  } catch (e) {
+    // Silencia erros de renderização de foto
+    console.warn("[gabaritoPdf] Erro ao renderizar foto:", e.message);
+  }
+}
+
 // ─── Geração do PDF OMR ─────────────────────────────────────────────────────
 
 async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, numAlternativas, alunos, turma }) {
@@ -98,6 +201,9 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
   res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.pdf"`);
   doc.pipe(res);
 
+  // Limpa o cache de fotos entre gerações de PDF
+  FOTO_CACHE.clear();
+
   for (let i = 0; i < alunos.length; i++) {
     if (i > 0) doc.addPage();
     const aluno = alunos[i];
@@ -107,6 +213,9 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
     // Turma individual do aluno (multi-turma) ou fallback global (turma única)
     const nomeTurma = (aluno.turmaNome || nomeTurmaGlobal).toUpperCase();
     const turmaId = aluno.turma_id || turma?.id || "";
+
+    // Busca foto do aluno (com LGPD: só se tiver consentimento)
+    const fotoBuffer = await buscarFotoBuffer(aluno.foto_url || null);
 
     // Gerar QR Code com dados do aluno
     const qrData = {
@@ -130,6 +239,7 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
       letras,
       modelo,
       qrBuffer,
+      fotoBuffer,
     });
   }
 
@@ -137,7 +247,7 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
 }
 
 function renderPaginaOMR(doc, opts) {
-  const { nomeEscola, descricao, nomeTurma, nomeAluno, codigoAluno, nQ, nA, letras, modelo, qrBuffer } = opts;
+  const { nomeEscola, descricao, nomeTurma, nomeAluno, codigoAluno, nQ, nA, letras, modelo, qrBuffer, fotoBuffer } = opts;
 
   const pageW = doc.page.width;
   const pageH = doc.page.height;
@@ -173,9 +283,23 @@ function renderPaginaOMR(doc, opts) {
   doc.text("LEITURA AUTOMÁTICA", qrX, qrY + QR_SIZE + 2, { width: QR_SIZE, align: "center" });
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // 2b. FOTO DO ALUNO — posicionada à esquerda do QR Code, com moldura premium
+  // ═══════════════════════════════════════════════════════════════════════════
+  const FOTO_RADIUS = 36;  // raio do círculo da foto (pt)
+  const fotoAreaW = fotoBuffer ? FOTO_RADIUS * 2 + 16 : 0; // largura reservada para a foto
+  const fotoX = qrX - fotoAreaW - 8; // posicionada à esquerda do QR
+  const fotoCX = fotoBuffer ? fotoX + FOTO_RADIUS + 4 : 0;
+  const fotoCY = qrY + QR_SIZE / 2;  // centralizada verticalmente com o QR
+
+  if (fotoBuffer) {
+    renderFotoAluno(doc, fotoBuffer, fotoCX, fotoCY, FOTO_RADIUS);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // 3. CABEÇALHO (nome da escola + título)
   // ═══════════════════════════════════════════════════════════════════════════
-  const headerW = contentW - QR_SIZE - 20;
+  // headerW descontando QR + foto (se houver)
+  const headerW = contentW - QR_SIZE - fotoAreaW - 28;
 
   // Nome da escola
   doc.font("Helvetica-Bold").fontSize(13).fillColor("#000");
@@ -187,8 +311,8 @@ function renderPaginaOMR(doc, opts) {
   doc.text(descricao, mL, y, { width: headerW, align: "left" });
   y += 16;
 
-  // Linha divisória (não invade a área do QR Code)
-  const linhaFimX = qrX - 10; // para 10pt antes do QR code
+  // Linha divisória (não invade a área do QR Code nem da foto)
+  const linhaFimX = fotoBuffer ? fotoX - 6 : qrX - 10;
   doc.moveTo(mL, y).lineTo(linhaFimX, y).strokeColor("#000").lineWidth(1).stroke();
   y += 8;
 
@@ -567,14 +691,37 @@ router.post("/gerar-individual", async (req, res) => {
 
     if (!aluno_codigo) return res.status(400).json({ error: "Código do aluno é obrigatório." });
 
-    const [rows] = await pool.query(
-      "SELECT id, estudante AS nome, codigo AS matricula FROM alunos WHERE codigo = ? AND escola_id = ?",
-      [aluno_codigo, escola_id]
-    );
-    if (rows.length === 0) return res.status(404).json({ error: "Aluno não encontrado." });
+    const [escola, alunoRow] = await Promise.all([
+      buscarEscola(escola_id),
+      pool.query(
+        `SELECT a.id, a.estudante AS nome, a.codigo AS matricula,
+                a.foto,
+                CASE
+                  WHEN a.foto LIKE 'http%' THEN a.foto
+                  ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
+                END AS foto_url,
+                COALESCE(
+                  (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
+                     FROM responsaveis_alunos ra
+                    WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+                  0
+                ) AS consentimento_imagem
+         FROM alunos a
+         LEFT JOIN escolas e ON e.id = a.escola_id
+         WHERE a.codigo = ? AND a.escola_id = ?`,
+        [SPACES_PUBLIC_BASE, aluno_codigo, escola_id]
+      ),
+    ]);
 
-    const aluno = rows[0];
-    const escola = await buscarEscola(escola_id);
+    const rows = alunoRow[0];
+    if (!rows || rows.length === 0) return res.status(404).json({ error: "Aluno não encontrado." });
+
+    const alunoRaw = rows[0];
+    const aluno = {
+      ...alunoRaw,
+      foto_url: Number(alunoRaw.consentimento_imagem) === 1 ? alunoRaw.foto_url : null,
+    };
+
     const turma = turma_id ? await buscarTurma(turma_id, escola_id) : { turma: "", id: null };
 
     await gerarPdfGabarito(res, {
