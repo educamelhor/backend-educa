@@ -15,7 +15,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 libx11-xcb1 \
     # Fontes (necessário para renderizar PDFs corretamente)
     fonts-liberation fonts-noto-core \
+    # Dependências do Tectonic (compilador LaTeX)
+    fontconfig libssl3 curl wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Instala Tectonic — compilador LaTeX moderno (binário único ~25MB)
+RUN wget -qO /tmp/tectonic.tar.gz \
+    https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.15.0/tectonic-0.15.0-x86_64-unknown-linux-musl.tar.gz \
+    && tar -xzf /tmp/tectonic.tar.gz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/tectonic \
+    && rm /tmp/tectonic.tar.gz
+
+# Diretório para jobs de compilação LaTeX temporários
+RUN mkdir -p /tmp/latex-jobs && chmod 777 /tmp/latex-jobs
 
 # Diretório da aplicação Node.js
 WORKDIR /app

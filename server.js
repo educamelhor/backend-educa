@@ -83,6 +83,7 @@ import questoesRouter from "./routes/questoes.js";
 import questoesUploadRouter from "./routes/questoesUpload.js";
 import provasRouter from "./routes/provas.js";
 import provaPdfRouter from "./routes/prova_pdf.js";
+import provaLatexPdfRouter from "./routes/provaLatexPdf.js";
 import escolasRouter from "./routes/escolas.js";
 import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/usuarios.js";
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
@@ -1363,6 +1364,8 @@ async function bootstrap() {
     app.use("/api/provas", autenticarToken, verificarEscola, provasRouter);
     // ✅ EDUCA.PROVA — Geração de HTML/PDF (Playwright)
     app.use("/api/provas", autenticarToken, verificarEscola, provaPdfRouter);
+    // ✅ EDUCA.PROVA — PDF Premium via LaTeX/Tectonic
+    app.use("/api/provas", autenticarToken, verificarEscola, provaLatexPdfRouter);
   } else {
     console.log("[FF] Questões desativado");
   }
