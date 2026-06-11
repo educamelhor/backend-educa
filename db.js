@@ -138,6 +138,24 @@ pool
         // coluna/tabela já existe — ignorar
       }
     }
+
+    // ── Limpeza única: remove questões de teste (sem numero_q) ──────────────
+    // Só executa quando numero_q é NULL (questões criadas antes do v3)
+    try {
+      const [[{ total_sem_num }]] = await pool.query(
+        "SELECT COUNT(*) AS total_sem_num FROM questoes WHERE numero_q IS NULL"
+      );
+      if (total_sem_num > 0) {
+        await pool.query("DELETE FROM questoes WHERE numero_q IS NULL");
+        console.log(`[DB] cleanup v3: ${total_sem_num} questão(ões) de teste removida(s) ✅`);
+        // Reseta sequência para começar do 1
+        await pool.query("DELETE FROM questoes_num_seq");
+        await pool.query("ALTER TABLE questoes_num_seq AUTO_INCREMENT = 1");
+        console.log("[DB] questoes_num_seq resetada → próxima questão será Q0001 ✅");
+      }
+    } catch (e) {
+      console.log("[DB] cleanup v3 skip:", e.message?.slice(0, 80));
+    }
   })
   .catch((err) => {
     console.error("[DB] connection FAIL ❌", {
