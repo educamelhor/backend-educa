@@ -326,7 +326,7 @@ function renderPaginaOMR(doc, opts) {
   // Posições das três colunas da linha 2
   const colReX    = mL;           // RE (esquerda)
   const colTurmaX = mL + 118;     // TURMA (meio)
-  const colDataX  = mL + 268;     // DATA (direita)
+  const colDataX  = mL + 240;     // DATA (direita) — ~1cm mais próximo de TURMA
 
   // Linha 1: ALUNO
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
