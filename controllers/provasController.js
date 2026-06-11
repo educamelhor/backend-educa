@@ -122,9 +122,9 @@ export async function excluirProva(req, res) {
   const { id } = req.params;
   const { escola_id } = req.user;
   try {
-    // Verifica se a prova pertence à escola
+    // Verifica se a prova pertence à escola (usa alias p para compatibilidade com escolaFilter)
     const [[prova]] = await pool.query(
-      `SELECT id FROM provas WHERE id = ? AND ${escolaFilter(escola_id)}`,
+      `SELECT p.id FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
       [id, ...escolaParam(escola_id)]
     );
     if (!prova) return res.status(404).json({ message: 'Prova não encontrada.' });
