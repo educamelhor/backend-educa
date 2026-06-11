@@ -285,7 +285,7 @@ function renderPaginaOMR(doc, opts) {
   // ═══════════════════════════════════════════════════════════════════════════
   // 2b. FOTO DO ALUNO — posicionada à esquerda do QR Code, com moldura premium
   // ═══════════════════════════════════════════════════════════════════════════
-  const FOTO_RADIUS = 36;  // raio do círculo da foto (pt)
+  const FOTO_RADIUS = 28;  // raio do círculo da foto (pt)
   const fotoAreaW = fotoBuffer ? FOTO_RADIUS * 2 + 16 : 0; // largura reservada para a foto
   const fotoX = qrX - fotoAreaW - 8; // posicionada à esquerda do QR
   const fotoCX = fotoBuffer ? fotoX + FOTO_RADIUS + 4 : 0;
@@ -317,58 +317,66 @@ function renderPaginaOMR(doc, opts) {
   y += 8;
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 4. DADOS DO ALUNO — Layout em 2 linhas, alinhado em colunas
+  // 4. DADOS DO ALUNO
+  //    Linha 1 — ALUNO (nome completo)
+  //    Linha 2 — RE  |  TURMA  |  DATA  (mesma linha)
+  //    Linha 3 — ASSINATURA (largura total até foto/QR)
   // ═══════════════════════════════════════════════════════════════════════════
-  const col2X = mL + contentW * 0.55;
-  const labelW = 48;
 
-  // Linha 1: ALUNO (esquerda)
+  // Posições das três colunas da linha 2
+  const colReX    = mL;           // RE (esquerda)
+  const colTurmaX = mL + 118;     // TURMA (meio)
+  const colDataX  = mL + 268;     // DATA (direita)
+
+  // Linha 1: ALUNO
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("ALUNO:", mL, y, { continued: false });
+  doc.text("ALUNO:", colReX, y, { continued: false });
   doc.font("Helvetica").fontSize(9).fillColor("#000");
-  doc.text(nomeAluno, mL + 42, y, { width: col2X - mL - 50 });
+  doc.text(nomeAluno, colReX + 42, y, { width: linhaFimX - colReX - 42 });
   y += 16;
 
-  // Linha 2: RE (esquerda) + TURMA (direita)
+  // Linha 2: RE | TURMA | DATA
   const linha2Y = y;
-  doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("RE:", mL, linha2Y);
-  doc.font("Helvetica-Bold").fontSize(11).fillColor("#000");
-  doc.text(codigoAluno, mL + 22, linha2Y - 1);
 
+  // RE
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("TURMA:", col2X, linha2Y);
+  doc.text("RE:", colReX, linha2Y);
+  doc.font("Helvetica-Bold").fontSize(11).fillColor("#000");
+  doc.text(codigoAluno, colReX + 22, linha2Y - 1, { width: colTurmaX - colReX - 26 });
+
+  // TURMA
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
+  doc.text("TURMA:", colTurmaX, linha2Y);
   doc.font("Helvetica").fontSize(9).fillColor("#000");
-  doc.text(nomeTurma, col2X + 42, linha2Y, { width: linhaFimX - col2X - 42, ellipsis: true });
+  doc.text(nomeTurma, colTurmaX + 44, linha2Y, {
+    width: colDataX - colTurmaX - 48,
+    ellipsis: true,
+  });
+
+  // DATA
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
+  doc.text("DATA:", colDataX, linha2Y, { width: 34 });
+  doc.font("Helvetica").fontSize(9).fillColor("#444");
+  doc.text("____/____/______", colDataX + 36, linha2Y, {
+    width: linhaFimX - colDataX - 36,
+  });
   y += 16;
 
-  // Linha 3: ASSINATURA (esquerda) + DATA (direita)
+  // Linha 3: ASSINATURA (ocupa largura total até linhaFimX)
   const linha3Y = y;
-
-  // Assinatura do estudante
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("ASSINATURA:", mL, linha3Y);
-  const assinaturaStartX = mL + 62;
-  const assinaturaEndX = col2X - 20;
-  // Linha pontilhada para assinatura
+  doc.text("ASSINATURA:", colReX, linha3Y);
   doc.save();
-  doc.moveTo(assinaturaStartX, linha3Y + 9)
-    .lineTo(assinaturaEndX, linha3Y + 9)
+  doc.moveTo(colReX + 62, linha3Y + 9)
+    .lineTo(linhaFimX, linha3Y + 9)
     .dash(2, { space: 2 })
     .strokeColor("#999")
     .lineWidth(0.5)
     .stroke();
-  doc.restore(); // restaura estado sem dash para as próximas linhas
-
-  // DATA (direita)
-  const dataMaxW = linhaFimX - col2X - 36;
-  doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("DATA:", col2X, linha3Y, { width: 34 });
-  doc.font("Helvetica").fontSize(9).fillColor("#444");
-  doc.text("_____/_____/_________", col2X + 36, linha3Y, { width: dataMaxW });
+  doc.restore();
   y += 16;
 
-  // Linha divisória (respeita área do QR Code se ainda estiver na mesma faixa)
+  // Linha divisória
   const linha2FimX = y < (qrY + QR_SIZE + 16) ? linhaFimX : (pageW - mR);
   doc.moveTo(mL, y).lineTo(linha2FimX, y).strokeColor("#000").lineWidth(0.5).stroke();
   y += 8;
