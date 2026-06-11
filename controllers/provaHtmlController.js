@@ -105,7 +105,7 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Source Serif 4', 'Times New Roman', serif; font-size: 11pt; line-height: 1.55; color: #000; background: #fff; }
 
-    .pagina { width: 210mm; min-height: 297mm; margin: 0 auto; padding: ${margem}; background: #fff; position: relative; }
+    .pagina { width: 210mm; min-height: 297mm; margin: 0 auto; padding: ${margem}; background: #fff; position: relative; border: 1.5pt solid #000; }
 
     .cabecalho { border: 2px solid #000; padding: 6px 10px; margin-bottom: 6px; }
     .cabecalho-top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
@@ -159,13 +159,37 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     .gabarito-tabela tr:nth-child(even) td { background: #f5f5f5; }
     .gabarito-tabela .resp-ok { color: #166534; font-weight: 700; }
 
-    .rodape { position: fixed; bottom: 8mm; left: 12mm; right: 12mm; font-size: 7.5pt; color: #666; border-top: 0.5pt solid #999; padding-top: 3px; display: flex; justify-content: space-between; }
+    /* ── ROD APÉ — 1cm fixo no rodapé de cada página ── */
+    .rodape {
+      position: fixed;
+      bottom: 0;
+      left: 0; right: 0;
+      height: 10mm;
+      max-height: 10mm;
+      padding: 2px 12mm;
+      font-size: 6.5pt;
+      color: #555;
+      border-top: 0.5pt solid #aaa;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #fff;
+      overflow: hidden;
+    }
+    .rodape-esq {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 48%;
+    }
+    .rodape-dir {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 48%; font-weight: 700; text-align: right;
+    }
 
     @media print {
       @page { size: A4; margin: ${margem}; }
       body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-      .pagina { width: 100%; margin: 0; padding: 0; min-height: unset; }
-      .rodape { position: fixed; }
+      .pagina { width: 100%; margin: 0; padding: 0; min-height: unset; border: 1.5pt solid #000; }
+      .rodape { position: fixed; bottom: 0; }
       .questao { break-inside: avoid; }
       .cabecalho { break-after: avoid; }
     }
@@ -284,12 +308,14 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
     </table>
   </div>` : '';
 
-  // ── Rodapé ──────────────────────────────────────────────────────────────────
+  // ── Rodapé ───────────────────────────────────────────────────────────────────
   const rodapeStr = rodapeTxt ? `EDUCA.PROVA · ${txt(rodapeTxt)}` : 'EDUCA.PROVA';
+  // Lado esquerdo simplificado para caber em 1 linha (sem disciplina)
+  const rodapeEsq = [escolaTxt, bimestre || anoLetivo].filter(Boolean).join(' — ');
   const rodapeHtml = `
   <div class="rodape">
-    <span>${escolaTxt} — ${disc} — ${bimestre} ${anoLetivo}</span>
-    <span>${rodapeStr}</span>
+    <span class="rodape-esq">${rodapeEsq}</span>
+    <span class="rodape-dir">${rodapeStr}</span>
   </div>`;
 
   return `<!DOCTYPE html>
