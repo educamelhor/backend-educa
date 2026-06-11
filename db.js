@@ -139,22 +139,42 @@ pool
       }
     }
 
-    // ── Limpeza única: remove questões de teste (sem numero_q) ──────────────
-    // Só executa quando numero_q é NULL (questões criadas antes do v3)
+    // ── Limpeza única v3: remove TODAS as questões de teste ─────────────────
+    // Identifica se ainda há questões de teste (sem numero_q) OU se o banco
+    // global ainda tem entradas do período de testes (antes do modelo v3).
     try {
+      // 1. Apaga questões locais sem numero_q (criadas antes do v3)
       const [[{ total_sem_num }]] = await pool.query(
         "SELECT COUNT(*) AS total_sem_num FROM questoes WHERE numero_q IS NULL"
       );
       if (total_sem_num > 0) {
         await pool.query("DELETE FROM questoes WHERE numero_q IS NULL");
-        console.log(`[DB] cleanup v3: ${total_sem_num} questão(ões) de teste removida(s) ✅`);
+        console.log(`[DB] cleanup v3 (questoes): ${total_sem_num} questão(ões) de teste removida(s) ✅`);
         // Reseta sequência para começar do 1
         await pool.query("DELETE FROM questoes_num_seq");
         await pool.query("ALTER TABLE questoes_num_seq AUTO_INCREMENT = 1");
         console.log("[DB] questoes_num_seq resetada → próxima questão será Q0001 ✅");
       }
     } catch (e) {
-      console.log("[DB] cleanup v3 skip:", e.message?.slice(0, 80));
+      console.log("[DB] cleanup v3 (questoes) skip:", e.message?.slice(0, 80));
+    }
+
+    // 2. Apaga banco global antigo (questoes_banco_global) — todas as entradas
+    //    de teste. No novo modelo v3, o Banco Global = tabela questoes sem filtro.
+    try {
+      const [[{ total_global }]] = await pool.query(
+        "SELECT COUNT(*) AS total_global FROM questoes_banco_global"
+      );
+      if (total_global > 0) {
+        await pool.query("DELETE FROM questoes_banco_global");
+        // Zera AUTO_INCREMENT para limpar histórico
+        await pool.query("ALTER TABLE questoes_banco_global AUTO_INCREMENT = 1");
+        // Limpa também tabelas relacionadas
+        await pool.query("DELETE FROM questoes_uso_escola").catch(() => {});
+        console.log(`[DB] cleanup v3 (banco_global): ${total_global} entrada(s) de teste removida(s) ✅`);
+      }
+    } catch (e) {
+      console.log("[DB] cleanup v3 (banco_global) skip:", e.message?.slice(0, 80));
     }
   })
   .catch((err) => {
