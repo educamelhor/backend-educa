@@ -339,7 +339,7 @@ function renderPaginaOMR(doc, opts) {
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
   doc.text("TURMA:", col2X, linha2Y);
   doc.font("Helvetica").fontSize(9).fillColor("#000");
-  doc.text(nomeTurma, col2X + 42, linha2Y);
+  doc.text(nomeTurma, col2X + 42, linha2Y, { width: linhaFimX - col2X - 42, ellipsis: true });
   y += 16;
 
   // Linha 3: ASSINATURA (esquerda) + DATA (direita)
@@ -361,10 +361,11 @@ function renderPaginaOMR(doc, opts) {
   doc.restore(); // restaura estado sem dash para as próximas linhas
 
   // DATA (direita)
+  const dataMaxW = linhaFimX - col2X - 36;
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#444");
-  doc.text("DATA:", col2X, linha3Y);
+  doc.text("DATA:", col2X, linha3Y, { width: 34 });
   doc.font("Helvetica").fontSize(9).fillColor("#444");
-  doc.text("_____/_____/_________", col2X + 36, linha3Y);
+  doc.text("_____/_____/_________", col2X + 36, linha3Y, { width: dataMaxW });
   y += 16;
 
   // Linha divisória (respeita área do QR Code se ainda estiver na mesma faixa)
