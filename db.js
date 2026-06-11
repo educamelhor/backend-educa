@@ -108,7 +108,7 @@ pool
     console.log("[DB] connection OK ✅");
     conn.release();
 
-    // ── Auto-migrations (idempotentes — falha silenciosa se já existir) ──
+    // ── Auto-migrations v3.1 (idempotentes — falha silenciosa se já existir) ──
     const migrations = [
       // Busca Ativa — rastreabilidade de edição
       "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_por INT NULL AFTER registrado_por",
