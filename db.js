@@ -121,13 +121,21 @@ pool
       "ALTER TABLE planos_avaliacao ADD COLUMN agente_notas_resultado_json TEXT NULL",
       // Agente EDUCA — mensagem do último erro (exibida ao professor)
       "ALTER TABLE planos_avaliacao ADD COLUMN agente_ultimo_erro VARCHAR(500) NULL",
+      // Banco de Questões v3 — numeração universal sequencial
+      `CREATE TABLE IF NOT EXISTS questoes_num_seq (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY
+      ) COMMENT 'Gerador de sequencia global para numero_q das questoes'`,
+      "ALTER TABLE questoes ADD COLUMN numero_q INT UNSIGNED NULL UNIQUE COMMENT 'Numero universal Q0001, Q0042... gerado automaticamente'",
+      "ALTER TABLE questoes ADD COLUMN professor_nome VARCHAR(150) NULL COMMENT 'Cache do nome do professor autor'",
+      "ALTER TABLE questoes ADD INDEX idx_numero_q (numero_q)",
+      "ALTER TABLE questoes ADD INDEX idx_professor (professor_id)",
     ];
     for (const sql of migrations) {
       try {
         await pool.query(sql);
-        console.log("[DB] migration OK:", sql.slice(0, 60));
+        console.log("[DB] migration OK:", sql.slice(0, 70));
       } catch {
-        // coluna já existe — ignorar
+        // coluna/tabela já existe — ignorar
       }
     }
   })

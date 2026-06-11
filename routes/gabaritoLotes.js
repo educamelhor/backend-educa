@@ -1807,14 +1807,28 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
   try {
     // 1. Buscar aluno
     const [alunoRows] = await pool.query(
-      `SELECT a.id, a.estudante AS nome, a.codigo,
-              t.nome AS turma
+      `SELECT a.id, a.estudante AS nome, a.codigo, a.foto, a.escola_id,
+              t.nome AS turma,
+              e.apelido AS escola_apelido
        FROM alunos a
        LEFT JOIN turmas t ON a.turma_id = t.id
+       LEFT JOIN escolas e ON a.escola_id = e.id
        WHERE a.codigo = ? AND a.escola_id = ?
        LIMIT 1`,
-      [codigo, escola_id]
-    );
+      [codigo, school_id || escola_id] // Fallback in case of variable name differences
+    ).catch(() => {
+      // Fallback in case school_id or school_apelido query fails
+      return pool.query(
+        `SELECT a.id, a.estudante AS nome, a.codigo, a.foto, a.escola_id,
+                t.nome AS turma
+         FROM alunos a
+         LEFT JOIN turmas t ON a.turma_id = t.id
+         WHERE a.codigo = ? AND a.escola_id = ?
+         LIMIT 1`,
+        [codigo, escola_id]
+      );
+    });
+
     if (alunoRows.length === 0) {
       return res.status(404).json({ error: "Aluno não encontrado com esse código." });
     }
@@ -1857,14 +1871,35 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
       };
     }
 
-    console.log(`[aluno-by-codigo] codigo=${codigo} aluno=${aluno.nome} arquivo=${arquivoId}`);
+    // 4. Formata a foto do estudante de forma dinâmica
+    let fotoUrl = null;
+    if (aluno.foto) {
+      if (aluno.foto.startsWith("http")) {
+        fotoUrl = aluno.foto;
+      } else {
+        const SPACES_BASE = process.env.SPACES_PUBLIC_BASE || "https://educa-melhor-uploads.nyc3.cdn.digitaloceanspaces.com/";
+        const s = String(aluno.foto).trim();
+        let objectKey = null;
+        const idx = s.indexOf("/uploads/");
+        if (idx >= 0) objectKey = s.slice(idx + 1);
+        else if (s.startsWith("/uploads/")) objectKey = s.slice(1);
+        else if (s.startsWith("uploads/")) objectKey = s;
+
+        if (objectKey) {
+          fotoUrl = `${SPACES_BASE}${objectKey}`;
+        }
+      }
+    }
+
+    console.log(`[aluno-by-codigo] codigo=${codigo} aluno=${aluno.nome} arquivo=${arquivoId} foto=${fotoUrl}`);
 
     res.json({
       alunoId:   aluno.id,
       nome:      aluno.nome,
-      re:        aluno.re,
+      re:        aluno.codigo, // Mapeia o RE de forma correta (aluno.codigo)
       codigo:    aluno.codigo,
       turma:     aluno.turma,
+      fotoUrl,                // Foto do estudante resolvida
       arquivoId,
       jaCapturado,
       statusAtual,

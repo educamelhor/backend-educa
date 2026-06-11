@@ -43,28 +43,38 @@ async function registrarHistorico(questao_id, acao, usuario_id, prova_id = null)
 }
 
 
-// ─── Campos completos para SELECT ───────────────────────────────────────────
+// ─── Campos completos para SELECT ────────────────────────────────────────────
 const CAMPOS = `
-  id, conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
+  id, numero_q, conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
   disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta,
   texto_apoio, fonte, explicacao, tags, compartilhada, status,
-  escola_id, professor_id, vezes_utilizada, criada_em, atualizada_em
+  escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
 `;
 
-// ─── BUILD WHERE helper ──────────────────────────────────────────────────────
+// ─── BUILD WHERE helper ──────────────────────────────────────────────
 function buildWhere(escola_id, professor_id, perfil, filters = {}) {
   const conditions = [];
   const params = [];
 
-  // ── RBAC: professor vê apenas próprias + compartilhadas; gestores vêem todas ──
-  if (escola_id) {
-    conditions.push('(q.escola_id = ? OR q.escola_id IS NULL)');
-    params.push(escola_id);
-  }
-  if (perfil === 'professor' && professor_id) {
-    conditions.push('(q.professor_id = ? OR q.compartilhada = 1)');
+  // ── ESCOPO: global | escola | meu ─────────────────────────────────────────
+  const escopo = filters.escopo || 'escola';
+
+  if (escopo === 'meu' && professor_id) {
+    // Apenas as questoes do proprio professor
+    conditions.push('q.professor_id = ?');
     params.push(professor_id);
+  } else if (escopo === 'escola') {
+    // Questoes da escola (padrao) + RBAC para professores
+    if (escola_id) {
+      conditions.push('(q.escola_id = ? OR q.escola_id IS NULL)');
+      params.push(escola_id);
+    }
+    if (perfil === 'professor' && professor_id) {
+      conditions.push('(q.professor_id = ? OR q.compartilhada = 1)');
+      params.push(professor_id);
+    }
   }
+  // escopo === 'global': sem filtro de escola — todas as questoes ativas de todas as escolas
 
   const { disciplina, tipo, nivel, serie, bimestre, status, busca,
           habilidade_bncc, compartilhada, professor_id: filtProfId } = filters;
@@ -203,7 +213,7 @@ export async function obterQuestao(req, res) {
 // 4) POST /questoes — Cria nova questão
 // ─────────────────────────────────────────────────────────────────────────────
 export async function criarQuestao(req, res) {
-  const { escola_id, professor_id: uid } = req.user;
+  const { escola_id, professor_id: uid, nome: nomeProfessor } = req.user;
   const {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
@@ -212,34 +222,48 @@ export async function criarQuestao(req, res) {
     compartilhada = 0, status = 'ativa',
   } = req.body;
 
+  // Validações obrigatórias (422 Unprocessable Entity)
+  if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
+  if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
+  if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
+  const temasArr = Array.isArray(temas) ? temas : (typeof temas === 'string' ? JSON.parse(temas || '[]').catch?.(() => []) : []);
+  const temasValidos = (Array.isArray(temas) ? temas : []).filter(Boolean);
+  if (!temasValidos.length) return res.status(422).json({ message: 'Informe ao menos 1 tema/conteúdo.', campo: 'temas' });
+
   // Gabarito por conteúdo — invariante à permutação de alternativas
   const correta_texto = resolverTextoCorreta(alternativas_json, correta);
 
   try {
+    // Gera número sequencial global (atômico via AUTO_INCREMENT)
+    const [seqResult] = await pool.query('INSERT INTO questoes_num_seq VALUES ()');
+    const numero_q = seqResult.insertId;
+
     const [result] = await pool.query(
       `INSERT INTO questoes (
+        numero_q,
         conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
         disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta, correta_texto,
         texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
-        escola_id, professor_id, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
+        escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
       [
+        numero_q,
         conteudo_bruto  || null, latex_formatado  || null,
-        tipo            || 'objetiva', nivel || 'medio',
+        tipo, nivel,
         serie           || null, bimestre || null,
-        disciplina      || null, habilidade_bncc || null,
+        disciplina, habilidade_bncc || null,
         imagem_base64   || null, alternativas_json || null, correta || null, correta_texto,
         texto_apoio     || null, fonte || null, explicacao || null,
         tags            || '',
-        temas           ? (typeof temas === 'string' ? temas : JSON.stringify(temas)) : null,
+        JSON.stringify(temasValidos),
         compartilhada ? 1 : 0,
         ['rascunho','ativa','arquivada'].includes(status) ? status : 'ativa',
-        escola_id, uid || null,
+        escola_id, uid || null, nomeProfessor || null,
       ]
     );
     const qid = result.insertId;
     await registrarHistorico(qid, 'criou', uid);
-    res.status(201).json({ id: qid, message: 'Questão criada com sucesso.' });
+    res.status(201).json({ id: qid, numero_q, message: 'Questão criada com sucesso.' });
   } catch (err) {
     console.error('Erro ao criar questão:', err);
     res.status(500).json({ message: 'Erro ao salvar questão.', detail: err.message });
@@ -251,7 +275,8 @@ export async function criarQuestao(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function atualizarQuestao(req, res) {
   const { id } = req.params;
-  const { escola_id } = req.user;
+  const { escola_id, professor_id, perfil } = req.user;
+  const isGestor = ['diretor', 'coordenador', 'admin', 'militar'].includes(perfil);
   const {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
@@ -260,10 +285,30 @@ export async function atualizarQuestao(req, res) {
     compartilhada, status,
   } = req.body;
 
+  // Validações obrigatórias
+  if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
+  if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
+  if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
+
   // Gabarito por conteúdo — invariante à permutação de alternativas
   const correta_texto = resolverTextoCorreta(alternativas_json, correta);
 
   try {
+    // Verifica autoria: só o professor_id que criou pode editar (ou gestores)
+    const [[questao]] = await pool.query(
+      'SELECT professor_id FROM questoes WHERE id = ? AND escola_id = ?',
+      [id, escola_id]
+    );
+    if (!questao)
+      return res.status(404).json({ message: 'Questão não encontrada.' });
+
+    if (!isGestor && questao.professor_id && Number(questao.professor_id) !== Number(professor_id)) {
+      return res.status(403).json({
+        message: 'Apenas o autor pode editar esta questão. Use “Duplicar” para criar sua própria versão.',
+        codigo: 'NAO_AUTOR',
+      });
+    }
+
     const [result] = await pool.query(
       `UPDATE questoes SET
         conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?,
@@ -275,8 +320,8 @@ export async function atualizarQuestao(req, res) {
       [
         conteudo_bruto    || null,
         latex_formatado   || null,
-        tipo              || "objetiva",
-        nivel             || "medio",
+        tipo              || 'objetiva',
+        nivel             || 'medio',
         serie             || null,
         bimestre          || null,
         disciplina        || null,
@@ -288,21 +333,21 @@ export async function atualizarQuestao(req, res) {
         texto_apoio       || null,
         fonte             || null,
         explicacao        || null,
-        tags              || "",
+        tags              || '',
         temas ? (typeof temas === 'string' ? temas : JSON.stringify(temas)) : null,
         compartilhada ? 1 : 0,
-        ["rascunho","ativa","arquivada"].includes(status) ? status : "ativa",
+        ['rascunho','ativa','arquivada'].includes(status) ? status : 'ativa',
         id, escola_id,
       ]
     );
 
     if (result.affectedRows === 0)
-      return res.status(404).json({ message: "Questão não encontrada ou não pertence à sua escola." });
+      return res.status(404).json({ message: 'Questão não encontrada ou não pertence à sua escola.' });
 
-    res.json({ message: "Questão atualizada com sucesso." });
+    res.json({ message: 'Questão atualizada com sucesso.' });
   } catch (err) {
-    console.error("Erro ao atualizar questão:", err);
-    res.status(500).json({ message: "Erro ao atualizar questão.", detail: err.message });
+    console.error('Erro ao atualizar questão:', err);
+    res.status(500).json({ message: 'Erro ao atualizar questão.', detail: err.message });
   }
 }
 
@@ -358,32 +403,43 @@ export async function excluirQuestao(req, res) {
 // ─────────────────────────────────────────────────────────────────────────
 export async function duplicarQuestao(req, res) {
   const { id } = req.params;
-  const { escola_id, professor_id } = req.user;
+  const { escola_id, professor_id, nome: nomeProfessor } = req.user;
   try {
+    // Busca a questao em qualquer escola (Banco Global: todos podem duplicar qualquer questao)
     const [[orig]] = await pool.query(
-      `SELECT * FROM questoes WHERE id = ? AND (escola_id = ? OR compartilhada = 1)`,
-      [id, escola_id]
+      `SELECT * FROM questoes WHERE id = ? AND status != 'arquivada'`,
+      [id]
     );
     if (!orig) return res.status(404).json({ message: 'Questão não encontrada.' });
 
+    // Gera numero_q para a cópia
+    const [seqResult] = await pool.query('INSERT INTO questoes_num_seq VALUES ()');
+    const numero_q_copia = seqResult.insertId;
+
     const [r] = await pool.query(
       `INSERT INTO questoes (
+        numero_q,
         conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta,
-        texto_apoio, fonte, explicacao, tags, compartilhada, status,
-        escola_id, professor_id, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, 0, NOW(), NOW())`,
+        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta, correta_texto,
+        texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
+        escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, ?, 0, NOW(), NOW())`,
       [
+        numero_q_copia,
         `[CÓPIA] ${orig.conteudo_bruto || ''}`,
         orig.latex_formatado, orig.tipo, orig.nivel, orig.serie, orig.bimestre,
         orig.disciplina, orig.habilidade_bncc, orig.imagem_base64,
-        orig.alternativas_json, orig.correta,
-        orig.texto_apoio, orig.fonte, orig.explicacao, orig.tags,
-        escola_id, professor_id || null,
+        orig.alternativas_json, orig.correta, orig.correta_texto,
+        orig.texto_apoio, orig.fonte, orig.explicacao, orig.tags, orig.temas,
+        escola_id, professor_id || null, nomeProfessor || null,
       ]
     );
     await registrarHistorico(r.insertId, 'duplicou', professor_id);
-    res.status(201).json({ id: r.insertId, message: 'Questão duplicada com sucesso.' });
+    res.status(201).json({
+      id: r.insertId,
+      numero_q: numero_q_copia,
+      message: 'Questão duplicada com sucesso. Edite e salve como sua.',
+    });
   } catch (err) {
     console.error('duplicarQuestao:', err);
     res.status(500).json({ message: 'Erro ao duplicar.', detail: err.message });
