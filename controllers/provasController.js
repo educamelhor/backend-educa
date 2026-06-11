@@ -122,15 +122,22 @@ export async function excluirProva(req, res) {
   const { id } = req.params;
   const { escola_id } = req.user;
   try {
-    const [r] = await pool.query(
-      `DELETE FROM provas WHERE id = ? AND ${escolaFilter(escola_id)}`,
+    // Verifica se a prova pertence à escola
+    const [[prova]] = await pool.query(
+      `SELECT id FROM provas WHERE id = ? AND ${escolaFilter(escola_id)}`,
       [id, ...escolaParam(escola_id)]
     );
-    if (r.affectedRows === 0) return res.status(404).json({ message: 'Prova não encontrada.' });
+    if (!prova) return res.status(404).json({ message: 'Prova não encontrada.' });
+
+    // Apaga primeiro os itens (FK constraint)
+    await pool.query('DELETE FROM prova_questoes WHERE prova_id = ?', [id]);
+    // Apaga a prova
+    await pool.query('DELETE FROM provas WHERE id = ?', [id]);
+
     res.status(204).end();
   } catch (err) {
     console.error('excluirProva:', err);
-    res.status(500).json({ message: 'Erro ao excluir prova.' });
+    res.status(500).json({ message: 'Erro ao excluir prova.', detail: err.message });
   }
 }
 
