@@ -1,4 +1,4 @@
-﻿// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
+// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
@@ -2050,6 +2050,7 @@ router.post("/verificar-codigo", async (req, res) => {
       ok: true,
       token,
       expires_in: APP_PAIS_JWT_EXPIRES_IN_SECONDS,
+      responsavel,
     });
   } catch (error) {
     console.error("[APP_PAIS] Erro em /verificar-codigo:", error);
