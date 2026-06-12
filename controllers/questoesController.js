@@ -226,8 +226,13 @@ export async function criarQuestao(req, res) {
   if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
   if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
   if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
-  const temasArr = Array.isArray(temas) ? temas : (typeof temas === 'string' ? JSON.parse(temas || '[]').catch?.(() => []) : []);
-  const temasValidos = (Array.isArray(temas) ? temas : []).filter(Boolean);
+  // Normaliza temas: aceita array direto ou string JSON (ex: '["cartografia"]')
+  let temasValidos = [];
+  try {
+    const parsed = Array.isArray(temas) ? temas
+      : (typeof temas === 'string' ? JSON.parse(temas || '[]') : []);
+    temasValidos = (Array.isArray(parsed) ? parsed : []).filter(Boolean);
+  } catch { temasValidos = []; }
   if (!temasValidos.length) return res.status(422).json({ message: 'Informe ao menos 1 tema/conteúdo.', campo: 'temas' });
 
   // Gabarito por conteúdo — invariante à permutação de alternativas
