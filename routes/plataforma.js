@@ -928,5 +928,129 @@ router.post("/convites/:token/ativar", async (req, res) => {
   }
 });
 
+// ======================================================
+// DASHBOARD CEO
+// GET /api/plataforma/dashboard
+// KPIs gerais, escolas recentes, acessos diários, top escolas
+// ======================================================
+router.get("/dashboard", async (req, res) => {
+  const db = req.db;
+  try {
+    // ── KPIs de Escolas ──
+    const [[{ total_escolas }]] = await db.query("SELECT COUNT(*) AS total_escolas FROM escolas");
+    const [[{ escolas_ativas }]] = await db.query("SELECT COUNT(*) AS escolas_ativas FROM escolas WHERE status = 'ativa'");
+    const [[{ escolas_bloqueadas }]] = await db.query("SELECT COUNT(*) AS escolas_bloqueadas FROM escolas WHERE status = 'bloqueada'");
+    const [[{ escolas_canceladas }]] = await db.query("SELECT COUNT(*) AS escolas_canceladas FROM escolas WHERE status = 'cancelada'");
+
+    // ── KPIs de Diretores ──
+    const [[{ total_diretores }]] = await db.query(
+      "SELECT COUNT(*) AS total_diretores FROM usuarios WHERE perfil IN ('diretor','militar')"
+    );
+    const [[{ diretores_ativos }]] = await db.query(
+      "SELECT COUNT(*) AS diretores_ativos FROM usuarios WHERE perfil IN ('diretor','militar') AND ativo = 1"
+    );
+
+    // ── KPIs de Alunos e Professores ──
+    const [[{ total_alunos }]] = await db.query("SELECT COUNT(*) AS total_alunos FROM alunos");
+    const [[{ total_professores }]] = await db.query("SELECT COUNT(*) AS total_professores FROM usuarios WHERE perfil = 'professor' AND ativo = 1");
+
+    // ── KPIs de Usuários da Plataforma ──
+    const [[{ total_usuarios_plataforma }]] = await db.query("SELECT COUNT(*) AS total_usuarios_plataforma FROM usuarios WHERE ativo = 1");
+
+    // ── Acessos ──
+    const [[{ acessos_hoje }]] = await db.query(
+      "SELECT COUNT(*) AS acessos_hoje FROM access_log WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+    );
+    const [[{ acessos_7d }]] = await db.query(
+      "SELECT COUNT(*) AS acessos_7d FROM access_log WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
+    );
+    const [[{ acessos_30d }]] = await db.query(
+      "SELECT COUNT(*) AS acessos_30d FROM access_log WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+    );
+
+    // ── Chamados (tabela pode não existir) ──
+    let chamados_abertos = 0;
+    let chamados_total = 0;
+    try {
+      const [[ca]] = await db.query("SELECT COUNT(*) AS n FROM chamados WHERE status = 'aberto'");
+      const [[ct]] = await db.query("SELECT COUNT(*) AS n FROM chamados");
+      chamados_abertos = ca.n || 0;
+      chamados_total = ct.n || 0;
+    } catch {
+      // tabela chamados ainda não existe — mantém 0
+    }
+
+    // ── Escolas sem diretor ativo ──
+    const [[{ escolas_sem_diretor }]] = await db.query(`
+      SELECT COUNT(*) AS escolas_sem_diretor
+      FROM escolas e
+      WHERE e.status = 'ativa'
+        AND NOT EXISTS (
+          SELECT 1 FROM usuarios u
+          WHERE u.escola_id = e.id
+            AND u.perfil IN ('diretor','militar')
+            AND u.ativo = 1
+        )
+    `);
+
+    // ── Escolas Recentes (últimas 5) ──
+    const [escolas_recentes] = await db.query(`
+      SELECT id, nome, apelido, status, cidade, created_at
+      FROM escolas
+      ORDER BY created_at DESC
+      LIMIT 5
+    `);
+
+    // ── Acessos Diários (últimos 7 dias) ──
+    const [acessos_diarios] = await db.query(`
+      SELECT DATE(created_at) AS dia, COUNT(*) AS total
+      FROM access_log
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY dia ASC
+    `);
+
+    // ── Top 5 Escolas por acessos nos últimos 30 dias ──
+    const [top_escolas] = await db.query(`
+      SELECT e.id, e.nome, e.apelido, e.cidade, e.status,
+             COUNT(al.id) AS acessos_30d
+      FROM escolas e
+      LEFT JOIN access_log al
+        ON al.escola_id = e.id
+        AND al.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY e.id, e.nome, e.apelido, e.cidade, e.status
+      ORDER BY acessos_30d DESC
+      LIMIT 5
+    `);
+
+    return res.json({
+      ok: true,
+      kpis: {
+        total_escolas: Number(total_escolas),
+        escolas_ativas: Number(escolas_ativas),
+        escolas_bloqueadas: Number(escolas_bloqueadas),
+        escolas_canceladas: Number(escolas_canceladas),
+        total_diretores: Number(total_diretores),
+        diretores_ativos: Number(diretores_ativos),
+        total_alunos: Number(total_alunos),
+        total_professores: Number(total_professores),
+        total_usuarios_plataforma: Number(total_usuarios_plataforma),
+        acessos_hoje: Number(acessos_hoje),
+        acessos_7d: Number(acessos_7d),
+        acessos_30d: Number(acessos_30d),
+        chamados_abertos: Number(chamados_abertos),
+        chamados_total: Number(chamados_total),
+        escolas_sem_diretor: Number(escolas_sem_diretor),
+      },
+      escolas_recentes: escolas_recentes || [],
+      acessos_diarios: acessos_diarios || [],
+      top_escolas: top_escolas || [],
+    });
+  } catch (err) {
+    console.error("[PLATAFORMA][DASHBOARD] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar dashboard.", detail: err?.message });
+  }
+});
+
 
 export default router;
