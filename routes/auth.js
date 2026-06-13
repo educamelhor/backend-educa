@@ -14,6 +14,53 @@ import path from "path";
 
 
 const router = express.Router();
+
+// ────────────────────────────────────────────────────────────────────────────────
+// HELPER: resolveModulosAtivos — arquitetura de permissões em 3 camadas
+//
+//  Camada 1 (CEO):     escola_modulos → TETO da escola
+//  Camada 2 (Diretor): escola_perfil_modulos → o que cada perfil pode acessar
+//  Camada 3 (Usuário): intersection(CEO ceiling, config Diretor) = acesso real
+//
+//  Regra: Diretor NUNCA pode conceder mais do que o CEO liberou.
+//  Retrocompatível: sem config do Diretor → usa CEO ceiling diretamente.
+// ────────────────────────────────────────────────────────────────────────────────
+const PERFIS_DIRECAO = new Set(['diretor', 'vice_diretor', 'militar', 'comandante']);
+
+async function resolveModulosAtivos(dbPool, escola_id, perfil) {
+  const perfilNorm = String(perfil || '').toLowerCase().trim();
+
+  const [ceoCeilingRows] = await dbPool.query(
+    'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+    [Number(escola_id)]
+  ).catch(() => [[]]);
+
+  const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
+  const ceoCeilingSet = new Set(ceoCeiling);
+
+  const normalizarPais = (lista) => {
+    const pais = lista.filter(m => m.includes('.')).map(m => m.split('.')[0]);
+    return [...new Set([...lista, ...pais])];
+  };
+
+  // Diretor e Vice-Diretor: teto completo do CEO
+  if (PERFIS_DIRECAO.has(perfilNorm)) {
+    return normalizarPais(ceoCeiling);
+  }
+
+  // Demais perfis: intersection(CEO ceiling, config do Diretor)
+  const [perfilRows] = await dbPool.query(
+    'SELECT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ? AND ativo = 1',
+    [Number(escola_id), perfilNorm]
+  ).catch(() => [[]]);
+
+  if (!perfilRows || perfilRows.length === 0) {
+    return normalizarPais(ceoCeiling); // retrocompatível
+  }
+
+  const perfilList = perfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
+  return normalizarPais(perfilList);
+}
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
@@ -473,15 +520,8 @@ router.post("/login", async (req, res) => {
         action: "login",
       });
 
-      // Buscar módulos ativos da escola
-      const [modulosRowsDiretor] = await pool.query(
-        'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-        [Number(usuario.escola_id)]
-      ).catch(() => [[]]);
-      const _listaDir = modulosRowsDiretor.map(r => r.modulo);
-      // Normalizar: se filho ativo (ex: 'secretaria.alunos'), pai ('secretaria') tb deve estar
-      const _paisDir = _listaDir.filter(m => m.includes('.')).map(m => m.split('.')[0]);
-      const modulos_ativos_diretor = [...new Set([..._listaDir, ..._paisDir])];
+      // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
+      const modulos_ativos_diretor = await resolveModulosAtivos(pool, usuario.escola_id, 'diretor');
 
       return res.json({
         ok: true,
@@ -629,14 +669,8 @@ router.post("/login", async (req, res) => {
         const fotoUrl = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
         const cpfLoginLimpo = String(usuario.cpf || "").replace(/\D/g, "");
 
-        // Buscar módulos ativos da escola
-        const [modulosRowsDevice] = await pool.query(
-          'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-          [Number(escolaIdFinal)]
-        ).catch(() => [[]]);
-        const _listaDev = modulosRowsDevice.map(r => r.modulo);
-        const _paisDev = _listaDev.filter(m => m.includes('.')).map(m => m.split('.')[0]);
-        const modulos_ativos_device = [...new Set([..._listaDev, ..._paisDev])];
+        // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
+        const modulos_ativos_device = await resolveModulosAtivos(pool, escolaIdFinal, perfilFinal);
 
         console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuarioIdFinal}, pulou OTP`);
 
@@ -848,14 +882,8 @@ router.post("/confirmar", async (req, res) => {
         }
       }
 
-      // Buscar módulos ativos da escola
-      const [modulosRowsConfirmar] = await pool.query(
-        'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-        [Number(escolaIdFinal)]
-      ).catch(() => [[]]);
-      const _listaConf = modulosRowsConfirmar.map(r => r.modulo);
-      const _paisConf = _listaConf.filter(m => m.includes('.')).map(m => m.split('.')[0]);
-      const modulos_ativos_confirmar = [...new Set([..._listaConf, ..._paisConf])];
+      // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
+      const modulos_ativos_confirmar = await resolveModulosAtivos(pool, escolaIdFinal, perfilFinal);
 
       return res.json({
         token,

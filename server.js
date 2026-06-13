@@ -107,6 +107,7 @@ import preferenciasRouter from "./routes/preferencias.js";
 import gradeRunMockRouter from "./routes/gradeRunMock.js";
 import gradePublishRouter from "./routes/gradePublish.js";
 import direcaoRouter from "./routes/direcao.js";
+import direcaoModulosRouter from "./routes/direcao_modulos.js";
 import governancaRouter, { syncPlanosAvaliacao } from "./routes/governanca.js";
 import escolaLogosRouter from "./routes/escola_logos.js";
 import capaProvasRouter from "./routes/capa_provas.js";
@@ -1462,6 +1463,8 @@ async function bootstrap() {
 
   // ✅ Direção — Gestão de Equipe (Diretor Disciplinar)
   app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);
+  // Governança de módulos por perfil (Camada 2: Diretor configura para cada perfil)
+  app.use("/api/direcao/modulos", autenticarToken, verificarEscola, direcaoModulosRouter);
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
   app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
