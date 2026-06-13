@@ -473,11 +473,19 @@ router.post("/login", async (req, res) => {
         action: "login",
       });
 
+      // Buscar módulos ativos da escola
+      const [modulosRowsDiretor] = await pool.query(
+        'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+        [Number(usuario.escola_id)]
+      ).catch(() => [[]]);
+      const modulos_ativos_diretor = modulosRowsDiretor.map(r => r.modulo);
+
       return res.json({
         ok: true,
         nome: usuario.nome || "Diretor",
         cpf: String(usuario.cpf || "").replace(/\D/g, ""),
         foto_url: fotoUrl,
+        modulos_ativos: modulos_ativos_diretor,
         ...jwtEscolar,
       });
     } catch (err) {
@@ -618,6 +626,13 @@ router.post("/login", async (req, res) => {
         const fotoUrl = await buscarFotoUsuario(usuarioIdFinal, escolaIdFinal);
         const cpfLoginLimpo = String(usuario.cpf || "").replace(/\D/g, "");
 
+        // Buscar módulos ativos da escola
+        const [modulosRowsDevice] = await pool.query(
+          'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+          [Number(escolaIdFinal)]
+        ).catch(() => [[]]);
+        const modulos_ativos_device = modulosRowsDevice.map(r => r.modulo);
+
         console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuarioIdFinal}, pulou OTP`);
 
         return res.json({
@@ -632,6 +647,7 @@ router.post("/login", async (req, res) => {
           perfil: perfilFinal,
           perfis,
           permissoes,
+          modulos_ativos: modulos_ativos_device,
         });
       }
     }
@@ -827,6 +843,13 @@ router.post("/confirmar", async (req, res) => {
         }
       }
 
+      // Buscar módulos ativos da escola
+      const [modulosRowsConfirmar] = await pool.query(
+        'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+        [Number(escolaIdFinal)]
+      ).catch(() => [[]]);
+      const modulos_ativos_confirmar = modulosRowsConfirmar.map(r => r.modulo);
+
       return res.json({
         token,
         nome: usuarioBase.nome || "Usuário",
@@ -837,6 +860,7 @@ router.post("/confirmar", async (req, res) => {
         perfil: perfilFinal, // compatibilidade
         perfis,
         permissoes,
+        modulos_ativos: modulos_ativos_confirmar,
         ...(deviceTokenNovo ? { device_token: deviceTokenNovo } : {}),
       });
   } catch (err) {

@@ -59,6 +59,7 @@ import authPlataformaRouter from "./routes/auth_plataforma.js";
 import plataformaRouter from "./routes/plataforma.js";
 import plataformaUsageRouter from "./routes/plataforma_usage.js";
 import plataformaSuporteRouter from "./routes/plataforma_suporte.js";
+import modulosPlataformaRouter from "./routes/plataforma_modulos.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
 import gabaritoAvaliacoesRouter from "./routes/gabaritoAvaliacoes.js";
@@ -1284,6 +1285,7 @@ async function bootstrap() {
   app.use("/api/plataforma/usage", autenticarToken, exigirEscopo("plataforma"), plataformaUsageRouter);
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
+  app.use("/api/plataforma/modulos", autenticarToken, exigirEscopo("plataforma"), modulosPlataformaRouter);
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
