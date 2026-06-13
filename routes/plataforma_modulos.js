@@ -20,16 +20,14 @@ router.use(async (req, _res, next) => {
         ativo      TINYINT(1) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uk_escola_modulo (escola_id, modulo),
-        CONSTRAINT fk_escola_modulos_escola
-          FOREIGN KEY (escola_id) REFERENCES escolas(id) ON DELETE CASCADE
+        INDEX      idx_em_escola (escola_id)
       )
     `);
     _tableMigrated = true;
     console.log('[plataforma_modulos] Tabela escola_modulos verificada/criada ✅');
   } catch (e) {
-    // Não bloqueia — tabela pode já existir ou FK pode ter nome duplicado
     _tableMigrated = true;
-    if (!String(e.message).includes('already exists') && !String(e.code).includes('DUP')) {
+    if (!String(e.message || '').includes('already exists')) {
       console.warn('[plataforma_modulos] Auto-migrate aviso:', e.message);
     }
   }
@@ -61,6 +59,7 @@ const MODULOS_VALIDOS = new Set([
   // Professores
   'professores', 'professores.planos', 'professores.avaliacoes',
   'professores.conteudos', 'professores.provas', 'professores.boletim',
+  'professores.conselho',
   // Monitoramento
   'monitoramento', 'monitoramento.painel', 'monitoramento.alertas',
   'monitoramento.embeddings',
@@ -151,11 +150,11 @@ router.put('/:escolaId', async (req, res) => {
 
     for (const { modulo, ativo } of modulos) {
       const ativoVal = ativo ? 1 : 0;
-      await db.query(
+      await req.db.query(
         `INSERT INTO escola_modulos (escola_id, modulo, ativo)
          VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE ativo = VALUES(ativo)`,
-        [escolaId, modulo, ativoVal]
+         ON DUPLICATE KEY UPDATE ativo = ?`,
+        [escolaId, modulo, ativoVal, ativoVal]
       );
       if (ativoVal) total_ativados++;
       else total_desativados++;
