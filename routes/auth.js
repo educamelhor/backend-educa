@@ -1782,5 +1782,40 @@ router.post("/upload-foto-professor", (req, res) => {
 });
 
 
-export default router;
+// ─── GET /api/auth/modulos ───────────────────────────────────────────────────
+// Retorna modulos_ativos atualizados para o usuário logado a partir do banco.
+// Usado pelo Sidebar para sincronizar sem precisar de logout/login após CEO mudar config.
+router.get('/modulos', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.json({ ok: false, modulos_ativos: [] });
 
+    let payload;
+    try {
+      payload = jwt.verify(token, process.env.JWT_SECRET || 'segredo_jwt_educamelhor');
+    } catch {
+      return res.json({ ok: false, modulos_ativos: [] });
+    }
+
+    const escola_id = payload.escola_id;
+    if (!escola_id) return res.json({ ok: true, modulos_ativos: [] });
+
+    const [rows] = await pool.query(
+      'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+      [Number(escola_id)]
+    ).catch(() => [[]]);
+
+    const lista = rows.map(r => r.modulo);
+    const pais = lista.filter(m => m.includes('.')).map(m => m.split('.')[0]);
+    const modulos_ativos = [...new Set([...lista, ...pais])];
+
+    console.log(`[AUTH/modulos] escola_id=${escola_id} → ${modulos_ativos.length} módulos ativos`);
+    return res.json({ ok: true, modulos_ativos });
+  } catch (err) {
+    console.error('[AUTH/modulos] erro:', err);
+    return res.json({ ok: false, modulos_ativos: [] });
+  }
+});
+
+
+export default router;
