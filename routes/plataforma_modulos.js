@@ -43,6 +43,7 @@ const MODULOS_VALIDOS = new Set([
   'disciplinar', 'disciplinar.alunos', 'disciplinar.historico',
   'disciplinar.atas', 'disciplinar.fo_coletivo', 'disciplinar.responsaveis',
   'disciplinar.liberacao', 'disciplinar.metadados', 'disciplinar.regimentos',
+  'disciplinar.manual',
   // Pedagógico
   'pedagogico', 'pedagogico.conselho', 'pedagogico.conteudos',
   'pedagogico.relatorios', 'pedagogico.correcoes',
