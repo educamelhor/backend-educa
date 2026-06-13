@@ -4,6 +4,38 @@ import express from 'express';
 
 const router = express.Router();
 
+// ── Auto-migrate: garante que a tabela escola_modulos existe ──────────────────
+// Executado uma única vez quando o módulo é importado pelo server.js.
+// Seguro: usa IF NOT EXISTS, não altera dados existentes.
+// ─────────────────────────────────────────────────────────────────────────────
+let _tableMigrated = false;
+router.use(async (req, _res, next) => {
+  if (_tableMigrated) return next();
+  try {
+    await req.db.query(`
+      CREATE TABLE IF NOT EXISTS escola_modulos (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        escola_id  INT NOT NULL,
+        modulo     VARCHAR(100) NOT NULL,
+        ativo      TINYINT(1) NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_escola_modulo (escola_id, modulo),
+        CONSTRAINT fk_escola_modulos_escola
+          FOREIGN KEY (escola_id) REFERENCES escolas(id) ON DELETE CASCADE
+      )
+    `);
+    _tableMigrated = true;
+    console.log('[plataforma_modulos] Tabela escola_modulos verificada/criada ✅');
+  } catch (e) {
+    // Não bloqueia — tabela pode já existir ou FK pode ter nome duplicado
+    _tableMigrated = true;
+    if (!String(e.message).includes('already exists') && !String(e.code).includes('DUP')) {
+      console.warn('[plataforma_modulos] Auto-migrate aviso:', e.message);
+    }
+  }
+  next();
+});
+
 const MODULOS_VALIDOS = new Set([
   // Secretaria
   'secretaria', 'secretaria.alunos', 'secretaria.professores',
