@@ -478,7 +478,10 @@ router.post("/login", async (req, res) => {
         'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
         [Number(usuario.escola_id)]
       ).catch(() => [[]]);
-      const modulos_ativos_diretor = modulosRowsDiretor.map(r => r.modulo);
+      const _listaDir = modulosRowsDiretor.map(r => r.modulo);
+      // Normalizar: se filho ativo (ex: 'secretaria.alunos'), pai ('secretaria') tb deve estar
+      const _paisDir = _listaDir.filter(m => m.includes('.')).map(m => m.split('.')[0]);
+      const modulos_ativos_diretor = [...new Set([..._listaDir, ..._paisDir])];
 
       return res.json({
         ok: true,
@@ -631,7 +634,9 @@ router.post("/login", async (req, res) => {
           'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
           [Number(escolaIdFinal)]
         ).catch(() => [[]]);
-        const modulos_ativos_device = modulosRowsDevice.map(r => r.modulo);
+        const _listaDev = modulosRowsDevice.map(r => r.modulo);
+        const _paisDev = _listaDev.filter(m => m.includes('.')).map(m => m.split('.')[0]);
+        const modulos_ativos_device = [...new Set([..._listaDev, ..._paisDev])];
 
         console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuarioIdFinal}, pulou OTP`);
 
@@ -848,7 +853,9 @@ router.post("/confirmar", async (req, res) => {
         'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
         [Number(escolaIdFinal)]
       ).catch(() => [[]]);
-      const modulos_ativos_confirmar = modulosRowsConfirmar.map(r => r.modulo);
+      const _listaConf = modulosRowsConfirmar.map(r => r.modulo);
+      const _paisConf = _listaConf.filter(m => m.includes('.')).map(m => m.split('.')[0]);
+      const modulos_ativos_confirmar = [...new Set([..._listaConf, ..._paisConf])];
 
       return res.json({
         token,
