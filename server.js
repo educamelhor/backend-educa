@@ -1430,6 +1430,30 @@ async function bootstrap() {
 
   app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
+  // ✅ Rota de diagnóstico de notas — TEMPORÁRIA, pública, protegida por PRINT_SECRET
+  const DIAG_SECRET_SRV = process.env.PRINT_SECRET || "123456";
+  app.get("/api/impressao/diagnostico-notas", async (req, res) => {
+    const { codigo, secret } = req.query;
+    if (secret !== DIAG_SECRET_SRV) return res.status(403).json({ error: "Forbidden" });
+    if (!codigo) return res.status(400).json({ error: "codigo obrigatorio" });
+    try {
+      const [rows] = await pool.query(
+        `SELECT n.id, n.aluno_id, n.disciplina_id, d.nome AS disciplina,
+                n.bimestre, n.ano, n.nota, n.faltas, n.escola_id,
+                a.codigo AS aluno_codigo, a.escola_id AS aluno_escola_id
+         FROM notas n
+         INNER JOIN alunos a ON a.id = n.aluno_id
+         INNER JOIN disciplinas d ON d.id = n.disciplina_id
+         WHERE a.codigo = ?
+         ORDER BY n.ano, n.bimestre, d.nome`,
+        [codigo]
+      );
+      return res.json({ total: rows.length, rows });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...)
   app.use("/api", autenticarToken, verificarEscola, alunosImpressaoRouter);
 
