@@ -76,8 +76,10 @@ router.get("/impressao/boletins", async (req, res) => {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    // 2) Buscar notas desses alunos (todas, 2024+2025) — soma do rodapé depende disso
-    const codigos = alunosDados.map((a) => a.codigo);
+    // 2) Buscar notas desses alunos filtradas por escola_id
+    //    (sem esse filtro, alunos com o mesmo código em escolas distintas
+    //     ou registros duplicados retornam notas erradas — ex: 5,00 em vez de 7,00)
+    const alunoIds = alunosDados.map((a) => a.id);
     const [notas] = await pool.query(
       `
       SELECT 
@@ -92,9 +94,11 @@ router.get("/impressao/boletins", async (req, res) => {
       FROM notas n
       INNER JOIN disciplinas d ON n.disciplina_id = d.id
       INNER JOIN alunos a ON n.aluno_id = a.id
-      WHERE a.codigo IN (?)
+      WHERE n.aluno_id IN (?)
+        AND a.escola_id = ?
+      ORDER BY n.ano, n.bimestre, d.nome
       `,
-      [codigos]
+      [alunoIds, escola_id]
     );
 
     // 3) Buscar ranking (escola e turma) — APENAS 2025
@@ -114,9 +118,10 @@ router.get("/impressao/boletins", async (req, res) => {
         turma: aluno.turma,
         turno: aluno.turno,
         situacao: aluno.status,
-        ranking: rankings[aluno.codigo] || null, // inclui ranking escola + turma (2025)
+        ranking: rankings[aluno.codigo] || null,
         notas: notas
-          .filter((n) => n.aluno_codigo === aluno.codigo)
+          // Filtra por aluno_id (número) — evita comparação string vs int
+          .filter((n) => Number(n.aluno_id) === Number(aluno.id))
           .map((n) => ({
             disciplina_id: n.disciplina_id,
             disciplina: n.disciplina,
@@ -165,7 +170,9 @@ async function montaBoletins(pool, { codigos }) {
     [codigos]
   );
 
-  // Consulta para buscar as notas de cada aluno (todas, 2024+2025)
+  // Consulta para buscar as notas de cada aluno (filtrando por ID e escola)
+  const alunoIds = alunosDados.map((a) => a.id);
+  const escolaId = alunosDados[0]?.escola_id;
   const [notas] = await pool.query(
     `
     SELECT 
@@ -180,9 +187,11 @@ async function montaBoletins(pool, { codigos }) {
     FROM notas n
     INNER JOIN disciplinas d ON n.disciplina_id = d.id
     INNER JOIN alunos a ON n.aluno_id = a.id
-    WHERE a.codigo IN (?)
+    WHERE n.aluno_id IN (?)
+      AND a.escola_id = ?
+    ORDER BY n.ano, n.bimestre, d.nome
     `,
-    [codigos]
+    [alunoIds, escolaId]
   );
 
   // Buscar rankings (escola e turma) — APENAS 2025
@@ -203,7 +212,8 @@ async function montaBoletins(pool, { codigos }) {
       situacao: aluno.status,
       ranking: rankings[aluno.codigo] || null,
       notas: notas
-        .filter((n) => n.aluno_codigo === aluno.codigo)
+        // Filtra por aluno_id (número) — garante match correto
+        .filter((n) => Number(n.aluno_id) === Number(aluno.id))
         .map((n) => ({
           disciplina_id: n.disciplina_id,
           disciplina: n.disciplina,
