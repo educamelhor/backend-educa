@@ -76,10 +76,10 @@ router.get("/impressao/boletins", async (req, res) => {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    // 2) Buscar notas desses alunos filtradas por escola_id
-    //    (sem esse filtro, alunos com o mesmo código em escolas distintas
-    //     ou registros duplicados retornam notas erradas — ex: 5,00 em vez de 7,00)
+    // 2) Buscar notas desses alunos — filtra por aluno_id (INT, seguro)
+    //    escola_id vem dos próprios dados para garantir isolamento multi-escola
     const alunoIds = alunosDados.map((a) => a.id);
+    const escolaIdTurma = alunosDados[0]?.escola_id;
     const [notas] = await pool.query(
       `
       SELECT 
@@ -98,7 +98,7 @@ router.get("/impressao/boletins", async (req, res) => {
         AND a.escola_id = ?
       ORDER BY n.ano, n.bimestre, d.nome
       `,
-      [alunoIds, escola_id]
+      [alunoIds, escolaIdTurma]
     );
 
     // 3) Buscar ranking (escola e turma) — APENAS 2025
