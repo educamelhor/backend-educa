@@ -76,8 +76,9 @@ router.get("/impressao/boletins", async (req, res) => {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    // 2) Buscar notas desses alunos — filtra por aluno_id (INT, seguro)
-    //    escola_id vem dos próprios dados para garantir isolamento multi-escola
+    // 2) Buscar notas filtradas por n.escola_id — IGUAL à Fiscalização de Notas
+    //    Filtrar por a.escola_id (aluno) não é suficiente pois o banco pode ter
+    //    registros duplicados com escola_id distintos; n.escola_id garante a nota certa.
     const alunoIds = alunosDados.map((a) => a.id);
     const escolaIdTurma = alunosDados[0]?.escola_id;
     const [notas] = await pool.query(
@@ -95,7 +96,7 @@ router.get("/impressao/boletins", async (req, res) => {
       INNER JOIN disciplinas d ON n.disciplina_id = d.id
       INNER JOIN alunos a ON n.aluno_id = a.id
       WHERE n.aluno_id IN (?)
-        AND a.escola_id = ?
+        AND n.escola_id = ?
       ORDER BY n.ano, n.bimestre, d.nome
       `,
       [alunoIds, escolaIdTurma]
@@ -170,7 +171,8 @@ async function montaBoletins(pool, { codigos }) {
     [codigos]
   );
 
-  // Consulta para buscar as notas de cada aluno (filtrando por ID e escola)
+  // Consulta para buscar as notas de cada aluno filtrando por n.escola_id
+  // (espelha exatamente o critério da Fiscalização de Notas)
   const alunoIds = alunosDados.map((a) => a.id);
   const escolaId = alunosDados[0]?.escola_id;
   const [notas] = await pool.query(
@@ -188,7 +190,7 @@ async function montaBoletins(pool, { codigos }) {
     INNER JOIN disciplinas d ON n.disciplina_id = d.id
     INNER JOIN alunos a ON n.aluno_id = a.id
     WHERE n.aluno_id IN (?)
-      AND a.escola_id = ?
+      AND n.escola_id = ?
     ORDER BY n.ano, n.bimestre, d.nome
     `,
     [alunoIds, escolaId]
