@@ -25,14 +25,24 @@ const router = express.Router();
 //  Regra: Diretor NUNCA pode conceder mais do que o CEO liberou.
 //  Retrocompatível: sem config do Diretor → usa CEO ceiling diretamente.
 // ────────────────────────────────────────────────────────────────────────────────
+// Perfis que recebem acesso IRRESTRITO (null = sem filtragem alguma)
+const PERFIS_SUPER = new Set(['super_admin', 'admin_global', 'ceo', 'plataforma']);
 const PERFIS_DIRECAO = new Set(['diretor', 'vice_diretor', 'militar', 'comandante']);
 
 async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const perfilNorm = String(perfil || '').toLowerCase().trim();
 
+  // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
+  // Esses perfis nunca devem ter menus bloqueados, independente da escola.
+  if (PERFIS_SUPER.has(perfilNorm)) return null;
+
+  // ── Sem escola_id válido: acesso irrestrito (ex: CEO acessando portal escola) ──
+  const escolaIdNum = Number(escola_id);
+  if (!escola_id || isNaN(escolaIdNum) || escolaIdNum <= 0) return null;
+
   const [ceoCeilingRows] = await dbPool.query(
     'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-    [Number(escola_id)]
+    [escolaIdNum]
   ).catch(() => [[]]);
 
   const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
@@ -51,7 +61,7 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   // Demais perfis: intersection(CEO ceiling, config do Diretor)
   const [perfilRows] = await dbPool.query(
     'SELECT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ? AND ativo = 1',
-    [Number(escola_id), perfilNorm]
+    [escolaIdNum, perfilNorm]
   ).catch(() => [[]]);
 
   if (!perfilRows || perfilRows.length === 0) {
@@ -1826,7 +1836,8 @@ router.get('/modulos', async (req, res) => {
     }
 
     const escola_id = payload.escola_id;
-    if (!escola_id) return res.json({ ok: true, modulos_ativos: [] });
+    // Sem escola_id → acesso irrestrito (CEO, super_admin, conta global)
+    if (!escola_id) return res.json({ ok: true, modulos_ativos: null });
 
     const [rows] = await pool.query(
       'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
