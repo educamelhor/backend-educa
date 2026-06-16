@@ -568,6 +568,17 @@ export async function publicarQuestao(req, res) {
     // Resolve texto da alternativa correta (ponto 1 do usuário)
     const correta_texto = resolverTextoCorreta(q.alternativas_json, q.correta);
 
+    // Normaliza temas: pode chegar como string JSON, array, ou null da tabela questoes
+    let temasJson = null;
+    try {
+      if (Array.isArray(q.temas)) {
+        temasJson = JSON.stringify(q.temas.filter(Boolean));
+      } else if (typeof q.temas === 'string' && q.temas.trim()) {
+        const parsed = JSON.parse(q.temas);
+        temasJson = JSON.stringify(Array.isArray(parsed) ? parsed.filter(Boolean) : [String(parsed)]);
+      }
+    } catch { temasJson = null; }
+
     // Evita duplicatas: verifica se já foi publicada
     if (q.publicada_globalmente && q.global_id) {
       // Atualiza a entrada existente (sync)
@@ -582,7 +593,7 @@ export async function publicarQuestao(req, res) {
         [
           q.conteudo_bruto, q.latex_formatado, q.tipo, q.nivel, q.serie,
           q.disciplina, q.habilidade_bncc,
-          q.temas || null,
+          temasJson,
           q.alternativas_json, q.correta, correta_texto,
           q.texto_apoio, q.fonte, q.explicacao, q.tags,
           q.global_id,
@@ -609,7 +620,7 @@ export async function publicarQuestao(req, res) {
         q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva",
         q.nivel || "medio", q.serie || null,
         q.disciplina, q.habilidade_bncc || null,
-        q.temas || null,
+        temasJson,
         q.alternativas_json || null, q.correta || null, correta_texto,
         q.texto_apoio || null, q.fonte || null, q.explicacao || null,
         q.tags || null,
