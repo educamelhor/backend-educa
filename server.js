@@ -1428,6 +1428,63 @@ async function bootstrap() {
   app.use("/api/agente-planos", autenticarToken, verificarEscola, agentePlanosRouter);
 
 
+  // ─── MIGRAÇÃO: corrigir disciplina_id divergente nas notas ─────────────
+  // Deve ficar ANTES de qualquer app.use("/api", autenticarToken, ...)
+  // para não ser interceptado pelo middleware de autenticação.
+  // GET  ?escola_id=3&secret=XXX        → dry-run (prévia segura)
+  // POST ?escola_id=3&secret=XXX        → executa correção
+  // ──────────────────────────────────────────────────────────────────────
+  const _FIX_SECRET = process.env.PRINT_SECRET || "123456";
+  async function fixDisciplinaId(req, res) {
+    if (req.query.secret !== _FIX_SECRET) return res.status(403).json({ error: "Forbidden" });
+    const escolaId = Number(req.query.escola_id);
+    if (!escolaId) return res.status(400).json({ error: "escola_id obrigatorio" });
+    const dryRun = req.method === "GET" || req.query.dry === "true";
+    try {
+      const [disciplinasAtivas] = await pool.query(
+        "SELECT id, nome FROM disciplinas WHERE escola_id = ?",
+        [escolaId]
+      );
+      const [notasComNome] = await pool.query(
+        `SELECT n.id AS nota_id, n.disciplina_id AS id_atual, d.nome AS nome_atual
+         FROM notas n
+         INNER JOIN alunos a ON a.id = n.aluno_id
+         LEFT JOIN disciplinas d ON d.id = n.disciplina_id
+         WHERE a.escola_id = ?`,
+        [escolaId]
+      );
+      const mapaIdPorNome = {};
+      for (const disc of disciplinasAtivas) {
+        const key = disc.nome.trim().toUpperCase();
+        if (!mapaIdPorNome[key]) mapaIdPorNome[key] = disc.id;
+      }
+      const divergentes = notasComNome.filter((n) => {
+        if (!n.nome_atual) return false;
+        const idCorreto = mapaIdPorNome[n.nome_atual.trim().toUpperCase()];
+        return idCorreto && idCorreto !== n.id_atual;
+      });
+      if (divergentes.length === 0)
+        return res.json({ ok: true, message: "Nenhuma divergencia encontrada.", total: 0 });
+      const preview = divergentes.map((n) => ({
+        nota_id: n.nota_id,
+        disciplina: n.nome_atual,
+        id_atual: n.id_atual,
+        id_correto: mapaIdPorNome[n.nome_atual.trim().toUpperCase()],
+      }));
+      if (dryRun) return res.json({ dry: true, total: preview.length, divergentes: preview });
+      let atualizadas = 0;
+      for (const item of preview) {
+        await pool.query("UPDATE notas SET disciplina_id = ? WHERE id = ?", [item.id_correto, item.nota_id]);
+        atualizadas++;
+      }
+      return res.json({ ok: true, total: atualizadas, message: `${atualizadas} nota(s) corrigida(s).`, detalhes: preview });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+  app.get("/api/admin/fix-disciplina-id", fixDisciplinaId);
+  app.post("/api/admin/fix-disciplina-id", fixDisciplinaId);
+
   app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
   // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...)
@@ -1508,9 +1565,6 @@ async function bootstrap() {
       return res.status(500).json({ error: err.message });
     }
   }
-  app.get("/api/admin/fix-disciplina-id", fixDisciplinaId);
-  app.post("/api/admin/fix-disciplina-id", fixDisciplinaId);
-
   // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
   app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);
 
