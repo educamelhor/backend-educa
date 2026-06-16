@@ -1433,6 +1433,18 @@ async function bootstrap() {
   // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...)
   app.use("/api", autenticarToken, verificarEscola, alunosImpressaoRouter);
 
+  // TEMP: diagnóstico turno de disciplinas — remove após investigação
+  const _PS2 = process.env.PRINT_SECRET || "123456";
+  app.get("/api/diag-disciplinas", async (req, res) => {
+    if (req.query.secret !== _PS2) return res.status(403).end();
+    const { escola_id } = req.query;
+    const [rows] = await pool.query(
+      "SELECT id, nome, etapa, turno, escola_id FROM disciplinas WHERE escola_id = ? ORDER BY nome",
+      [escola_id || 3]
+    );
+    res.json(rows);
+  });
+
   // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
   app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);
 
