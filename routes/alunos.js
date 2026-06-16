@@ -1516,6 +1516,10 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Informe ao menos um aluno no lote." });
     }
 
+    // UUID único que vincula todos os registros deste lote
+    const { randomUUID } = await import("crypto");
+    const loteId = randomUUID();
+
     let sucesso = 0;
     let falhas  = 0;
     const erros = [];
@@ -1527,8 +1531,8 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
         await pool.query(
           `INSERT INTO ocorrencias_disciplinares
              (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
-              convocar_responsavel, dias_suspensao, usuario_registro_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              convocar_responsavel, dias_suspensao, usuario_registro_id, lote_id, origem)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'coletivo')`,
           [
             alunoId, escola_id, data, motivo,
             tipoOcorrencia  || null,
@@ -1537,6 +1541,7 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
             convocarResponsavel ? 1 : 0,
             diasSuspensao   || null,
             usuarioRegistroId,
+            loteId,
           ]
         );
         sucesso++;
@@ -1552,14 +1557,94 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
       total: alunos.length,
       sucesso,
       falhas,
+      lote_id: loteId,
       erros: erros.length > 0 ? erros : undefined,
     });
-  } catch (err) {
+} catch (err) {
     console.error("[Lote] Erro geral:", err);
     return res.status(500).json({ message: "Erro ao registrar lote." });
   }
 });
-// ─── FIM F.O. COLETIVO ──────────────────────────────────────────────────────
+// ─── FIM F.O. COLETIVO ───────────────────────────────────────────────────────────────────────────
+
+// ─── F.O. COLETIVO: Buscar registros por data (impressão em lote) ────────────────────
+// GET /api/alunos/ocorrencias/coletivos?data=YYYY-MM-DD
+router.get("/ocorrencias/coletivos", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const dataParam = req.query.data || (() => {
+      const d = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    })();
+
+    const [rows] = await pool.query(
+      `SELECT
+         o.lote_id,
+         o.id                                                       AS ocorrencia_id,
+         DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y')                 AS data_ocorrencia,
+         o.motivo,
+         o.tipo_ocorrencia,
+         o.status,
+         o.descricao,
+         a.id                                                        AS aluno_id,
+         a.estudante,
+         a.codigo,
+         t.nome                                                      AS turma,
+         t.turno,
+         COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D')   AS medida_disciplinar,
+         ur.nome                                                     AS registrado_por
+       FROM ocorrencias_disciplinares o
+       JOIN  alunos a  ON a.id = o.aluno_id AND a.escola_id = o.escola_id
+       LEFT JOIN turmas t ON t.id = a.turma_id
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
+       WHERE o.escola_id = ?
+         AND o.origem    = 'coletivo'
+         AND DATE(o.data_ocorrencia) = ?
+         AND o.status   != 'CANCELADA'
+       ORDER BY o.lote_id, a.estudante ASC`,
+      [escola_id, dataParam]
+    );
+
+    // Agrupar por lote_id
+    const lotesMap = new Map();
+    for (const row of rows) {
+      const key = row.lote_id || `_${row.ocorrencia_id}`;
+      if (!lotesMap.has(key)) {
+        lotesMap.set(key, {
+          lote_id:           key,
+          data_ocorrencia:   row.data_ocorrencia,
+          motivo:            row.motivo,
+          tipo_ocorrencia:   row.tipo_ocorrencia,
+          medida_disciplinar: row.medida_disciplinar,
+          descricao:         row.descricao,
+          registrado_por:    row.registrado_por,
+          alunos:            [],
+        });
+      }
+      lotesMap.get(key).alunos.push({
+        aluno_id:      row.aluno_id,
+        ocorrencia_id: row.ocorrencia_id,
+        estudante:     row.estudante,
+        codigo:        row.codigo,
+        turma:         row.turma,
+        turno:         row.turno,
+        status:        row.status,
+      });
+    }
+
+    res.json({
+      data: dataParam,
+      lotes: Array.from(lotesMap.values()),
+      total_alunos: rows.length,
+    });
+  } catch (err) {
+    console.error("[Coletivos] Erro:", err);
+    res.status(500).json({ message: "Erro ao buscar registros coletivos." });
+  }
+});
+// ─── FIM COLETIVOS ───────────────────────────────────────────────────────────────────────────
 
 router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) => {
   try {
