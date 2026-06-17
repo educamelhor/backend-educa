@@ -57,6 +57,17 @@ function getConceito(pontos) {
   return "VI - Incompatível";
 }
 
+// ── Art. 46 III: Suspensão = −0,50 por dia letivo (máx 3 dias) ───────────────────────────────────────────────────────
+// Para suspensão o ponto unitário (−0,50) deve ser multiplicado pelos dias.
+// Para todas as outras medidas os pontos são fixos.
+function pontosEfetivos(pontoBase, medidaDisciplinar, diasSuspensao) {
+  if (String(medidaDisciplinar).trim() === 'Suspensão') {
+    const dias = Number(diasSuspensao) || 1;
+    return Number(pontoBase) * dias;
+  }
+  return Number(pontoBase) || 0;
+}
+
 // ── Calcula e persiste o Bônus de Mérito (registro único por aluno) ─────────
 // Regra: a partir do 61º dia consecutivo sem registro NEGATIVO no ano letivo,
 // o aluno acumula +0,01 ponto por dia. A acumulação daí em diante pode ser
@@ -476,6 +487,8 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
               o.motivo,
               o.descricao,
               COALESCE(r.pontos, 0) AS pontos,
+              COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+              COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
               o.status,
               o.convocar_responsavel,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
@@ -495,21 +508,31 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     await calcularEUpsertBonusMedia(alunoId, escola_id);
 
     // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
+    // Art. 46 III: Suspensão = −0,50 por dia (pontosEfetivos multiplica pelo nº de dias)
     const PONTUACAO_INICIAL = 8.00;
     const [allRows] = await pool.query(
-      `SELECT COALESCE(r.pontos, 0) AS pontos, o.status
+      `SELECT COALESCE(r.pontos, 0) AS pontos,
+              COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+              COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
+              o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
-    const totalPontosGeral = allRows.reduce((s, r) => s + Number(r.pontos || 0), 0);
+    const totalPontosGeral = allRows.reduce(
+      (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
+    );
     const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontosGeral)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 
-    // Pontos apenas deste registro
-    const pontosRegistro = Number(registros[0].pontos || 0);
+    // Pontos apenas deste registro (corrigidos para Suspensão: −0,50 × dias)
+    const pontosRegistro = pontosEfetivos(
+      registros[0].pontos,
+      registros[0].medida_disciplinar,
+      registros[0].dias_suspensao
+    );
 
     // ── Logos ────────────────────────────────────────────────────────
     const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
@@ -1003,12 +1026,15 @@ router.get("/:alunoId", async (req, res) => {
     });
 
     // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
+    // Art. 46 III: Suspensão = −0,50 por dia (pontosEfetivos multiplica pelo nº de dias)
     // O bônus de mérito já está incluído em rowsPts via o registro MERITO = FINALIZADA
     const PONTUACAO_INICIAL = 8.00;
     const [rowsPts] = await pool.query(
       `SELECT
          CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
               ELSE COALESCE(r.pontos, 0) END AS pontos,
+         COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+         COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
          o.tipo_ocorrencia AS tipo_raw, o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
@@ -1016,7 +1042,9 @@ router.get("/:alunoId", async (req, res) => {
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
-    const totalPontosBase = rowsPts.reduce((s, r) => s + Number(r.pontos || 0), 0);
+    const totalPontosBase = rowsPts.reduce(
+      (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
+    );
     const totalPontos = totalPontosBase + merito.bonusTotal;
     const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
