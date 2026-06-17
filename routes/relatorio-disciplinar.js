@@ -489,6 +489,8 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
               COALESCE(r.pontos, 0) AS pontos,
               COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
               COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
+              o.atenuantes,
+              o.agravantes,
               o.status,
               o.convocar_responsavel,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
@@ -533,6 +535,17 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       registros[0].medida_disciplinar,
       registros[0].dias_suspensao
     );
+
+    // Circunstâncias Atenuantes (Art. 34) e Agravantes (Art. 35) para o PDF
+    const atenList = (() => { try { return JSON.parse(registros[0].atenuantes || '[]'); } catch { return []; } })();
+    const agravList = (() => { try { return JSON.parse(registros[0].agravantes || '[]'); } catch { return []; } })();
+    let circunstanciasTexto = '';
+    if (atenList.length > 0) {
+      circunstanciasTexto += `\n\nCircunstâncias Atenuantes (Art. 34): ${atenList.join(' | ')}`;
+    }
+    if (agravList.length > 0) {
+      circunstanciasTexto += `\n\nCircunstâncias Agravantes (Art. 35): ${agravList.join(' | ')}`;
+    }
 
     // ── Logos ────────────────────────────────────────────────────────
     const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
@@ -791,6 +804,13 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
         descricaoText = descricaoText
           ? `${descricaoText} ${infoComparecimento}`
           : infoComparecimento;
+      }
+
+      // Injetar circunstâncias atenuantes/agravantes nas observações (Art. 34/35)
+      if (circunstanciasTexto) {
+        descricaoText = descricaoText
+          ? `${descricaoText}${circunstanciasTexto}`
+          : circunstanciasTexto.trim();
       }
 
       const descH = descricaoText

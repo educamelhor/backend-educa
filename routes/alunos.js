@@ -1449,6 +1449,8 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               o.registro_interno,
               o.convocar_responsavel,
               o.dias_suspensao,
+              o.atenuantes,
+              o.agravantes,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
               o.status,
               ur.nome  AS nome_usuario_registro,
@@ -1478,19 +1480,24 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const { id } = req.params;
     const { escola_id } = req.user;
     const usuarioRegistroId = req.user.usuarioId || req.user.id || req.user.usuario_id;
-    const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao } = req.body;
+    const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao, atenuantes, agravantes } = req.body;
 
     if (!data || !motivo) {
       return res.status(400).json({ message: "Preencha os campos obrigatórios." });
     }
 
+    // Serializar atenuantes/agravantes como JSON (Art. 34/35)
+    const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
+    const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
+
     const [result] = await pool.query(
       `INSERT INTO ocorrencias_disciplinares
          (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
-          convocar_responsavel, dias_suspensao, usuario_registro_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          convocar_responsavel, dias_suspensao, atenuantes, agravantes, usuario_registro_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
-       registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null, usuarioRegistroId]
+       registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null,
+       atenuantesJson, agravantesJson, usuarioRegistroId]
     );
 
     res.status(201).json({
@@ -1654,14 +1661,19 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
     const usuarioEdicaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
-    const { descricao, registroInterno, convocarResponsavel } = req.body;
+    const { descricao, registroInterno, convocarResponsavel, atenuantes, agravantes } = req.body;
+
+    // Serializar atenuantes/agravantes como JSON (Art. 34/35)
+    const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
+    const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
 
     await pool.query(
       `UPDATE ocorrencias_disciplinares 
        SET descricao = ?, registro_interno = ?, convocar_responsavel = ?,
-           usuario_edicao_id = ?
+           atenuantes = ?, agravantes = ?, usuario_edicao_id = ?
        WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
-      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, usuarioEdicaoId, ocorrenciaId, id, escola_id]
+      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0,
+       atenuantesJson, agravantesJson, usuarioEdicaoId, ocorrenciaId, id, escola_id]
     );
 
     res.json({ message: "Ocorrência atualizada com sucesso." });
