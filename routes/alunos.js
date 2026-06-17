@@ -9,6 +9,7 @@ import path, { dirname as _dirname } from "path";
 import { fileURLToPath } from "url";
 import XLSX from "xlsx";
 import { getInativos } from "../controllers/alunosController.js";
+import { calcularEUpsertBonusMedia } from "./relatorio-disciplinar.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _dirname(__filename);
@@ -1433,7 +1434,9 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const { id } = req.params;
     const { escola_id } = req.user;
 
-    // Buscar ocorrências do aluno
+    // Atualiza bônus de média bimestral em tempo real antes de retornar ocorrências
+    await calcularEUpsertBonusMedia(id, escola_id);
+
     const [rows] = await pool.query(
       `SELECT o.id,
               LPAD(o.id, 4, '0') AS registro,

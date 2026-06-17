@@ -156,6 +156,121 @@ async function calcularEUpsertMerito(alunoId, escolaId) {
 }
 
 
+// ── Calcula e persiste o Bônus de Média Bimestral (até 4 registros/ano) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Regra: média bimestral (AVG de todas as disciplinas) >= 8,00 no ano letivo atual
+// concede +0,50 ponto disciplinar por bimestre (máximo 4 registros = +2,00).
+// Registros BONUS_MEDIA são REMOVIDOS automaticamente se a média cair abaixo de 8,00.
+async function calcularEUpsertBonusMedia(alunoId, escolaId) {
+  const NOMES_BIMESTRES = ['', '1º Bimestre', '2º Bimestre', '3º Bimestre', '4º Bimestre'];
+  // Motivos fixos por bimestre (usados como chave do JOIN com registros_ocorrencias)
+  const MOTIVOS = {
+    1: 'Bônus de média bimestral >= 8,00 — 1B',
+    2: 'Bônus de média bimestral >= 8,00 — 2B',
+    3: 'Bônus de média bimestral >= 8,00 — 3B',
+    4: 'Bônus de média bimestral >= 8,00 — 4B',
+  };
+  const PONTOS_BONUS = 0.50;
+
+  try {
+    const anoAtual = new Date().getFullYear();
+
+    // 1. Garantir que existem os 4 registros-referência em registros_ocorrencias
+    for (const bim of [1, 2, 3, 4]) {
+      const [[refExiste]] = await pool.query(
+        `SELECT id FROM registros_ocorrencias
+         WHERE tipo_ocorrencia = 'BONUS_MEDIA' AND descricao_ocorrencia = ?
+         LIMIT 1`,
+        [MOTIVOS[bim]]
+      );
+      if (!refExiste) {
+        await pool.query(
+          `INSERT INTO registros_ocorrencias
+             (medida_disciplinar, tipo_ocorrencia, descricao_ocorrencia, pontos, ativo)
+           VALUES ('Bônus de Média Bimestral', 'BONUS_MEDIA', ?, ?, 1)`,
+          [MOTIVOS[bim], PONTOS_BONUS]
+        );
+      }
+    }
+
+    // 2. Calcular média por bimestre do ano letivo atual
+    const [medias] = await pool.query(
+      `SELECT bimestre, ROUND(AVG(nota), 2) AS media
+       FROM notas
+       WHERE aluno_id = ? AND ano = ?
+       GROUP BY bimestre
+       ORDER BY bimestre`,
+      [alunoId, anoAtual]
+    );
+
+    const hoje2 = new Date();
+    const dataRefStr = `${hoje2.getFullYear()}-${String(hoje2.getMonth()+1).padStart(2,'0')}-${String(hoje2.getDate()).padStart(2,'0')}`;
+
+    const bimestresComBonus = new Set();
+
+    // 3. Para cada bimestre com média >= 8,00: upsert do registro BONUS_MEDIA
+    for (const row of medias) {
+      const bim = Number(row.bimestre);
+      const media = Number(row.media);
+      if (bim < 1 || bim > 4) continue;
+
+      if (media >= 8.00) {
+        bimestresComBonus.add(bim);
+        const nomeBim = NOMES_BIMESTRES[bim];
+        const descDetalhada = `${nomeBim} — Média: ${media.toFixed(2).replace('.', ',')} ≥ 8,00 → +0,50 pontos disciplinares`;
+        const motivo = MOTIVOS[bim];
+
+        // Verificar se já existe registro BONUS_MEDIA para este bimestre/ano
+        const [[existente]] = await pool.query(
+          `SELECT id FROM ocorrencias_disciplinares
+           WHERE aluno_id = ? AND escola_id = ?
+             AND tipo_ocorrencia = 'BONUS_MEDIA'
+             AND motivo = ?
+             AND YEAR(data_ocorrencia) = ?
+           LIMIT 1`,
+          [alunoId, escolaId, motivo, anoAtual]
+        );
+
+        if (existente) {
+          await pool.query(
+            `UPDATE ocorrencias_disciplinares
+             SET descricao = ?, data_ocorrencia = ?, status = 'FINALIZADA'
+             WHERE id = ?`,
+            [descDetalhada, dataRefStr, existente.id]
+          );
+        } else {
+          await pool.query(
+            `INSERT INTO ocorrencias_disciplinares
+               (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia)
+             VALUES (?, ?, 'BONUS_MEDIA', ?, ?, 'FINALIZADA', ?)`,
+            [alunoId, escolaId, motivo, descDetalhada, dataRefStr]
+          );
+        }
+      }
+    }
+
+    // 4. Remover registros BONUS_MEDIA de bimestres que não atingiram 8,00
+    //    (garante consistência caso notas sejam corrigidas para baixo)
+    for (const bim of [1, 2, 3, 4]) {
+      if (!bimestresComBonus.has(bim)) {
+        await pool.query(
+          `DELETE FROM ocorrencias_disciplinares
+           WHERE aluno_id = ? AND escola_id = ?
+             AND tipo_ocorrencia = 'BONUS_MEDIA'
+             AND motivo = ?
+             AND YEAR(data_ocorrencia) = ?`,
+          [alunoId, escolaId, MOTIVOS[bim], anoAtual]
+        );
+      }
+    }
+
+    return { bimestresBonus: [...bimestresComBonus], bonusTotal: bimestresComBonus.size * PONTOS_BONUS };
+
+  } catch (err) {
+    console.warn('[BONUS_MEDIA] Erro no cálculo/persistência (não crítico):', err.message);
+    return { bimestresBonus: [], bonusTotal: 0 };
+  }
+}
+
 // ── Rota GET /validar/:alunoId — verifica dados obrigatórios para gerar PDF ──
 router.get("/validar/:alunoId", async (req, res) => {
   try {
@@ -375,8 +490,9 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
 
     const registros = rows;
 
-    // ── Bônus Mérito: calcular e persistir antes de somar pontos ──
+    // ── Bônus Mérito e Bônus de Média: calcular e persistir antes de somar pontos ──
     await calcularEUpsertMerito(alunoId, escola_id);
+    await calcularEUpsertBonusMedia(alunoId, escola_id);
 
     // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
     const PONTUACAO_INICIAL = 8.00;
@@ -873,8 +989,9 @@ router.get("/:alunoId", async (req, res) => {
       [alunoId, escola_id]
     );
 
-    // ── Bônus Mérito: calcular e persistir antes de somar pontos ──
+    // ── Bônus Mérito e Bônus de Média: calcular e persistir antes de somar pontos ──
     const merito = await calcularEUpsertMerito(alunoId, escola_id);
+    await calcularEUpsertBonusMedia(alunoId, escola_id);
 
     // Injetar pontos reais no registro de MERITO (que veio com pontos=0 do SQL)
     const registros = rows.map(r => {
@@ -1309,4 +1426,5 @@ router.get("/:alunoId", async (req, res) => {
   }
 });
 
+export { calcularEUpsertBonusMedia };
 export default router;
