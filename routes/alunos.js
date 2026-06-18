@@ -1253,14 +1253,15 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     }
 
     const [atuais] = await pool.query(
-      "SELECT id, codigo, status FROM alunos WHERE turma_id = ?",
-      [turma_id]
+      "SELECT id, codigo, status, data_nascimento, sexo, estudante FROM alunos WHERE turma_id = ? AND escola_id = ?",
+      [turma_id, escola_id]
     );
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
     const entradaSet = new Set(xlsxEntries.map((e) => String(e.codigo)));
 
     const toInsert = [];
     const toReactivate = [];
+    const toUpdate = [];   // ativos com dados faltantes a completar
     let jaExistiam = 0;
 
     for (const e of xlsxEntries) {
@@ -1269,9 +1270,17 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       if (!atual) {
         toInsert.push(e);
       } else if (atual.status === "inativo") {
-        toReactivate.push(e);
+        toReactivate.push({ entry: e, atual });
       } else {
-        jaExistiam++;
+        // Ativo: verifica se há dados faltantes no banco que o XLSX pode preencher
+        const precisaAtualizar =
+          (e.dataBr && !atual.data_nascimento) ||
+          (e.sexo   && !atual.sexo);
+        if (precisaAtualizar) {
+          toUpdate.push({ entry: e, atual });
+        } else {
+          jaExistiam++;
+        }
       }
     }
 
@@ -1314,13 +1323,12 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
 
     // Reativar
     let reativados = 0;
-    for (const e of toReactivate) {
-      const atualObj = atuaisMap.get(String(e.codigo));
+    for (const { entry: e, atual: atualObj } of toReactivate) {
       await pool.query(
         "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
         [turma_id, e.codigo, escola_id]
       );
-      
+
       const alunoId = atualObj.id;
       if (alunoId) {
         const [matr] = await pool.query(
@@ -1338,6 +1346,33 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       }
 
       reativados++;
+    }
+
+    // Atualizar dados faltantes de alunos ativos
+    let atualizados = 0;
+    for (const { entry: e, atual } of toUpdate) {
+      const sets = [];
+      const vals = [];
+
+      if (e.dataBr && !atual.data_nascimento) {
+        sets.push("data_nascimento = STR_TO_DATE(?, '%d/%m/%Y')");
+        vals.push(e.dataBr);
+      }
+      if (e.sexo && !atual.sexo) {
+        sets.push("sexo = ?");
+        vals.push(e.sexo);
+      }
+
+      if (sets.length > 0) {
+        vals.push(atual.id);
+        await pool.query(
+          `UPDATE alunos SET ${sets.join(", ")} WHERE id = ?`,
+          vals
+        );
+        atualizados++;
+      } else {
+        jaExistiam++; // sem dados novos para preencher
+      }
     }
 
     // Inativar não listados
@@ -1363,9 +1398,9 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
     }
 
     console.log(
-      `[importar-xlsx] → localizados: ${xlsxEntries.length}, inseridos: ${inseridos}, reativados: ${reativados}, jáExistiam: ${jaExistiam}, inativados: ${inativados}`
+      `[importar-xlsx] localizados: ${xlsxEntries.length}, inseridos: ${inseridos}, reativados: ${reativados}, atualizados: ${atualizados}, jaExistiam: ${jaExistiam}, inativados: ${inativados}`
     );
-    return res.json({ localizados: xlsxEntries.length, inseridos, reativados, jaExistiam, inativados });
+    return res.json({ localizados: xlsxEntries.length, inseridos, reativados, atualizados, jaExistiam, inativados });
   } catch (err) {
     console.error("Erro ao processar /importar-xlsx:", err);
     return res.status(500).json({ message: "Erro ao processar XLSX.", error: err.message });
