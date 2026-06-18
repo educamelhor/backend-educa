@@ -1532,15 +1532,34 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
     const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
 
-    const [result] = await pool.query(
-      `INSERT INTO ocorrencias_disciplinares
-         (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
-          convocar_responsavel, dias_suspensao, atenuantes, agravantes, usuario_registro_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
-       registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null,
-       atenuantesJson, agravantesJson, usuarioRegistroId]
-    );
+    // Fallback: se atenuantes/agravantes ainda não existirem no BD de produção, insere sem elas
+    let result;
+    try {
+      [result] = await pool.query(
+        `INSERT INTO ocorrencias_disciplinares
+           (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+            convocar_responsavel, dias_suspensao, atenuantes, agravantes, usuario_registro_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
+         registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null,
+         atenuantesJson, agravantesJson, usuarioRegistroId]
+      );
+    } catch (insertErr) {
+      if (insertErr.code === 'ER_BAD_FIELD_ERROR') {
+        // Colunas atenuantes/agravantes ausentes — insere sem elas
+        [result] = await pool.query(
+          `INSERT INTO ocorrencias_disciplinares
+             (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+              convocar_responsavel, dias_suspensao, usuario_registro_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
+           registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null,
+           usuarioRegistroId]
+        );
+      } else {
+        throw insertErr;
+      }
+    }
 
     res.status(201).json({
       message: "Ocorrência registrada com sucesso.",
@@ -1576,26 +1595,49 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
     let falhas  = 0;
     const erros = [];
 
+    // Detectar se atenuantes/agravantes existem (teste único antes do loop)
+    let colunasExtrasExistem = true;
+    try {
+      await pool.query(
+        `INSERT INTO ocorrencias_disciplinares
+           (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+            convocar_responsavel, dias_suspensao, usuario_registro_id, lote_id, origem, atenuantes, agravantes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'coletivo', NULL, NULL)
+         LIMIT 0`,
+        [0, 0, data, motivo, null, null, null, 0, null, usuarioRegistroId, loteId]
+      );
+    } catch (testErr) {
+      if (testErr.code === 'ER_BAD_FIELD_ERROR') colunasExtrasExistem = false;
+    }
+
     for (const item of alunos) {
       const { alunoId, convocarResponsavel } = item;
       if (!alunoId) { falhas++; continue; }
       try {
-        await pool.query(
-          `INSERT INTO ocorrencias_disciplinares
-             (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
-              convocar_responsavel, dias_suspensao, usuario_registro_id, lote_id, origem)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'coletivo')`,
-          [
-            alunoId, escola_id, data, motivo,
-            tipoOcorrencia  || null,
-            descricao       || null,
-            registroInterno || null,
-            convocarResponsavel ? 1 : 0,
-            diasSuspensao   || null,
-            usuarioRegistroId,
-            loteId,
-          ]
-        );
+        if (colunasExtrasExistem) {
+          await pool.query(
+            `INSERT INTO ocorrencias_disciplinares
+               (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+                convocar_responsavel, dias_suspensao, usuario_registro_id, lote_id, origem)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'coletivo')`,
+            [alunoId, escola_id, data, motivo, tipoOcorrencia || null,
+             descricao || null, registroInterno || null,
+             convocarResponsavel ? 1 : 0, diasSuspensao || null,
+             usuarioRegistroId, loteId]
+          );
+        } else {
+          // Fallback: sem atenuantes/agravantes
+          await pool.query(
+            `INSERT INTO ocorrencias_disciplinares
+               (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
+                convocar_responsavel, dias_suspensao, usuario_registro_id, lote_id, origem)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'coletivo')`,
+            [alunoId, escola_id, data, motivo, tipoOcorrencia || null,
+             descricao || null, registroInterno || null,
+             convocarResponsavel ? 1 : 0, diasSuspensao || null,
+             usuarioRegistroId, loteId]
+          );
+        }
         sucesso++;
       } catch (innerErr) {
         console.error(`[Lote] Erro aluno ${alunoId}:`, innerErr);
