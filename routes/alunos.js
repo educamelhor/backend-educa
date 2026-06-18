@@ -1437,8 +1437,10 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
     // Atualiza bônus de média bimestral em tempo real antes de retornar ocorrências
     await calcularEUpsertBonusMedia(id, escola_id);
 
-    const [rows] = await pool.query(
-      `SELECT o.id,
+    // Query principal: inclui atenuantes/agravantes (Art. 34/35)
+    // Fallback automático caso a migration ainda não tenha sido executada no servidor
+    const QUERY_FULL = `
+      SELECT o.id,
               LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
               o.motivo,
@@ -1464,9 +1466,49 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
        LEFT JOIN usuarios ue ON ue.id = o.usuario_edicao_id
        LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
        WHERE o.aluno_id = ? AND o.escola_id = ?
-       ORDER BY o.data_ocorrencia DESC, o.id DESC`,
-      [id, escola_id]
-    );
+       ORDER BY o.data_ocorrencia DESC, o.id DESC`;
+
+    const QUERY_COMPAT = `
+      SELECT o.id,
+              LPAD(o.id, 4, '0') AS registro,
+              DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
+              o.motivo,
+              r.medida_disciplinar,
+              r.tipo_ocorrencia AS tipo,
+              r.pontos,
+              o.descricao,
+              o.registro_interno,
+              o.convocar_responsavel,
+              o.dias_suspensao,
+              NULL AS atenuantes,
+              NULL AS agravantes,
+              DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
+              o.status,
+              ur.nome  AS nome_usuario_registro,
+              uf.nome  AS nome_usuario_finalizacao,
+              ui.nome  AS nome_usuario_impressao,
+              ue.nome  AS nome_usuario_edicao
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
+       LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
+       LEFT JOIN usuarios ui ON ui.id = o.usuario_impressao_id
+       LEFT JOIN usuarios ue ON ue.id = o.usuario_edicao_id
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE o.aluno_id = ? AND o.escola_id = ?
+       ORDER BY o.data_ocorrencia DESC, o.id DESC`;
+
+    let rows;
+    try {
+      [rows] = await pool.query(QUERY_FULL, [id, escola_id]);
+    } catch (queryErr) {
+      if (queryErr.code === 'ER_BAD_FIELD_ERROR') {
+        // Migration atenuantes/agravantes ainda não rodou — fallback compatível
+        console.warn('[disciplinar] Colunas atenuantes/agravantes ausentes — usando query de compatibilidade. Execute run_migration_atenuantes_agravantes.js no servidor.');
+        [rows] = await pool.query(QUERY_COMPAT, [id, escola_id]);
+      } else {
+        throw queryErr;
+      }
+    }
 
     res.json(rows);
   } catch (err) {
