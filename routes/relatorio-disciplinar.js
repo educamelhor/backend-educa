@@ -649,27 +649,58 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     );
 
     // Registro individual — exclui apenas CANCELADA (frontend já avisa sobre REGISTRADA)
-    const [rows] = await pool.query(
-      `SELECT LPAD(o.id, 4, '0') AS registro,
-              DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
-              COALESCE(r.tipo_ocorrencia, 'N/D') AS tipo,
-              COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
-              o.motivo,
-              o.descricao,
-              COALESCE(r.pontos, 0) AS pontos,
-              COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
-              COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
-              o.atenuantes,
-              o.agravantes,
-              o.status,
-              o.convocar_responsavel,
-              DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
-       FROM ocorrencias_disciplinares o
-       LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
-       WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
-      [ocorrenciaId, alunoId, escola_id]
-    );
+    // Fallback: se atenuantes/agravantes ainda não existirem no BD de produção, refaz sem elas
+    let rows;
+    try {
+      [rows] = await pool.query(
+        `SELECT LPAD(o.id, 4, '0') AS registro,
+                DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
+                COALESCE(r.tipo_ocorrencia, 'N/D') AS tipo,
+                COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
+                o.motivo,
+                o.descricao,
+                COALESCE(r.pontos, 0) AS pontos,
+                COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+                COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
+                o.atenuantes,
+                o.agravantes,
+                o.status,
+                o.convocar_responsavel,
+                DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r
+           ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+        [ocorrenciaId, alunoId, escola_id]
+      );
+    } catch (queryErr) {
+      if (queryErr.code === "ER_BAD_FIELD_ERROR") {
+        // Colunas atenuantes/agravantes ainda não existem neste banco — refaz sem elas
+        [rows] = await pool.query(
+          `SELECT LPAD(o.id, 4, '0') AS registro,
+                  DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
+                  COALESCE(r.tipo_ocorrencia, 'N/D') AS tipo,
+                  COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
+                  o.motivo,
+                  o.descricao,
+                  COALESCE(r.pontos, 0) AS pontos,
+                  COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+                  COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
+                  NULL AS atenuantes,
+                  NULL AS agravantes,
+                  o.status,
+                  o.convocar_responsavel,
+                  DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
+           FROM ocorrencias_disciplinares o
+           LEFT JOIN registros_ocorrencias r
+             ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+           WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+          [ocorrenciaId, alunoId, escola_id]
+        );
+      } else {
+        throw queryErr;
+      }
+    }
 
     if (!rows.length) return res.status(404).json({ error: "Registro não encontrado ou possui status cancelado." });
 
