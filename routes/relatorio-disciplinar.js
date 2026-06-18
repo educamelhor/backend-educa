@@ -282,6 +282,176 @@ async function calcularEUpsertBonusMedia(alunoId, escolaId) {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /semestral — Relatório Semestral Quantitativo (Arts. 23 e 52)
+// Query params: semestre=1|2  ano=YYYY  (default: semestre atual, ano corrente)
+// Art. 23: dados agregados SEM nomear alunos
+// Art. 52: lista nominal de alunos com pontuação < 7,0
+// ═══════════════════════════════════════════════════════════════════════════
+router.get("/semestral", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const anoAtual = new Date().getFullYear();
+    const mesAtual = new Date().getMonth() + 1; // 1-12
+    const semestreDefault = mesAtual <= 6 ? 1 : 2;
+
+    const ano      = parseInt(req.query.ano)      || anoAtual;
+    const semestre = parseInt(req.query.semestre) || semestreDefault;
+
+    // Intervalo de datas do semestre
+    const dataInicio = semestre === 1 ? `${ano}-01-01` : `${ano}-07-01`;
+    const dataFim    = semestre === 1 ? `${ano}-06-30` : `${ano}-12-31`;
+
+    // ── ART. 23 ── Dados quantitativos (sem nomear alunos) ──────────────────
+
+    // 1) Totais por tipo de medida disciplinar
+    const [totalPorMedida] = await pool.query(
+      `SELECT
+         COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'Outro') AS medida,
+         COUNT(*) AS total,
+         SUM(CASE WHEN o.status = 'CANCELADA' THEN 1 ELSE 0 END) AS canceladas,
+         SUM(CASE WHEN o.status = 'FINALIZADA' THEN 1 ELSE 0 END) AS finalizadas,
+         SUM(CASE WHEN o.status = 'REGISTRADA' THEN 1 ELSE 0 END) AS registradas
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE o.escola_id = ?
+         AND o.data_ocorrencia BETWEEN ? AND ?
+       GROUP BY medida
+       ORDER BY total DESC`,
+      [escola_id, dataInicio, dataFim]
+    );
+
+    // 2) Totais por turma (sem nomear alunos)
+    const [porTurma] = await pool.query(
+      `SELECT
+         COALESCE(t.nome, 'Sem turma') AS turma,
+         COALESCE(t.turno, '—')         AS turno,
+         COUNT(*) AS total,
+         SUM(CASE WHEN o.status != 'CANCELADA' THEN 1 ELSE 0 END) AS ativas,
+         SUM(CASE WHEN COALESCE(r.medida_disciplinar, o.tipo_ocorrencia) = 'Suspensão' AND o.status != 'CANCELADA' THEN 1 ELSE 0 END) AS suspensoes,
+         SUM(CASE WHEN COALESCE(r.medida_disciplinar, o.tipo_ocorrencia) = 'Suspensão' AND o.status != 'CANCELADA' THEN COALESCE(o.dias_suspensao, 1) ELSE 0 END) AS dias_suspensao,
+         SUM(CASE WHEN COALESCE(r.medida_disciplinar, o.tipo_ocorrencia) IN ('Elogio','Mérito Disciplinar') AND o.status != 'CANCELADA' THEN 1 ELSE 0 END) AS positivos
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN alunos a ON a.id = o.aluno_id
+       LEFT JOIN turmas t ON t.id = a.turma_id
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE o.escola_id = ?
+         AND o.data_ocorrencia BETWEEN ? AND ?
+       GROUP BY t.id, t.nome, t.turno
+       ORDER BY t.nome`,
+      [escola_id, dataInicio, dataFim]
+    );
+
+    // 3) Top 5 motivos mais frequentes (excl. canceladas, excl. BONUS_MEDIA)
+    const [topMotivos] = await pool.query(
+      `SELECT o.motivo, COUNT(*) AS total
+       FROM ocorrencias_disciplinares o
+       WHERE o.escola_id = ?
+         AND o.data_ocorrencia BETWEEN ? AND ?
+         AND o.status != 'CANCELADA'
+         AND o.tipo_ocorrencia != 'BONUS_MEDIA'
+       GROUP BY o.motivo
+       ORDER BY total DESC
+       LIMIT 5`,
+      [escola_id, dataInicio, dataFim]
+    );
+
+    // 4) Dados de responsáveis
+    const [[dadosResp]] = await pool.query(
+      `SELECT
+         SUM(CASE WHEN o.convocar_responsavel = 1 AND o.status != 'CANCELADA' THEN 1 ELSE 0 END) AS convocados,
+         SUM(CASE WHEN o.convocar_responsavel = 1 AND o.data_comparecimento_responsavel IS NOT NULL AND o.status != 'CANCELADA' THEN 1 ELSE 0 END) AS comparecidos,
+         SUM(CASE WHEN o.convocar_responsavel = 1 AND o.data_comparecimento_responsavel IS NULL AND o.status = 'FINALIZADA' THEN 1 ELSE 0 END) AS pendentes
+       FROM ocorrencias_disciplinares o
+       WHERE o.escola_id = ?
+         AND o.data_ocorrencia BETWEEN ? AND ?`,
+      [escola_id, dataInicio, dataFim]
+    );
+
+    // 5) KPI geral do semestre
+    const [[kpiGeral]] = await pool.query(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN o.status = 'REGISTRADA' THEN 1 ELSE 0 END) AS registradas,
+         SUM(CASE WHEN o.status = 'FINALIZADA' THEN 1 ELSE 0 END) AS finalizadas,
+         SUM(CASE WHEN o.status = 'CANCELADA' THEN 1 ELSE 0 END) AS canceladas,
+         COUNT(DISTINCT o.aluno_id) AS alunos_envolvidos
+       FROM ocorrencias_disciplinares o
+       WHERE o.escola_id = ?
+         AND o.data_ocorrencia BETWEEN ? AND ?
+         AND o.tipo_ocorrencia != 'BONUS_MEDIA'`,
+      [escola_id, dataInicio, dataFim]
+    );
+
+    // ── ART. 52 ── Lista de alunos com comportamento ≤ Regular (< 7,0) ─────
+    // Calcula pontuação = 8.0 + soma de pontos de ocorrências ATIVAS até fim do semestre
+    // Suspensão: pontoBase × dias
+    const [alunosRaw] = await pool.query(
+      `SELECT
+         a.id AS aluno_id,
+         a.codigo,
+         a.estudante AS nome,
+         COALESCE(t.nome,  '—') AS turma,
+         COALESCE(t.turno, '—') AS turno,
+         COALESCE(SUM(
+           CASE
+             WHEN o.status = 'CANCELADA' THEN 0
+             WHEN COALESCE(r.medida_disciplinar, o.tipo_ocorrencia) = 'Suspensão'
+               THEN COALESCE(r.pontos, 0) * COALESCE(o.dias_suspensao, 1)
+             ELSE COALESCE(r.pontos, 0)
+           END
+         ), 0) AS soma_pontos
+       FROM alunos a
+       LEFT JOIN turmas t ON t.id = a.turma_id
+       LEFT JOIN ocorrencias_disciplinares o
+         ON o.aluno_id = a.id AND o.escola_id = a.escola_id
+         AND o.data_ocorrencia BETWEEN ? AND ?
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       WHERE a.escola_id = ? AND a.ativo = 1
+       GROUP BY a.id, a.codigo, a.estudante, t.nome, t.turno
+       HAVING (8.0 + soma_pontos) < 7.0
+       ORDER BY (8.0 + soma_pontos) ASC`,
+      [dataInicio, dataFim, escola_id]
+    );
+
+    // Formatar lista Art. 52 com pontuação e conceito
+    const art52 = alunosRaw.map(r => {
+      const pontuacao = Math.max(0, Math.min(10, parseFloat((8.0 + Number(r.soma_pontos)).toFixed(2))));
+      return {
+        codigo:    r.codigo,
+        nome:      r.nome,
+        turma:     r.turma,
+        turno:     r.turno,
+        pontuacao,
+        conceito:  getConceito(pontuacao),
+      };
+    });
+
+    res.json({
+      semestre,
+      ano,
+      dataInicio,
+      dataFim,
+      art23: {
+        kpi:          kpiGeral,
+        porMedida:    totalPorMedida,
+        porTurma,
+        topMotivos,
+        responsaveis: dadosResp,
+      },
+      art52,
+    });
+
+  } catch (err) {
+    console.error("Erro ao gerar relatório semestral:", err);
+    res.status(500).json({ error: "Erro ao gerar relatório semestral." });
+  }
+});
+
 // ── Rota GET /validar/:alunoId — verifica dados obrigatórios para gerar PDF ──
 router.get("/validar/:alunoId", async (req, res) => {
   try {
