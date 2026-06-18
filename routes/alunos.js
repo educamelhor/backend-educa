@@ -1464,7 +1464,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
        LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
        LEFT JOIN usuarios ui ON ui.id = o.usuario_impressao_id
        LEFT JOIN usuarios ue ON ue.id = o.usuario_edicao_id
-       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`;
 
@@ -1493,7 +1493,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
        LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
        LEFT JOIN usuarios ui ON ui.id = o.usuario_impressao_id
        LEFT JOIN usuarios ue ON ue.id = o.usuario_edicao_id
-       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ?
        ORDER BY o.data_ocorrencia DESC, o.id DESC`;
 
@@ -1649,7 +1649,7 @@ router.get("/ocorrencias/coletivos", verificarEscola, async (req, res) => {
        JOIN  alunos a  ON a.id = o.aluno_id AND a.escola_id = o.escola_id
        LEFT JOIN turmas t ON t.id = a.turma_id
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
        WHERE o.escola_id = ?
          AND o.origem    = 'coletivo'

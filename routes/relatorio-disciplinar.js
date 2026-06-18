@@ -89,7 +89,7 @@ async function calcularEUpsertMerito(alunoId, escolaId) {
       `SELECT DATE(o.data_ocorrencia) AS data_oc
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ?
          AND o.tipo_ocorrencia != 'MERITO'
          AND o.status NOT IN ('CANCELADA')
@@ -315,7 +315,7 @@ router.get("/semestral", async (req, res) => {
          SUM(CASE WHEN o.status = 'REGISTRADA' THEN 1 ELSE 0 END) AS registradas
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.escola_id = ?
          AND o.data_ocorrencia BETWEEN ? AND ?
        GROUP BY medida
@@ -337,7 +337,7 @@ router.get("/semestral", async (req, res) => {
        LEFT JOIN alunos a ON a.id = o.aluno_id
        LEFT JOIN turmas t ON t.id = a.turma_id
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.escola_id = ?
          AND o.data_ocorrencia BETWEEN ? AND ?
        GROUP BY t.id, t.nome, t.turno
@@ -410,7 +410,7 @@ router.get("/semestral", async (req, res) => {
          ON o.aluno_id = a.id AND o.escola_id = a.escola_id
          AND o.data_ocorrencia BETWEEN ? AND ?
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE a.escola_id = ?
        GROUP BY a.id, a.codigo, a.estudante, t.nome, t.turno
        HAVING (8.0 + soma_pontos) < 7.0
@@ -669,7 +669,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
                 DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
          FROM ocorrencias_disciplinares o
          LEFT JOIN registros_ocorrencias r
-           ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+           ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
          WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
         [ocorrenciaId, alunoId, escola_id]
       );
@@ -693,7 +693,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
                   DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r
-             ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+             ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
            WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
           [ocorrenciaId, alunoId, escola_id]
         );
@@ -720,7 +720,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
               o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
@@ -1225,7 +1225,7 @@ router.get("/:alunoId", async (req, res) => {
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'
        ORDER BY
          CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 1 ELSE 0 END ASC,
@@ -1259,7 +1259,7 @@ router.get("/:alunoId", async (req, res) => {
          o.tipo_ocorrencia AS tipo_raw, o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo AND r.escola_id = o.escola_id
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
