@@ -411,7 +411,7 @@ router.get("/semestral", async (req, res) => {
          AND o.data_ocorrencia BETWEEN ? AND ?
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
-       WHERE a.escola_id = ? AND a.ativo = 1
+       WHERE a.escola_id = ?
        GROUP BY a.id, a.codigo, a.estudante, t.nome, t.turno
        HAVING (8.0 + soma_pontos) < 7.0
        ORDER BY (8.0 + soma_pontos) ASC`,
