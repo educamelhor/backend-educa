@@ -187,7 +187,7 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
 // ─────────────────────────────────────────────────────────────────────────────
 function measureInstrHeight(doc, instrText, textWidth) {
   return doc.font('Helvetica').fontSize(8.8)
-    .heightOfString(instrText, { width: textWidth, lineGap: 1.5, paragraphGap: 3 });
+    .heightOfString(instrText, { width: textWidth, lineGap: 0.5, paragraphGap: 2 });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,7 +257,7 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 16, instrY + 8,
        { width: instrInnerW, align: 'center' });
   doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
-     .text(instrText, MARGIN + 16, instrY + 28, { width: instrInnerW, lineGap: 1.5, paragraphGap: 3 });
+     .text(instrText, MARGIN + 16, instrY + 28, { width: instrInnerW, lineGap: 0.5, paragraphGap: 2 });
 
   // Themed image fills ALL remaining space below instructions
   const imageStartY = instrY + instrBoxH + 6;
@@ -382,7 +382,7 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const instrTextH = measureInstrHeight(doc, instrText, instrW);
   const instrStartY = instrSepY + 26;
   doc.fillColor('#222222').font('Helvetica').fontSize(8.8)
-     .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+     .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // ── Step 12: Themed image fills ALL remaining space ────────────────────────
   const imageStartY = instrStartY + instrTextH + 10;
@@ -463,7 +463,7 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   const instrW = A4W - 70;
   const instrTextH = measureInstrHeight(doc, instrText, instrW);
   doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
-     .text(instrText, 35, instrBaseY + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+     .text(instrText, 35, instrBaseY + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // Image fills rest
   const imageStartY = instrBaseY + 28 + instrTextH + 8;
@@ -523,7 +523,7 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 10, instrTop + 8,
        { width: instrW + 4, align: 'center' });
   doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
-     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // ── Image fills rest ──────────────────────────────────────────────────────
   const imageStartY = instrTop + instrBoxH + 8;
@@ -573,7 +573,7 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 12, instrTop + 8,
        { width: instrW + 12, align: 'center' });
   doc.fillColor('#cbd5e1').font('Helvetica').fontSize(8.8)
-     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 1.5, paragraphGap: 3 });
+     .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // Image fills rest
   const imageStartY = instrTop + instrBoxH + 8;
