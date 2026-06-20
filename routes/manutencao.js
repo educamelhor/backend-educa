@@ -110,8 +110,15 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ ok: false, message: "Informe 'inicio' e 'fim'." });
   }
 
-  const dtInicio = new Date(inicio);
-  const dtFim = new Date(fim);
+  // Normaliza timezone: se não tem indicador (Z ou ±HH:MM), assume Brasília (UTC-3)
+  function parseBrasilia(dateStr) {
+    const s = String(dateStr).trim();
+    if (s.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(s)) return new Date(s);
+    return new Date(s + '-03:00'); // Assume Brasília
+  }
+
+  const dtInicio = parseBrasilia(inicio);
+  const dtFim = parseBrasilia(fim);
 
   if (isNaN(dtInicio.getTime()) || isNaN(dtFim.getTime())) {
     return res.status(400).json({ ok: false, message: "Datas inválidas." });
