@@ -71,6 +71,25 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const perfilList = perfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
   return normalizarPais(perfilList);
 }
+
+// ────────────────────────────────────────────────────────────────────────────────
+// HELPER: resolveEscolaTipo — retorna o array de tipos da escola (ex: ['CCMDF'])
+// ────────────────────────────────────────────────────────────────────────────────
+async function resolveEscolaTipo(dbPool, escola_id) {
+  const escolaIdNum = Number(escola_id);
+  if (!escola_id || isNaN(escolaIdNum) || escolaIdNum <= 0) return [];
+  try {
+    const [[row]] = await dbPool.query(
+      'SELECT tipo FROM escolas WHERE id = ? LIMIT 1',
+      [escolaIdNum]
+    );
+    if (!row || !row.tipo) return [];
+    const parsed = typeof row.tipo === 'string' ? JSON.parse(row.tipo) : row.tipo;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
@@ -533,12 +552,16 @@ router.post("/login", async (req, res) => {
       // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
       const modulos_ativos_diretor = await resolveModulosAtivos(pool, usuario.escola_id, 'diretor');
 
+      // Buscar tipo da escola (ex: ['CCMDF']) para regras de visibilidade no frontend
+      const escola_tipo_diretor = await resolveEscolaTipo(pool, usuario.escola_id);
+
       return res.json({
         ok: true,
         nome: usuario.nome || "Diretor",
         cpf: String(usuario.cpf || "").replace(/\D/g, ""),
         foto_url: fotoUrl,
         modulos_ativos: modulos_ativos_diretor,
+        escola_tipo: escola_tipo_diretor,
         ...jwtEscolar,
       });
     } catch (err) {
@@ -682,6 +705,9 @@ router.post("/login", async (req, res) => {
         // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
         const modulos_ativos_device = await resolveModulosAtivos(pool, escolaIdFinal, perfilFinal);
 
+        // Buscar tipo da escola (ex: ['CCMDF']) para regras de visibilidade no frontend
+        const escola_tipo_device = await resolveEscolaTipo(pool, escolaIdFinal);
+
         console.log(`[AUTH/login] Dispositivo confiado OK → usuário ${usuarioIdFinal}, pulou OTP`);
 
         return res.json({
@@ -697,6 +723,7 @@ router.post("/login", async (req, res) => {
           perfis,
           permissoes,
           modulos_ativos: modulos_ativos_device,
+          escola_tipo: escola_tipo_device,
         });
       }
     }
@@ -895,6 +922,9 @@ router.post("/confirmar", async (req, res) => {
       // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
       const modulos_ativos_confirmar = await resolveModulosAtivos(pool, escolaIdFinal, perfilFinal);
 
+      // Buscar tipo da escola (ex: ['CCMDF']) para regras de visibilidade no frontend
+      const escola_tipo_confirmar = await resolveEscolaTipo(pool, escolaIdFinal);
+
       return res.json({
         token,
         nome: usuarioBase.nome || "Usuário",
@@ -906,6 +936,7 @@ router.post("/confirmar", async (req, res) => {
         perfis,
         permissoes,
         modulos_ativos: modulos_ativos_confirmar,
+        escola_tipo: escola_tipo_confirmar,
         ...(deviceTokenNovo ? { device_token: deviceTokenNovo } : {}),
       });
   } catch (err) {
@@ -1749,6 +1780,10 @@ router.post("/confirmar-escola", async (req, res) => {
     const fotoUrlEscola = await buscarFotoUsuario(usuarioEscola.id, usuarioEscola.escola_id);
     const cpfEscolaLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
 
+    // Buscar módulos ativos + tipo da escola
+    const modulos_ativos_ce = await resolveModulosAtivos(pool, usuarioEscola.escola_id, usuarioEscola.perfil);
+    const escola_tipo_ce = await resolveEscolaTipo(pool, usuarioEscola.escola_id);
+
     return res.json({
       token,
       nome: usuarioBase.nome || "Usuário",
@@ -1759,6 +1794,8 @@ router.post("/confirmar-escola", async (req, res) => {
       perfil: usuarioEscola.perfil || "aluno",
       perfis,
       permissoes,
+      modulos_ativos: modulos_ativos_ce,
+      escola_tipo: escola_tipo_ce,
     });
   } catch (err) {
     console.error("Erro ao confirmar escola:", err);

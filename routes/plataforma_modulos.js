@@ -49,7 +49,7 @@ const MODULOS_VALIDOS = new Set([
   // Pedagógico
   'pedagogico', 'pedagogico.conselho', 'pedagogico.conteudos',
   'pedagogico.relatorios', 'pedagogico.correcoes',
-  'pedagogico.solicitacao', 'pedagogico.provas',
+  'pedagogico.solicitacoes', 'pedagogico.provas',
   // Gabarito
   'gabarito', 'gabarito.gerar', 'gabarito.corrigir_lote',
   'gabarito.corrigir', 'gabarito.resultados',
@@ -65,7 +65,8 @@ const MODULOS_VALIDOS = new Set([
   'professores.conteudos', 'professores.provas', 'professores.boletim',
   'professores.conselho',
   // Monitoramento
-  'monitoramento', 'monitoramento.painel', 'monitoramento.alertas',
+  'monitoramento', 'monitoramento.painel',
+  'monitoramento.visitantes_registrar', 'monitoramento.visitantes_historico',
   'monitoramento.embeddings',
   // Questões
   'questoes',
@@ -79,6 +80,8 @@ const MODULOS_VALIDOS = new Set([
   // Direção
   'direcao', 'direcao.educa_capture', 'direcao.responsaveis',
   'direcao.cadastro', 'direcao.governanca',
+  // Estudantes
+  'estudantes',
 ]);
 
 /**
