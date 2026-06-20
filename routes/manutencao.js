@@ -37,7 +37,7 @@ router.get("/status", async (req, res) => {
        LIMIT 1`
     );
     if (row) {
-      return res.status(503).json({
+      return res.json({
         maintenance: true,
         inicio: row.inicio,
         fim: row.fim,
