@@ -1305,8 +1305,8 @@ async function bootstrap() {
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
   app.use("/api/plataforma/modulos", autenticarToken, exigirEscopo("plataforma"), modulosPlataformaRouter);
-  app.use("/api/plataforma", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // GET/POST/DELETE /manutencao
-  app.use("/api", manutencaoRouter); // GET /api/status (público, sem auth)
+  app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
+  app.use("/api/sistema", manutencaoRouter); // Público: GET /api/sistema/status (sem auth)
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────

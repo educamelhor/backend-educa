@@ -54,7 +54,7 @@ router.get("/status", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/plataforma/manutencao — CEO consulta status
 // ─────────────────────────────────────────────────────────────────────────────
-router.get("/manutencao", async (req, res) => {
+router.get("/", async (req, res) => {
   const db = req.db;
   try {
     await ensureTable(db);
@@ -102,7 +102,7 @@ router.get("/manutencao", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/plataforma/manutencao — CEO ativa/agenda manutenção
 // ─────────────────────────────────────────────────────────────────────────────
-router.post("/manutencao", async (req, res) => {
+router.post("/", async (req, res) => {
   const db = req.db;
   const { inicio, fim, mensagem } = req.body || {};
 
@@ -155,7 +155,7 @@ router.post("/manutencao", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/plataforma/manutencao — CEO cancela manutenção
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete("/manutencao", async (req, res) => {
+router.delete("/", async (req, res) => {
   const db = req.db;
   try {
     await ensureTable(db);
