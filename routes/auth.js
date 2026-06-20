@@ -491,6 +491,22 @@ router.post("/convite/ativar", async (req, res) => {
  * 1) Login – envia código de confirmação (OTP) OU login escolar (CPF+senha)
  */
 router.post("/login", async (req, res) => {
+  // ── Manutenção Programada: bloqueia login escolar (CEO exempto via /api/auth-plataforma) ──
+  try {
+    const [[manut]] = await pool.query(
+      `SELECT inicio, fim, mensagem FROM sistema_manutencao
+       WHERE ativo = 1 AND inicio <= NOW() AND fim > NOW() LIMIT 1`
+    );
+    if (manut) {
+      return res.status(503).json({
+        maintenance: true,
+        inicio: manut.inicio,
+        fim: manut.fim,
+        mensagem: manut.mensagem,
+      });
+    }
+  } catch { /* tabela pode não existir ainda — segue normalmente */ }
+
   const cpf = String(req.body?.cpf || "").trim();
   const senha = String(req.body?.senha || "");
 

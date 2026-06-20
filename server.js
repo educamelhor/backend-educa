@@ -112,6 +112,7 @@ import governancaRouter, { syncPlanosAvaliacao } from "./routes/governanca.js";
 import escolaLogosRouter from "./routes/escola_logos.js";
 import capaProvasRouter from "./routes/capa_provas.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
+import manutencaoRouter from "./routes/manutencao.js";
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
@@ -1277,6 +1278,23 @@ async function bootstrap() {
     console.warn("[BOOT-SYNC-PAPs] Falha na sincronizacao em lote no boot:", syncErr.message);
   }
 
+  // [2026-06-20] Tabela sistema_manutencao — modo manutenção programada (CEO)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sistema_manutencao (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        ativo         TINYINT(1)  NOT NULL DEFAULT 0,
+        inicio        DATETIME    NOT NULL,
+        fim           DATETIME    NOT NULL,
+        mensagem      VARCHAR(500) DEFAULT 'O sistema está em manutenção programada.',
+        criado_por    INT          DEFAULT NULL,
+        criado_em     DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (migErr) {
+    console.warn("[MIGRATION] sistema_manutencao (não crítico):", migErr.message);
+  }
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
@@ -1287,6 +1305,8 @@ async function bootstrap() {
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
   app.use("/api/plataforma/modulos", autenticarToken, exigirEscopo("plataforma"), modulosPlataformaRouter);
+  app.use("/api/plataforma", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // GET/POST/DELETE /manutencao
+  app.use("/api", manutencaoRouter); // GET /api/status (público, sem auth)
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
