@@ -211,7 +211,7 @@ function drawBottomImage(doc, temaBuf, x, w, imgY, maxY) {
 // TEMPLATE 1 — CLÁSSICO
 // Fundo suave com bordas duplas na cor da área
 // ═══════════════════════════════════════════════════════════════════════════════
-async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
+async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
@@ -263,19 +263,22 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   const imageStartY = instrY + instrBoxH + 6;
   // maxY = inner border bottom (A4H - MARGIN - 4) so image stays inside double border
   const imgMaxY = A4H - MARGIN - 6;
-  drawBottomImage(doc, temaBuf, MARGIN + 8, A4W - MARGIN * 2 - 16, imageStartY, imgMaxY);
+  const imgZoneX = MARGIN + 8;
+  const imgZoneW = A4W - MARGIN * 2 - 16;
+  if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, imgMaxY);
 
   // Footer
   doc.fillColor('#666666').font('Helvetica').fontSize(7)
      .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN + 8, A4H - 14,
        { width: A4W - MARGIN * 2 - 16, align: 'center' });
+  return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: imgMaxY - imageStartY };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 2 — MODERNO
 // Faixa lateral colorida + layout clean e bold
 // ═══════════════════════════════════════════════════════════════════════════════
-async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
+async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
   const STRIPE = 62;
@@ -387,19 +390,22 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // ── Step 12: Themed image fills ALL remaining space ────────────────────────
   const imageStartY = instrStartY + instrTextH + 10;
   // Moderno: no border, but leave 18px at bottom for footer text
-  drawBottomImage(doc, temaBuf, STRIPE, A4W - STRIPE, imageStartY, A4H - 18);
+  const imgZoneX = STRIPE;
+  const imgZoneW = A4W - STRIPE;
+  if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 18);
 
   // Footer
   doc.fillColor('#999999').font('Helvetica').fontSize(7)
      .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12,
        { width: A4W - STRIPE - MARGIN - 10 });
+  return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: A4H - 18 - imageStartY };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 3 — FORMAL
 // Bordas duplas + header colorido sólido
 // ═══════════════════════════════════════════════════════════════════════════════
-async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
+async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
@@ -468,17 +474,20 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // Image fills rest
   const imageStartY = instrBaseY + 28 + instrTextH + 8;
   // maxY = inner border bottom (A4H - 24) so image stays inside double border
-  drawBottomImage(doc, temaBuf, 24, A4W - 48, imageStartY, A4H - 24);
+  const imgZoneX = 24;
+  const imgZoneW = A4W - 48;
+  if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 24);
 
   doc.fillColor('#aaaaaa').font('Helvetica').fontSize(7)
      .text('EDUCA.MELHOR', 30, A4H - 20, { width: A4W - 60, align: 'center' });
+  return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: A4H - 24 - imageStartY };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 4 — COLORIDO
 // Topo na cor sólida da área + zona branca inferior
 // ═══════════════════════════════════════════════════════════════════════════════
-async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
+async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
@@ -528,14 +537,15 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
   // ── Image fills rest ──────────────────────────────────────────────────────
   const imageStartY = instrTop + instrBoxH + 8;
   // Colorido: leave 18px at bottom for footer
-  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
+  if (!opts.noImage) drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
+  return { imgX: 0, imgY: imageStartY, imgW: A4W, imgH: A4H - 18 - imageStartY };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 5 — DARK
 // Fundo escuro (#0f172a) com texto claro
 // ═══════════════════════════════════════════════════════════════════════════════
-async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
+async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts = {}) {
   const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
@@ -578,11 +588,12 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
   // Image fills rest
   const imageStartY = instrTop + instrBoxH + 8;
   // Dark: leave 18px at bottom for footer
-  drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
+  if (!opts.noImage) drawBottomImage(doc, temaBuf, 0, A4W, imageStartY, A4H - 18);
 
-  // Accent line above image
+  // Accent line above image (always drawn, even without the image)
   doc.moveTo(0, imageStartY).lineTo(A4W, imageStartY)
      .strokeColor(area.cor).lineWidth(2).stroke();
+  return { imgX: 0, imgY: imageStartY, imgW: A4W, imgH: A4H - 18 - imageStartY };
 }
 
 const RENDERERS = { 1: renderClassico, 2: renderModerno, 3: renderFormal, 4: renderColorido, 5: renderDark };
@@ -671,6 +682,9 @@ router.get('/:id/pdf', async (req, res) => {
   const HEX_RE = /^#[0-9a-fA-F]{6}$/;
   const colorOverride = HEX_RE.test(rawColor) ? rawColor : null;
 
+  // Optional: skip default themed image (used when frontend will overlay a custom image)
+  const noImage = req.query.noImage === '1';
+
   try {
     const [[capa]] = await db.query(
       'SELECT * FROM capa_provas WHERE id=? AND escola_id=? AND ativo=1 LIMIT 1', [id, escolaId]
@@ -753,7 +767,19 @@ router.get('/:id/pdf', async (req, res) => {
     const renderer = RENDERERS[capa.template_id] || RENDERERS[1];
     // Pass areaFinal (with possible color override) as part of a patched capa object
     const capaPatch = { ...capa, _areaOverride: areaFinal };
-    await renderer(doc, capaPatch, escola, logoEsqBuf, logoDirBuf, qrBuf);
+    const rendererOpts = { noImage };
+    const imageZone = await renderer(doc, capaPatch, escola, logoEsqBuf, logoDirBuf, qrBuf, rendererOpts);
+
+    // Expose image zone coordinates so the frontend can place the custom image precisely
+    if (noImage && imageZone) {
+      const expose = 'X-Image-Zone-Y,X-Image-Zone-H,X-Image-Zone-X,X-Image-Zone-W';
+      res.setHeader('Access-Control-Expose-Headers', expose);
+      res.setHeader('X-Image-Zone-Y', String(Math.round(imageZone.imgY)));
+      res.setHeader('X-Image-Zone-H', String(Math.round(imageZone.imgH)));
+      res.setHeader('X-Image-Zone-X', String(Math.round(imageZone.imgX)));
+      res.setHeader('X-Image-Zone-W', String(Math.round(imageZone.imgW)));
+      console.log(`[CAPA_PROVAS][PDF] noImage zone: x=${imageZone.imgX} y=${imageZone.imgY} w=${imageZone.imgW} h=${imageZone.imgH}`);
+    }
 
     const filename = `capa-${capa.area.toLowerCase()}-${capa.bimestre}bim-${capa.ano}.pdf`
       .replace(/[^a-z0-9\-\.]/gi, '_');
