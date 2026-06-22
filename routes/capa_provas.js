@@ -212,7 +212,7 @@ function drawBottomImage(doc, temaBuf, x, w, imgY, maxY) {
 // Fundo suave com bordas duplas na cor da área
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
-  const area = AREAS[capa.area] || AREAS.GERAL;
+  const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
   // Page background (light tint of area color)
@@ -276,7 +276,7 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
 // Faixa lateral colorida + layout clean e bold
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
-  const area = AREAS[capa.area] || AREAS.GERAL;
+  const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
   const STRIPE = 62;
 
@@ -400,7 +400,7 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
 // Bordas duplas + header colorido sólido
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
-  const area = AREAS[capa.area] || AREAS.GERAL;
+  const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
   doc.fillColor('#f9f9f9').rect(0, 0, A4W, A4H).fill();
@@ -479,7 +479,7 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
 // Topo na cor sólida da área + zona branca inferior
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
-  const area = AREAS[capa.area] || AREAS.GERAL;
+  const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
   // ── Header (colored zone) ──────────────────────────────────────────────────
@@ -536,7 +536,7 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) 
 // Fundo escuro (#0f172a) com texto claro
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf) {
-  const area = AREAS[capa.area] || AREAS.GERAL;
+  const area = capa._areaOverride || AREAS[capa.area] || AREAS.GERAL;
   const temaBuf = TEMA_IMAGES[capa.area] || null;
 
   doc.fillColor('#0f172a').rect(0, 0, A4W, A4H).fill();
@@ -666,6 +666,11 @@ router.get('/:id/pdf', async (req, res) => {
   const escolaId = Number(req.user?.escola_id);
   const id = Number(req.params.id);
 
+  // Optional custom color override via ?color=%23rrggbb
+  const rawColor = req.query.color || '';
+  const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+  const colorOverride = HEX_RE.test(rawColor) ? rawColor : null;
+
   try {
     const [[capa]] = await db.query(
       'SELECT * FROM capa_provas WHERE id=? AND escola_id=? AND ativo=1 LIMIT 1', [id, escolaId]
@@ -704,10 +709,51 @@ router.get('/:id/pdf', async (req, res) => {
     const qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
     const qrBuf = await gerarQRBuffer(qrPayload);
 
+    // ── Apply custom color override if provided ──────────────────────────────
+    // Derives a light variant of the custom color for corClaro (backgrounds/fills)
+    // by converting to HSL and pushing lightness to ~93%.
+    let areaFinal = AREAS[capa.area] || AREAS.GERAL;
+    if (colorOverride) {
+      // Parse hex to RGB
+      const r = parseInt(colorOverride.slice(1, 3), 16) / 255;
+      const g = parseInt(colorOverride.slice(3, 5), 16) / 255;
+      const b = parseInt(colorOverride.slice(5, 7), 16) / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 2;
+      let h = 0, s = 0;
+      if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+          case g: h = ((b - r) / d + 2) / 6; break;
+          case b: h = ((r - g) / d + 4) / 6; break;
+        }
+      }
+      // Build corClaro: same hue, high saturation (~0.8), very light (~0.93)
+      const hDeg = h * 360;
+      const sClaro = Math.min(s, 0.8);
+      const lClaro = 0.93;
+      function hslToHex(hd, sv, lv) {
+        const a = sv * Math.min(lv, 1 - lv);
+        const f = n => {
+          const k = (n + hd / 30) % 12;
+          return Math.round(255 * (lv - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)))
+            .toString(16).padStart(2, '0');
+        };
+        return `#${f(0)}${f(8)}${f(4)}`;
+      }
+      const corClaro = hslToHex(hDeg, sClaro, lClaro);
+      areaFinal = { ...areaFinal, cor: colorOverride, corClaro };
+      console.log(`[CAPA_PROVAS][PDF] Color override: ${colorOverride} → corClaro: ${corClaro}`);
+    }
+
     // Render PDF
     const doc = new PDFDocument({ size: 'A4', margin: 0, info: { Title: capa.titulo, Author: 'EDUCA.MELHOR' } });
     const renderer = RENDERERS[capa.template_id] || RENDERERS[1];
-    await renderer(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf);
+    // Pass areaFinal (with possible color override) as part of a patched capa object
+    const capaPatch = { ...capa, _areaOverride: areaFinal };
+    await renderer(doc, capaPatch, escola, logoEsqBuf, logoDirBuf, qrBuf);
 
     const filename = `capa-${capa.area.toLowerCase()}-${capa.bimestre}bim-${capa.ano}.pdf`
       .replace(/[^a-z0-9\-\.]/gi, '_');
