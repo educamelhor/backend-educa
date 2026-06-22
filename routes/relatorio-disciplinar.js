@@ -616,6 +616,411 @@ router.get("/merito/:alunoId", async (req, res) => {
   }
 });
 
+// ── Rota POST /lote-registros — PDF único com todos os F.O. selecionados ─────
+// Body: { registros: [{aluno_id, ocorrencia_id}, ...] }
+// Gera um único PDF com um aluno por página (page-break entre cada F.O.)
+router.post("/lote-registros", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { registros: items } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Informe ao menos um registro." });
+    }
+
+    // ── Dados estáticos da escola ────────────────────────────────────
+    const [[escola]] = await pool.query(
+      "SELECT id, nome, apelido, endereco, cidade, estado FROM escolas WHERE id = ?",
+      [escola_id]
+    );
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
+    const uidImpressao = req.user?.usuarioId || req.user?.id || req.user?.usuario_id;
+
+    // ── Constantes de layout ─────────────────────────────────────────
+    const L = 40, R = 40;
+    const PW = 595.28 - L - R;
+    const PAGE_H = 841.89;
+    const FOOTER_Y = PAGE_H - 25;
+    const MAX_Y = FOOTER_Y - 15;
+    const COR_AZUL = "#1e3a5f", COR_DOURADO = "#b8860b", COR_CINZA = "#555";
+    const COR_VERMELHO = "#c62828", COR_VERDE = "#2e7d32";
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 30, bottom: 0, left: L, right: R },
+      autoFirstPage: true,
+      info: {
+        Title: "Impressão de Registros Disciplinares — F.O. Coletivo",
+        Author: "EDUCA.MELHOR — Sistema Educacional",
+      },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="fo_coletivo_lote.pdf"`);
+
+    const pdfChunks = [];
+    const { PassThrough } = await import("stream");
+    const passThrough = new PassThrough();
+    passThrough.on("data", chunk => pdfChunks.push(chunk));
+    doc.pipe(passThrough);
+
+    let pageNum = 1;
+    let firstPage = true;
+
+    // ── Funções auxiliares de layout ─────────────────────────────────
+    function drawFooter() {
+      doc.font("Helvetica").fontSize(6.5).fillColor("#aaa")
+        .text(
+          `Impressão de Registro Disciplinar • Documento gerado pelo EDUCA.MELHOR • Página ${pageNum}`,
+          L, FOOTER_Y, { width: PW, align: "center", lineBreak: false }
+        );
+    }
+    function drawLine(cor = "#ccc") {
+      doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(cor).lineWidth(0.5).stroke();
+    }
+    function lbl(text, x, y, w) {
+      doc.font("Helvetica-Bold").fontSize(8).fillColor("#888").text(text.toUpperCase(), x, y, { width: w, lineBreak: false });
+    }
+    function val(text, x, y, w) {
+      doc.font("Helvetica-Bold").fontSize(10).fillColor("#111").text(text || "—", x, y, { width: w, lineBreak: false });
+    }
+    function ensureSpace(needed) {
+      if (doc.y + needed > MAX_Y) {
+        drawFooter(); doc.addPage(); pageNum++; doc.y = 30;
+      }
+    }
+    function drawSigLine(x, y, w, nome, cargo) {
+      const lineY = y + 28;
+      doc.moveTo(x, lineY).lineTo(x + w, lineY).strokeColor("#333").lineWidth(0.5).stroke();
+      if (nome) doc.font("Helvetica-Bold").fontSize(8).fillColor("#333").text(nome, x, lineY + 3, { width: w, align: "center", lineBreak: false });
+      doc.font("Helvetica").fontSize(7).fillColor("#666").text(cargo, x, lineY + (nome ? 13 : 3), { width: w, align: "center", lineBreak: false });
+    }
+
+    // ── Função que desenha um F.O. completo na página atual ──────────
+    async function drawRegistro(alunoId, ocorrenciaId) {
+      // Dados do aluno
+      const [[aluno]] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante, a.data_nascimento,
+                t.nome AS turma, t.turno
+         FROM alunos a
+         LEFT JOIN turmas t ON t.id = a.turma_id
+         WHERE a.id = ? AND a.escola_id = ?`,
+        [alunoId, escola_id]
+      );
+      if (!aluno) return;
+
+      // Responsável
+      const [[resp]] = await pool.query(
+        `SELECT r.id, r.nome, r.cpf, r.email, r.telefone_celular, r.telefone_secundario, r.endereco
+         FROM responsaveis r
+         JOIN responsaveis_alunos ra ON ra.responsavel_id = r.id
+         WHERE ra.aluno_id = ? AND ra.escola_id = ? AND ra.ativo = 1
+         ORDER BY ra.id ASC LIMIT 1`,
+        [alunoId, escola_id]
+      );
+
+      // Registro da ocorrência (com fallback para ER_BAD_FIELD_ERROR)
+      let rows;
+      try {
+        [rows] = await pool.query(
+          `SELECT LPAD(o.id,4,'0') AS registro,
+                  DATE_FORMAT(o.data_ocorrencia,'%d/%m/%Y') AS data,
+                  COALESCE(r.tipo_ocorrencia,'N/D') AS tipo,
+                  COALESCE(r.medida_disciplinar,o.tipo_ocorrencia,'N/D') AS medida,
+                  o.motivo, o.descricao,
+                  COALESCE(r.pontos,0) AS pontos,
+                  COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                  COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                  o.atenuantes, o.agravantes, o.status, o.convocar_responsavel,
+                  DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
+           FROM ocorrencias_disciplinares o
+           LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+           WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+          [ocorrenciaId, alunoId, escola_id]
+        );
+      } catch (qe) {
+        if (qe.code === "ER_BAD_FIELD_ERROR") {
+          [rows] = await pool.query(
+            `SELECT LPAD(o.id,4,'0') AS registro,
+                    DATE_FORMAT(o.data_ocorrencia,'%d/%m/%Y') AS data,
+                    COALESCE(r.tipo_ocorrencia,'N/D') AS tipo,
+                    COALESCE(r.medida_disciplinar,o.tipo_ocorrencia,'N/D') AS medida,
+                    o.motivo, o.descricao,
+                    COALESCE(r.pontos,0) AS pontos,
+                    COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                    COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                    NULL AS atenuantes, NULL AS agravantes, o.status, o.convocar_responsavel,
+                    DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
+             FROM ocorrencias_disciplinares o
+             LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+             WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+            [ocorrenciaId, alunoId, escola_id]
+          );
+        } else throw qe;
+      }
+      if (!rows || !rows.length) return;
+      const reg = rows[0];
+
+      // Pontuação geral do aluno
+      await calcularEUpsertMerito(alunoId, escola_id);
+      await calcularEUpsertBonusMedia(alunoId, escola_id);
+      const PONTUACAO_INICIAL = 8.00;
+      const [allRows] = await pool.query(
+        `SELECT COALESCE(r.pontos,0) AS pontos,
+                COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                COALESCE(o.dias_suspensao,1) AS dias_suspensao, o.status
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+        [alunoId, escola_id]
+      );
+      const totalPontosGeral = allRows.reduce((s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+      const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontosGeral)).toFixed(2);
+      const conceito = getConceito(pontuacaoFinal);
+      const pontosRegistro = pontosEfetivos(reg.pontos, reg.medida_disciplinar, reg.dias_suspensao);
+
+      // Circunstâncias
+      const atenList = (() => { try { return JSON.parse(reg.atenuantes || "[]"); } catch { return []; } })();
+      const agravList = (() => { try { return JSON.parse(reg.agravantes || "[]"); } catch { return []; } })();
+      let circunstanciasTexto = "";
+      if (atenList.length > 0) circunstanciasTexto += `\n\nCircunstâncias Atenuantes (Art. 34): ${atenList.join(" | ")}`;
+      if (agravList.length > 0) circunstanciasTexto += `\n\nCircunstâncias Agravantes (Art. 35): ${agravList.join(" | ")}`;
+
+      // ── CABEÇALHO INSTITUCIONAL ──────────────────────────────────
+      const logoSize = 58;
+      const headerTop = doc.y;
+
+      if (hasLogoLeft)  doc.image(logoLeft,  L, headerTop, { width: logoSize, height: logoSize });
+      if (hasLogoRight) doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
+
+      const hx = L + logoSize + 8;
+      const hw = PW - (logoSize + 8) * 2;
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+        .text("SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL", hx, headerTop + 4, { width: hw, align: "center" });
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor(COR_AZUL)
+        .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${(escola?.cidade || "PLANALTINA").toUpperCase()}`, hx, doc.y + 1, { width: hw, align: "center" });
+      const nomeCompleto = escola?.apelido ? `${escola.nome} — ${escola.apelido}` : (escola?.nome || "CENTRO DE ENSINO FUNDAMENTAL");
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+        .text(nomeCompleto.toUpperCase(), hx, doc.y + 1, { width: hw, align: "center" });
+      doc.font("Helvetica").fontSize(7.5).fillColor(COR_CINZA)
+        .text(escola?.endereco || "Endereço não cadastrado", hx, doc.y + 1, { width: hw, align: "center" });
+      doc.y = headerTop + logoSize + 4;
+
+      doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_DOURADO).lineWidth(2).stroke(); doc.y += 3;
+      doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(0.8).stroke(); doc.y += 8;
+
+      doc.font("Helvetica-Bold").fontSize(14).fillColor(COR_AZUL)
+        .text("IMPRESSÃO DE REGISTRO DISCIPLINAR", L, doc.y, { width: PW, align: "center" });
+      doc.y += 6;
+      drawLine(); doc.y += 6;
+
+      // ── 1. IDENTIFICAÇÃO DO ESTUDANTE ────────────────────────────
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("1. IDENTIFICAÇÃO DO ESTUDANTE", L, doc.y, { width: PW }); doc.y += 4;
+
+      const yS1 = doc.y;
+      lbl("Nome do Estudante", L, yS1, PW * 0.65);
+      val(aluno.estudante, L, yS1 + 10, PW * 0.65);
+      lbl("RE (Registro)", L + PW * 0.68, yS1, PW * 0.32);
+      val(aluno.codigo || "—", L + PW * 0.68, yS1 + 10, PW * 0.32);
+      doc.y = yS1 + 26;
+
+      const yS1b = doc.y;
+      lbl("Data de Nascimento", L, yS1b, PW * 0.35);
+      val(fmtDataNasc(aluno.data_nascimento), L, yS1b + 10, PW * 0.35);
+      doc.y = yS1b + 26;
+
+      const yS2 = doc.y;
+      lbl("Turma", L, yS2, PW * 0.35);
+      val(aluno.turma || "—", L, yS2 + 10, PW * 0.35);
+      lbl("Turno", L + PW * 0.38, yS2, PW * 0.25);
+      val(aluno.turno || "—", L + PW * 0.38, yS2 + 10, PW * 0.25);
+
+      // Boxes pontuação/comportamento
+      const pontoX = L + PW * 0.66, pontoW = PW * 0.16;
+      const compX  = L + PW * 0.83, compW  = PW * 0.17;
+      const boxH = 28;
+      doc.roundedRect(pontoX, yS2 - 2, pontoW, boxH, 4)
+        .fillAndStroke(Number(pontuacaoFinal) >= 7 ? "#e8f5e9" : Number(pontuacaoFinal) >= 5 ? "#fff8e1" : "#ffebee",
+                       Number(pontuacaoFinal) >= 7 ? COR_VERDE : Number(pontuacaoFinal) >= 5 ? COR_DOURADO : COR_VERMELHO);
+      doc.font("Helvetica").fontSize(6.5).fillColor("#888").text("PONTUAÇÃO", pontoX + 3, yS2, { width: pontoW - 6, align: "center" });
+      doc.font("Helvetica-Bold").fontSize(12)
+        .fillColor(Number(pontuacaoFinal) >= 7 ? COR_VERDE : Number(pontuacaoFinal) >= 5 ? COR_DOURADO : COR_VERMELHO)
+        .text(String(pontuacaoFinal).replace(".", ","), pontoX + 3, yS2 + 10, { width: pontoW - 6, align: "center" });
+      doc.roundedRect(compX, yS2 - 2, compW, boxH, 4).fillAndStroke("#e3f2fd", COR_AZUL);
+      doc.font("Helvetica").fontSize(6.5).fillColor("#888").text("COMPORTAMENTO", compX + 3, yS2, { width: compW - 6, align: "center" });
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(COR_AZUL).text(conceito, compX + 3, yS2 + 12, { width: compW - 6, align: "center" });
+      doc.y = yS2 + boxH + 4;
+      drawLine(); doc.y += 6;
+
+      // ── 2. IDENTIFICAÇÃO DO RESPONSÁVEL ─────────────────────────
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("2. IDENTIFICAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); doc.y += 4;
+      const yR1 = doc.y;
+      lbl("Nome do Responsável", L, yR1, PW * 0.55); val(resp?.nome || "—", L, yR1 + 10, PW * 0.55);
+      lbl("CPF", L + PW * 0.58, yR1, PW * 0.42); val(fmtCpf(resp?.cpf), L + PW * 0.58, yR1 + 10, PW * 0.42);
+      doc.y = yR1 + 26;
+      const yR2 = doc.y;
+      const endH = Math.max(26, doc.font("Helvetica-Bold").fontSize(10).heightOfString(resp?.endereco || "—", { width: PW * 0.55 }) + 14);
+      lbl("Endereço", L, yR2, PW * 0.55); val(resp?.endereco || "—", L, yR2 + 10, PW * 0.55);
+      lbl("Telefone", L + PW * 0.58, yR2, PW * 0.42); val(fmtTel(resp?.telefone_celular), L + PW * 0.58, yR2 + 10, PW * 0.42);
+      doc.y = yR2 + endH;
+      drawLine(); doc.y += 6;
+
+      // ── 3. REGISTRO DISCIPLINAR ──────────────────────────────────
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("3. REGISTRO DISCIPLINAR", L, doc.y, { width: PW }); doc.y += 4;
+
+      const cols = [
+        { label: "Nº",         w: 32,  align: "center" },
+        { label: "DATA",       w: 55,  align: "center" },
+        { label: "TIPO",       w: 45,  align: "center" },
+        { label: "MEDIDA",     w: 105, align: "left"   },
+        { label: "OCORRÊNCIA", w: PW - 32 - 55 - 45 - 105 - 40, align: "left" },
+        { label: "PTS",        w: 40,  align: "center" },
+      ];
+      const TH = 16, TR = 14;
+
+      // Cabeçalho da tabela
+      const headerY2 = doc.y;
+      let tx = L;
+      doc.rect(L, headerY2, PW, TH).fill(COR_AZUL);
+      cols.forEach(c => {
+        doc.font("Helvetica-Bold").fontSize(7).fillColor("#fff")
+          .text(c.label, tx + 2, headerY2 + 4, { width: c.w - 4, align: c.align, lineBreak: false });
+        tx += c.w;
+      });
+      doc.y = headerY2 + TH;
+
+      // Linha de dados
+      let descricaoText = reg.descricao ? String(reg.descricao).trim() : "";
+      if (Number(reg.convocar_responsavel) === 1 && reg.data_comparecimento) {
+        const info = `${resp?.nome || "Responsável"} compareceu dia ${reg.data_comparecimento} para tomar conhecimento deste registro.`;
+        descricaoText = descricaoText ? `${descricaoText} ${info}` : info;
+      }
+      if (circunstanciasTexto) descricaoText = descricaoText ? `${descricaoText}${circunstanciasTexto}` : circunstanciasTexto.trim();
+
+      const descH = descricaoText
+        ? Math.max(18, doc.font("Helvetica-Oblique").fontSize(8.5).heightOfString(descricaoText, { width: PW - 16 }) + 8)
+        : 0;
+
+      doc.rect(L, doc.y, PW, TR).fill("#f8f9fa");
+      let tx2 = L;
+      const rowY = doc.y + 3;
+      const vals2 = [reg.registro, reg.data, reg.tipo, reg.medida, reg.motivo, String(reg.pontos).replace(".", ",")];
+      cols.forEach((c, ci) => {
+        const isNeg = ci === 5 && Number(reg.pontos) < 0;
+        const isPos = ci === 5 && Number(reg.pontos) > 0;
+        doc.font(ci === 5 ? "Helvetica-Bold" : "Helvetica").fontSize(7)
+          .fillColor(isNeg ? COR_VERMELHO : isPos ? COR_VERDE : "#333")
+          .text(vals2[ci] || "—", tx2 + 2, rowY, { width: c.w - 4, align: c.align });
+        tx2 += c.w;
+      });
+      doc.y += TR;
+
+      if (descricaoText) {
+        const descY = doc.y;
+        doc.rect(L, descY, PW, descH).fill("#eef2f7");
+        doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
+          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
+        doc.y = descY + descH;
+      }
+
+      // Linha resumo pontos
+      const resumoH = TR + 4, resumoY = doc.y;
+      doc.rect(L, resumoY, PW, resumoH).fill("#e8eaf6");
+      const resumoTextY = resumoY + (resumoH - 9) / 2;
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(COR_AZUL)
+        .text("REGISTRO: " + reg.registro, L + 4, resumoTextY, { width: PW * 0.5, lineBreak: false });
+      doc.y = resumoTextY;
+      doc.font("Helvetica-Bold").fontSize(9)
+        .fillColor(pontosRegistro < 0 ? COR_VERMELHO : COR_VERDE)
+        .text(`Pontos deste Registro: ${pontosRegistro.toFixed(1).replace(".", ",")}`, L + PW * 0.5, resumoTextY, {
+          width: PW * 0.5 - 4, align: "right", lineBreak: false,
+        });
+      doc.y = resumoY + resumoH + 4;
+
+      // Quem registrou
+      const nomeUsuarioRegistro = await (async () => {
+        try {
+          const [[oc]] = await pool.query("SELECT usuario_registro_id FROM ocorrencias_disciplinares WHERE id = ? LIMIT 1", [ocorrenciaId]);
+          if (!oc?.usuario_registro_id) return null;
+          const [[u]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [oc.usuario_registro_id]);
+          return u?.nome || null;
+        } catch { return null; }
+      })();
+
+      // Convocação e ciência
+      const temConvocacao = Number(reg.convocar_responsavel) === 1;
+      const numItemCiencia = temConvocacao ? 4 : 3;
+
+      drawLine(); doc.y += 6;
+
+      if (temConvocacao) {
+        ensureSpace(80);
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); doc.y += 4;
+        const dataComp = reg.data_comparecimento;
+        doc.font("Helvetica").fontSize(8.5).fillColor("#333")
+          .text(
+            dataComp
+              ? `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} para tomar conhecimento do registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`
+              : `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola em relação ao registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`,
+            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
+          );
+        doc.y += 8; drawLine(); doc.y += 6;
+      }
+
+      ensureSpace(130);
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text(`${numItemCiencia}. CIÊNCIA DO RESPONSÁVEL LEGAL`, L, doc.y, { width: PW }); doc.y += 4;
+      doc.font("Helvetica").fontSize(8.5).fillColor("#333")
+        .text(
+          `Declaro que tomei ciência do registro disciplinar nº ${reg.registro} vinculado ao(à) estudante ${aluno.estudante}, conforme detalhado neste documento.`,
+          L, doc.y, { width: PW, lineGap: 2, align: "justify" }
+        );
+      doc.y += 8;
+      doc.font("Helvetica").fontSize(9).fillColor("#333")
+        .text(`${escola?.cidade || "Planaltina"} — DF, ${hoje()}.`, L, doc.y, { width: PW, align: "right" });
+      doc.y += 20;
+
+      const sigW = PW * 0.42, sigGap = PW * 0.16, ySig = doc.y;
+      drawSigLine(L,                 ySig, sigW, resp?.nome || "—", "Responsável Legal");
+      drawSigLine(L + sigW + sigGap, ySig, sigW, nomeUsuarioRegistro || "", "Militar Responsável pelo Registro");
+      doc.y = ySig + 52;
+
+      drawFooter();
+
+      // Rastreabilidade
+      if (uidImpressao) {
+        pool.query(
+          "UPDATE ocorrencias_disciplinares SET usuario_impressao_id = ? WHERE id = ?",
+          [uidImpressao, ocorrenciaId]
+        ).catch(e => console.warn("[RASTREABILIDADE] Falha ao gravar impressão:", e.message));
+      }
+    }
+    // ── FIM drawRegistro ─────────────────────────────────────────────
+
+    // ── Processar cada item da fila ──────────────────────────────────
+    for (const item of items) {
+      if (!firstPage) {
+        doc.addPage();
+        pageNum++;
+        doc.y = 30;
+      }
+      firstPage = false;
+      await drawRegistro(item.aluno_id, item.ocorrencia_id);
+    }
+
+    // ── Finalizar e enviar ───────────────────────────────────────────
+    passThrough.on("end", () => {
+      const pdfBuffer = Buffer.concat(pdfChunks);
+      res.setHeader("Content-Length", pdfBuffer.length);
+      res.end(pdfBuffer);
+    });
+    doc.end();
+
+  } catch (err) {
+    console.error("[RELATORIO-DISCIPLINAR] Erro ao gerar PDF em lote:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Erro ao gerar PDF em lote." });
+  }
+});
+
 // ── Rota GET /:alunoId/registro/:ocorrenciaId — PDF de registro individual ──
 router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
   try {
