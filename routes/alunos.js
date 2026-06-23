@@ -529,12 +529,21 @@ router.post("/:id/foto", upload.single("foto"), async (req, res) => {
 });
 
 /* ============================================================================
- * 11) IMPORTAR PDF (gera inserts/reativa/inativa por turma)
+ * 11) IMPORTAR PDF — Formato EDUCADF 2025 (novo portal da SEEDF)
  * POST /api/alunos/importar-pdf (arquivo: file)
- * - Nome do arquivo (sem extensão) = nome da turma
- * - PDF padrão da Secretaria de Educação ("Ficha do Estudante")
- *   Cada linha de dados: RE(4-7 dígitos) + NOME + dd/mm/yyyy + filiação...
- *   Extraímos apenas: RE, nome do estudante, data de nascimento
+ *
+ * Novo formato: 11 colunas
+ *   RE do Estudante | Estudante | Data de Nascimento | CPF | Sexo |
+ *   Turma | Turno | Série | Contato Emergencial | Nome Responsável | CPF Responsável
+ *
+ * Novidades vs. formato antigo:
+ *   - Turma identificada pela coluna "Turma" do PDF (não pelo nome do arquivo)
+ *   - Novos campos: CPF do aluno, Sexo, Série, Telefone do responsável
+ *   - Parser com separação por página (evita colisão de Y entre páginas)
+ *   - Nomes longos que quebram para linha abaixo/acima são corretamente montados
+ *
+ * flags opcionais no body:
+ *   semTurma=true → importa sem turma (turma_id=null) quando turma não existe
  * ========================================================================== */
 const uploadPdf = multer(); // usa buffer
 router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
@@ -545,34 +554,19 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   try {
     const { escola_id } = req.user;
     const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
+    const semTurma = req.body.semTurma === "true" || req.body.semTurma === true;
 
-    // Identifica turma pelo nome do arquivo
-    let turmaNomeStr = req.body.turmaNome || req.file.originalname.replace(/\.pdf$/i, "").trim();
-    // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
-    const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
-
-    // ⚠️ Filtra por ano letivo para evitar confundir turmas de anos diferentes com mesmo nome
-    const [[turma]] = await pool.query(
-      "SELECT id FROM turmas WHERE nome = ? AND escola_id = ? AND ano = ? ORDER BY id DESC LIMIT 1",
-      [turmaNome, escola_id, anoLetivoAtual]
-    );
-    if (!turma) {
-      return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada para o ano letivo ${anoLetivoAtual}.` });
-    }
-    const turma_id = turma.id;
-  
-    // ──────────────────────────────────────────────────────────────────
-    // PARSER POSICIONAL — extrai dados diretamente pelas colunas do PDF
-    // Auto-detecta as posições X das colunas pelo cabeçalho (RE, NOME, DT NASCIMENTO, etc.)
-    // Funciona com qualquer layout: colunas extras visíveis ou ocultas.
-    // Fallback para ranges hardcoded se a auto-detecção falhar.
-    // ──────────────────────────────────────────────────────────────────
-    const pdfEntries = [];
-
-    // Extrai text items com posição usando pagerender customizado
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 1: Extração posicional com separação por página
+    // Evita que Y=600 da página 1 colida com Y=600 da página 2
+    // ─────────────────────────────────────────────────────────────────
     const allItems = [];
-    const parseOptions = {
+    let pageCounter = 0;
+
+    await pdfParse(req.file.buffer, {
       pagerender: async (pageData) => {
+        pageCounter++;
+        const pg = pageCounter;
         const tc = await pageData.getTextContent();
         for (const item of tc.items) {
           const txt = (item.str || "").trim();
@@ -581,61 +575,60 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             text: txt,
             x: Math.round(item.transform[4]),
             y: Math.round(item.transform[5]),
+            page: pg,
           });
         }
-        return ""; // pdf-parse espera string; retornamos vazio pois usamos allItems
+        return "";
       },
-    };
-    await pdfParse(req.file.buffer, parseOptions);
+    });
 
-    // ── Auto-detecção de colunas pelo cabeçalho ──
-    // Procura a linha Y onde aparece exatamente "RE" (cabeçalho da tabela)
-    // e lê as posições X de cada coluna a partir dos labels.
-    const _normH = (s) => (s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
-    let _headerY = null;
-    for (const item of allItems) {
-      if (_normH(item.text) === "RE") {
-        if (_headerY === null || item.y > _headerY) _headerY = item.y;
-      }
+    // Agrupa por chave "página-Y" (tolerância 3px no Y)
+    const rowsMap = {};
+    for (const it of allItems) {
+      const yKey = Math.round(it.y / 3) * 3;
+      const key = `${it.page}-${yKey}`;
+      if (!rowsMap[key]) rowsMap[key] = [];
+      rowsMap[key].push(it);
     }
 
-    let COL_RANGES;
-    if (_headerY !== null) {
-      const headerItems = allItems.filter(it => Math.abs(it.y - _headerY) <= 3).sort((a, b) => a.x - b.x);
-      const colPositions = {};
-      for (const item of headerItems) {
-        const t = _normH(item.text);
-        if (t === "RE") colPositions.re = item.x;
-        else if (t === "NOME" || t === "ESTUDANTE") colPositions.nome = item.x;
-        else if (t.includes("NASCIMENTO")) colPositions.dataNasc = item.x;
-        else if (t.includes("FILIACAO")) colPositions.filiacao = item.x;
-        else if (t.includes("RESPONSAVEL") && !t.includes("CPF")) colPositions.responsavel = item.x;
-        else if (t.includes("CPF")) colPositions.cpf = item.x;
-      }
-      if (colPositions.re != null && colPositions.nome != null) {
-        const cols = Object.entries(colPositions).sort((a, b) => a[1] - b[1]);
-        COL_RANGES = {};
-        for (let i = 0; i < cols.length; i++) {
-          const [name, startX] = cols[i];
-          const nextX = i + 1 < cols.length ? cols[i + 1][1] : startX + 200;
-          COL_RANGES[name] = { min: Math.max(0, startX - 10), max: nextX - 5 };
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 2: Detecta cabeçalho por página
+    // O cabeçalho tem "RE do Estudante" (ou "RE") + "Turma" + "CPF"
+    // ─────────────────────────────────────────────────────────────────
+    const headerYByPage = {};
+    for (const [key, items] of Object.entries(rowsMap)) {
+      const [pgStr, yStr] = key.split("-");
+      const pg = Number(pgStr);
+      const y = Number(yStr);
+      const textos = items.map((it) => it.text.toUpperCase());
+      const hasRE = textos.some((t) => /^RE(\s|$)/.test(t) || t.startsWith("RE DO"));
+      const hasTurma = textos.some((t) => t === "TURMA");
+      const hasCPF = textos.some((t) => t === "CPF");
+      if (hasRE && hasTurma && hasCPF) {
+        if (!(pg in headerYByPage) || y > headerYByPage[pg]) {
+          headerYByPage[pg] = y;
         }
-        console.log(`[importar-pdf] Auto-detect colunas OK:`, JSON.stringify(COL_RANGES));
       }
     }
+    console.log(`[importar-pdf-novo] ${pageCounter} página(s), cabeçalhos:`, headerYByPage);
 
-    // Fallback: ranges hardcoded (layout padrão com colunas extras visíveis)
-    if (!COL_RANGES) {
-      COL_RANGES = {
-        re:          { min: 20, max: 85 },
-        nome:        { min: 85, max: 310 },
-        dataNasc:    { min: 310, max: 400 },
-        filiacao:    { min: 400, max: 630 },
-        responsavel: { min: 630, max: 865 },
-        cpf:         { min: 865, max: 960 },
-      };
-      console.log(`[importar-pdf] Auto-detect falhou, usando ranges padrão`);
-    }
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 3: Ranges de colunas calibrados nas posições reais dos dados
+    // (os dados têm X diferentes dos cabeçalhos pelo zoom de renderização)
+    // ─────────────────────────────────────────────────────────────────
+    const COL_RANGES = {
+      re:       { min:  68, max: 130 },   // RE: ~80
+      nome:     { min: 130, max: 270 },   // Estudante: ~154-165
+      dataNasc: { min: 270, max: 373 },   // Data Nasc: ~279-281
+      cpfAluno: { min: 373, max: 487 },   // CPF aluno: ~375-376
+      sexo:     { min: 480, max: 590 },   // Sexo: ~487-489
+      turma:    { min: 580, max: 690 },   // Turma: ~591
+      turno:    { min: 680, max: 800 },   // Turno: ~689
+      serie:    { min: 793, max: 865 },   // Série: ~802
+      contato:  { min: 865, max: 960 },   // Contato Emergencial: ~895
+      nomeResp: { min: 960, max: 1090 },  // Nome Responsável: ~971-984
+      cpfResp:  { min: 1090, max: 1300 }, // CPF Responsável: ~1100-1102
+    };
 
     function getCol(x) {
       for (const [col, range] of Object.entries(COL_RANGES)) {
@@ -644,35 +637,27 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       return null;
     }
 
-    // Agrupa items por linha (Y) → ordena por X dentro de cada linha
-    const rowsMap = {};
-    for (const it of allItems) {
-      // Agrupa Y com tolerância de 3px (variações de renderização)
-      const yKey = Math.round(it.y / 3) * 3;
-      if (!rowsMap[yKey]) rowsMap[yKey] = [];
-      rowsMap[yKey].push(it);
-    }
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 4: Classifica cada linha como "data row" ou "continuation"
+    // Ordena por página asc, depois Y desc (top→bottom dentro de cada página)
+    // ─────────────────────────────────────────────────────────────────
+    const sortedKeys = Object.keys(rowsMap).sort((a, b) => {
+      const [pa, ya] = a.split("-").map(Number);
+      const [pb, yb] = b.split("-").map(Number);
+      if (pa !== pb) return pa - pb;
+      return yb - ya; // Y maior = mais alto na página
+    });
 
-    // ──────────────────────────────────────────────────────────────────
-    // DUAS PASSADAS — resolve nomes longos que ocupam 2+ linhas no PDF
-    //
-    // Passada 1: Identifica cada linha como "data row" (tem RE) ou
-    //            "continuation row" (sem RE — é continuação do nome).
-    //
-    // Passada 2: Mescla continuation rows no data row anterior,
-    //            concatenando o texto de cada coluna.
-    //
-    // Exemplo real:
-    //   y=682 RE=226604 NOME="MARIA FERNANDA RIBEIRO DE SILOS"  ← data row
-    //   y=671 RE=—      NOME="PEREIRA"                          ← continuation
-    //   Resultado: NOME = "MARIA FERNANDA RIBEIRO DE SILOS PEREIRA"
-    // ──────────────────────────────────────────────────────────────────
-    const yKeys = Object.keys(rowsMap).map(Number).sort((a, b) => b - a); // top→bottom (Y decresce)
-
-    // Passada 1 — classifica linhas e extrai colunas
     const classifiedRows = [];
-    for (const yKey of yKeys) {
-      const lineItems = rowsMap[yKey].sort((a, b) => a.x - b.x);
+    for (const key of sortedKeys) {
+      const [pgStr, yStr] = key.split("-");
+      const pg = Number(pgStr);
+      const yKey = Number(yStr);
+      const headerY = headerYByPage[pg];
+      // Ignora cabeçalho, título, rodapé (Y >= headerY ou ausente)
+      if (!headerY || yKey >= headerY) continue;
+
+      const lineItems = rowsMap[key].sort((a, b) => a.x - b.x);
       const rowData = {};
       for (const it of lineItems) {
         const col = getCol(it.x);
@@ -680,166 +665,203 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
           rowData[col] = rowData[col] ? rowData[col] + " " + it.text : it.text;
         }
       }
-      const re = (rowData.re || "").trim();
-      const isDataRow = /^\d{4,7}$/.test(re);
-      classifiedRows.push({ yKey, rowData, isDataRow });
+      const reRaw = (rowData.re || "").replace(/\D/g, "").trim();
+      const isDataRow = /^\d{4,7}$/.test(reRaw);
+      classifiedRows.push({ key, pg, yKey, rowData, isDataRow });
     }
 
-    // Passada 2 — mescla continuation rows no data row anterior
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 5: Merge de continuation rows
+    // Nomes longos podem ter fragmentos ACIMA ou ABAIXO do data row.
+    // Algoritmo: para cada data row, tudo entre ela e o data row
+    // adjacente (anterior/posterior da mesma página) é continuação.
+    // ─────────────────────────────────────────────────────────────────
+
+    // Agrupa data rows por página
+    const dataRowsByPage = {};
+    for (const row of classifiedRows) {
+      if (!row.isDataRow) continue;
+      if (!dataRowsByPage[row.pg]) dataRowsByPage[row.pg] = [];
+      dataRowsByPage[row.pg].push(row);
+    }
+
     const mergedRows = [];
-    for (let i = 0; i < classifiedRows.length; i++) {
-      const row = classifiedRows[i];
-      if (row.isDataRow) {
-        // Inicia um novo registro a partir desta data row
-        const merged = { ...row.rowData };
-        // Olha as linhas seguintes (y menor = mais abaixo) e mescla
-        let j = i + 1;
-        while (j < classifiedRows.length && !classifiedRows[j].isDataRow) {
-          const contRow = classifiedRows[j].rowData;
-          for (const [col, text] of Object.entries(contRow)) {
-            if (col === "re") { j++; continue; } // nunca mescla RE
+
+    for (const pg of Object.keys(dataRowsByPage)) {
+      const dRows = dataRowsByPage[pg]; // já ordenados top→bottom (Y desc)
+      const allPageRows = classifiedRows.filter((r) => r.pg === Number(pg));
+
+      for (let i = 0; i < dRows.length; i++) {
+        const currentRow = dRows[i];
+        // Limites do "bloco" deste aluno: entre o data row anterior e o próximo
+        const upperBound = i > 0 ? dRows[i - 1].yKey : Infinity;
+        const lowerBound = i < dRows.length - 1 ? dRows[i + 1].yKey : -Infinity;
+
+        // Coleta continuations dentro dos limites (exclui os data rows)
+        const continuations = allPageRows.filter(
+          (r) => !r.isDataRow && r.yKey < upperBound && r.yKey > lowerBound
+        );
+
+        const merged = { ...currentRow.rowData };
+        for (const cont of continuations) {
+          for (const [col, text] of Object.entries(cont.rowData)) {
+            if (col === "re") continue; // nunca mescla RE
             merged[col] = merged[col] ? merged[col] + " " + text : text;
           }
-          j++;
         }
         mergedRows.push(merged);
       }
-      // continuation rows são consumidas pelo loop acima, então ignoramos
     }
 
-    // Passada 3 — extrai dados de cada merged row
-    for (const rowData of mergedRows) {
-      const re = (rowData.re || "").trim();
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 6: Limpeza e normalização de cada registro
+    // ─────────────────────────────────────────────────────────────────
+    const pdfEntries = [];
+    let turmaNomePdf = null; // turma identificada pela coluna "Turma" do PDF
+
+    for (const r of mergedRows) {
+      const re = (r.re || "").replace(/\D/g, "").trim();
       if (!/^\d{4,7}$/.test(re)) continue;
 
-      let estudante = (rowData.nome || "").trim();
-      let dataBr = (rowData.dataNasc || "").trim();
-      let responsavel = (rowData.responsavel || "").trim();
-      let cpfResp = (rowData.cpf || "").replace(/\D/g, "");
-      const filiacao = (rowData.filiacao || "").trim();
-
-      // ── Safety net 1: se o CPF vazou para dentro do nome do responsável ──
-      // Nomes brasileiros NUNCA contêm dígitos (são apenas letras, acentos e espaços).
-      // Logo, a primeira sequência numérica encontrada no campo responsável é o CPF.
-      // Isso cobre: "MARIA DA SILVA 12345678901" (com espaço)
-      //          e: "MARIA DA SILVA12345678901" (sem espaço / colunas coladas)
-      if (!cpfResp && responsavel) {
-        const splitMatch = responsavel.match(
-          /^([A-Za-zÀ-ÖØ-öø-ÿÇçÃãÕõÉéÍíÓóÚúÂâÊêÎîÔôÛû\s.'-]+?)\s*(\d{11})$/
-        );
-        if (splitMatch) {
-          responsavel = splitMatch[1].trim();
-          cpfResp = splitMatch[2];
-        }
-      }
-
-      // ── Safety net 2: responsável vazou para filiação (drift de colunas) ──
-      // Se o responsável ficou vazio mas temos CPF, o nome provavelmente
-      // foi classificado como filiação por causa de posição X levemente menor.
-      // Nos PDFs da Secretaria de Educação, filiação e responsável frequentemente
-      // são a mesma pessoa (mãe), então usamos a filiação como fallback.
-      if (!responsavel && cpfResp && filiacao) {
-        responsavel = filiacao;
-      }
-
-      // ── Safety net 3: data de nascimento com filiação colada ──
-      // Se a filiação vazou para o campo dataNasc (drift de colunas),
-      // o campo fica com "01/12/2008 MARIA FRANCINETE DA COSTA..."
-      // Extraímos apenas o padrão dd/mm/yyyy do início e descartamos o resto.
-      if (dataBr && !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
-        const dateAtStart = dataBr.match(/^(\d{2}\/\d{2}\/\d{4})/);
-        if (dateAtStart) {
-          dataBr = dateAtStart[1];
-        } else {
-          dataBr = ""; // não é data
-        }
-      }
-
-      // Se a data vazou para o campo nome (drift de colunas), extrair e limpar
-      const dateInName = estudante.match(/\s+(\d{2}\/\d{2}\/\d{4})\s*$/);
-      if (dateInName) {
-        if (!dataBr || !/^\d{2}\/\d{2}\/\d{4}$/.test(dataBr)) {
-          dataBr = dateInName[1]; // usa a data encontrada no nome
-        }
-        estudante = estudante.replace(/\s+\d{2}\/\d{2}\/\d{4}\s*$/, "").trim();
-      }
-
+      // Nome: remove fragmentos de data e números que possam ter vazado
+      const estudante = (r.nome || "")
+        .replace(/\d{2}\/\d{2}\/\d{4}/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
       if (!estudante) continue;
+
+      // Data de nascimento (extrai dd/mm/yyyy, ignora lixo)
+      const dataMatch = (r.dataNasc || "").match(/(\d{2}\/\d{2}\/\d{4})/);
+      const dataBr = dataMatch ? dataMatch[1] : "";
+
+      // CPF do aluno (11 dígitos)
+      const cpfAlunoDigitos = (r.cpfAluno || "").replace(/\D/g, "");
+      const cpfAluno = cpfAlunoDigitos.length === 11 ? cpfAlunoDigitos : null;
+
+      // Sexo: armazena como "Masculino"/"Feminino" (varchar(10) no BD)
+      const sexoRaw = (r.sexo || "").trim();
+      const sexo = /masculino/i.test(sexoRaw) ? "Masculino"
+                 : /feminino/i.test(sexoRaw)  ? "Feminino"
+                 : null;
+
+      // Série
+      const serie = (r.serie || "").trim() || null;
+
+      // Turma: captura uma vez (todas as linhas terão o mesmo valor)
+      const turmaRaw = (r.turma || "").trim();
+      if (turmaRaw && !turmaNomePdf) {
+        // Normaliza "7º Ano - A" → "7º ANO A"
+        turmaNomePdf = turmaRaw
+          .toUpperCase()
+          .replace(/\s*-\s*/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      // Contato Emergencial = telefone do responsável
+      const contatoRaw = (r.contato || "").trim();
+      const telefone = contatoRaw && contatoRaw !== "-"
+        ? contatoRaw.replace(/\D/g, "").substring(0, 20) || null
+        : null;
+
+      // Nome do responsável
+      const nomeResp = (r.nomeResp || "").trim() || null;
+
+      // CPF do responsável
+      const cpfRespDigitos = (r.cpfResp || "").replace(/\D/g, "");
+      const cpfResponsavel = cpfRespDigitos.length === 11 ? cpfRespDigitos : null;
 
       pdfEntries.push({
         codigo: re,
         estudante,
         dataBr,
-        sexo: null,
-        responsavel: responsavel || null,
-        cpfResponsavel: cpfResp.length === 11 ? cpfResp : null,
+        cpfAluno,
+        sexo,
+        serie,
+        telefone,
+        responsavel: nomeResp,
+        cpfResponsavel,
       });
     }
 
-    // Fallback: se parser posicional não encontrou nada, tenta regex legado
+    console.log(
+      `[importar-pdf-novo] Extraídos: ${pdfEntries.length} alunos | Turma PDF: "${turmaNomePdf}"`
+    );
+
     if (pdfEntries.length === 0) {
-      const { text } = await pdfParse(req.file.buffer);
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      const regexLinha = /^(\d{4,7})([A-Za-zÀ-ÖØ-öø-ÿÇçÃãÕõÉéÍíÓóÚúÂâÊêÎîÔôÛû\s]+?)(\d{2}\/\d{2}\/\d{4})(.*)/;
-      for (const ln of lines) {
-        const m = ln.match(regexLinha);
-        if (!m) continue;
-        const [, codigo, nomeRaw, dataBr, restante] = m;
-        const cpfMatch = (restante || "").match(/(\d{11})$/);
-        const cpfResp = cpfMatch ? cpfMatch[1] : null;
-        const nomes = cpfResp ? restante.slice(0, -11).trim() : (restante || "").trim();
-        // Fallback: tenta separar nomes duplicados
-        let nomeResponsavel = nomes;
-        const ngLen = nomes.length;
-        if (ngLen > 0 && ngLen % 2 === 0) {
-          const half = ngLen / 2;
-          if (nomes.substring(0, half) === nomes.substring(half)) {
-            nomeResponsavel = nomes.substring(half);
-          }
-        }
-        pdfEntries.push({
-          codigo: String(codigo).trim(),
-          estudante: nomeRaw.trim(),
-          dataBr,
-          sexo: null,
-          responsavel: nomeResponsavel || null,
-          cpfResponsavel: cpfResp || null,
+      return res.status(400).json({
+        message:
+          "Nenhum aluno encontrado no PDF. Verifique se o arquivo está no formato EDUCADF 2025.",
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 7: Identificação da turma no BD via coluna "Turma" do PDF
+    // ─────────────────────────────────────────────────────────────────
+    let turma_id = null;
+
+    if (!semTurma) {
+      if (!turmaNomePdf) {
+        return res.status(400).json({
+          message: "Não foi possível identificar a turma no PDF.",
         });
+      }
+
+      // Busca exata (UPPER + TRIM + normaliza " - " → " ")
+      const [[turma]] = await pool.query(
+        `SELECT id, nome FROM turmas
+         WHERE UPPER(TRIM(REPLACE(nome, ' - ', ' '))) = ?
+           AND escola_id = ?
+           AND ano = ?
+         ORDER BY id DESC LIMIT 1`,
+        [turmaNomePdf, escola_id, anoLetivoAtual]
+      );
+
+      if (!turma) {
+        // Retorna estruturado para o frontend exibir modal premium
+        return res.status(404).json({
+          code: "TURMA_NAO_ENCONTRADA",
+          message: `Turma "${turmaNomePdf}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          turmaNaoEncontrada: turmaNomePdf,
+        });
+      }
+
+      turma_id = turma.id;
+      console.log(`[importar-pdf-novo] Turma encontrada: id=${turma_id} nome="${turma.nome}"`);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 8: Situação atual no BD para a turma (duas fontes)
+    // ─────────────────────────────────────────────────────────────────
+    const atuaisIdSet = new Set();
+    const atuais = [];
+
+    if (turma_id) {
+      const [atuaisMatricula] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+         FROM matriculas m
+         INNER JOIN alunos a ON a.id = m.aluno_id
+         WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
+        [turma_id, anoLetivoAtual, escola_id]
+      );
+      const [atuaisAlunos] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante, a.status
+         FROM alunos a
+         WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
+        [turma_id, escola_id]
+      );
+      for (const a of atuaisMatricula) {
+        if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+      }
+      for (const a of atuaisAlunos) {
+        if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
       }
     }
 
-    console.log(`[importar-pdf] Parser posicional extraiu ${pdfEntries.length} alunos`);
-
-    // Situação atual no DB — DUAS fontes para garantir cobertura total:
-    // 1) Alunos com matrícula ativa na turma+ano (fonte canônica)
-    // 2) Alunos ativos na tabela alunos (turma_id) que podem não ter matrícula ativa
-    //    (ex: aluno inserido manualmente ou com matrícula dessincronizada)
-    const [atuaisMatricula] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
-       FROM matriculas m
-       INNER JOIN alunos a ON a.id = m.aluno_id
-       WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
-      [turma_id, anoLetivoAtual, escola_id]
-    );
-    const [atuaisAlunos] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, a.status
-       FROM alunos a
-       WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
-      [turma_id, escola_id]
-    );
-    // Merge sem duplicatas (por aluno.id)
-    const atuaisIdSet = new Set();
-    const atuais = [];
-    for (const a of atuaisMatricula) {
-      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
-    }
-    for (const a of atuaisAlunos) {
-      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
-    }
+    const normName = (s) =>
+      (s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
-    // ── Match por nome normalizado (fallback para migração ieducar→educadf) ──
-    const normName = (s) => (s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
     const atuaisNomeMap = new Map();
     for (const a of atuais) {
       const key = normName(a.estudante);
@@ -847,7 +869,6 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     }
 
     const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
-
     const toInsert = [];
     const toReactivate = [];
     let jaExistiam = 0;
@@ -857,14 +878,16 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       const cod = String(e.codigo);
       let atual = atuaisMap.get(cod);
 
-      // Fallback: match por nome normalizado (cobre migração ieducar→educadf)
+      // Fallback: match por nome (cobre migração ieducar→educadf com RE diferente)
       if (!atual) {
         const nomeKey = normName(e.estudante);
         const porNome = atuaisNomeMap.get(nomeKey);
         if (porNome) {
-          console.log(`[importar-pdf] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`);
+          console.log(
+            `[importar-pdf-novo] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`
+          );
           await pool.query(
-            'UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?',
+            "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
             [e.codigo, porNome.id, escola_id]
           );
           atualizadosCodigo++;
@@ -880,226 +903,172 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       } else if (atual.status === "inativo") {
         toReactivate.push(e);
       } else {
+        // Aluno já existe e está ativo — complementa campos NULL
         jaExistiam++;
+        const sets = [];
+        const params = [];
+
         const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
         if (dataValida) {
+          sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+          params.push(e.dataBr);
+        }
+        if (e.sexo) {
+          sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+          params.push(e.sexo);
+        }
+        if (e.cpfAluno) {
+          sets.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
+          params.push(e.cpfAluno);
+        }
+        if (e.serie) {
+          sets.push("serie = IF(serie IS NULL OR serie = '', ?, serie)");
+          params.push(e.serie);
+        }
+        if (sets.length > 0) {
+          params.push(atual.id, escola_id);
           await pool.query(
-            `UPDATE alunos SET data_nascimento = STR_TO_DATE(?, '%d/%m/%Y')
-             WHERE id = ? AND escola_id = ? AND data_nascimento IS NULL`,
-            [e.dataBr, atual.id, escola_id]
+            `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
+            params
           );
         }
-        // Vincula responsável APENAS se o PDF trouxer CPF (chave de identificação)
-        // Regra: se BD já tem nome, preserva; só preenche se BD estiver vazio.
-        if (e.cpfResponsavel && e.responsavel) {
-          try {
-            const [respResult] = await pool.query(
-              `INSERT INTO responsaveis (nome, cpf)
-               VALUES (?, ?)
-               ON DUPLICATE KEY UPDATE
-                 id = LAST_INSERT_ID(id),
-                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
-              [e.responsavel, e.cpfResponsavel]
-            );
-            const responsavelId = respResult.insertId;
-            if (responsavelId && atual.id) {
-              const [[vinculoExiste]] = await pool.query(
-                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
-                [responsavelId, atual.id, escola_id]
-              );
-              if (!vinculoExiste) {
-                await pool.query(
-                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
-                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
-                  [escola_id, responsavelId, atual.id]
-                );
-              }
-            }
-          } catch (respErr) {
-            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno existente ${e.codigo}:`, respErr.message);
-          }
-        }
+
+        await upsertResponsavelPdf(pool, e, atual.id, escola_id);
       }
     }
 
     if (atualizadosCodigo > 0) {
-      console.log(`[importar-pdf] ${atualizadosCodigo} códigos atualizados (ieducar → educadf)`);
+      console.log(`[importar-pdf-novo] ${atualizadosCodigo} código(s) atualizado(s) (ieducar→educadf)`);
     }
 
-    // Inserir novos (e lidar com possíveis alunos existentes em outras turmas via DUPLICATE KEY)
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 9: Inserir novos alunos
+    // ─────────────────────────────────────────────────────────────────
     let inseridos = 0;
     for (const e of toInsert) {
-      // Se dataBr é vazio/inválido, usa NULL direto (evita STR_TO_DATE com lixo)
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
-      const insertParams = dataValida
-        ? [e.codigo, e.estudante, e.dataBr, turma_id, escola_id]
-        : [e.codigo, e.estudante, turma_id, escola_id];
-      let insertSql = dataValida
-        ? `INSERT INTO alunos (codigo, estudante, data_nascimento, turma_id, escola_id, status)
-           VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, 'ativo')
-           ON DUPLICATE KEY UPDATE 
-             id = LAST_INSERT_ID(id),
-             estudante = VALUES(estudante),
-             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
-             turma_id = VALUES(turma_id),
-             status = 'ativo'`
-        : `INSERT INTO alunos (codigo, estudante, turma_id, escola_id, status)
-           VALUES (?, ?, ?, ?, 'ativo')
-           ON DUPLICATE KEY UPDATE 
-             id = LAST_INSERT_ID(id),
-             estudante = VALUES(estudante),
-             turma_id = VALUES(turma_id),
-             status = 'ativo'`;
-      // Se o PDF trouxer sexo (raro), inclui na query
-      if (e.sexo) {
-        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
-         VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
-         ON DUPLICATE KEY UPDATE 
-           id = LAST_INSERT_ID(id),
-           estudante = VALUES(estudante),
-           turma_id = VALUES(turma_id),
-           status = 'ativo'`;
-        insertParams.splice(3, 0, e.sexo); // insere sexo após dataBr
+      const baseParams = [e.codigo, e.estudante];
+      let insertSql;
+
+      if (dataValida) {
+        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, cpf, serie, turma_id, escola_id, status)
+          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
+            serie = IF(serie IS NULL OR serie = '', VALUES(serie),  serie),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams.push(e.dataBr, e.sexo || null, e.cpfAluno || null, e.serie || null, turma_id, escola_id);
+      } else {
+        insertSql = `INSERT INTO alunos (codigo, estudante, sexo, cpf, serie, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
+            serie = IF(serie IS NULL OR serie = '', VALUES(serie),  serie),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams.push(e.sexo || null, e.cpfAluno || null, e.serie || null, turma_id, escola_id);
       }
-      const [result] = await pool.query(insertSql, insertParams);
-      
+
+      const [result] = await pool.query(insertSql, baseParams);
       const alunoId = result.insertId;
-      if (alunoId) {
+
+      if (alunoId && turma_id) {
         const [matr] = await pool.query(
           "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
           [alunoId, anoLetivoAtual, escola_id]
         );
         if (matr.length > 0) {
-          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
         } else {
           await pool.query(
             "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
             [escola_id, alunoId, turma_id, anoLetivoAtual]
           );
         }
-
-        // ── RESPONSÁVEL (background) ──
-        // Insere/atualiza responsável e cria vínculo com o aluno.
-        // Regra de proteção: se o BD já tem nome preenchido, não sobrescreve.
-        // Só preenche nome se o BD estiver NULL ou vazio.
-        if (e.cpfResponsavel && e.responsavel) {
-          try {
-            // INSERT ou UPDATE pelo CPF (chave natural)
-            const [respResult] = await pool.query(
-              `INSERT INTO responsaveis (nome, cpf)
-               VALUES (?, ?)
-               ON DUPLICATE KEY UPDATE
-                 id = LAST_INSERT_ID(id),
-                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
-              [e.responsavel, e.cpfResponsavel]
-            );
-            const responsavelId = respResult.insertId;
-
-            if (responsavelId) {
-              // Cria vínculo aluno ↔ responsável (se não existir)
-              const [[vinculoExiste]] = await pool.query(
-                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
-                [responsavelId, alunoId, escola_id]
-              );
-              if (!vinculoExiste) {
-                await pool.query(
-                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
-                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
-                  [escola_id, responsavelId, alunoId]
-                );
-              }
-            }
-          } catch (respErr) {
-            // Erro ao inserir responsável não deve bloquear a importação dos alunos
-            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno ${e.codigo}:`, respErr.message);
-          }
-        }
       }
+
+      if (alunoId) await upsertResponsavelPdf(pool, e, alunoId, escola_id);
       inseridos++;
     }
 
-    // Reativar inativos que voltaram
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 10: Reativar inativos que voltaram
+    // ─────────────────────────────────────────────────────────────────
     let reativados = 0;
     for (const e of toReactivate) {
       const atualObj = atuaisMap.get(String(e.codigo));
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+
+      const sets = ["status = 'ativo'", "turma_id = ?"];
+      const params = [turma_id];
+
       if (dataValida) {
-        await pool.query(
-          `UPDATE alunos SET status='ativo', turma_id = ?,
-           data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))
-           WHERE codigo = ? AND escola_id = ?`,
-          [turma_id, e.dataBr, e.codigo, escola_id]
-        );
-      } else {
-        await pool.query(
-          "UPDATE alunos SET status='ativo', turma_id = ? WHERE codigo = ? AND escola_id = ?",
-          [turma_id, e.codigo, escola_id]
-        );
+        sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+        params.push(e.dataBr);
       }
-      
-      const alunoId = atualObj.id;
-      if (alunoId) {
+      if (e.sexo) {
+        sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+        params.push(e.sexo);
+      }
+      if (e.cpfAluno) {
+        sets.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
+        params.push(e.cpfAluno);
+      }
+      if (e.serie) {
+        sets.push("serie = IF(serie IS NULL OR serie = '', ?, serie)");
+        params.push(e.serie);
+      }
+      params.push(e.codigo, escola_id);
+
+      await pool.query(
+        `UPDATE alunos SET ${sets.join(", ")} WHERE codigo = ? AND escola_id = ?`,
+        params
+      );
+
+      const alunoId = atualObj?.id;
+      if (alunoId && turma_id) {
         const [matr] = await pool.query(
           "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
           [alunoId, anoLetivoAtual, escola_id]
         );
         if (matr.length > 0) {
-          await pool.query("UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?", [turma_id, matr[0].id]);
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
         } else {
           await pool.query(
             "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
             [escola_id, alunoId, turma_id, anoLetivoAtual]
           );
         }
-
-        // ── RESPONSÁVEL (background — reativação) ──
-        // Regra de proteção: se BD já tem nome, preserva; só preenche se BD vazio.
-        if (e.cpfResponsavel && e.responsavel) {
-          try {
-            const [respResult] = await pool.query(
-              `INSERT INTO responsaveis (nome, cpf)
-               VALUES (?, ?)
-               ON DUPLICATE KEY UPDATE
-                 id = LAST_INSERT_ID(id),
-                 nome = IF(nome IS NULL OR nome = '', VALUES(nome), nome)`,
-              [e.responsavel, e.cpfResponsavel]
-            );
-            const responsavelId = respResult.insertId;
-            if (responsavelId) {
-              const [[vinculoExiste]] = await pool.query(
-                "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
-                [responsavelId, alunoId, escola_id]
-              );
-              if (!vinculoExiste) {
-                await pool.query(
-                  `INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo)
-                   VALUES (?, ?, ?, 'RESPONSAVEL', 1)`,
-                  [escola_id, responsavelId, alunoId]
-                );
-              }
-            }
-          } catch (respErr) {
-            console.warn(`[importar-pdf] Aviso: falha ao vincular responsável do aluno reativado ${e.codigo}:`, respErr.message);
-          }
-        }
       }
-
+      if (alunoId) await upsertResponsavelPdf(pool, e, alunoId, escola_id);
       reativados++;
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    // DETECÇÃO DE AUSENTES (alunos no banco que NÃO estão no PDF)
-    // Não inativa automaticamente — retorna a lista para confirmação
-    // pelo secretário no frontend via modal de confirmação.
-    // ──────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 11: Detectar ausentes (alunos no BD que não estão no PDF)
+    // Não inativa automaticamente — retorna para confirmação manual
+    // ─────────────────────────────────────────────────────────────────
     const pendentesInativacao = [];
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
       const cod = String(atual.codigo);
       const nomeKey = normName(atual.estudante);
-      // Se não está no PDF (nem por código, nem por nome) → ausente
       const noCodigoPdf = entradaSet.has(cod);
-      const noNomePdf = pdfEntries.some(e => normName(e.estudante) === nomeKey);
+      const noNomePdf = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
       if (!noCodigoPdf && !noNomePdf) {
         pendentesInativacao.push({
           id: atual.id,
@@ -1111,12 +1080,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     if (pendentesInativacao.length > 0) {
       console.log(
-        `[importar-pdf] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) no PDF — pendentes de confirmação para inativação`
+        `[importar-pdf-novo] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) — pendentes de confirmação`
       );
     }
 
     console.log(
-      `[importar-pdf] → localizados: ${pdfEntries.length}, inseridos: ${inseridos}, reativados: ${reativados}, jáExistiam: ${jaExistiam}, códigosAtualizados: ${atualizadosCodigo}, pendentesInativacao: ${pendentesInativacao.length}`
+      `[importar-pdf-novo] localizados:${pdfEntries.length} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} pendentes:${pendentesInativacao.length}`
     );
 
     return res.json({
@@ -1135,8 +1104,564 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Upsert de responsável com telefone (novo campo)
+// Regra de proteção: não sobrescreve nome/telefone já existente no BD
+// ─────────────────────────────────────────────────────────────────────────────
+async function upsertResponsavelPdf(pool, e, alunoId, escola_id) {
+  if (!e.cpfResponsavel) return; // CPF é chave natural — sem ele não há upsert seguro
+  const nomeResp = (e.responsavel || "").trim();
+  try {
+    const [respResult] = await pool.query(
+      `INSERT INTO responsaveis (nome, cpf, telefone)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         id       = LAST_INSERT_ID(id),
+         nome     = IF(nome     IS NULL OR nome     = '', VALUES(nome),     nome),
+         telefone = IF(telefone IS NULL OR telefone = '', VALUES(telefone), telefone)`,
+      [nomeResp || null, e.cpfResponsavel, e.telefone || null]
+    );
+    const responsavelId = respResult.insertId;
+    if (responsavelId && alunoId) {
+      const [[vinculo]] = await pool.query(
+        "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+        [responsavelId, alunoId, escola_id]
+      );
+      if (!vinculo) {
+        await pool.query(
+          "INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo) VALUES (?, ?, ?, 'RESPONSAVEL', 1)",
+          [escola_id, responsavelId, alunoId]
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[importar-pdf] Falha ao vincular responsável do aluno ${e.codigo}:`, err.message);
+  }
+}
+
+
 /* ============================================================================
- * 11b) INATIVAR EM LOTE (confirmação manual pelo secretário)
+ * 11b) IMPORTAR CSV — Formato EDUCADF (portal oficial SEEDF)
+
+
+
+
+
+
+ * POST /api/alunos/importar-csv (arquivo: file)
+ *
+ * Colunas esperadas (separador ;):
+ *   Nº | RE do Estudante | NOME | MATRÍCULA | DATA_DE_NASCIMENTO | CPF | SEXO |
+ *   CONTATO_EMERGENCIAL | STATUS_MATRÍCULA | INÍCIO DA MATRÍCULA | FIM DA MATRÍCULA |
+ *   OUTRAS INFORMAÇÕES | NOME FILIAÇÃO 1 | CPF FILIAÇÃO 1 | NOME FILIAÇÃO 2 |
+ *   CPF FILIAÇÃO 2 | NOME RESPONSÁVEL | CPF RESPONSÁVEL | ENDEREÇO | ANEES
+ *
+ * Turma: extraída do nome do arquivo (ex: "7º ANO A.csv" → "7º ANO A")
+ *        confirmada pelo título da linha 0 do CSV
+ * Série e Turno: já cadastrados pelo secretário — não sobrescritos
+ * ========================================================================== */
+router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "CSV não enviado." });
+  }
+
+  try {
+    const { escola_id } = req.user;
+    const anoLetivoAtual =
+      typeof anoLetivoPadrao === "function"
+        ? anoLetivoPadrao()
+        : String(new Date().getFullYear());
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 1: Decodifica CSV (UTF-8 + BOM aware)
+    // ─────────────────────────────────────────────────────────────────
+    const raw = req.file.buffer.toString("utf8").replace(/^\uFEFF/, "");
+    const lines = raw.split(/\r?\n/).filter((l) => l.trim());
+
+    if (lines.length < 3) {
+      return res.status(400).json({ message: "CSV inválido ou vazio." });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 2: Identificação da turma
+    // Fonte A: nome do arquivo (principal)
+    // Fonte B: título linha 0 do CSV (confirmação)
+    // ─────────────────────────────────────────────────────────────────
+    const normTurma = (s) =>
+      (s || "")
+        .toUpperCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s*-\s*/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    // Fonte A: nome do arquivo
+    let turmaNome = (req.file.originalname || "")
+      .replace(/\.csv$/i, "")
+      .replace(/Âº/g, "º")
+      .replace(/Âª/g, "ª")
+      .trim();
+
+    // Fonte B: linha 0 do CSV contém "Lista de alunos da Turma 7º Ano - A"
+    const linha0 = lines[0].replace(/"/g, "").trim();
+    const matchTitulo = linha0.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
+    if (matchTitulo) {
+      const turmaTitulo = matchTitulo[1].trim();
+      // Usa o título como fonte se o nome do arquivo não tiver informação
+      if (!turmaNome) turmaNome = turmaTitulo;
+      // Log de confirmação cruzada
+      console.log(
+        `[importar-csv] Turma — arquivo: "${turmaNome}" | título CSV: "${turmaTitulo}"`
+      );
+    }
+
+    if (!turmaNome) {
+      return res
+        .status(400)
+        .json({ message: "Não foi possível identificar a turma pelo nome do arquivo CSV." });
+    }
+
+    // Busca turma no BD (nome normalizado, sem acento, sem " - ")
+    const turmaNomeNorm = normTurma(turmaNome);
+    const [turmasEncontradas] = await pool.query(
+      `SELECT id, nome, serie, turno
+       FROM turmas
+       WHERE UPPER(TRIM(REPLACE(
+         REPLACE(
+           REPLACE(nome COLLATE utf8mb4_general_ci, 'Â', ''),
+           'º', 'º'
+         ), ' - ', ' '
+       ))) = ? AND escola_id = ? AND ano = ?
+       ORDER BY id DESC`,
+      [turmaNomeNorm, escola_id, anoLetivoAtual]
+    );
+
+    if (turmasEncontradas.length === 0) {
+      return res.status(404).json({
+        code: "TURMA_NAO_ENCONTRADA",
+        message: `Turma "${turmaNome}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+        turmaNaoEncontrada: turmaNome,
+      });
+    }
+
+    // Usa a primeira turma encontrada (pode haver uma por turno — secretário controla)
+    const turma = turmasEncontradas[0];
+    const turma_id = turma.id;
+    console.log(
+      `[importar-csv] Turma encontrada: id=${turma_id} nome="${turma.nome}" turno="${turma.turno}"`
+    );
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 3: Parse do CSV
+    // Linha 0 = título escola | Linha 1 = cabeçalho | Linhas 2+ = dados
+    // ─────────────────────────────────────────────────────────────────
+    function parseCSVLine(line) {
+      const campos = [];
+      let campo = "";
+      let emAspas = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (emAspas && line[i + 1] === '"') {
+            campo += '"';
+            i++;
+            continue;
+          }
+          emAspas = !emAspas;
+          continue;
+        }
+        if (c === ";" && !emAspas) {
+          campos.push(campo.trim());
+          campo = "";
+          continue;
+        }
+        campo += c;
+      }
+      campos.push(campo.trim());
+      return campos;
+    }
+
+    const headerCols = parseCSVLine(lines[1]);
+    const idxRE    = headerCols.findIndex((h) => /RE\s*do\s*Estudante/i.test(h));
+    const idxNome  = headerCols.findIndex((h) => /^NOME$/i.test(h));
+    const idxNasc  = headerCols.findIndex((h) => /DATA.*NASCIMENTO/i.test(h));
+    const idxCPF   = headerCols.findIndex((h) => /^CPF$/i.test(h));
+    const idxSexo  = headerCols.findIndex((h) => /^SEXO$/i.test(h));
+    const idxTel   = headerCols.findIndex((h) => /CONTATO.*EMERGENCIAL/i.test(h));
+    const idxStatus = headerCols.findIndex((h) => /STATUS.*MATR/i.test(h));
+    const idxResp  = headerCols.findIndex((h) => /NOME\s+RESPONS/i.test(h));
+    const idxCPFR  = headerCols.findIndex((h) => /CPF\s+RESPONS/i.test(h));
+    const idxEnd   = headerCols.findIndex((h) => /ENDERE/i.test(h));
+    const idxAnees = headerCols.findIndex((h) => /ANEES|OUTRAS\s+INFORMA/i.test(h));
+
+    if (idxRE < 0 || idxNome < 0) {
+      return res.status(400).json({
+        message:
+          "CSV fora do formato esperado. Verifique se é o arquivo exportado pelo portal EDUCADF.",
+      });
+    }
+
+    const pdfEntries = [];
+    for (let i = 2; i < lines.length; i++) {
+      const campos = parseCSVLine(lines[i]);
+      const re = (campos[idxRE] || "").replace(/\D/g, "").trim();
+      if (!/^\d{4,7}$/.test(re)) continue;
+
+      const estudante = (campos[idxNome] || "").trim();
+      if (!estudante) continue;
+
+      const dataBr = ((campos[idxNasc] || "").match(/(\d{2}\/\d{2}\/\d{4})/) || [])[1] || "";
+      const cpfAlunoRaw = (campos[idxCPF] || "").replace(/\D/g, "");
+      const cpfAluno = cpfAlunoRaw.length === 11 ? cpfAlunoRaw : null;
+      const sexoRaw = (campos[idxSexo] || "").trim();
+      const sexo =
+        /masculino/i.test(sexoRaw)
+          ? "Masculino"
+          : /feminino/i.test(sexoRaw)
+          ? "Feminino"
+          : null;
+      const telefone =
+        idxTel >= 0
+          ? (campos[idxTel] || "").replace(/\D/g, "").substring(0, 20) || null
+          : null;
+      const nomeResp = idxResp >= 0 ? (campos[idxResp] || "").trim() || null : null;
+      const cpfRespRaw = idxCPFR >= 0 ? (campos[idxCPFR] || "").replace(/\D/g, "") : "";
+      const cpfResponsavel = cpfRespRaw.length === 11 ? cpfRespRaw : null;
+      const endereco = idxEnd >= 0 ? (campos[idxEnd] || "").trim() || null : null;
+      const anees = idxAnees >= 0 ? (campos[idxAnees] || "").trim() || null : null;
+
+      pdfEntries.push({
+        codigo: re,
+        estudante,
+        dataBr,
+        cpfAluno,
+        sexo,
+        telefone,
+        responsavel: nomeResp,
+        cpfResponsavel,
+        endereco,
+        anees,
+      });
+    }
+
+    console.log(`[importar-csv] Extraídos: ${pdfEntries.length} alunos | Turma: "${turma.nome}"`);
+
+    if (pdfEntries.length === 0) {
+      return res.status(400).json({
+        message: "Nenhum aluno encontrado no CSV. Verifique se o arquivo está no formato correto.",
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 4: Situação atual no BD (duas fontes — matrícula e aluno direto)
+    // ─────────────────────────────────────────────────────────────────
+    const [atuaisMatricula] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+       FROM matriculas m
+       INNER JOIN alunos a ON a.id = m.aluno_id
+       WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
+      [turma_id, anoLetivoAtual, escola_id]
+    );
+    const [atuaisAlunos] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante, a.status
+       FROM alunos a
+       WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
+      [turma_id, escola_id]
+    );
+
+    const atuaisIdSet = new Set();
+    const atuais = [];
+    for (const a of atuaisMatricula) {
+      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+    }
+    for (const a of atuaisAlunos) {
+      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+    }
+
+    const normName = (s) =>
+      (s || "")
+        .toUpperCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
+    const atuaisNomeMap = new Map();
+    for (const a of atuais) {
+      const key = normName(a.estudante);
+      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+    }
+
+    const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
+    const toInsert = [];
+    const toReactivate = [];
+    let jaExistiam = 0;
+    let atualizadosCodigo = 0;
+
+    for (const e of pdfEntries) {
+      const cod = String(e.codigo);
+      let atual = atuaisMap.get(cod);
+
+      if (!atual) {
+        const nomeKey = normName(e.estudante);
+        const porNome = atuaisNomeMap.get(nomeKey);
+        if (porNome) {
+          console.log(
+            `[importar-csv] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`
+          );
+          await pool.query(
+            "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
+            [e.codigo, porNome.id, escola_id]
+          );
+          atualizadosCodigo++;
+          atual = porNome;
+          atuaisMap.set(cod, porNome);
+          atuaisNomeMap.delete(nomeKey);
+          entradaSet.add(String(porNome.codigo));
+        }
+      }
+
+      if (!atual) {
+        toInsert.push(e);
+      } else if (atual.status === "inativo") {
+        toReactivate.push(e);
+      } else {
+        // Aluno ativo — complementa campos NULL sem sobrescrever existentes
+        jaExistiam++;
+        const sets = [];
+        const params = [];
+        const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+        if (dataValida) {
+          sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+          params.push(e.dataBr);
+        }
+        if (e.sexo) {
+          sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+          params.push(e.sexo);
+        }
+        if (e.cpfAluno) {
+          sets.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
+          params.push(e.cpfAluno);
+        }
+        if (e.anees) {
+          sets.push("anees = IF(anees IS NULL OR anees = '', ?, anees)");
+          params.push(e.anees);
+        }
+        if (sets.length > 0) {
+          params.push(atual.id, escola_id);
+          await pool.query(
+            `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
+            params
+          );
+        }
+        await upsertResponsavelCsv(pool, e, atual.id, escola_id);
+      }
+    }
+
+    if (atualizadosCodigo > 0) {
+      console.log(`[importar-csv] ${atualizadosCodigo} código(s) atualizado(s)`);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 5: Inserir novos alunos
+    // ─────────────────────────────────────────────────────────────────
+    let inseridos = 0;
+    for (const e of toInsert) {
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+
+      let insertSql, baseParams;
+      if (dataValida) {
+        insertSql = `INSERT INTO alunos
+          (codigo, estudante, data_nascimento, sexo, cpf, anees, turma_id, escola_id, status)
+          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
+            anees = IF(anees IS NULL OR anees = '', VALUES(anees), anees),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams = [
+          e.codigo, e.estudante, e.dataBr,
+          e.sexo || null, e.cpfAluno || null, e.anees || null,
+          turma_id, escola_id,
+        ];
+      } else {
+        insertSql = `INSERT INTO alunos
+          (codigo, estudante, sexo, cpf, anees, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
+            anees = IF(anees IS NULL OR anees = '', VALUES(anees), anees),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams = [
+          e.codigo, e.estudante,
+          e.sexo || null, e.cpfAluno || null, e.anees || null,
+          turma_id, escola_id,
+        ];
+      }
+
+      const [result] = await pool.query(insertSql, baseParams);
+      const alunoId = result.insertId;
+
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+        await upsertResponsavelCsv(pool, e, alunoId, escola_id);
+      }
+      inseridos++;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 6: Reativar inativos
+    // ─────────────────────────────────────────────────────────────────
+    let reativados = 0;
+    for (const e of toReactivate) {
+      const atualObj = atuaisMap.get(String(e.codigo));
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+
+      const sets = ["status = 'ativo'", "turma_id = ?"];
+      const params = [turma_id];
+      if (dataValida) {
+        sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+        params.push(e.dataBr);
+      }
+      if (e.sexo)    { sets.push("sexo  = IF(sexo  IS NULL OR sexo  = '', ?, sexo)");  params.push(e.sexo); }
+      if (e.cpfAluno){ sets.push("cpf   = IF(cpf   IS NULL OR cpf   = '', ?, cpf)");   params.push(e.cpfAluno); }
+      if (e.anees)   { sets.push("anees = IF(anees IS NULL OR anees = '', ?, anees)"); params.push(e.anees); }
+      params.push(e.codigo, escola_id);
+
+      await pool.query(
+        `UPDATE alunos SET ${sets.join(", ")} WHERE codigo = ? AND escola_id = ?`,
+        params
+      );
+
+      const alunoId = atualObj?.id;
+      if (alunoId) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+        await upsertResponsavelCsv(pool, e, alunoId, escola_id);
+      }
+      reativados++;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 7: Detectar ausentes (alunos no BD mas não no CSV)
+    // ─────────────────────────────────────────────────────────────────
+    const pendentesInativacao = [];
+    for (const atual of atuais) {
+      if (atual.status !== "ativo") continue;
+      const cod = String(atual.codigo);
+      const nomeKey = normName(atual.estudante);
+      const noCodigoCsv = entradaSet.has(cod);
+      const noNomeCsv = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
+      if (!noCodigoCsv && !noNomeCsv) {
+        pendentesInativacao.push({
+          id: atual.id,
+          codigo: atual.codigo,
+          estudante: atual.estudante,
+        });
+      }
+    }
+
+    if (pendentesInativacao.length > 0) {
+      console.log(
+        `[importar-csv] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) — pendentes de confirmação`
+      );
+    }
+
+    console.log(
+      `[importar-csv] localizados:${pdfEntries.length} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} pendentes:${pendentesInativacao.length}`
+    );
+
+    return res.json({
+      localizados: pdfEntries.length,
+      inseridos,
+      reativados,
+      jaExistiam,
+      codigosAtualizados: atualizadosCodigo,
+      inativados: 0,
+      pendentesInativacao,
+      listaAlunos: pdfEntries,
+    });
+  } catch (err) {
+    console.error("Erro ao processar /importar-csv:", err);
+    return res.status(500).json({ message: "Erro ao processar CSV.", error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Upsert de responsável com endereço e telefone (via CSV)
+// Regra de proteção: não sobrescreve dados já preenchidos no BD
+// ─────────────────────────────────────────────────────────────────────────────
+async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
+  if (!e.cpfResponsavel) return; // CPF é chave natural obrigatória
+  const nomeResp = (e.responsavel || "").trim();
+  try {
+    const [respResult] = await pool.query(
+      `INSERT INTO responsaveis (nome, cpf, telefone, endereco)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         id       = LAST_INSERT_ID(id),
+         nome     = IF(nome     IS NULL OR nome     = '', VALUES(nome),     nome),
+         telefone = IF(telefone IS NULL OR telefone = '', VALUES(telefone), telefone),
+         endereco = IF(endereco IS NULL OR endereco = '', VALUES(endereco), endereco)`,
+      [nomeResp || null, e.cpfResponsavel, e.telefone || null, e.endereco || null]
+    );
+    const responsavelId = respResult.insertId;
+    if (responsavelId && alunoId) {
+      const [[vinculo]] = await pool.query(
+        "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+        [responsavelId, alunoId, escola_id]
+      );
+      if (!vinculo) {
+        await pool.query(
+          "INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo) VALUES (?, ?, ?, 'RESPONSAVEL', 1)",
+          [escola_id, responsavelId, alunoId]
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[importar-csv] Falha ao vincular responsável do aluno ${e.codigo}:`, err.message);
+  }
+}
+
+/* ============================================================================
+ * 11c) INATIVAR EM LOTE (confirmação manual pelo secretário)
  * POST /api/alunos/inativar-lote
  * Body: { alunoIds: [1, 2, 3] }
  *
