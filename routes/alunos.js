@@ -2010,6 +2010,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               o.descricao,
               o.registro_interno,
               o.convocar_responsavel,
+              DATE_FORMAT(o.data_convocacao, '%d/%m/%Y') AS data_convocacao,
               o.dias_suspensao,
               o.atenuantes,
               o.agravantes,
@@ -2041,6 +2042,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
               o.descricao,
               o.registro_interno,
               o.convocar_responsavel,
+              DATE_FORMAT(o.data_convocacao, '%d/%m/%Y') AS data_convocacao,
               o.dias_suspensao,
               NULL AS atenuantes,
               NULL AS agravantes,
@@ -2086,7 +2088,7 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const { id } = req.params;
     const { escola_id } = req.user;
     const usuarioRegistroId = req.user.usuarioId || req.user.id || req.user.usuario_id;
-    const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao, atenuantes, agravantes } = req.body;
+    const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao, atenuantes, agravantes, dataConvocacao } = req.body;
 
     if (!data || !motivo) {
       return res.status(400).json({ message: "Preencha os campos obrigatórios." });
@@ -2095,22 +2097,24 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     // Serializar atenuantes/agravantes como JSON (Art. 34/35)
     const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
     const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
+    // Normalizar data de convocação (aceita YYYY-MM-DD ou null/undefined)
+    const dataConvocacaoVal = dataConvocacao || null;
 
-    // Fallback: se atenuantes/agravantes ainda não existirem no BD de produção, insere sem elas
+    // Fallback: se atenuantes/agravantes ou data_convocacao ainda não existirem no BD, insere sem elas
     let result;
     try {
       [result] = await pool.query(
         `INSERT INTO ocorrencias_disciplinares
            (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
-            convocar_responsavel, dias_suspensao, atenuantes, agravantes, usuario_registro_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            convocar_responsavel, data_convocacao, dias_suspensao, atenuantes, agravantes, usuario_registro_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, escola_id, data, motivo, tipoOcorrencia || null, descricao || null,
-         registroInterno || null, convocarResponsavel ? 1 : 0, diasSuspensao || null,
-         atenuantesJson, agravantesJson, usuarioRegistroId]
+         registroInterno || null, convocarResponsavel ? 1 : 0, dataConvocacaoVal,
+         diasSuspensao || null, atenuantesJson, agravantesJson, usuarioRegistroId]
       );
     } catch (insertErr) {
       if (insertErr.code === 'ER_BAD_FIELD_ERROR') {
-        // Colunas atenuantes/agravantes ausentes — insere sem elas
+        // Colunas ausentes — insere sem elas
         [result] = await pool.query(
           `INSERT INTO ocorrencias_disciplinares
              (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
@@ -2309,20 +2313,36 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
     const usuarioEdicaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
-    const { descricao, registroInterno, convocarResponsavel, atenuantes, agravantes } = req.body;
+    const { descricao, registroInterno, convocarResponsavel, atenuantes, agravantes, dataConvocacao } = req.body;
 
     // Serializar atenuantes/agravantes como JSON (Art. 34/35)
     const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
     const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
+    const dataConvocacaoVal = dataConvocacao || null;
 
-    await pool.query(
-      `UPDATE ocorrencias_disciplinares 
-       SET descricao = ?, registro_interno = ?, convocar_responsavel = ?,
-           atenuantes = ?, agravantes = ?, usuario_edicao_id = ?
-       WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
-      [descricao, registroInterno || null, convocarResponsavel ? 1 : 0,
-       atenuantesJson, agravantesJson, usuarioEdicaoId, ocorrenciaId, id, escola_id]
-    );
+    try {
+      await pool.query(
+        `UPDATE ocorrencias_disciplinares
+         SET descricao = ?, registro_interno = ?, convocar_responsavel = ?,
+             data_convocacao = ?, atenuantes = ?, agravantes = ?, usuario_edicao_id = ?
+         WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+        [descricao, registroInterno || null, convocarResponsavel ? 1 : 0,
+         dataConvocacaoVal, atenuantesJson, agravantesJson, usuarioEdicaoId, ocorrenciaId, id, escola_id]
+      );
+    } catch (updErr) {
+      if (updErr.code === 'ER_BAD_FIELD_ERROR') {
+        // Fallback sem data_convocacao/atenuantes/agravantes
+        await pool.query(
+          `UPDATE ocorrencias_disciplinares
+           SET descricao = ?, registro_interno = ?, convocar_responsavel = ?, usuario_edicao_id = ?
+           WHERE id = ? AND aluno_id = ? AND escola_id = ?`,
+          [descricao, registroInterno || null, convocarResponsavel ? 1 : 0,
+           usuarioEdicaoId, ocorrenciaId, id, escola_id]
+        );
+      } else {
+        throw updErr;
+      }
+    }
 
     res.json({ message: "Ocorrência atualizada com sucesso." });
   } catch (err) {
