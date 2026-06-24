@@ -306,8 +306,9 @@ router.get('/genero', async (req, res) => {
     for (const r of rows) {
       const n = Number(r.total);
       totais.total += n;
-      if (r.sexo === 'M') totais.M += n;
-      else if (r.sexo === 'F') totais.F += n;
+      // BD armazena 'Masculino'/'Feminino' — após UPPER() vira 'MASCULINO'/'FEMININO'
+      if (r.sexo === 'MASCULINO' || r.sexo === 'M') totais.M += n;
+      else if (r.sexo === 'FEMININO' || r.sexo === 'F') totais.F += n;
       else totais.outro += n;
     }
 

@@ -420,9 +420,9 @@ router.get("/genero", async (req, res) => {
       ORDER BY CASE serie WHEN '6º Ano' THEN 1 WHEN '7º Ano' THEN 2 WHEN '8º Ano' THEN 3 WHEN '9º Ano' THEN 4 ELSE 5 END, sexo
     `, params);
 
-    const totM=rows.filter(r=>r.sexo==="M").reduce((a,r)=>a+Number(r.total),0);
-    const totF=rows.filter(r=>r.sexo==="F").reduce((a,r)=>a+Number(r.total),0);
-    const totO=rows.filter(r=>r.sexo!=="M"&&r.sexo!=="F").reduce((a,r)=>a+Number(r.total),0);
+    const totM=rows.filter(r=>r.sexo==="MASCULINO"||r.sexo==="M").reduce((a,r)=>a+Number(r.total),0);
+    const totF=rows.filter(r=>r.sexo==="FEMININO"||r.sexo==="F").reduce((a,r)=>a+Number(r.total),0);
+    const totO=rows.filter(r=>r.sexo!=="MASCULINO"&&r.sexo!=="M"&&r.sexo!=="FEMININO"&&r.sexo!=="F").reduce((a,r)=>a+Number(r.total),0);
     const total=totM+totF+totO;
 
     const L=40,PW=595.28-80,PAGE_H=841.89,FOOTER_Y=PAGE_H-25,MAX_Y=FOOTER_Y-15;
