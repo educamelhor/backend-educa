@@ -732,6 +732,7 @@ router.post("/lote-registros", async (req, res) => {
                   COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
                   COALESCE(o.dias_suspensao,1) AS dias_suspensao,
                   o.atenuantes, o.agravantes, o.status, o.convocar_responsavel,
+                  DATE_FORMAT(o.data_convocacao,'%d/%m/%Y') AS data_convocacao,
                   DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
@@ -750,6 +751,7 @@ router.post("/lote-registros", async (req, res) => {
                     COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
                     COALESCE(o.dias_suspensao,1) AS dias_suspensao,
                     NULL AS atenuantes, NULL AS agravantes, o.status, o.convocar_responsavel,
+                    NULL AS data_convocacao,
                     DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
              FROM ocorrencias_disciplinares o
              LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
@@ -956,14 +958,21 @@ router.post("/lote-registros", async (req, res) => {
       if (temConvocacao) {
         ensureSpace(80);
         doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); doc.y += 4;
-        const dataComp = reg.data_comparecimento;
+        const dataComp     = reg.data_comparecimento;
+        const dataAgendada = reg.data_convocacao;
+        let textoConvocacao;
+        if (dataComp) {
+          // Responsável já compareceu
+          textoConvocacao = `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} para tomar conhecimento do registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`;
+        } else if (dataAgendada) {
+          // Convocado com data agendada, ainda não compareceu
+          textoConvocacao = `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola em relação ao registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}, com data prevista para comparecimento em ${dataAgendada}.`;
+        } else {
+          // Convocado sem data definida
+          textoConvocacao = `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola em relação ao registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`;
+        }
         doc.font("Helvetica").fontSize(8.5).fillColor("#333")
-          .text(
-            dataComp
-              ? `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} para tomar conhecimento do registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`
-              : `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola em relação ao registro disciplinar nº ${reg.registro}, vinculado ao(à) estudante ${aluno.estudante}.`,
-            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
-          );
+          .text(textoConvocacao, L, doc.y, { width: PW, lineGap: 2, align: "justify" });
         doc.y += 8; drawLine(); doc.y += 6;
       }
 
