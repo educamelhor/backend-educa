@@ -735,7 +735,9 @@ router.post("/lote-registros", async (req, res) => {
                   DATE_FORMAT(o.data_convocacao,'%d/%m/%Y') AS data_convocacao,
                   DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
            FROM ocorrencias_disciplinares o
-           LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+           LEFT JOIN registros_ocorrencias r
+             ON r.descricao_ocorrencia = o.motivo
+             AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
            WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
           [ocorrenciaId, alunoId, escola_id]
         );
@@ -754,7 +756,9 @@ router.post("/lote-registros", async (req, res) => {
                     NULL AS data_convocacao,
                     DATE_FORMAT(o.data_comparecimento_responsavel,'%d/%m/%Y') AS data_comparecimento
              FROM ocorrencias_disciplinares o
-             LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+             LEFT JOIN registros_ocorrencias r
+               ON r.descricao_ocorrencia = o.motivo
+               AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
              WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
             [ocorrenciaId, alunoId, escola_id]
           );
@@ -772,7 +776,9 @@ router.post("/lote-registros", async (req, res) => {
                 COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
                 COALESCE(o.dias_suspensao,1) AS dias_suspensao, o.status
          FROM ocorrencias_disciplinares o
-         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         LEFT JOIN registros_ocorrencias r
+           ON r.descricao_ocorrencia = o.motivo
+           AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
          WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
         [alunoId, escola_id]
       );
