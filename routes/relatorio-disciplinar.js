@@ -43,8 +43,10 @@ function fmtDataNasc(val) {
 }
 function hoje() {
   const m = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
-  const d = new Date();
-  return `${d.getDate()} de ${m[d.getMonth()]} de ${d.getFullYear()}`;
+  // Usar horário de Brasília (UTC-3) independente do fuso do servidor
+  const d = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const utc = new Date(d.toISOString().slice(0, 10) + 'T00:00:00Z');
+  return `${utc.getUTCDate()} de ${m[utc.getUTCMonth()]} de ${utc.getUTCFullYear()}`;
 }
 
 function getConceito(pontos) {
@@ -1521,24 +1523,31 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL)
         .text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
       doc.y += 4;
-      const dataComp = registros[0].data_comparecimento;
+      const dataComp      = registros[0].data_comparecimento;
+      const dataAgendada  = registros[0].data_convocacao;
+      let textoConvocacao;
       if (dataComp) {
-        doc.font("Helvetica").fontSize(8.5).fillColor("#333")
-          .text(
-            `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} ` +
-            `para tomar conhecimento do registro disciplinar nº ${registros[0].registro}, ` +
-            `vinculado ao(à) estudante ${aluno.estudante}.`,
-            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
-          );
+        // Responsável já compareceu
+        textoConvocacao =
+          `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) e compareceu em ${dataComp} ` +
+          `para tomar conhecimento do registro disciplinar nº ${registros[0].registro}, ` +
+          `vinculado ao(à) estudante ${aluno.estudante}.`;
+      } else if (dataAgendada) {
+        // Convocado com data agendada, ainda não compareceu
+        textoConvocacao =
+          `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola ` +
+          `em relação ao registro disciplinar nº ${registros[0].registro}, ` +
+          `vinculado ao(à) estudante ${aluno.estudante}, ` +
+          `com data prevista para comparecimento em ${dataAgendada}.`;
       } else {
-        doc.font("Helvetica").fontSize(8.5).fillColor("#333")
-          .text(
-            `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola ` +
-            `em relação ao registro disciplinar nº ${registros[0].registro}, ` +
-            `vinculado ao(à) estudante ${aluno.estudante}.`,
-            L, doc.y, { width: PW, lineGap: 2, align: "justify" }
-          );
+        // Convocado sem data definida
+        textoConvocacao =
+          `O(A) responsável legal ${resp?.nome || "—"} foi convocado(a) para comparecer à escola ` +
+          `em relação ao registro disciplinar nº ${registros[0].registro}, ` +
+          `vinculado ao(à) estudante ${aluno.estudante}.`;
       }
+      doc.font("Helvetica").fontSize(8.5).fillColor("#333")
+        .text(textoConvocacao, L, doc.y, { width: PW, lineGap: 2, align: "justify" });
       doc.y += 8;
       drawLine(); doc.y += 6;
     }
