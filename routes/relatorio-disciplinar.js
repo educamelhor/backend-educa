@@ -1086,10 +1086,12 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
                 o.agravantes,
                 o.status,
                 o.convocar_responsavel,
+                DATE_FORMAT(o.data_convocacao, '%d/%m/%Y') AS data_convocacao,
                 DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
          FROM ocorrencias_disciplinares o
          LEFT JOIN registros_ocorrencias r
            ON r.descricao_ocorrencia = o.motivo
+           AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
          WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
         [ocorrenciaId, alunoId, escola_id]
       );
@@ -1110,10 +1112,12 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
                   NULL AS agravantes,
                   o.status,
                   o.convocar_responsavel,
+                  NULL AS data_convocacao,
                   DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y') AS data_comparecimento
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r
              ON r.descricao_ocorrencia = o.motivo
+             AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
            WHERE o.id = ? AND o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
           [ocorrenciaId, alunoId, escola_id]
         );
@@ -1141,6 +1145,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo
+         AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
