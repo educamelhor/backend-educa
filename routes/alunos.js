@@ -1627,22 +1627,46 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: Upsert de responsável com endereço e telefone (via CSV)
 // Regra de proteção: não sobrescreve dados já preenchidos no BD
+// Correções:
+//   1. Salva em telefone_celular (campo "Telefone Principal" no modal)
+//   2. Ignora telefones fictícios (ex: 99999999999 — todos dígitos iguais)
+//   3. Usa SELECT como fallback quando insertId=0 (ON DUPLICATE KEY)
 // ─────────────────────────────────────────────────────────────────────────────
 async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
   if (!e.cpfResponsavel) return; // CPF é chave natural obrigatória
   const nomeResp = (e.responsavel || "").trim();
+
+  // Descarta telefones fictícios: todos dígitos iguais (ex: 99999999999, 00000000000)
+  // ou com menos de 8 dígitos após limpar não-numéricos
+  const telDigits = (e.telefone || "").replace(/\D/g, "");
+  const telValido =
+    telDigits.length >= 8 && !/^(\d)\1+$/.test(telDigits)
+      ? telDigits.substring(0, 20)
+      : null;
+
   try {
     const [respResult] = await pool.query(
-      `INSERT INTO responsaveis (nome, cpf, telefone, endereco)
+      `INSERT INTO responsaveis (nome, cpf, telefone_celular, endereco)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-         id       = LAST_INSERT_ID(id),
-         nome     = IF(nome     IS NULL OR nome     = '', VALUES(nome),     nome),
-         telefone = IF(telefone IS NULL OR telefone = '', VALUES(telefone), telefone),
-         endereco = IF(endereco IS NULL OR endereco = '', VALUES(endereco), endereco)`,
-      [nomeResp || null, e.cpfResponsavel, e.telefone || null, e.endereco || null]
+         id               = LAST_INSERT_ID(id),
+         nome             = IF(nome             IS NULL OR nome             = '', VALUES(nome),             nome),
+         telefone_celular = IF(telefone_celular IS NULL OR telefone_celular = '', VALUES(telefone_celular), telefone_celular),
+         endereco         = IF(endereco         IS NULL OR endereco         = '', VALUES(endereco),         endereco)`,
+      [nomeResp || null, e.cpfResponsavel, telValido, e.endereco || null]
     );
-    const responsavelId = respResult.insertId;
+
+    // ON DUPLICATE KEY retorna insertId=0 quando o registro já existe.
+    // Nesse caso fazemos SELECT para obter o id real.
+    let responsavelId = respResult.insertId;
+    if (!responsavelId) {
+      const [[existing]] = await pool.query(
+        "SELECT id FROM responsaveis WHERE cpf = ?",
+        [e.cpfResponsavel]
+      );
+      responsavelId = existing?.id || null;
+    }
+
     if (responsavelId && alunoId) {
       const [[vinculo]] = await pool.query(
         "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
