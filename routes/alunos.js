@@ -1184,8 +1184,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
 
     // ─────────────────────────────────────────────────────────────────
     // FASE 2: Identificação da turma
-    // Fonte A: nome do arquivo (principal)
-    // Fonte B: título linha 0 do CSV (confirmação)
+    // Prioridade: turma_id explícito no body (enviado pelo frontend após
+    // o usuário selecionar o turno no modal de conflito) > lookup por nome.
     // ─────────────────────────────────────────────────────────────────
     const normTurma = (s) =>
       (s || "")
@@ -1196,63 +1196,74 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         .replace(/\s+/g, " ")
         .trim();
 
-    // Fonte A: nome do arquivo
-    let turmaNome = (req.file.originalname || "")
-      .replace(/\.csv$/i, "")
-      .replace(/Âº/g, "º")
-      .replace(/Âª/g, "ª")
-      .trim();
+    let turma;
+    const turmaIdExplicito = req.body?.turma_id ? Number(req.body.turma_id) : null;
 
-    // Fonte B: linha 0 do CSV contém "Lista de alunos da Turma 7º Ano - A"
-    const linha0 = lines[0].replace(/"/g, "").trim();
-    const matchTitulo = linha0.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
-    if (matchTitulo) {
-      const turmaTitulo = matchTitulo[1].trim();
-      // Usa o título como fonte se o nome do arquivo não tiver informação
-      if (!turmaNome) turmaNome = turmaTitulo;
-      // Log de confirmação cruzada
-      console.log(
-        `[importar-csv] Turma — arquivo: "${turmaNome}" | título CSV: "${turmaTitulo}"`
+    if (turmaIdExplicito) {
+      // Frontend resolveu o conflito de turno — usa o id diretamente
+      const [[turmaRow]] = await pool.query(
+        "SELECT id, nome, serie, turno FROM turmas WHERE id = ? AND escola_id = ?",
+        [turmaIdExplicito, escola_id]
       );
+      if (!turmaRow) {
+        return res.status(404).json({
+          code: "TURMA_NAO_ENCONTRADA",
+          message: `Turma id=${turmaIdExplicito} não encontrada.`,
+        });
+      }
+      turma = turmaRow;
+      console.log(`[importar-csv] Turma via turma_id explícito: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
+    } else {
+      // Lookup por nome do arquivo
+      let turmaNome = (req.file.originalname || "")
+        .replace(/\.csv$/i, "")
+        .replace(/Âº/g, "º")
+        .replace(/Âª/g, "ª")
+        .trim();
+
+      // Fonte B: linha 0 do CSV contém "Lista de alunos da Turma 7º Ano - A"
+      const linha0 = lines[0].replace(/"/g, "").trim();
+      const matchTitulo = linha0.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
+      if (matchTitulo) {
+        const turmaTitulo = matchTitulo[1].trim();
+        if (!turmaNome) turmaNome = turmaTitulo;
+        console.log(`[importar-csv] Turma — arquivo: "${turmaNome}" | título CSV: "${turmaTitulo}"`);
+      }
+
+      if (!turmaNome) {
+        return res.status(400).json({ message: "Não foi possível identificar a turma pelo nome do arquivo CSV." });
+      }
+
+      const turmaNomeNorm = normTurma(turmaNome);
+      const [turmasEncontradas] = await pool.query(
+        `SELECT id, nome, serie, turno
+         FROM turmas
+         WHERE UPPER(TRIM(REPLACE(
+           REPLACE(
+             REPLACE(nome COLLATE utf8mb4_general_ci, 'Â', ''),
+             'º', 'º'
+           ), ' - ', ' '
+         ))) = ? AND escola_id = ? AND ano = ?
+         ORDER BY id DESC`,
+        [turmaNomeNorm, escola_id, anoLetivoAtual]
+      );
+
+      if (turmasEncontradas.length === 0) {
+        return res.status(404).json({
+          code: "TURMA_NAO_ENCONTRADA",
+          message: `Turma "${turmaNome}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          turmaNaoEncontrada: turmaNome,
+        });
+      }
+
+      // Se houver mais de uma (frontend não enviou turma_id), usa a primeira
+      // (situação improvável pois o frontend detecta e pede seleção)
+      turma = turmasEncontradas[0];
+      console.log(`[importar-csv] Turma por nome: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
     }
 
-    if (!turmaNome) {
-      return res
-        .status(400)
-        .json({ message: "Não foi possível identificar a turma pelo nome do arquivo CSV." });
-    }
-
-    // Busca turma no BD (nome normalizado, sem acento, sem " - ")
-    const turmaNomeNorm = normTurma(turmaNome);
-    const [turmasEncontradas] = await pool.query(
-      `SELECT id, nome, serie, turno
-       FROM turmas
-       WHERE UPPER(TRIM(REPLACE(
-         REPLACE(
-           REPLACE(nome COLLATE utf8mb4_general_ci, 'Â', ''),
-           'º', 'º'
-         ), ' - ', ' '
-       ))) = ? AND escola_id = ? AND ano = ?
-       ORDER BY id DESC`,
-      [turmaNomeNorm, escola_id, anoLetivoAtual]
-    );
-
-    if (turmasEncontradas.length === 0) {
-      return res.status(404).json({
-        code: "TURMA_NAO_ENCONTRADA",
-        message: `Turma "${turmaNome}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
-        turmaNaoEncontrada: turmaNome,
-      });
-    }
-
-    // Usa a primeira turma encontrada (pode haver uma por turno — secretário controla)
-    const turma = turmasEncontradas[0];
     const turma_id = turma.id;
-    console.log(
-      `[importar-csv] Turma encontrada: id=${turma_id} nome="${turma.nome}" turno="${turma.turno}"`
-    );
 
-    // ─────────────────────────────────────────────────────────────────
     // FASE 3: Parse do CSV
     // Linha 0 = título escola | Linha 1 = cabeçalho | Linhas 2+ = dados
     // ─────────────────────────────────────────────────────────────────
