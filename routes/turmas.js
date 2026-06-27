@@ -167,24 +167,47 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { escola_id } = req.user;
-    const anoLetivo = req.query.ano || new Date().getFullYear();
+    // Aceita 'ano' OU 'ano_letivo' (frontend pode enviar qualquer um dos dois)
+    const anoLetivo = req.query.ano || req.query.ano_letivo || new Date().getFullYear();
 
+    // Query principal: status 'ativo' OU 'matriculado'
     const [rows] = await pool.query(
       `
       SELECT
         a.id,
         a.estudante AS nome,
-        a.codigo AS matricula
+        a.codigo    AS matricula
       FROM matriculas m
       INNER JOIN alunos a ON a.id = m.aluno_id
-      WHERE m.turma_id = ?
-        AND m.escola_id = ?
+      WHERE m.turma_id   = ?
+        AND m.escola_id  = ?
         AND m.ano_letivo = ?
-        AND m.status = 'ativo'
+        AND m.status IN ('ativo', 'matriculado')
       ORDER BY a.estudante ASC
       `,
       [id, escola_id, anoLetivo]
     );
+
+    // Fallback: se a query principal retornou vazio, tenta SEM filtro de status
+    // (cobre casos onde o status foi gravado com valor diferente do esperado)
+    if (rows.length === 0) {
+      const [rowsFallback] = await pool.query(
+        `
+        SELECT
+          a.id,
+          a.estudante AS nome,
+          a.codigo    AS matricula
+        FROM matriculas m
+        INNER JOIN alunos a ON a.id = m.aluno_id
+        WHERE m.turma_id   = ?
+          AND m.escola_id  = ?
+          AND m.ano_letivo = ?
+        ORDER BY a.estudante ASC
+        `,
+        [id, escola_id, anoLetivo]
+      );
+      return res.json({ ok: true, alunos: rowsFallback, fallback: true });
+    }
 
     return res.json({ ok: true, alunos: rows });
   } catch (err) {
