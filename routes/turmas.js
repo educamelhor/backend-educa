@@ -1,14 +1,14 @@
-// src/routes/turmas.js
+﻿// src/routes/turmas.js
 import express from "express";
 import pool from "../db.js";
 
 const router = express.Router();
 
 
-// Middleware para validar e forçar filtro por escola
+// Middleware para validar e forÃ§ar filtro por escola
 function verificarEscola(req, res, next) {
   if (!req.user || !req.user.escola_id) {
-    return res.status(403).json({ message: "Acesso negado: escola não definida." });
+    return res.status(403).json({ message: "Acesso negado: escola nÃ£o definida." });
   }
   next();
 }
@@ -61,7 +61,7 @@ router.get("/", verificarEscola, async (req, res) => {
     return res.status(200).json(rows);
   } catch (err) {
     console.error("Erro ao listar turmas:", err);
-    return res.status(500).json({ error: "Não foi possível carregar as turmas" });
+    return res.status(500).json({ error: "NÃ£o foi possÃ­vel carregar as turmas" });
   }
 });
 
@@ -71,7 +71,7 @@ router.get("/", verificarEscola, async (req, res) => {
 
 /**
  * ================================
- * CRIAR TURMA (vinculada à escola)
+ * CRIAR TURMA (vinculada Ã  escola)
  * POST /api/turmas
  * ================================
  */
@@ -87,7 +87,7 @@ router.post("/", verificarEscola, async (req, res) => {
     return res.status(201).json({ id: result.insertId });
   } catch (err) {
     console.error("Erro ao criar turma:", err);
-    return res.status(500).json({ error: "Não foi possível criar a turma" });
+    return res.status(500).json({ error: "NÃ£o foi possÃ­vel criar a turma" });
   }
 });
 
@@ -114,13 +114,13 @@ router.put("/:id", verificarEscola, async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Turma não encontrada ou não pertence à sua escola" });
+      return res.status(404).json({ error: "Turma nÃ£o encontrada ou nÃ£o pertence Ã  sua escola" });
     }
 
     return res.status(200).json({ message: "Turma atualizada com sucesso" });
   } catch (err) {
     console.error("Erro ao atualizar turma:", err);
-    return res.status(500).json({ error: "Não foi possível atualizar a turma" });
+    return res.status(500).json({ error: "NÃ£o foi possÃ­vel atualizar a turma" });
   }
 });
 
@@ -145,13 +145,13 @@ router.delete("/:id", verificarEscola, async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Turma não encontrada ou não pertence à sua escola" });
+      return res.status(404).json({ error: "Turma nÃ£o encontrada ou nÃ£o pertence Ã  sua escola" });
     }
 
-    return res.status(200).json({ message: "Turma excluída com sucesso" });
+    return res.status(200).json({ message: "Turma excluÃ­da com sucesso" });
   } catch (err) {
     console.error("Erro ao excluir turma:", err);
-    return res.status(500).json({ error: "Não foi possível excluir a turma" });
+    return res.status(500).json({ error: "NÃ£o foi possÃ­vel excluir a turma" });
   }
 });
 
@@ -160,8 +160,8 @@ router.delete("/:id", verificarEscola, async (req, res) => {
  * LISTAR ALUNOS DE UMA TURMA
  * GET /api/turmas/:id/alunos
  * ================================
- * Busca alunos matriculados em uma turma específica (ano letivo atual).
- * Fonte canônica: tabela `matriculas`.
+ * Busca alunos matriculados em uma turma especÃ­fica (ano letivo atual).
+ * Fonte canÃ´nica: tabela `matriculas`.
  */
 router.get("/:id/alunos", verificarEscola, async (req, res) => {
   try {
@@ -212,7 +212,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
     return res.json({ ok: true, alunos: rows });
   } catch (err) {
     console.error("Erro ao listar alunos da turma:", err);
-    return res.status(500).json({ ok: false, error: "Não foi possível carregar os alunos da turma." });
+    return res.status(500).json({ ok: false, error: "NÃ£o foi possÃ­vel carregar os alunos da turma." });
   }
 });
 
@@ -236,8 +236,34 @@ router.patch("/:id/nome-oficial", verificarEscola, async (req, res) => {
     return res.status(200).json({ success: true, message: "Nome oficial da turma atualizado com sucesso." });
   } catch (err) {
     console.error("Erro ao atualizar nome oficial da turma:", err);
-    return res.status(500).json({ error: "Não foi possível atualizar o nome oficial da turma." });
+    return res.status(500).json({ error: "NÃ£o foi possÃ­vel atualizar o nome oficial da turma." });
+  }
+});
+
+
+/**
+ * DIAGNOSTICO TEMPORARIO — GET /api/turmas/diagnostico/aluno?codigo=488943
+ * Remove apos resolver o bug.
+ */
+router.get("/diagnostico/aluno", verificarEscola, async (req, res) => {
+  try {
+    const { codigo } = req.query;
+    const { escola_id } = req.user;
+    if (!codigo) return res.status(400).json({ error: "Informe o codigo." });
+    const [[aluno]] = await pool.query(
+      "SELECT id, codigo, estudante, turma_id AS turma_id_alunos, status FROM alunos WHERE codigo = ? AND escola_id = ?",
+      [codigo, escola_id]
+    );
+    if (!aluno) return res.json({ ok: false, msg: "Aluno nao encontrado." });
+    const [matriculas] = await pool.query(
+      "SELECT m.id, m.turma_id, m.ano_letivo, m.status, t.nome AS turma_nome, t.turno FROM matriculas m LEFT JOIN turmas t ON t.id = m.turma_id WHERE m.aluno_id = ? AND m.escola_id = ? ORDER BY m.ano_letivo DESC",
+      [aluno.id, escola_id]
+    );
+    return res.json({ ok: true, aluno, matriculas });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 export default router;
+
