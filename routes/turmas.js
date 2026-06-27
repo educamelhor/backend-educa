@@ -1,4 +1,4 @@
-﻿// src/routes/turmas.js
+// src/routes/turmas.js
 import express from "express";
 import pool from "../db.js";
 
@@ -206,10 +206,33 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
         `,
         [id, escola_id, anoLetivo]
       );
-      return res.json({ ok: true, alunos: rowsFallback, fallback: true });
+      return res.json({ ok: true, alunos: rowsFallback, fallback: "sem-status" });
     }
 
-    return res.json({ ok: true, alunos: rows });
+    // === Fallback 3: por NOME da turma ===
+    // Cobre o caso onde o aluno foi matriculado com id de uma turma diferente
+    // mas com o mesmo nome (ex: dois registros de "7 ANO A" na tabela turmas).
+    // Isso acontece quando a secretaria usa um turma_id e a modulacao usa outro.
+    const [[turmaNomeRow]] = await pool.query(
+      "SELECT nome FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+      [id, escola_id]
+    );
+    if (turmaNomeRow?.nome) {
+      const [rowsByNome] = await pool.query(
+        `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo AS matricula
+         FROM matriculas m
+         INNER JOIN alunos a ON a.id = m.aluno_id
+         INNER JOIN turmas t ON t.id = m.turma_id
+         WHERE t.nome       = ?
+           AND m.escola_id  = ?
+           AND m.ano_letivo = ?
+         ORDER BY a.estudante ASC`,
+        [turmaNomeRow.nome, escola_id, anoLetivo]
+      );
+      return res.json({ ok: true, alunos: rowsByNome, fallback: "nome-turma" });
+    }
+
+    return res.json({ ok: true, alunos: [] });
   } catch (err) {
     console.error("Erro ao listar alunos da turma:", err);
     return res.status(500).json({ ok: false, error: "NÃ£o foi possÃ­vel carregar os alunos da turma." });
