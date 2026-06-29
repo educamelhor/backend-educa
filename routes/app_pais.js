@@ -386,13 +386,17 @@ async function runStartupMigrations() {
   console.log("[APP_PAIS][MIGRATION] consentimentos_log — responsaveis_alunos atualizado");
 
   // 5. APP ALUNO: adiciona coluna telefone em alunos (se não existir)
+  // Verifica manualmente para compatibilidade com MySQL < 8.0
   try {
-    await pool.query(`ALTER TABLE alunos ADD COLUMN IF NOT EXISTS telefone VARCHAR(20) NULL AFTER cpf`);
-    console.log('[APP_PAIS][MIGRATION] alunos.telefone — OK');
-  } catch (e) {
-    if (!e.message?.includes('Duplicate column')) {
-      console.warn('[APP_PAIS][MIGRATION] alunos.telefone:', e.message);
+    const [colsTel] = await pool.query(`SHOW COLUMNS FROM alunos LIKE 'telefone'`);
+    if (colsTel.length === 0) {
+      await pool.query(`ALTER TABLE alunos ADD COLUMN telefone VARCHAR(20) NULL AFTER cpf`);
+      console.log('[APP_PAIS][MIGRATION] alunos.telefone — coluna adicionada OK');
+    } else {
+      console.log('[APP_PAIS][MIGRATION] alunos.telefone — já existia, skip');
     }
+  } catch (e) {
+    console.warn('[APP_PAIS][MIGRATION] alunos.telefone:', e.message);
   }
 
   // 6. APP ALUNO: cria tabela app_aluno_codigos (se não existir)
