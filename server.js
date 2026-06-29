@@ -1302,11 +1302,12 @@ async function bootstrap() {
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
-  // IMPORTANTE: montar com appPaisRouterModule (import estático) diretamente,
-  // SEM if-block e SEM a variável `appPaisRouter`. Routes relativas (/ping, /me...)
-  // + app.use(prefix, router) funciona corretamente em Express 5 neste contexto.
+  // Monta via app.use() (funciona para GETs simples) + mountAppPaisToApp (workaround
+  // para bug do Express 5 com POSTs em ambiente Docker/DO onde app.use(router) perde
+  // certas rotas e elas caem no catch-all do autenticarToken).
   app.use("/api/app-pais", appPaisRouterModule);
-  console.log("[FF] FF_APP_PAIS: router montado em /api/app-pais ✅ stack:", appPaisRouterModule.stack?.length);
+  mountAppPaisToApp(app, "/api/app-pais");
+  console.log("[FF] FF_APP_PAIS: router montado via app.use + mountToApp ✅ stack:", appPaisRouterModule.stack?.length);
 
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
