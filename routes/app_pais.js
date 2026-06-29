@@ -2,6 +2,7 @@
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import pool from "../db.js";
 import { getSignedGetObjectUrl } from "../storage/spacesUpload.js";
 
@@ -2049,7 +2050,7 @@ router.post('/aluno/verificar-data-nascimento', async (req, res) => {
     const inputDate = normalize(dataNasc);
     if (!dbDate || !inputDate || dbDate !== inputDate)
       return res.status(403).json({ message: 'Data de nascimento incorreta.' });
-    const tokenTemp = require('crypto').randomBytes(32).toString('hex');
+    const tokenTemp = crypto.randomBytes(32).toString('hex');
     await pool.query(
       `INSERT INTO app_aluno_codigos (aluno_id, codigo, destino, expiracao, token_data_nasc, token_data_nasc_exp) VALUES (?, '', '', DATE_ADD(NOW(), INTERVAL 1 MINUTE), ?, DATE_ADD(NOW(), INTERVAL 15 MINUTE))`,
       [aluno.id, tokenTemp]
