@@ -36,6 +36,7 @@ if (!process.env.JWT_SECRET) {
 
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
+import appAlunoAuthRouter from "./routes/app_aluno_auth.js";
 
 // ------------------------- Rotas --------------------------------------------
 // ⚠️ MODULAÇÃO (temporariamente OFF)
@@ -1302,12 +1303,17 @@ async function bootstrap() {
 
 
   // ─── APP_PAIS ──────────────────────────────────────────────────────────────────
-  // Monta via app.use() (funciona para GETs simples) + mountAppPaisToApp (workaround
-  // para bug do Express 5 com POSTs em ambiente Docker/DO onde app.use(router) perde
-  // certas rotas e elas caem no catch-all do autenticarToken).
+  // Monta via app.use() + mountAppPaisToApp (workaround Express 5 Docker)
   app.use("/api/app-pais", appPaisRouterModule);
   mountAppPaisToApp(app, "/api/app-pais");
   console.log("[FF] FF_APP_PAIS: router montado via app.use + mountToApp ✅ stack:", appPaisRouterModule.stack?.length);
+
+  // ─── APP ALUNO AUTH (router dedicado — sem auth middleware) ──────────────────
+  // Rotas públicas de auth do aluno em router separado para contornar
+  // definitivamente o bug Express 5 + Docker com app.use(router) em POSTs.
+  // Montado ANTES do catch-all app.use("/api", autenticarToken, ...).
+  app.use("/api/app-pais/aluno", appAlunoAuthRouter);
+  console.log("[APP_ALUNO_AUTH] router montado em /api/app-pais/aluno ✅");
 
   if (responsavelRoutes) app.use(responsavelRoutes);
   if (deviceRoutes) app.use(deviceRoutes);
