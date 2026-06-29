@@ -1266,17 +1266,9 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration 'escola.avaliacao_padrao_bimestral.excecoes' (nao critico):", migErr.message);
   }
 
-  // [2026-05-29] One-time Sync: Sincroniza todos os planos de avaliação de todas as escolas ativas no boot
-  try {
-    const [escolas] = await pool.query("SELECT id FROM escolas");
-    console.log(`[BOOT-SYNC-PAPs] Iniciando sincronizacao em lote para ${escolas.length} escolas...`);
-    for (const esc of escolas) {
-      await syncPlanosAvaliacao(pool, esc.id);
-    }
-    console.log("[BOOT-SYNC-PAPs] Sincronizacao em lote concluida com sucesso! ");
-  } catch (syncErr) {
-    console.warn("[BOOT-SYNC-PAPs] Falha na sincronizacao em lote no boot:", syncErr.message);
-  }
+  // [2026-05-29] Sync de planos de avaliação — MOVIDO para background (após app.listen)
+  // Era bloqueante no boot: 740+ planos x latência DO = minutos antes da porta 3000 abrir.
+  // Ver: bootSyncPAPs() chamado no .then() do bootstrap().
 
   // [2026-06-20] Tabela sistema_manutencao — modo manutenção programada (CEO)
   try {
@@ -1329,6 +1321,20 @@ async function bootstrap() {
 
 
   // ============================================================================
+  // Monitoramento — INGEST do Worker (sem JWT — valida via x-worker-token)
+  // ✅ DEVE ficar ANTES do monitoramentoStream:
+  //    o stream tem router.get('/:id.jpg', autenticarToken, ...) que em Express 5
+  //    captura paths multi-segmento como /ingest/snapshot/1.jpg, bloqueando o ingest.
+  // ============================================================================
+  if (monitoramentoIngestRouter) {
+    app.use("/api/monitoramento/ingest", (req, _res, next) => { req.db = pool; next(); }, monitoramentoIngestRouter);
+  }
+
+  if (monitoramentoEmbeddingsRouter) {
+    app.use("/api/monitoramento/embeddings", monitoramentoEmbeddingsRouter);
+  }
+
+  // ============================================================================
   // Monitoramento — STREAM (RTSP→MJPEG) SEM middleware global de auth
   //  - O próprio arquivo monitoramento_stream.js protege /stream/:id.mjpeg
   //  - /stream/ping continua público para diagnóstico
@@ -1342,6 +1348,14 @@ async function bootstrap() {
   // Rotas protegidas principais (mantidas como estavam)
   // ============================================================================
   app.use("/api/auth", authRouter);
+
+  // ✅ Monitoramento Público (overlay, faces) — DEVE ficar ANTES dos handlers
+  //    genéricos app.use("/api", autenticarToken, ...) que existem nas linhas
+  //    abaixo e interceptariam /api/monitoramento-public causando 401.
+  if (monitoramentoOverlayRouter) {
+    app.use("/api/monitoramento-public", monitoramentoOverlayRouter);
+  }
+
   app.use(
     "/api/ferramentas",
     autenticarToken,
@@ -1558,19 +1572,7 @@ async function bootstrap() {
     );
   }
 
-  if (monitoramentoIngestRouter) {
-    // Ingest do Worker: sem JWT e sem verificarEscola (validação é feita por x-worker-token no próprio router)
-    // ✅ Injeta pool do server.js (evita re-import dinâmico que falha em produção com host errado)
-    app.use("/api/monitoramento/ingest", (req, _res, next) => { req.db = pool; next(); }, monitoramentoIngestRouter);
-  }
-
-  if (monitoramentoEmbeddingsRouter) {
-    // 🔐 Autenticação delegada ao próprio router:
-    // - Worker: x-worker-token (+ x-escola-id)
-    // - Admin: JWT + RBAC + verificarEscola (dentro do router)
-    // ✅ Precisa ficar ANTES do gate "/api" do Conteúdos Admin
-    app.use("/api/monitoramento/embeddings", monitoramentoEmbeddingsRouter);
-  }
+  // (ingest e embeddings já montados acima, ANTES do stream router)
 
   if (conteudosAdminRouter) {
 
@@ -1587,6 +1589,10 @@ async function bootstrap() {
         // ✅ Rotas públicas do Monitoramento (OPÇÃO A)
         if (p.startsWith("/monitoramento-public")) return next();
         if (p.startsWith("/monitoramento-overlay")) return next();
+
+        // ✅ Ingest do Worker (validação é feita por x-worker-token no próprio router)
+        // Inclui /monitoramento/ingest/snapshot (público) e /monitoramento/ingest/frame-binary (worker token)
+        if (p.startsWith("/monitoramento/ingest")) return next();
 
         // ✅ Monitoramento Embeddings: auth é decidida no próprio router (Worker OU Admin)
         if (p.startsWith("/monitoramento/embeddings")) return next();
@@ -1632,14 +1638,11 @@ async function bootstrap() {
   }
 
   if (monitoramentoOverlayRouter) {
-    // ✅ Público (sem token) — overlay para painel operacional / TV / diagnóstico
-    app.use("/api/monitoramento-public", monitoramentoOverlayRouter);
+    // ✅ /api/monitoramento-public já montado ANTES das rotas protegidas (linha ~1355).
+    // Mantém /api/monitoramento-overlay como alias para compatibilidade com código antigo.
     app.use("/api/monitoramento-overlay", monitoramentoOverlayRouter);
-
-    // ❌ Removido: overlay NÃO deve ser montado em /api/monitoramento (rota protegida),
-    // pois isso força autenticação e quebra o conceito de "public".
-    // app.use("/api/monitoramento", autenticarToken, verificarEscola, monitoramentoOverlayRouter);
   }
+
 
 
 
@@ -1802,6 +1805,20 @@ bootstrap()
         console.log("    • /visitantes-ping-root");
         console.log("    • /api/__overlay-debug");
       }
+
+      // ✅ BOOT-SYNC-PAPs em background (não bloqueia o listen)
+      setImmediate(async () => {
+        try {
+          const [escolas] = await pool.query(`SELECT id FROM escolas`);
+          console.log(`[BOOT-SYNC-PAPs] Iniciando sincronizacao em lote para ${escolas.length} escolas...`);
+          for (const esc of escolas) {
+            await syncPlanosAvaliacao(pool, esc.id);
+          }
+          console.log('[BOOT-SYNC-PAPs] Sincronizacao em lote concluida com sucesso!');
+        } catch (syncErr) {
+          console.warn('[BOOT-SYNC-PAPs] Falha na sincronizacao em lote no boot:', syncErr.message);
+        }
+      });
     });
   })
   .catch((err) => {
