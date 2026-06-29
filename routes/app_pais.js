@@ -113,6 +113,28 @@ function authAppPais(req, res, next) {
   }
 }
 
+function authAluno(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    const parts = auth.split(' ');
+    if (parts.length !== 2 || parts[0] !== 'Bearer')
+      return res.status(401).json({ message: 'Token ausente ou inválido.' });
+    const decoded = jwt.verify(parts[1], APP_PAIS_JWT_SECRET);
+    if (decoded.tipo !== 'ALUNO')
+      return res.status(403).json({ message: 'Acesso restrito a alunos.' });
+    req.alunoAuth = decoded;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ message: 'Token inválido ou expirado.' });
+  }
+}
+
+function maskPhone(tel) {
+  const t = String(tel || '').replace(/\D/g, '');
+  if (t.length < 8) return '(**) *****-????';
+  return `(**) *****-${t.slice(-4)}`;
+}
+
 // ============================================================================
 // PASSO 2.3.1 â€” Helpers de Credenciais (master)
 // ============================================================================
@@ -361,6 +383,34 @@ async function runStartupMigrations() {
   `);
 
   console.log("[APP_PAIS][MIGRATION] consentimentos_log — responsaveis_alunos atualizado");
+
+  // 5. APP ALUNO: adiciona coluna telefone em alunos (se não existir)
+  try {
+    await pool.query(`ALTER TABLE alunos ADD COLUMN IF NOT EXISTS telefone VARCHAR(20) NULL AFTER cpf`);
+    console.log('[APP_PAIS][MIGRATION] alunos.telefone — OK');
+  } catch (e) {
+    if (!e.message?.includes('Duplicate column')) {
+      console.warn('[APP_PAIS][MIGRATION] alunos.telefone:', e.message);
+    }
+  }
+
+  // 6. APP ALUNO: cria tabela app_aluno_codigos (se não existir)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_aluno_codigos (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      aluno_id BIGINT UNSIGNED NOT NULL,
+      codigo CHAR(6) NOT NULL,
+      destino VARCHAR(20) NOT NULL,
+      expiracao DATETIME NOT NULL,
+      usado_em DATETIME NULL,
+      token_data_nasc VARCHAR(64) NULL,
+      token_data_nasc_exp DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      INDEX idx_aluno_cod (aluno_id, codigo)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  console.log('[APP_PAIS][MIGRATION] app_aluno_codigos — OK');
 
   // 4. DEMO-APPLE: garante que o responsavel demo existe com CPF 00000000019
   // Credencial fornecida à Apple App Store Review. O token é gerado diretamente
@@ -938,13 +988,8 @@ router.get("/alunos/:id/foto-url", authAppPais, async (req, res) => {
     if (!row) {
       return res.status(403).json({ ok: false, message: "Acesso negado a este estudante." });
     }
-
     const escola_id = Number(row.escola_id);
     const objectKey = extrairObjectKeyDeFoto(row.aluno_foto);
-
-    if (!objectKey) {
-      return res.status(404).json({ ok: false, message: "Foto nÃ£o disponÃ­vel para este estudante." });
-    }
 
     const ttl = Number(process.env.APP_PAIS_FOTO_URL_TTL_SECONDS || 3600);
     const signed = await getSignedGetObjectUrl(objectKey, ttl);
@@ -965,16 +1010,49 @@ router.get("/alunos/:id/foto-url", authAppPais, async (req, res) => {
 
 
 // ============================================================================
-// PASSO 3.1 — GET /boletim (App Pais)
-// - Retorna notas do aluno para o responsável logado
+// PASSO 3.1 — GET /boletim (App Pais + App Aluno)
+// - Retorna notas do aluno para o responsável OU para o próprio aluno logado
 // - Valida vínculo em responsaveis_alunos (ativo=1) e permissão pode_ver_boletim
 // Querystring:
 //   /api/app-pais/boletim?aluno_id=2&ano=2024   (ano opcional)
 // ============================================================================
-router.get("/boletim", authAppPais, async (req, res) => {
+function authAppPaisOuAluno(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    const parts = auth.split(' ');
+    if (parts.length !== 2 || parts[0] !== 'Bearer')
+      return res.status(401).json({ message: 'Token ausente.' });
+    const decoded = jwt.verify(parts[1], APP_PAIS_JWT_SECRET);
+    if (decoded.tipo === 'ALUNO') req.alunoAuth = decoded;
+    else req.appPaisAuth = decoded;
+    return next();
+  } catch (e) {
+    return res.status(401).json({ message: 'Token inválido ou expirado.' });
+  }
+}
+
+router.get("/boletim", authAppPaisOuAluno, async (req, res) => {
   const db = pool;
 
   try {
+    // === FLUXO ALUNO ===
+    if (req.alunoAuth) {
+      const { aluno_id, escola_id } = req.alunoAuth;
+      const reqAlunoId = parseInt(req.query.aluno_id);
+      if (reqAlunoId && reqAlunoId !== aluno_id)
+        return res.status(403).json({ message: 'Acesso negado.' });
+      const ano = req.query.ano ? parseInt(req.query.ano) : null;
+      let notasQuery = `SELECT n.ano, n.bimestre, d.nome AS disciplina, n.nota, n.faltas
+        FROM notas n INNER JOIN disciplinas d ON d.id = n.disciplina_id
+        WHERE n.escola_id = ? AND n.aluno_id = ?`;
+      const params = [escola_id, aluno_id];
+      if (ano) { notasQuery += ' AND n.ano = ?'; params.push(ano); }
+      notasQuery += ' ORDER BY n.ano DESC, n.bimestre ASC, d.nome ASC';
+      const [rows] = await db.query(notasQuery, params);
+      return res.json({ ok: true, escola_id, aluno_id, rows });
+    }
+    // === FIM FLUXO ALUNO ===
+
     const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
 
     const aluno_id = Number(req.query?.aluno_id);
@@ -1697,7 +1775,6 @@ router.get("/credenciais/contextos", authAppPais, async (req, res) => {
       [responsavel_id]
     );
 
-    // Agrupa por escola para facilitar o frontend
     const map = new Map();
     for (const r of rows) {
       if (!map.has(r.escola_id)) {
@@ -1726,6 +1803,150 @@ router.get("/credenciais/contextos", authAppPais, async (req, res) => {
 // ============================================================================
 // POST /solicitar-codigo  (v2 — suporte a e-mail + SMS + fluxo PRECISA_EMAIL)
 // ============================================================================
+// ============================================================================
+// APP ALUNO — Rotas de autenticação e perfil do aluno
+// ============================================================================
+
+// POST /aluno/solicitar-codigo
+router.post('/aluno/solicitar-codigo', async (req, res) => {
+  try {
+    const cpf = normalizarCpf(req.body?.cpf);
+    if (!cpf) return res.status(400).json({ message: 'CPF é obrigatório.' });
+    const [[aluno]] = await pool.query(
+      `SELECT id, estudante, telefone, escola_id, data_nascimento FROM alunos WHERE cpf = ? AND status = 'ativo' LIMIT 1`,
+      [cpf]
+    );
+    if (!aluno) return res.status(404).json({ ok: false, code: 'ALUNO_NAO_ENCONTRADO', message: 'CPF não encontrado.' });
+    if (aluno.telefone) {
+      const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+      await pool.query(
+        `INSERT INTO app_aluno_codigos (aluno_id, codigo, destino, expiracao) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+        [aluno.id, codigo, aluno.telefone]
+      );
+      await enviarCodigoPorSms(aluno.telefone, codigo);
+      return res.json({ ok: true, tem_telefone: true, telefone_mascara: maskPhone(aluno.telefone) });
+    } else {
+      return res.json({ ok: true, tem_telefone: false, requer_verificacao: true });
+    }
+  } catch (e) {
+    console.error('[ALUNO/SOLICITAR-CODIGO]', e);
+    return res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// POST /aluno/verificar-data-nascimento
+router.post('/aluno/verificar-data-nascimento', async (req, res) => {
+  try {
+    const cpf = normalizarCpf(req.body?.cpf);
+    const dataNasc = String(req.body?.data_nascimento || '');
+    if (!cpf || !dataNasc) return res.status(400).json({ message: 'CPF e data_nascimento são obrigatórios.' });
+    const [[aluno]] = await pool.query(
+      `SELECT id, data_nascimento FROM alunos WHERE cpf = ? AND status = 'ativo' LIMIT 1`,
+      [cpf]
+    );
+    if (!aluno) return res.status(404).json({ message: 'Aluno não encontrado.' });
+    const normalize = (d) => {
+      const s = String(d).replace(/\D/g, '');
+      if (s.length !== 8) return null;
+      const maybeYear = parseInt(s.slice(0, 4));
+      if (maybeYear > 1900 && maybeYear < 2100) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+      return `${s.slice(4,8)}-${s.slice(2,4)}-${s.slice(0,2)}`;
+    };
+    const dbDate = aluno.data_nascimento ? String(aluno.data_nascimento).slice(0, 10) : null;
+    const inputDate = normalize(dataNasc);
+    if (!dbDate || !inputDate || dbDate !== inputDate)
+      return res.status(403).json({ message: 'Data de nascimento incorreta.' });
+    const tokenTemp = require('crypto').randomBytes(32).toString('hex');
+    await pool.query(
+      `INSERT INTO app_aluno_codigos (aluno_id, codigo, destino, expiracao, token_data_nasc, token_data_nasc_exp) VALUES (?, '', '', DATE_ADD(NOW(), INTERVAL 1 MINUTE), ?, DATE_ADD(NOW(), INTERVAL 15 MINUTE))`,
+      [aluno.id, tokenTemp]
+    );
+    return res.json({ ok: true, token_temp: tokenTemp });
+  } catch (e) {
+    console.error('[ALUNO/VERIFICAR-DATA-NASCIMENTO]', e);
+    return res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// POST /aluno/cadastrar-telefone
+router.post('/aluno/cadastrar-telefone', async (req, res) => {
+  try {
+    const cpf = normalizarCpf(req.body?.cpf);
+    const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
+    const tokenTemp = String(req.body?.token_temp || '');
+    if (!cpf || !telefone || !tokenTemp) return res.status(400).json({ message: 'Dados incompletos.' });
+    const [[aluno]] = await pool.query(`SELECT id FROM alunos WHERE cpf = ? AND status = 'ativo' LIMIT 1`, [cpf]);
+    if (!aluno) return res.status(404).json({ message: 'Aluno não encontrado.' });
+    const [[tokenRow]] = await pool.query(
+      `SELECT id FROM app_aluno_codigos WHERE aluno_id = ? AND token_data_nasc = ? AND token_data_nasc_exp > NOW() LIMIT 1`,
+      [aluno.id, tokenTemp]
+    );
+    if (!tokenRow) return res.status(403).json({ message: 'Token expirado. Tente novamente.' });
+    const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+    await pool.query(
+      `INSERT INTO app_aluno_codigos (aluno_id, codigo, destino, expiracao) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+      [aluno.id, codigo, telefone]
+    );
+    await enviarCodigoPorSms(telefone, codigo);
+    return res.json({ ok: true, telefone_mascara: maskPhone(telefone) });
+  } catch (e) {
+    console.error('[ALUNO/CADASTRAR-TELEFONE]', e);
+    return res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// POST /aluno/verificar-codigo
+router.post('/aluno/verificar-codigo', async (req, res) => {
+  try {
+    const cpf = normalizarCpf(req.body?.cpf);
+    const codigo = String(req.body?.codigo || '').trim();
+    if (!cpf || !codigo) return res.status(400).json({ message: 'CPF e código são obrigatórios.' });
+    const [[aluno]] = await pool.query(
+      `SELECT id, estudante, escola_id, telefone, cpf FROM alunos WHERE cpf = ? AND status = 'ativo' LIMIT 1`, [cpf]
+    );
+    if (!aluno) return res.status(404).json({ message: 'Aluno não encontrado.' });
+    const [[otpRow]] = await pool.query(
+      `SELECT id, destino FROM app_aluno_codigos WHERE aluno_id = ? AND codigo = ? AND usado_em IS NULL AND expiracao > NOW() AND destino != '' ORDER BY id DESC LIMIT 1`,
+      [aluno.id, codigo]
+    );
+    if (!otpRow) return res.status(401).json({ message: 'Código inválido ou expirado.' });
+    await pool.query(`UPDATE app_aluno_codigos SET usado_em = NOW() WHERE id = ?`, [otpRow.id]);
+    if (!aluno.telefone) {
+      await pool.query(`UPDATE alunos SET telefone = ? WHERE id = ?`, [otpRow.destino, aluno.id]);
+    }
+    const token = jwt.sign(
+      { tipo: 'ALUNO', aluno_id: aluno.id, cpf: aluno.cpf, escola_id: aluno.escola_id },
+      APP_PAIS_JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+    return res.json({ ok: true, token, aluno: { id: aluno.id, nome: aluno.estudante, escola_id: aluno.escola_id } });
+  } catch (e) {
+    console.error('[ALUNO/VERIFICAR-CODIGO]', e);
+    return res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// GET /aluno/me
+router.get('/aluno/me', authAluno, async (req, res) => {
+  try {
+    const { aluno_id } = req.alunoAuth;
+    const [[aluno]] = await pool.query(
+      `SELECT a.id, a.estudante AS nome, a.codigo AS ra, a.escola_id, a.cpf, a.serie,
+              e.apelido AS escola_apelido,
+              t.nome AS turma_nome, t.serie AS turma_serie, t.turno AS turma_turno
+       FROM alunos a
+       LEFT JOIN escolas e ON e.id = a.escola_id
+       LEFT JOIN turmas t ON t.id = a.turma_id
+       WHERE a.id = ? LIMIT 1`,
+      [aluno_id]
+    );
+    if (!aluno) return res.status(404).json({ message: 'Aluno não encontrado.' });
+    return res.json({ ok: true, aluno });
+  } catch (e) {
+    return res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 router.post("/solicitar-codigo", async (req, res) => {
   console.log("[SOLICITAR-CODIGO] body:", JSON.stringify(req.body ?? null));
   const db = pool;
@@ -2244,134 +2465,6 @@ router.post("/credencial/solicitar", async (req, res) => {
   );
 
   const responsavel_id = respRow?.id;
-
-  if (!responsavel_id) {
-    return res.status(500).json({ message: "Erro ao registrar responsável." });
-  }
-
-  // ✅ Abre solicitação ABERTA para cada escola que tenha master
-  // (a aprovação final ocorrerá pela secretaria/master no painel)
-  const obs =
-    observacao ||
-    `Parentesco: ${parentesco || "N/I"} | Solicitação via app (pré-login)`;
-
-  for (const m of masters) {
-    const escola_id = m.escola_id;
-
-    await db.query(
-      `
-      INSERT INTO responsaveis_vinculacao_solicitacoes
-        (escola_id, responsavel_id, status, observacao)
-      VALUES (?, ?, 'ABERTA', ?)
-      `,
-      [escola_id, responsavel_id, obs]
-    );
-  }
-
-  return res.json({
-    ok: true,
-    status: "ABERTA",
-    message: "Solicitação registrada. Aguarde autorização.",
-    escolas_destino: masters.map((m) => m.escola_id),
-  });
-});
-
-// ============================================================================
-// PASSO 2.3.1 — POST /credenciais/autorizar
-// - Master autoriza um CPF (pré-cadastrado) para um estudante específico
-// - Permissões ficam no vínculo responsaveis_alunos (escopo: escola + aluno)
-// Body:
-// {
-//   cpf: "00000000000",
-//   escola_id: 1,
-//   aluno_id: 123,
-//   permissoes: {
-//     boletim: true,
-//     conteudos: true,
-//     historico_entrada: true,
-//     agenda: true,
-//     registros: true,
-//     atividades: true,
-//     credenciais: false
-//   }
-// }
-// ============================================================================
-router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
-  const db = pool;
-
-  const { responsavel_id } = req.appPaisAuth;
-  const cpf = normalizarCpf(req.body?.cpf);
-  const escola_id = Number(req.body?.escola_id);
-  const aluno_id = Number(req.body?.aluno_id);
-  const p = req.body?.permissoes || {};
-
-  if (!cpf || !Number.isFinite(escola_id) || !Number.isFinite(aluno_id)) {
-    return res.status(400).json({ message: "cpf, escola_id e aluno_id são obrigatórios." });
-  }
-
-  try {
-    // 1) Confirma que o LOGADO é master nesse contexto (escola+aluno)
-    await exigirMasterNoContexto(db, responsavel_id, escola_id, aluno_id);
-
-    // 2) Confirma que o CPF existe (pré-cadastro)
-    const [[terceiro]] = await db.query(
-      "SELECT id, email, status_global FROM responsaveis WHERE cpf = ? LIMIT 1",
-      [cpf]
-    );
-
-    if (!terceiro) {
-      return res.status(404).json({
-        code: "PRECISA_SOLICITAR_CREDENCIAMENTO",
-        message: "Esse CPF precisa solicitar o credenciamento no EDUCA.MELHOR.",
-      });
-    }
-
-    // 3) Monta flags (campos existentes no seu SELECT do /alunos)
-    // Observação: conteudos/registros/atividades podem exigir colunas novas (ver nota abaixo).
-    const pode_ver_boletim = !!p.boletim;
-    const pode_ver_agenda = !!p.agenda;
-    const pode_ver_frequencia = !!p.historico_entrada;
-    const pode_receber_notificacoes = true; // default seguro (pode evoluir depois)
-    const pode_autorizar_terceiros = !!p.credenciais;
-
-    // 4) Upsert do vínculo (se existir, atualiza; se não, cria)
-    const [[existeVinculo]] = await db.query(
-      `
-      SELECT id
-      FROM responsaveis_alunos
-      WHERE responsavel_id = ?
-        AND escola_id = ?
-        AND aluno_id = ?
-      LIMIT 1
-      `,
-      [terceiro.id, escola_id, aluno_id]
-    );
-
-    if (!existeVinculo) {
-      await db.query(
-        `
-        INSERT INTO responsaveis_alunos
-          (responsavel_id, escola_id, aluno_id,
-           pode_ver_boletim, pode_ver_frequencia, pode_ver_agenda, pode_receber_notificacoes,
-           principal, ativo, pode_autorizar_terceiros)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)
-        `,
-        [
-          terceiro.id,
-          escola_id,
-          aluno_id,
-          pode_ver_boletim,
-          pode_ver_frequencia,
-          pode_ver_agenda,
-          pode_receber_notificacoes,
-          pode_autorizar_terceiros,
-        ]
-      );
-    } else {
-      await db.query(
-        `
-        UPDATE responsaveis_alunos
-           SET pode_ver_boletim = ?,
                pode_ver_frequencia = ?,
                pode_ver_agenda = ?,
                pode_receber_notificacoes = ?,
@@ -2409,32 +2502,6 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
       aluno_id,
     });
   } catch (error) {
-    console.error("[APP_PAIS] Erro em /credenciais/autorizar:", error);
-    return res.status(error.status || 500).json({
-      message: error.message || "Erro ao autorizar credencial.",
-      code: error.code || "ERRO_AUTORIZAR_CREDENCIAL",
-    });
-  }
-});
-
-
-// ============================================================================
-// CONTEÚDOS (APP PAIS) — por turma/disciplina/bimestre/ano_letivo
-// - Objetivo: retornar "itens" (array de tópicos) para o ConteudosScreen.js
-// - Filtro: turma_id é derivado do aluno (alunos.turma_id)
-// - Segurança: responsável precisa estar vinculado ao aluno (responsaveis_alunos ativo)
-// ============================================================================
-
-router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
-  const db = pool;
-  try {
-    const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
-    const alunoId = Number(req.query.aluno_id);
-
-    if (!alunoId || Number.isNaN(alunoId)) {
-      return res.status(400).json({ message: "Parâmetro aluno_id inválido." });
-    }
-
     // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
     if (cpfAuth === '00000000019') {
       return res.json({ ok: true, disciplinas: [
