@@ -2667,9 +2667,8 @@ router.post("/credencial/solicitar", async (req, res) => {
 // ============================================================================
 // GET /conteudos/disciplinas
 // ============================================================================
-router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
+router.get("/conteudos/disciplinas", authAppPaisOuAluno, async (req, res) => {
   const db = pool;
-  const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
   const alunoId = Number(req.query.aluno_id);
 
   if (!alunoId) {
@@ -2677,57 +2676,8 @@ router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
   }
 
   try {
-    // [EDIT] Injetado lógica de atualização de vínculo de terceiros aqui (omitido por brevidade no original)
-    // 4) Update de permissões se o vínculo existir
-    const [[existeVinculo]] = await db.query(
-      `SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? LIMIT 1`,
-      [req.body.responsavel_id, req.body.aluno_id]
-    );
-
-    if (existeVinculo) {
-      await db.query(
-        `UPDATE responsaveis_alunos 
-         SET pode_ver_boletim = ?,
-               pode_ver_frequencia = ?,
-               pode_ver_agenda = ?,
-               pode_receber_notificacoes = ?,
-               ativo = 1,
-               pode_autorizar_terceiros = ?
-         WHERE id = ?
-        `,
-        [
-          req.body.pode_ver_boletim,
-          req.body.pode_ver_frequencia,
-          req.body.pode_ver_agenda,
-          req.body.pode_receber_notificacoes,
-          req.body.pode_autorizar_terceiros,
-          existeVinculo.id,
-        ]
-      );
-    }
-
-    // 5) Opcional: ajustar status_global (não quebra login, mas mantém semântica)
-    // - Se ainda não tem email, continua PENDENTE (o OTP depende de email).
-    // - Se tem email, pode promover para ATIVO.
-    const [[terceiro]] = await db.query("SELECT id, email FROM responsaveis WHERE id = ?", [req.body.responsavel_id]);
-    const email = String(terceiro?.email || "").trim();
-    if (email) {
-      await db.query(
-        "UPDATE responsaveis SET status_global = 'ATIVO' WHERE id = ?",
-        [terceiro.id]
-      );
-    }
-
-    return res.json({
-      ok: true,
-      message: `CPF ${req.body.cpf} credenciado com sucesso!`,
-      responsavel_id: terceiro.id,
-      escola_id: req.body.escola_id,
-      aluno_id: req.body.aluno_id,
-    });
-  } catch (error) {
     // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
-    if (cpfAuth === '00000000019') {
+    if (req.appPaisAuth && req.appPaisAuth.cpf === '00000000019') {
       return res.json({ ok: true, disciplinas: [
         { id: 1, nome: 'Português' },
         { id: 2, nome: 'Matemática' },
@@ -2741,23 +2691,28 @@ router.get("/conteudos/disciplinas", authAppPais, async (req, res) => {
     // ─────────────────────────────────────────────────────────────────────────
 
     // 1) Descobre escola_id a partir do vínculo (garante acesso)
-    const [vinc] = await db.query(
-      `
-      SELECT ra.escola_id
-      FROM responsaveis_alunos ra
-      WHERE ra.responsavel_id = ?
-        AND ra.aluno_id = ?
-        AND ra.ativo = 1
-      LIMIT 1
-      `,
-      [responsavel_id, alunoId]
-    );
-
-    if (!vinc.length) {
-      return res.status(403).json({ message: "Acesso negado para este aluno." });
+    let escolaId = null;
+    if (req.alunoAuth) {
+      if (req.alunoAuth.aluno_id !== alunoId) return res.status(403).json({ message: "Acesso negado." });
+      const [[vinc]] = await db.query(`SELECT escola_id FROM alunos WHERE id = ? LIMIT 1`, [alunoId]);
+      if (!vinc) return res.status(403).json({ message: "Acesso negado para este aluno." });
+      escolaId = vinc.escola_id;
+    } else {
+      const { responsavel_id } = req.appPaisAuth;
+      const [vinc] = await db.query(
+        `
+        SELECT ra.escola_id
+        FROM responsaveis_alunos ra
+        WHERE ra.responsavel_id = ?
+          AND ra.aluno_id = ?
+          AND ra.ativo = 1
+        LIMIT 1
+        `,
+        [responsavel_id, alunoId]
+      );
+      if (!vinc.length) return res.status(403).json({ message: "Acesso negado para este aluno." });
+      escolaId = vinc[0].escola_id;
     }
-
-    const escolaId = vinc[0].escola_id;
 
     // 2) Lista disciplinas da escola
     const [rows] = await db.query(
