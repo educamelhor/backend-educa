@@ -496,6 +496,31 @@ router.post("/convite/ativar", async (req, res) => {
 
 
 /**
+ * 0) Status público — verifica manutenção ativa (sem autenticação)
+ * GET /api/auth/status
+ * Resposta: { maintenance: false } ou { maintenance: true, inicio, fim, mensagem }
+ */
+router.get('/status', async (req, res) => {
+  try {
+    const [[manut]] = await pool.query(
+      `SELECT inicio, fim, mensagem FROM sistema_manutencao
+       WHERE ativo = 1 AND inicio <= NOW() AND fim > NOW() LIMIT 1`
+    );
+    if (manut) {
+      return res.json({
+        maintenance: true,
+        inicio: manut.inicio,
+        fim: manut.fim,
+        mensagem: manut.mensagem,
+      });
+    }
+    return res.json({ maintenance: false });
+  } catch {
+    return res.json({ maintenance: false });
+  }
+});
+
+/**
  * 1) Login – envia código de confirmação (OTP) OU login escolar (CPF+senha)
  */
 router.post("/login", async (req, res) => {
