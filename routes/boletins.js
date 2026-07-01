@@ -112,7 +112,7 @@ const PRINT_SECRET = process.env.PRINT_SECRET || "123456";
 // - Fluxo consolidado (gera PDF a partir de uma turma)
 // ============================================================================
 router.post("/gerar", verificarEscola, async (req, res) => {
-  const { turma_id } = req.body;
+  const { turma_id, ano } = req.body;
   const { escola_id } = req.user;
 
   if (!turma_id) {
@@ -135,12 +135,13 @@ router.post("/gerar", verificarEscola, async (req, res) => {
     const authHeader = req.headers.authorization || "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
 
-    // 3) Monta a URL de impressão
+    // 3) Monta a URL de impressão (inclui ano se fornecido)
     const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
     const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
+    const anoParam = ano ? `&ano=${encodeURIComponent(ano)}` : "";
     const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
       turma_id
-    )}&secret=${encodeURIComponent(PRINT_SECRET)}`;
+    )}&secret=${encodeURIComponent(PRINT_SECRET)}${anoParam}`;
 
     let browser;
     try {
