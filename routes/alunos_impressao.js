@@ -2,8 +2,9 @@
 // ============================================================================
 // Rotas relacionadas à impressão de boletins
 // Agora retornando RANKING por ESCOLA e também por TURMA
-// Ajuste (2025): ranking considera APENAS notas do ano 2025.
-// A soma de notas no front continua somando 2024 + 2025 (sem mudanças aqui).
+// Fix (2026): usa tabela `matriculas` (igual à Fiscalização de Notas) para
+// buscar alunos da turma, evitando o campo legado `alunos.turma_id` que
+// aponta para turmas de anos anteriores.
 // ============================================================================
 
 import express from "express";
@@ -11,8 +12,8 @@ import pool from "../db.js";
 
 const router = express.Router();
 
-// Ano-base do ranking
-const ANO_RANKING = 2025;
+// Ano-base do ranking — usa o ano letivo atual
+const ANO_RANKING = new Date().getFullYear();
 
 
 // -------------------------------------------------------------------------
@@ -41,6 +42,8 @@ router.post("/impressao/boletins", async (req, res) => {
 // -------------------------------------------------------------------------
 // GET /api/impressao/boletins?turma_id=123
 // Objetivo: buscar todos os alunos de uma turma e retornar boletins completos
+// FIX 2026: usa tabela `matriculas` (igual à Fiscalização de Notas) em vez
+// de `alunos.turma_id` (campo legado que aponta para turmas de anos anteriores)
 // -------------------------------------------------------------------------
 router.get("/impressao/boletins", async (req, res) => {
   try {
@@ -52,61 +55,86 @@ router.get("/impressao/boletins", async (req, res) => {
         .json({ error: "Parâmetro turma_id é obrigatório." });
     }
 
-    // 1) Buscar alunos da turma
-    const [alunosDados] = await pool.query(
-      `
-      SELECT 
-        a.id,
-        a.codigo,
-        a.estudante AS nome,
-        t.nome AS turma,
-        t.turno,
-        t.id AS turma_id,
-        a.status,
-        a.escola_id,
-        t.etapa
-      FROM alunos a
-      INNER JOIN turmas t ON a.turma_id = t.id
-      WHERE a.turma_id = ?
-      ORDER BY a.estudante
-      `,
+    // ── Descobrir o ano letivo da turma (usa o maior ano_letivo nas matrículas) ──
+    const [[turmaInfo]] = await pool.query(
+      `SELECT t.id, t.nome AS turma, t.turno, t.etapa, t.escola_id,
+              MAX(m.ano_letivo) AS ano_letivo
+         FROM turmas t
+         LEFT JOIN matriculas m ON m.turma_id = t.id AND m.status = 'ativo'
+        WHERE t.id = ?
+        GROUP BY t.id`,
       [turma_id]
+    );
+
+    if (!turmaInfo) {
+      return res.json({ turma_id, total: 0, alunos: [] });
+    }
+
+    const anoLetivo = turmaInfo.ano_letivo || new Date().getFullYear();
+    const escolaIdTurma = turmaInfo.escola_id;
+
+    // 1) Buscar alunos via tabela MATRICULAS (igual à Fiscalização de Notas)
+    //    Garante alunos matriculados no ano letivo correto, independente do
+    //    campo legado `alunos.turma_id`.
+    const [alunosDados] = await pool.query(
+      `SELECT
+         a.id,
+         a.codigo,
+         a.estudante AS nome,
+         ? AS turma,
+         ? AS turno,
+         ? AS turma_id,
+         a.status,
+         a.escola_id,
+         ? AS etapa
+       FROM matriculas m
+       INNER JOIN alunos a ON a.id = m.aluno_id
+       WHERE m.turma_id = ?
+         AND m.escola_id = ?
+         AND m.ano_letivo = ?
+         AND m.status = 'ativo'
+       ORDER BY a.estudante`,
+      [
+        turmaInfo.turma,
+        turmaInfo.turno,
+        turmaInfo.id,
+        turmaInfo.etapa,
+        turma_id,
+        escolaIdTurma,
+        anoLetivo,
+      ]
     );
 
     if (alunosDados.length === 0) {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    // 2) Buscar notas filtradas por n.escola_id — IGUAL à Fiscalização de Notas
-    //    Filtrar por a.escola_id (aluno) não é suficiente pois o banco pode ter
-    //    registros duplicados com escola_id distintos; n.escola_id garante a nota certa.
+    // 2) Buscar notas filtradas por escola_id — IGUAL à Fiscalização de Notas.
+    //    Não filtra por ano para retornar todos os bimestres disponíveis.
     const alunoIds = alunosDados.map((a) => a.id);
-    const escolaIdTurma = alunosDados[0]?.escola_id;
     const [notas] = await pool.query(
-      `
-      SELECT 
-        n.aluno_id,
-        a.codigo AS aluno_codigo,
-        d.nome AS disciplina,
-        n.nota,
-        n.faltas,
-        n.ano,
-        n.bimestre,
-        d.id AS disciplina_id
-      FROM notas n
-      INNER JOIN disciplinas d ON n.disciplina_id = d.id
-      INNER JOIN alunos a ON n.aluno_id = a.id
-      WHERE n.aluno_id IN (?)
-        AND n.escola_id = ?
-      ORDER BY n.ano, n.bimestre, d.nome
-      `,
+      `SELECT
+         n.aluno_id,
+         a.codigo AS aluno_codigo,
+         d.nome AS disciplina,
+         n.nota,
+         n.faltas,
+         n.ano,
+         n.bimestre,
+         d.id AS disciplina_id
+       FROM notas n
+       INNER JOIN disciplinas d ON n.disciplina_id = d.id
+       INNER JOIN alunos a ON n.aluno_id = a.id
+       WHERE n.aluno_id IN (?)
+         AND n.escola_id = ?
+       ORDER BY n.ano, n.bimestre, d.nome`,
       [alunoIds, escolaIdTurma]
     );
 
-    // 3) Buscar ranking (escola e turma) — APENAS 2025
+    // 3) Buscar ranking (escola e turma) — ano letivo atual
     const rankings = {};
     for (const aluno of alunosDados) {
-      rankings[aluno.codigo] = await calculaRankings(aluno);
+      rankings[aluno.codigo] = await calculaRankings(aluno, anoLetivo);
     }
 
     // 4) Montar estrutura final
@@ -122,7 +150,6 @@ router.get("/impressao/boletins", async (req, res) => {
         situacao: aluno.status,
         ranking: rankings[aluno.codigo] || null,
         notas: notas
-          // Filtra por aluno_id (número) — evita comparação string vs int
           .filter((n) => Number(n.aluno_id) === Number(aluno.id))
           .map((n) => ({
             disciplina_id: n.disciplina_id,
@@ -233,20 +260,20 @@ async function montaBoletins(pool, { codigos }) {
 }
 
 // ============================================================================
-// Função auxiliar: calcula ranking ESCOLA e TURMA (apenas ano 2025)
+// Função auxiliar: calcula ranking ESCOLA e TURMA (ano letivo corrente)
 // ============================================================================
-async function calculaRankings(aluno) {
-  // Soma das notas do aluno — somente 2025
+async function calculaRankings(aluno, anoRanking = ANO_RANKING) {
+  // Soma das notas do aluno — ano letivo atual
   const [somaNotasAluno] = await pool.query(
     `SELECT SUM(n.nota) AS soma 
        FROM notas n 
       WHERE n.aluno_id = ? 
         AND n.ano = ?`,
-    [aluno.id, ANO_RANKING]
+    [aluno.id, anoRanking]
   );
   const soma2025 = somaNotasAluno[0]?.soma;
 
-  // Total de alunos da escola COM notas em 2025
+  // Total de alunos da escola COM notas no ano letivo atual
   const [totalEscola] = await pool.query(
     `
     SELECT COUNT(*) AS total
@@ -260,43 +287,46 @@ async function calculaRankings(aluno) {
       HAVING SUM(n.nota) IS NOT NULL
     ) sub
     `,
-    [aluno.escola_id, ANO_RANKING]
+    [aluno.escola_id, anoRanking]
   );
 
-  // Total de alunos da turma COM notas em 2025
+  // Total de alunos da turma COM notas no ano letivo atual
   const [totalTurma] = await pool.query(
     `
     SELECT COUNT(*) AS total
     FROM (
       SELECT a.id
-        FROM alunos a
+        FROM matriculas m
+        INNER JOIN alunos a ON a.id = m.aluno_id
         INNER JOIN notas n ON n.aluno_id = a.id
-       WHERE a.turma_id = ?
+       WHERE m.turma_id = ?
+         AND m.ano_letivo = ?
+         AND m.status = 'ativo'
          AND n.ano = ?
        GROUP BY a.id
       HAVING SUM(n.nota) IS NOT NULL
     ) sub
     `,
-    [aluno.turma_id, ANO_RANKING]
+    [aluno.turma_id, anoRanking, anoRanking]
   );
 
-  // Se o aluno não tem notas em 2025, ele não entra no ranking
+  // Se o aluno não tem notas no ano letivo atual, ele não entra no ranking
   if (!soma2025) {
     return {
       escola: {
         ranking: totalEscola[0]?.total || 0,
         total_alunos: totalEscola[0]?.total || 0,
-        semNotas: true, // sem notas em 2025
+        semNotas: true,
       },
       turma: {
         ranking: totalTurma[0]?.total || 0,
         total_alunos: totalTurma[0]?.total || 0,
-        semNotas: true, // sem notas em 2025
+        semNotas: true,
       },
     };
   }
 
-  // Ranking por escola (somente 2025)
+  // Ranking por escola (ano letivo atual)
   const [posEscola] = await pool.query(
     `
     SELECT COUNT(*) + 1 AS posicao
@@ -317,18 +347,21 @@ async function calculaRankings(aluno) {
            AND n2.ano = ?
      )
     `,
-    [aluno.escola_id, ANO_RANKING, aluno.id, ANO_RANKING]
+    [aluno.escola_id, anoRanking, aluno.id, anoRanking]
   );
 
-  // Ranking por turma (somente 2025)
+  // Ranking por turma (ano letivo atual, via matriculas)
   const [posTurma] = await pool.query(
     `
     SELECT COUNT(*) + 1 AS posicao
       FROM (
         SELECT a.id, SUM(n.nota) AS soma_notas
-          FROM alunos a
+          FROM matriculas m
+          INNER JOIN alunos a ON a.id = m.aluno_id
           INNER JOIN notas n ON n.aluno_id = a.id
-         WHERE a.turma_id = ?
+         WHERE m.turma_id = ?
+           AND m.ano_letivo = ?
+           AND m.status = 'ativo'
            AND n.ano = ?
          GROUP BY a.id
         HAVING soma_notas IS NOT NULL
@@ -341,7 +374,7 @@ async function calculaRankings(aluno) {
            AND n2.ano = ?
      )
     `,
-    [aluno.turma_id, ANO_RANKING, aluno.id, ANO_RANKING]
+    [aluno.turma_id, anoRanking, anoRanking, aluno.id, anoRanking]
   );
 
   return {
