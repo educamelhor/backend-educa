@@ -42,7 +42,8 @@ router.get("/registros", async (req, res) => {
     const [rows] = await db.query(
       `SELECT id, aluno_codigo, turma_id, texto,
               usuario_id, usuario_nome, usuario_perfil,
-              criado_em, editado_em, editado_por_nome
+              criado_em, editado_em, editado_por_nome,
+              excluido, excluido_em, excluido_por_nome
        FROM registro_conselho
        ${where}
        ORDER BY criado_em DESC
@@ -157,6 +158,50 @@ router.put("/registros/:id", async (req, res) => {
     });
   } catch (err) {
     console.error("[CONSELHO] Erro ao editar registro:", err);
+    res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
+
+// ============================================================================
+// DELETE /api/conselho/registros/:id
+// Soft delete de um registro (oculta o conteúdo)
+// ============================================================================
+router.delete("/registros/:id", async (req, res) => {
+  try {
+    const escola_id = req.escola_id ?? req.user?.escola_id;
+    if (!escola_id) return res.status(400).json({ ok: false, error: "Escola não identificada." });
+
+    const { id } = req.params;
+    const usuario_id = req.user?.usuario_id || req.user?.usuarioId || req.user?.id || null;
+    const db = req.db || pool;
+
+    const usuario_nome = await buscarNomeUsuario(db, usuario_id);
+
+    const [[registro]] = await db.query(
+      `SELECT id, usuario_id FROM registro_conselho WHERE id = ? AND escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (!registro) {
+      return res.status(404).json({ ok: false, error: "Registro não encontrado." });
+    }
+
+    if (Number(registro.usuario_id) !== Number(usuario_id)) {
+      return res.status(403).json({ ok: false, error: "Sem permissão para excluir este registro." });
+    }
+
+    const excluido_em = new Date();
+
+    await db.query(
+      `UPDATE registro_conselho
+       SET excluido = 1, excluido_em = ?, excluido_por_nome = ?
+       WHERE id = ?`,
+      [excluido_em, usuario_nome, id]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[CONSELHO] Erro ao excluir registro:", err);
     res.status(500).json({ ok: false, error: "Erro interno." });
   }
 });
