@@ -163,6 +163,25 @@ function verificarEscola(req, res, next) {
   next();
 }
 
+// ✅ [GOVERNANÇA v2] Mapeamento de autoridade de criação (mesma lógica do POST)
+const AUTORIDADE_CRIADOR_MAP = {
+  'diretor':            ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+  'vice_diretor':       ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+  'diretor_disciplinar':['subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'],
+  'admin':              ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+};
+
+/**
+ * GET /api/usuarios/perfis-disponiveis
+ * ✅ [GOVERNANÇA v2] Retorna os perfis que o diretor logado pode criar.
+ * Usado pelo frontend para filtrar o dropdown de perfis no cadastro.
+ */
+router.get("/perfis-disponiveis", verificarEscola, async (req, res) => {
+  const perfilCriador = String(req.user?.perfil || '').toLowerCase().trim();
+  const perfisPermitidos = AUTORIDADE_CRIADOR_MAP[perfilCriador] || [];
+  return res.json({ ok: true, perfil_criador: perfilCriador, perfis: perfisPermitidos });
+});
+
 /**
  * GET /api/usuarios
  * Lista todos os usuários da escola logada com paginação
@@ -307,9 +326,25 @@ router.post("/", verificarEscola, async (req, res) => {
     return res.status(400).json({ message: "Preencha todos os campos obrigatórios (CPF válido com 11 dígitos)." });
   }
 
-  // Validação: apenas admin pode criar outro admin
-  if (perfil.toLowerCase() === "admin" && perfilCriador.toLowerCase() !== "admin") {
-    return res.status(403).json({ message: "Somente administradores podem criar outros administradores." });
+  // ✅ [GOVERNANÇA v2] Mapeamento de autoridade: quem pode criar quem
+  const AUTORIDADE_CRIADOR = {
+    'diretor':            ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+    'vice_diretor':       ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+    'diretor_disciplinar':['subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'],
+    // Permissão legada: admin pode criar qualquer um abaixo de si
+    'admin':              ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+  };
+
+  const perfilCriadorNorm = String(perfilCriador || '').toLowerCase().trim();
+  const perfilNovoNorm = String(perfil || '').toLowerCase().trim();
+
+  const perfilsPermitidos = AUTORIDADE_CRIADOR[perfilCriadorNorm];
+
+  // Validação antiga (mantida como fallback para super_admin)
+  if (perfilsPermitidos !== undefined && !perfilsPermitidos.includes(perfilNovoNorm)) {
+    return res.status(403).json({
+      message: `Perfil '${perfilCriador}' não tem autoridade para criar usuários com perfil '${perfil}'. Perfis permitidos: ${(perfilsPermitidos || []).join(', ')}.`
+    });
   }
 
   try {

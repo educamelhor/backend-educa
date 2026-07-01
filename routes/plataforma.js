@@ -268,7 +268,7 @@ router.patch("/escolas/:id/status", async (req, res) => {
     if (novoStatus === "cancelada") {
       const [diretores] = await db.query(
         `SELECT id, nome, perfil FROM usuarios
-         WHERE escola_id = ? AND perfil IN ('diretor','militar') AND ativo = 1`,
+         WHERE escola_id = ? AND perfil IN ('diretor','diretor_disciplinar') AND ativo = 1`,
         [id]
       );
       if (diretores.length > 0) {
@@ -412,7 +412,8 @@ router.post("/escolas/:escolaId/diretor", async (req, res) => {
     // Determina o perfil a salvar no banco
     let perfilSalvo = "diretor";
     if (papelNorm === "diretor_disciplinar") {
-      perfilSalvo = "militar"; // Re-usa enum existente para Comandante
+      // ✅ [GOVERNANÇA v2] Perfil explícito para Diretor Disciplinar
+      perfilSalvo = "diretor_disciplinar";
     }
 
     await db.query("START TRANSACTION");
@@ -505,7 +506,7 @@ router.get("/diretores", async (req, res) => {
         e.estado,
         e.tipo  AS escola_tipo,
         CASE
-          WHEN u.perfil = 'militar' THEN 'diretor_disciplinar'
+          WHEN u.perfil = 'diretor_disciplinar' THEN 'diretor_disciplinar'
           WHEN u.perfil = 'diretor' AND e.tipo LIKE '%CCMDF%' THEN 'diretor_pedagogico'
           ELSE 'diretor'
         END AS papel,
@@ -522,7 +523,7 @@ router.get("/diretores", async (req, res) => {
           GROUP BY usuario_id
         ) latest ON uc.id = latest.max_id
       ) c ON c.usuario_id = u.id
-      WHERE u.perfil IN ('diretor', 'militar')
+      WHERE u.perfil IN ('diretor', 'diretor_disciplinar')
       ORDER BY COALESCE(u.escola_id, 999999) DESC, u.perfil ASC
       LIMIT 500
     `);
@@ -549,7 +550,7 @@ router.post("/diretores/:id/regenerar-codigo", async (req, res) => {
   try {
     // Verifica se é diretor
     const [uRows] = await db.query(
-      "SELECT id, nome, perfil, ativo FROM usuarios WHERE id = ? AND perfil IN ('diretor','militar') LIMIT 1",
+      "SELECT id, nome, perfil, ativo FROM usuarios WHERE id = ? AND perfil IN ('diretor','diretor_disciplinar') LIMIT 1",
       [id]
     );
     if (!uRows.length) {
@@ -613,7 +614,7 @@ router.put("/diretores/:id", async (req, res) => {
 
   try {
     const [exists] = await db.query(
-      "SELECT id, perfil FROM usuarios WHERE id = ? AND perfil IN ('diretor','militar') LIMIT 1",
+      "SELECT id, perfil FROM usuarios WHERE id = ? AND perfil IN ('diretor','diretor_disciplinar') LIMIT 1",
       [id]
     );
     if (!exists.length) {
@@ -674,7 +675,7 @@ router.patch("/diretores/:id/status", async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      "SELECT id, ativo, perfil, escola_id FROM usuarios WHERE id = ? AND perfil IN ('diretor','militar') LIMIT 1",
+      "SELECT id, ativo, perfil, escola_id FROM usuarios WHERE id = ? AND perfil IN ('diretor','diretor_disciplinar') LIMIT 1",
       [id]
     );
     if (!rows.length) {
@@ -717,9 +718,9 @@ router.delete("/diretores/:id", async (req, res) => {
   }
 
   try {
-    // 1) Verifica se existe e é diretor/militar
+    // 1) Verifica se existe e é diretor/diretor_disciplinar
     const [rows] = await db.query(
-      "SELECT id, nome, ativo, perfil, escola_id FROM usuarios WHERE id = ? AND perfil IN ('diretor','militar') LIMIT 1",
+      "SELECT id, nome, ativo, perfil, escola_id FROM usuarios WHERE id = ? AND perfil IN ('diretor','diretor_disciplinar') LIMIT 1",
       [id]
     );
     if (!rows.length) {
@@ -944,10 +945,10 @@ router.get("/dashboard", async (req, res) => {
 
     // ── KPIs de Diretores ──
     const [[{ total_diretores }]] = await db.query(
-      "SELECT COUNT(*) AS total_diretores FROM usuarios WHERE perfil IN ('diretor','militar')"
+      "SELECT COUNT(*) AS total_diretores FROM usuarios WHERE perfil IN ('diretor','diretor_disciplinar')"
     );
     const [[{ diretores_ativos }]] = await db.query(
-      "SELECT COUNT(*) AS diretores_ativos FROM usuarios WHERE perfil IN ('diretor','militar') AND ativo = 1"
+      "SELECT COUNT(*) AS diretores_ativos FROM usuarios WHERE perfil IN ('diretor','diretor_disciplinar') AND ativo = 1"
     );
 
     // ── KPIs de Alunos e Professores ──
@@ -988,7 +989,7 @@ router.get("/dashboard", async (req, res) => {
         AND NOT EXISTS (
           SELECT 1 FROM usuarios u
           WHERE u.escola_id = e.id
-            AND u.perfil IN ('diretor','militar')
+            AND u.perfil IN ('diretor','diretor_disciplinar')
             AND u.ativo = 1
         )
     `);

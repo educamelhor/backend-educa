@@ -27,7 +27,8 @@ const router = express.Router();
 // ────────────────────────────────────────────────────────────────────────────────
 // Perfis que recebem acesso IRRESTRITO (null = sem filtragem alguma)
 const PERFIS_SUPER = new Set(['super_admin', 'admin_global', 'ceo', 'plataforma']);
-const PERFIS_DIRECAO = new Set(['diretor', 'vice_diretor', 'militar', 'comandante']);
+// ✅ [GOVERNANÇA v2] 'militar' renomeado para 'diretor_disciplinar'
+const PERFIS_DIRECAO = new Set(['diretor', 'vice_diretor', 'diretor_disciplinar', 'comandante']);
 
 async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const perfilNorm = String(perfil || '').toLowerCase().trim();
@@ -53,9 +54,15 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
     return [...new Set([...lista, ...pais])];
   };
 
-  // Diretor e Vice-Diretor: teto completo do CEO
+  // ✅ [GOVERNANÇA v2] Isolamento estrutural CCMDF
+  // Diretor Disciplinar: APENAS módulos disciplinar.*
+  if (perfilNorm === 'diretor_disciplinar') {
+    return normalizarPais(ceoCeiling.filter(m => m.startsWith('disciplinar')));
+  }
+
+  // Diretor Pedagógico / Escola Comum / Vice-Diretor: teto CEO exceto disciplinar.*
   if (PERFIS_DIRECAO.has(perfilNorm)) {
-    return normalizarPais(ceoCeiling);
+    return normalizarPais(ceoCeiling.filter(m => !m.startsWith('disciplinar')));
   }
 
   // Demais perfis: intersection(CEO ceiling, config do Diretor)
@@ -64,8 +71,9 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
     [escolaIdNum, perfilNorm]
   ).catch(() => [[]]);
 
+  // ✅ [GOVERNANÇA v2] Fallback zero: sem config do Diretor = menu vazio
   if (!perfilRows || perfilRows.length === 0) {
-    return normalizarPais(ceoCeiling); // retrocompatível
+    return []; // Acesso zero — Diretor deve configurar os módulos do perfil
   }
 
   const perfilList = perfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
@@ -1207,7 +1215,7 @@ router.post("/validar-professor", async (req, res) => {
         ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
        AND p.escola_id = u.escola_id
       WHERE REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = ?
-        AND u.perfil NOT IN ('diretor', 'militar', 'aluno', 'responsavel')
+        AND u.perfil NOT IN ('diretor', 'diretor_disciplinar', 'aluno', 'responsavel')
         AND u.escola_id IS NOT NULL
         AND (u.senha_hash IS NULL OR u.senha_hash = '')
       ORDER BY e.nome ASC
@@ -1232,7 +1240,7 @@ router.post("/validar-professor", async (req, res) => {
       SELECT id, perfil
       FROM usuarios
       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-        AND perfil NOT IN ('diretor', 'militar', 'aluno', 'responsavel')
+        AND perfil NOT IN ('diretor', 'diretor_disciplinar', 'aluno', 'responsavel')
         AND (senha_hash IS NOT NULL AND senha_hash <> '')
       LIMIT 1
       `,
