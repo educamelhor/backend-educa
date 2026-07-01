@@ -90,14 +90,27 @@ async function waitRenderComplete(page) {
 }
 
 /**
- * Gera um buffer de PDF em A4, sem margens, com fundo.
+ * Ativa o modo de mídia CSS 'print' na página.
+ * SEM isso, as regras @media print do CSS Module são IGNORADAS pelo Playwright,
+ * causando página em branco (min-height:100vh) e conteúdo sem centralizar.
+ */
+async function enablePrintMedia(page) {
+  await page.emulateMedia({ media: "print" });
+}
+
+/**
+ * Gera um buffer de PDF em A4 landscape, com margens simétricas.
+ * - landscape: boletim é mais largo que alto.
+ * - margin 10mm: centram o conteúdo visualmente na página.
+ * - preferCSSPageSize: respeita o @page do CSS Module.
  */
 async function makePDF(page) {
   return page.pdf({
     format: "A4",
+    landscape: true,
     printBackground: true,
-    margin: { top: 0, bottom: 0, left: 0, right: 0 },
-    preferCSSPageSize: true,
+    margin: { top: "8mm", bottom: "8mm", left: "10mm", right: "10mm" },
+    preferCSSPageSize: false, // usa format+landscape acima
   });
 }
 
@@ -160,9 +173,17 @@ router.post("/gerar", verificarEscola, async (req, res) => {
         }
       }, { token, escola_id });
 
+      // 5b) Ativa @media print — sem isso as regras print do CSS Module
+      //     (min-height:unset, margens, etc.) são IGNORADAS pelo Playwright.
+      await enablePrintMedia(page);
+
       // 6) Navega com robustez e espera sinal de render
       await robustGoto(page, url);
       await waitRenderComplete(page);
+
+      // 6b) Garante que o modo print está ativo após a navegação
+      //     (navegar pode fazer reset da emulação em alguns browsers)
+      await enablePrintMedia(page);
 
       // 7) Gera o PDF
       const pdfBuffer = await makePDF(page);
@@ -235,9 +256,15 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
         }
       }, { token, escola_id });
 
+      // 5b) Ativa @media print (mesmo motivo da rota /gerar)
+      await enablePrintMedia(page);
+
       // 6) Navega com robustez e espera render final
       await robustGoto(page, url);
       await waitRenderComplete(page);
+
+      // 6b) Re-aplica print media após navegação
+      await enablePrintMedia(page);
 
       // 7) Gera PDF
       const pdfBuffer = await makePDF(page);
