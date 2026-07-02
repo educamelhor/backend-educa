@@ -219,3 +219,189 @@ router.post('/:escolaId/copiar-de/:origemId', async (req, res) => {
 });
 
 export default router;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MÓDULOS POR PERFIL — CEO define o teto de módulos para cada perfil por escola
+// Hierarquia: CEO (teto) → Diretor (pode manter ou restringir)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Auto-migrate: garante que a tabela escola_perfil_modulos existe ──────────
+let _perfilTableMigrated = false;
+router.use(async (req, _res, next) => {
+  if (_perfilTableMigrated) return next();
+  try {
+    await req.db.query(`
+      CREATE TABLE IF NOT EXISTS escola_perfil_modulos (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        escola_id  INT NOT NULL,
+        perfil     VARCHAR(60) NOT NULL,
+        modulo     VARCHAR(100) NOT NULL,
+        ativo      TINYINT(1) NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_epm (escola_id, perfil, modulo),
+        INDEX      idx_epm_escola_perfil (escola_id, perfil)
+      )
+    `);
+    _perfilTableMigrated = true;
+    console.log('[plataforma_modulos] Tabela escola_perfil_modulos verificada/criada ✅');
+  } catch (e) {
+    _perfilTableMigrated = true;
+    if (!String(e.message || '').includes('already exists')) {
+      console.warn('[plataforma_modulos] Auto-migrate perfil aviso:', e.message);
+    }
+  }
+  next();
+});
+
+// Perfis gerenciáveis pelo CEO (militares fixos não entram aqui)
+const PERFIS_GERENCIAVEIS = new Set([
+  'professor', 'coordenador', 'supervisor', 'pedagogo',
+  'secretario', 'secretaria', 'orientador',
+  'aluno', 'biblioteca', 'educador_social', 'merenda',
+  'psicologo', 'responsavel', 'vice_diretor', 'vigilancia', 'visitante',
+  'subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar',
+]);
+
+/**
+ * GET /api/plataforma/modulos/:escolaId/perfil/:perfil
+ * Retorna módulos ativos para este perfil nesta escola (teto CEO).
+ * Se não houver registros, retorna todos com ativo=false.
+ */
+router.get('/:escolaId/perfil/:perfil', async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.params.escolaId);
+  const perfil   = String(req.params.perfil || '').toLowerCase().trim();
+
+  if (!escolaId || isNaN(escolaId)) {
+    return res.status(400).json({ ok: false, message: 'escolaId inválido.' });
+  }
+  if (!PERFIS_GERENCIAVEIS.has(perfil)) {
+    return res.status(400).json({ ok: false, message: `Perfil '${perfil}' não gerenciável pelo CEO.` });
+  }
+
+  try {
+    const [rows] = await db.query(
+      'SELECT modulo, ativo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ?',
+      [escolaId, perfil]
+    );
+
+    let modulos;
+    if (!rows || rows.length === 0) {
+      modulos = Array.from(MODULOS_VALIDOS).map(modulo => ({ modulo, ativo: false }));
+    } else {
+      const mapa = new Map(rows.map(r => [r.modulo, Number(r.ativo) === 1]));
+      modulos = Array.from(MODULOS_VALIDOS).map(modulo => ({
+        modulo,
+        ativo: mapa.has(modulo) ? mapa.get(modulo) : false,
+      }));
+    }
+
+    return res.json({ ok: true, escola_id: escolaId, perfil, modulos });
+  } catch (err) {
+    console.error('[plataforma_modulos] GET perfil erro:', err.message);
+    return res.status(500).json({ ok: false, message: 'Erro ao buscar módulos do perfil.' });
+  }
+});
+
+/**
+ * PUT /api/plataforma/modulos/:escolaId/perfil/:perfil
+ * body: { modulos: [{ modulo: 'gabarito.gerar', ativo: true }, ...] }
+ * Salva o teto de módulos para este perfil nesta escola.
+ */
+router.put('/:escolaId/perfil/:perfil', async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.params.escolaId);
+  const perfil   = String(req.params.perfil || '').toLowerCase().trim();
+
+  if (!escolaId || isNaN(escolaId)) {
+    return res.status(400).json({ ok: false, message: 'escolaId inválido.' });
+  }
+  if (!PERFIS_GERENCIAVEIS.has(perfil)) {
+    return res.status(400).json({ ok: false, message: `Perfil '${perfil}' não gerenciável pelo CEO.` });
+  }
+
+  const { modulos } = req.body;
+  if (!Array.isArray(modulos) || modulos.length === 0) {
+    return res.status(400).json({ ok: false, message: 'Campo modulos deve ser um array não vazio.' });
+  }
+
+  const invalidos = modulos.filter(m => !MODULOS_VALIDOS.has(m?.modulo));
+  if (invalidos.length > 0) {
+    return res.status(400).json({
+      ok: false,
+      message: `Módulos inválidos: ${invalidos.map(m => m?.modulo).join(', ')}`,
+    });
+  }
+
+  try {
+    let total_ativados = 0;
+    let total_desativados = 0;
+
+    for (const { modulo, ativo } of modulos) {
+      const ativoVal = ativo ? 1 : 0;
+      await db.query(
+        `INSERT INTO escola_perfil_modulos (escola_id, perfil, modulo, ativo)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE ativo = ?`,
+        [escolaId, perfil, modulo, ativoVal, ativoVal]
+      );
+      if (ativoVal) total_ativados++;
+      else total_desativados++;
+    }
+
+    return res.json({ ok: true, escola_id: escolaId, perfil, total_ativados, total_desativados });
+  } catch (err) {
+    console.error('[plataforma_modulos] PUT perfil erro:', err.message);
+    return res.status(500).json({ ok: false, message: 'Erro ao salvar módulos do perfil.' });
+  }
+});
+
+/**
+ * POST /api/plataforma/modulos/:escolaId/copiar-de/:origemId/perfil/:perfil
+ * Copia configuração de módulos do perfil da escola origem para a escola destino.
+ */
+router.post('/:escolaId/copiar-de/:origemId/perfil/:perfil', async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.params.escolaId);
+  const origemId = Number(req.params.origemId);
+  const perfil   = String(req.params.perfil || '').toLowerCase().trim();
+
+  if (!escolaId || isNaN(escolaId) || !origemId || isNaN(origemId)) {
+    return res.status(400).json({ ok: false, message: 'escolaId ou origemId inválido.' });
+  }
+  if (escolaId === origemId) {
+    return res.status(400).json({ ok: false, message: 'Escola destino e origem não podem ser iguais.' });
+  }
+  if (!PERFIS_GERENCIAVEIS.has(perfil)) {
+    return res.status(400).json({ ok: false, message: `Perfil '${perfil}' não gerenciável pelo CEO.` });
+  }
+
+  try {
+    const [origemRows] = await db.query(
+      'SELECT modulo, ativo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ?',
+      [origemId, perfil]
+    );
+
+    // Remove configuração existente do perfil no destino
+    await db.query(
+      'DELETE FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ?',
+      [escolaId, perfil]
+    );
+
+    // Copia registros da origem
+    let total_copiados = 0;
+    for (const { modulo, ativo } of origemRows) {
+      await db.query(
+        'INSERT INTO escola_perfil_modulos (escola_id, perfil, modulo, ativo) VALUES (?, ?, ?, ?)',
+        [escolaId, perfil, modulo, ativo]
+      );
+      total_copiados++;
+    }
+
+    return res.json({ ok: true, escola_id: escolaId, perfil, origem_id: origemId, total_copiados });
+  } catch (err) {
+    console.error('[plataforma_modulos] POST copiar-de perfil erro:', err.message);
+    return res.status(500).json({ ok: false, message: 'Erro ao copiar módulos do perfil.' });
+  }
+});
+
