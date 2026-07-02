@@ -65,7 +65,7 @@ const MODULOS_VALIDOS = new Set([
   'professores.conteudos', 'professores.provas', 'professores.boletim',
   'professores.conselho',
   // Monitoramento
-  'monitoramento', 'monitoramento.painel',
+  'monitoramento', 'monitoramento.painel', 'monitoramento.alertas',
   'monitoramento.visitantes_registrar', 'monitoramento.visitantes_historico',
   'monitoramento.embeddings',
   // Questões
