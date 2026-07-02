@@ -49,11 +49,17 @@ const DOMINIOS_DIRETOR = {
   'diretor': new Set([
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'aluno', 'biblioteca', 'educador_social', 'merenda',
+    'psicologo', 'responsavel', 'vice_diretor',
+    'vigilancia', 'visitante',
   ]),
   // Vice-Diretor: mesmos perfis do diretor pedagógico
   'vice_diretor': new Set([
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'aluno', 'biblioteca', 'educador_social', 'merenda',
+    'psicologo', 'responsavel',
+    'vigilancia', 'visitante',
   ]),
   // Diretor Disciplinar (CCMDF — domínio disciplinar)
   'diretor_disciplinar': new Set([

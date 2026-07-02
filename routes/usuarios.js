@@ -165,10 +165,28 @@ function verificarEscola(req, res, next) {
 
 // ✅ [GOVERNANÇA v2] Mapeamento de autoridade de criação (mesma lógica do POST)
 const AUTORIDADE_CRIADOR_MAP = {
-  'diretor':            ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
-  'vice_diretor':       ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+  'diretor':            [
+    'professor', 'coordenador', 'supervisor', 'pedagogo',
+    'secretario', 'secretaria', 'orientador',
+    'aluno', 'biblioteca', 'educador_social', 'merenda',
+    'psicologo', 'responsavel', 'vice_diretor',
+    'vigilancia', 'visitante',
+  ],
+  'vice_diretor':       [
+    'professor', 'coordenador', 'supervisor', 'pedagogo',
+    'secretario', 'secretaria', 'orientador',
+    'aluno', 'biblioteca', 'educador_social', 'merenda',
+    'psicologo', 'responsavel',
+    'vigilancia', 'visitante',
+  ],
   'diretor_disciplinar':['subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'],
-  'admin':              ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+  'admin':              [
+    'professor', 'coordenador', 'supervisor', 'pedagogo',
+    'secretario', 'secretaria', 'orientador',
+    'aluno', 'biblioteca', 'educador_social', 'merenda',
+    'psicologo', 'responsavel', 'vice_diretor',
+    'vigilancia', 'visitante',
+  ],
 };
 
 /**
@@ -328,11 +346,29 @@ router.post("/", verificarEscola, async (req, res) => {
 
   // ✅ [GOVERNANÇA v2] Mapeamento de autoridade: quem pode criar quem
   const AUTORIDADE_CRIADOR = {
-    'diretor':            ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
-    'vice_diretor':       ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+    'diretor':            [
+      'professor', 'coordenador', 'supervisor', 'pedagogo',
+      'secretario', 'secretaria', 'orientador',
+      'aluno', 'biblioteca', 'educador_social', 'merenda',
+      'psicologo', 'responsavel', 'vice_diretor',
+      'vigilancia', 'visitante',
+    ],
+    'vice_diretor':       [
+      'professor', 'coordenador', 'supervisor', 'pedagogo',
+      'secretario', 'secretaria', 'orientador',
+      'aluno', 'biblioteca', 'educador_social', 'merenda',
+      'psicologo', 'responsavel',
+      'vigilancia', 'visitante',
+    ],
     'diretor_disciplinar':['subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'],
     // Permissão legada: admin pode criar qualquer um abaixo de si
-    'admin':              ['professor', 'coordenador', 'supervisor', 'pedagogo', 'secretario', 'secretaria', 'orientador'],
+    'admin':              [
+      'professor', 'coordenador', 'supervisor', 'pedagogo',
+      'secretario', 'secretaria', 'orientador',
+      'aluno', 'biblioteca', 'educador_social', 'merenda',
+      'psicologo', 'responsavel', 'vice_diretor',
+      'vigilancia', 'visitante',
+    ],
   };
 
   const perfilCriadorNorm = String(perfilCriador || '').toLowerCase().trim();
