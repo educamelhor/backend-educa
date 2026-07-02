@@ -62,24 +62,24 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
     return normalizarPais(ceoCeiling.filter(m => m.startsWith('disciplinar')));
   }
 
-  // ── Diretor Pedagógico / Vice-Diretor / Comandante: ───────────────────────
+  // ── Diretor Pedagógico / Vice-Diretor / Comandante: ─────────────────────────
   //  = UNIÃO de todos os perfis configurados pelo CEO em escola_perfil_modulos
-  //  (ele sempre vislumbra tudo que qualquer perfil pode acessar)
-  //  Se o CEO ainda não configurou por perfil → fallback para teto geral (escola_modulos)
+  //  Se o CEO AINDA NÃO configurou nenhum perfil → [] (só HOME + SUPORTE no front)
+  //  O CEO precisa configurar antes de qualquer módulo aparecer além dos genéricos.
   if (PERFIS_DIRECAO.has(perfilNorm)) {
     const [uniaoRows] = await dbPool.query(
       'SELECT DISTINCT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND ativo = 1',
       [escolaIdNum]
     ).catch(() => [[]]);
 
-    let uniaoList;
-    if (uniaoRows && uniaoRows.length > 0) {
-      // CEO já configurou por perfil: Diretor = UNIÃO de todos os perfis (sem disciplinar)
-      uniaoList = uniaoRows.map(r => r.modulo).filter(m => !m.startsWith('disciplinar'));
-    } else {
-      // Fallback retrocompatível: nenhum perfil configurado ainda → usa teto geral
-      uniaoList = ceoCeiling.filter(m => !m.startsWith('disciplinar'));
+    if (!uniaoRows || uniaoRows.length === 0) {
+      // CEO não configurou nenhum perfil desta escola → acesso zero
+      // HOME e SUPORTE sempre renderizam no frontend independente disso.
+      return [];
     }
+
+    // CEO configurou: Diretor = UNIÃO de todos os perfis (sem disciplinar, que é fixo)
+    const uniaoList = uniaoRows.map(r => r.modulo).filter(m => !m.startsWith('disciplinar'));
     return normalizarPais(uniaoList);
   }
 
