@@ -103,9 +103,22 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   // Lista do CEO por perfil (já é o teto do Diretor para este perfil)
   const ceoPorPerfil = ceoPorPerfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
 
-  // [Futura Camada 3] Verifica se o Diretor restringiu além do CEO
-  // Tabela direcao_perfil_modulos será criada quando implementarmos a Governança do Diretor
-  // Por ora, usa direto a config do CEO como acesso efetivo (conforme regra: CEO = padrão inicial)
+  // ── Camada 3: restrições do Diretor (direcao_acesso_perfil) ──────────────────
+  // O Diretor pode manter ou restringir o que o CEO definiu.
+  // Se o Diretor não configurou nada → herda o CEO diretamente (padrão = igual ao CEO).
+  const [diretorRows] = await dbPool.query(
+    'SELECT modulo, ativo FROM direcao_acesso_perfil WHERE escola_id = ? AND perfil = ?',
+    [escolaIdNum, perfilNorm]
+  ).catch(() => [[]]);
+
+  if (diretorRows && diretorRows.length > 0) {
+    // Diretor configurou: intersection — remove o que o Diretor desativou
+    const diretorMap = new Map(diretorRows.map(r => [r.modulo, Number(r.ativo) === 1]));
+    const efetivo = ceoPorPerfil.filter(m => diretorMap.get(m) !== false);
+    return normalizarPais(efetivo);
+  }
+
+  // Sem config do Diretor → usa direto o que o CEO definiu (Diretor herda CEO)
   return normalizarPais(ceoPorPerfil);
 }
 
