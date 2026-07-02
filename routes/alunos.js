@@ -1,4 +1,4 @@
-// api/routes/alunos.js
+﻿// api/routes/alunos.js
 
 import express from "express";
 import multer from "multer";
@@ -16,17 +16,17 @@ const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: ano letivo padrão com data de corte em 31/jan
-// (se mês <= 1 → ano anterior; senão → ano corrente)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helper: ano letivo padrÃ£o com data de corte em 31/jan
+// (se mÃªs <= 1 â†’ ano anterior; senÃ£o â†’ ano corrente)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function anoLetivoPadrao() {
   const hoje = new Date();
-  const mes = hoje.getMonth() + 1; // 1–12
+  const mes = hoje.getMonth() + 1; // 1â€“12
   return mes <= 1 ? hoje.getFullYear() - 1 : hoje.getFullYear();
 }
 
-// Base pública do Spaces (sem depender do front “adivinhar” a URL)
+// Base pÃºblica do Spaces (sem depender do front â€œadivinharâ€ a URL)
 // Ex.: https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/
 const SPACES_PUBLIC_BASE = String(
   process.env.SPACES_PUBLIC_BASE || "https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/"
@@ -34,18 +34,18 @@ const SPACES_PUBLIC_BASE = String(
 
 /*
  * Middleware local (defensivo) para garantir escola no req.user
- * OBS: O router já é protegido por autenticação + verificarEscola no server.js,
+ * OBS: O router jÃ¡ Ã© protegido por autenticaÃ§Ã£o + verificarEscola no server.js,
  * mas mantemos aqui para endpoints que o utilizam diretamente.
  */
 function verificarEscola(req, res, next) {
   if (!req.user || !req.user.escola_id) {
-    return res.status(403).json({ message: "Acesso negado: escola não definida." });
+    return res.status(403).json({ message: "Acesso negado: escola nÃ£o definida." });
   }
   next();
 }
 
 /* ============================================================================
- * 1) CONFIGURAÇÃO DE UPLOAD DE FOTOS (MULTER)
+ * 1) CONFIGURAÃ‡ÃƒO DE UPLOAD DE FOTOS (MULTER)
  * - Grava em /uploads/CEF04_PLAN/alunos (pasta servida pelo server.js)
  * ========================================================================== */
 const uploadDir = path.resolve(__dirname, "../uploads/CEF04_PLAN/alunos");
@@ -55,16 +55,16 @@ if (!fs.existsSync(uploadDir)) {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const codigo = req.params.id; // usamos :id da rota como "código do aluno"
+    const codigo = req.params.id; // usamos :id da rota como "cÃ³digo do aluno"
     cb(null, `${codigo}.jpg`);
   },
 });
 const upload = multer({ storage });
 
 /* ============================================================================
- * 2) ROTA PÚBLICA PARA IMPRESSÃO (por turma, via secret)
+ * 2) ROTA PÃšBLICA PARA IMPRESSÃƒO (por turma, via secret)
  * GET /api/alunos/publico?turma_id=123&secret=xxxx
- * - Não depende de req.user
+ * - NÃ£o depende de req.user
  * ========================================================================== */
 router.get("/publico", async (req, res) => {
   try {
@@ -72,10 +72,10 @@ router.get("/publico", async (req, res) => {
 
     const PRINT_SECRET = process.env.PRINT_SECRET || "123456";
     if (!secret || secret !== PRINT_SECRET) {
-      return res.status(403).json({ message: "Acesso negado (secret inválido)." });
+      return res.status(403).json({ message: "Acesso negado (secret invÃ¡lido)." });
     }
     if (!turma_id) {
-      return res.status(400).json({ message: "turma_id obrigatório." });
+      return res.status(400).json({ message: "turma_id obrigatÃ³rio." });
     }
 
     const [rows] = await pool.query(
@@ -102,8 +102,8 @@ router.get("/publico", async (req, res) => {
 /* ============================================================================
  * 3) LISTAR ALUNOS (com filtros)
  * GET /api/alunos?turma_id=&filtro=&status=&limit=&offset=
- * - Filtra por escola do usuário (req.user.escola_id)
- * - Filtros: turma_id, busca textual (nome/código/turma/turno) e status (ativo/inativo)
+ * - Filtra por escola do usuÃ¡rio (req.user.escola_id)
+ * - Filtros: turma_id, busca textual (nome/cÃ³digo/turma/turno) e status (ativo/inativo)
  * ========================================================================== */
 router.get("/", verificarEscola, async (req, res) => {
   try {
@@ -117,15 +117,15 @@ router.get("/", verificarEscola, async (req, res) => {
     } = req.query;
     const { escola_id } = req.user;
 
-    // Ano letivo efetivo: usa o parâmetro ou calcula o padrão (corte 31/jan)
+    // Ano letivo efetivo: usa o parÃ¢metro ou calcula o padrÃ£o (corte 31/jan)
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
 
     // DEBUG: o que chegou do front e do token
-    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
-    console.log("🔎 /api/alunos → req.user:", req.user);
+    console.log("ðŸ”Ž /api/alunos â†’ filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
+    console.log("ðŸ”Ž /api/alunos â†’ req.user:", req.user);
 
     const where = ["a.escola_id = ?", "m.ano_letivo = ?"];
-    // ⚠️ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
+    // âš ï¸ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
     const params = [SPACES_PUBLIC_BASE, escola_id, anoEfetivo];
 
     if (turma_id) {
@@ -159,8 +159,8 @@ router.get("/", verificarEscola, async (req, res) => {
       ${whereSql}
     `;
 
-    // Filtra params: SPACES_PUBLIC_BASE não deve ir para o COUNT (já que COUNT usa os mesmos binds do WHERE e ignoramos o bind inicial do SELECT principal)
-    // SPACES_PUBLIC_BASE é o params[0], então paramsCount pula ele.
+    // Filtra params: SPACES_PUBLIC_BASE nÃ£o deve ir para o COUNT (jÃ¡ que COUNT usa os mesmos binds do WHERE e ignoramos o bind inicial do SELECT principal)
+    // SPACES_PUBLIC_BASE Ã© o params[0], entÃ£o paramsCount pula ele.
     const paramsCount = params.slice(1);
     const [countRows] = await pool.query(countSql, paramsCount);
     const total = countRows[0].total;
@@ -175,7 +175,7 @@ router.get("/", verificarEscola, async (req, res) => {
              a.status,
              a.foto,
 
-             -- URL canônica do Spaces (novo padrão do EDUCA-CAPTURE):
+             -- URL canÃ´nica do Spaces (novo padrÃ£o do EDUCA-CAPTURE):
              CASE
                WHEN a.foto LIKE 'http%' THEN a.foto
                ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
@@ -186,7 +186,7 @@ router.get("/", verificarEscola, async (req, res) => {
              m.turma_id,
              m.ano_letivo,
 
-             -- LGPD: consentimento de imagem pelo responsável
+             -- LGPD: consentimento de imagem pelo responsÃ¡vel
              COALESCE(
                (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
                   FROM responsaveis_alunos ra
@@ -195,7 +195,7 @@ router.get("/", verificarEscola, async (req, res) => {
              ) AS consentimento_imagem
 
       FROM alunos AS a
-      -- JOIN via matriculas (fonte canônica de turma/ano a partir de 2026-03)
+      -- JOIN via matriculas (fonte canÃ´nica de turma/ano a partir de 2026-03)
       INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
       LEFT JOIN  turmas     AS t ON t.id = m.turma_id
       LEFT JOIN  escolas    AS e ON e.id = a.escola_id
@@ -205,12 +205,12 @@ router.get("/", verificarEscola, async (req, res) => {
     `;
     params.push(Number(limit), Number(offset));
 
-    console.log("🔎 /api/alunos → SQL:", sql.replace(/\s+/g, " ").trim());
-    console.log("🔎 /api/alunos → params:", params);
+    console.log("ðŸ”Ž /api/alunos â†’ SQL:", sql.replace(/\s+/g, " ").trim());
+    console.log("ðŸ”Ž /api/alunos â†’ params:", params);
 
     const [rows] = await pool.query(sql, params);
 
-    // LGPD: oculta foto quando não há consentimento
+    // LGPD: oculta foto quando nÃ£o hÃ¡ consentimento
     const alunosComConsentimento = rows.map((a) => {
       const ok = Number(a.consentimento_imagem) === 1;
       return {
@@ -233,7 +233,7 @@ router.get("/", verificarEscola, async (req, res) => {
  * 4) CRIAR ALUNO
  * POST /api/alunos
  * Body: { codigo, estudante, data_nascimento(YYYY-MM-DD), sexo, turma_id }
- * - status padrão: "ativo"
+ * - status padrÃ£o: "ativo"
  * ========================================================================== */
 router.post("/", verificarEscola, async (req, res) => {
   try {
@@ -241,12 +241,12 @@ router.post("/", verificarEscola, async (req, res) => {
     const { escola_id } = req.user;
 
     if (!codigo || !estudante) {
-      return res.status(400).json({ message: "Código e nome são obrigatórios." });
+      return res.status(400).json({ message: "CÃ³digo e nome sÃ£o obrigatÃ³rios." });
     }
 
     const anoLetivoAtual = anoLetivoPadrao();
 
-    // Verifica se já existe na base global da escola
+    // Verifica se jÃ¡ existe na base global da escola
     const [[existe]] = await pool.query(
       "SELECT id, status FROM alunos WHERE codigo = ? AND escola_id = ?",
       [codigo, escola_id]
@@ -257,22 +257,22 @@ router.post("/", verificarEscola, async (req, res) => {
     if (existe) {
       alunoId = existe.id;
 
-      // Se existe, verifica se já está matriculado ATIVO neste mesmo ano letivo
+      // Se existe, verifica se jÃ¡ estÃ¡ matriculado ATIVO neste mesmo ano letivo
       const [[matr]] = await pool.query(
         "SELECT id, status FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
         [alunoId, anoLetivoAtual, escola_id]
       );
       if (matr && matr.status === "ativo") {
-        return res.status(409).json({ message: "Este estudante já possui uma matrícula ativa no ano corrente." });
+        return res.status(409).json({ message: "Este estudante jÃ¡ possui uma matrÃ­cula ativa no ano corrente." });
       }
 
-      // Se ele já estava na base, apenas atualizamos seus dados e o validamos como ativo
+      // Se ele jÃ¡ estava na base, apenas atualizamos seus dados e o validamos como ativo
       await pool.query(
         `UPDATE alunos SET estudante = ?, data_nascimento = ?, sexo = ?, turma_id = ?, status = 'ativo' WHERE id = ?`,
         [estudante, data_nascimento || null, sexo || null, turma_id || null, alunoId]
       );
     } else {
-      // Inserção inédita na base global
+      // InserÃ§Ã£o inÃ©dita na base global
       const [result] = await pool.query(
         `
         INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
@@ -283,7 +283,7 @@ router.post("/", verificarEscola, async (req, res) => {
       alunoId = result.insertId;
     }
 
-    // ✅ Cria matrícula automaticamente ao cadastrar o aluno
+    // âœ… Cria matrÃ­cula automaticamente ao cadastrar o aluno
     if (turma_id && alunoId) {
       await pool.query(
         `INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status)
@@ -367,7 +367,7 @@ router.delete("/:id", verificarEscola, async (req, res) => {
       "DELETE FROM alunos WHERE id = ? AND escola_id = ?",
       [id, escola_id]
     );
-    res.json({ message: "Aluno excluído." });
+    res.json({ message: "Aluno excluÃ­do." });
   } catch (err) {
     console.error("Erro ao excluir aluno:", err);
     res.status(500).json({ message: "Erro ao excluir aluno." });
@@ -375,9 +375,9 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 });
 
 /* ============================================================================
- * 8) BUSCAR POR CÓDIGO
+ * 8) BUSCAR POR CÃ“DIGO
  * GET /api/alunos/por-codigo/:codigo
- * - Útil para verificar reativação/criação no frontend
+ * - Ãštil para verificar reativaÃ§Ã£o/criaÃ§Ã£o no frontend
  * ========================================================================== */
 router.get("/por-codigo/:codigo", verificarEscola, async (req, res) => {
   try {
@@ -394,12 +394,12 @@ router.get("/por-codigo/:codigo", verificarEscola, async (req, res) => {
       [codigo, escola_id]
     );
     if (!aluno) {
-      return res.status(404).json({ message: "Aluno não encontrado." });
+      return res.status(404).json({ message: "Aluno nÃ£o encontrado." });
     }
     res.json(aluno);
   } catch (err) {
-    console.error("Erro ao buscar aluno por código:", err);
-    res.status(500).json({ message: "Erro no servidor ao buscar por código." });
+    console.error("Erro ao buscar aluno por cÃ³digo:", err);
+    res.status(500).json({ message: "Erro no servidor ao buscar por cÃ³digo." });
   }
 });
 
@@ -455,9 +455,9 @@ router.get("/:id/notas-detalhadas", async (req, res) => {
 });
 
 /* ============================================================================
- * 9) BUSCAR UM ALUNO ESPECÍFICO (por código)
+ * 9) BUSCAR UM ALUNO ESPECÃFICO (por cÃ³digo)
  * GET /api/alunos/:id
- * - Aqui ":id" é o CÓDIGO do aluno (mantido conforme uso no frontend)
+ * - Aqui ":id" Ã© o CÃ“DIGO do aluno (mantido conforme uso no frontend)
  * ========================================================================== */
 router.get("/:id", async (req, res) => {
   const { id } = req.params;
@@ -476,7 +476,7 @@ router.get("/:id", async (req, res) => {
         t.nome AS turma,
         t.turno,
         t.etapa AS etapa,
-        -- Verifica se algum responsável ativo concedeu consentimento de imagem
+        -- Verifica se algum responsÃ¡vel ativo concedeu consentimento de imagem
         COALESCE(
           (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
              FROM responsaveis_alunos ra
@@ -490,10 +490,10 @@ router.get("/:id", async (req, res) => {
       [id]
     );
     if (!aluno) {
-      return res.status(404).json({ message: "Aluno não encontrado." });
+      return res.status(404).json({ message: "Aluno nÃ£o encontrado." });
     }
 
-    // LGPD/Consentimento: só expõe a foto se o responsável autorizou
+    // LGPD/Consentimento: sÃ³ expÃµe a foto se o responsÃ¡vel autorizou
     const consentimento_ok = Number(aluno.consentimento_imagem) === 1;
     return res.json({
       ...aluno,
@@ -511,10 +511,10 @@ router.get("/:id", async (req, res) => {
  * 10) RECEBER FOTO RECORTADA
  * POST /api/alunos/:id/foto
  * - Salva em /uploads/CEF04_PLAN/alunos/<codigo>.jpg
- * - Atualiza coluna 'foto' com o caminho público
+ * - Atualiza coluna 'foto' com o caminho pÃºblico
  * ========================================================================== */
 router.post("/:id/foto", upload.single("foto"), async (req, res) => {
-  const { id } = req.params; // código do aluno
+  const { id } = req.params; // cÃ³digo do aluno
   if (!req.file) {
     return res.status(400).json({ message: "Nenhuma foto enviada." });
   }
@@ -529,26 +529,26 @@ router.post("/:id/foto", upload.single("foto"), async (req, res) => {
 });
 
 /* ============================================================================
- * 11) IMPORTAR PDF — Formato EDUCADF 2025 (novo portal da SEEDF)
+ * 11) IMPORTAR PDF â€” Formato EDUCADF 2025 (novo portal da SEEDF)
  * POST /api/alunos/importar-pdf (arquivo: file)
  *
  * Novo formato: 11 colunas
  *   RE do Estudante | Estudante | Data de Nascimento | CPF | Sexo |
- *   Turma | Turno | Série | Contato Emergencial | Nome Responsável | CPF Responsável
+ *   Turma | Turno | SÃ©rie | Contato Emergencial | Nome ResponsÃ¡vel | CPF ResponsÃ¡vel
  *
  * Novidades vs. formato antigo:
- *   - Turma identificada pela coluna "Turma" do PDF (não pelo nome do arquivo)
- *   - Novos campos: CPF do aluno, Sexo, Série, Telefone do responsável
- *   - Parser com separação por página (evita colisão de Y entre páginas)
- *   - Nomes longos que quebram para linha abaixo/acima são corretamente montados
+ *   - Turma identificada pela coluna "Turma" do PDF (nÃ£o pelo nome do arquivo)
+ *   - Novos campos: CPF do aluno, Sexo, SÃ©rie, Telefone do responsÃ¡vel
+ *   - Parser com separaÃ§Ã£o por pÃ¡gina (evita colisÃ£o de Y entre pÃ¡ginas)
+ *   - Nomes longos que quebram para linha abaixo/acima sÃ£o corretamente montados
  *
  * flags opcionais no body:
- *   semTurma=true → importa sem turma (turma_id=null) quando turma não existe
+ *   semTurma=true â†’ importa sem turma (turma_id=null) quando turma nÃ£o existe
  * ========================================================================== */
 const uploadPdf = multer(); // usa buffer
 router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: "PDF não enviado." });
+    return res.status(400).json({ message: "PDF nÃ£o enviado." });
   }
 
   try {
@@ -556,10 +556,10 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
     const semTurma = req.body.semTurma === "true" || req.body.semTurma === true;
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 1: Extração posicional com separação por página
-    // Evita que Y=600 da página 1 colida com Y=600 da página 2
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 1: ExtraÃ§Ã£o posicional com separaÃ§Ã£o por pÃ¡gina
+    // Evita que Y=600 da pÃ¡gina 1 colida com Y=600 da pÃ¡gina 2
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const allItems = [];
     let pageCounter = 0;
 
@@ -582,7 +582,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       },
     });
 
-    // Agrupa por chave "página-Y" (tolerância 3px no Y)
+    // Agrupa por chave "pÃ¡gina-Y" (tolerÃ¢ncia 3px no Y)
     const rowsMap = {};
     for (const it of allItems) {
       const yKey = Math.round(it.y / 3) * 3;
@@ -591,10 +591,10 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       rowsMap[key].push(it);
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 2: Detecta cabeçalho por página
-    // O cabeçalho tem "RE do Estudante" (ou "RE") + "Turma" + "CPF"
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 2: Detecta cabeÃ§alho por pÃ¡gina
+    // O cabeÃ§alho tem "RE do Estudante" (ou "RE") + "Turma" + "CPF"
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const headerYByPage = {};
     for (const [key, items] of Object.entries(rowsMap)) {
       const [pgStr, yStr] = key.split("-");
@@ -610,12 +610,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         }
       }
     }
-    console.log(`[importar-pdf-novo] ${pageCounter} página(s), cabeçalhos:`, headerYByPage);
+    console.log(`[importar-pdf-novo] ${pageCounter} pÃ¡gina(s), cabeÃ§alhos:`, headerYByPage);
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 3: Ranges de colunas calibrados nas posições reais dos dados
-    // (os dados têm X diferentes dos cabeçalhos pelo zoom de renderização)
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 3: Ranges de colunas calibrados nas posiÃ§Ãµes reais dos dados
+    // (os dados tÃªm X diferentes dos cabeÃ§alhos pelo zoom de renderizaÃ§Ã£o)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const COL_RANGES = {
       re:       { min:  68, max: 130 },   // RE: ~80
       nome:     { min: 130, max: 270 },   // Estudante: ~154-165
@@ -624,10 +624,10 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       sexo:     { min: 480, max: 590 },   // Sexo: ~487-489
       turma:    { min: 580, max: 690 },   // Turma: ~591
       turno:    { min: 680, max: 800 },   // Turno: ~689
-      serie:    { min: 793, max: 865 },   // Série: ~802
+      serie:    { min: 793, max: 865 },   // SÃ©rie: ~802
       contato:  { min: 865, max: 960 },   // Contato Emergencial: ~895
-      nomeResp: { min: 960, max: 1090 },  // Nome Responsável: ~971-984
-      cpfResp:  { min: 1090, max: 1300 }, // CPF Responsável: ~1100-1102
+      nomeResp: { min: 960, max: 1090 },  // Nome ResponsÃ¡vel: ~971-984
+      cpfResp:  { min: 1090, max: 1300 }, // CPF ResponsÃ¡vel: ~1100-1102
     };
 
     function getCol(x) {
@@ -637,15 +637,15 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       return null;
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 4: Classifica cada linha como "data row" ou "continuation"
-    // Ordena por página asc, depois Y desc (top→bottom dentro de cada página)
-    // ─────────────────────────────────────────────────────────────────
+    // Ordena por pÃ¡gina asc, depois Y desc (topâ†’bottom dentro de cada pÃ¡gina)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const sortedKeys = Object.keys(rowsMap).sort((a, b) => {
       const [pa, ya] = a.split("-").map(Number);
       const [pb, yb] = b.split("-").map(Number);
       if (pa !== pb) return pa - pb;
-      return yb - ya; // Y maior = mais alto na página
+      return yb - ya; // Y maior = mais alto na pÃ¡gina
     });
 
     const classifiedRows = [];
@@ -654,7 +654,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       const pg = Number(pgStr);
       const yKey = Number(yStr);
       const headerY = headerYByPage[pg];
-      // Ignora cabeçalho, título, rodapé (Y >= headerY ou ausente)
+      // Ignora cabeÃ§alho, tÃ­tulo, rodapÃ© (Y >= headerY ou ausente)
       if (!headerY || yKey >= headerY) continue;
 
       const lineItems = rowsMap[key].sort((a, b) => a.x - b.x);
@@ -670,14 +670,14 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       classifiedRows.push({ key, pg, yKey, rowData, isDataRow });
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 5: Merge de continuation rows
     // Nomes longos podem ter fragmentos ACIMA ou ABAIXO do data row.
     // Algoritmo: para cada data row, tudo entre ela e o data row
-    // adjacente (anterior/posterior da mesma página) é continuação.
-    // ─────────────────────────────────────────────────────────────────
+    // adjacente (anterior/posterior da mesma pÃ¡gina) Ã© continuaÃ§Ã£o.
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    // Agrupa data rows por página
+    // Agrupa data rows por pÃ¡gina
     const dataRowsByPage = {};
     for (const row of classifiedRows) {
       if (!row.isDataRow) continue;
@@ -688,12 +688,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     const mergedRows = [];
 
     for (const pg of Object.keys(dataRowsByPage)) {
-      const dRows = dataRowsByPage[pg]; // já ordenados top→bottom (Y desc)
+      const dRows = dataRowsByPage[pg]; // jÃ¡ ordenados topâ†’bottom (Y desc)
       const allPageRows = classifiedRows.filter((r) => r.pg === Number(pg));
 
       for (let i = 0; i < dRows.length; i++) {
         const currentRow = dRows[i];
-        // Limites do "bloco" deste aluno: entre o data row anterior e o próximo
+        // Limites do "bloco" deste aluno: entre o data row anterior e o prÃ³ximo
         const upperBound = i > 0 ? dRows[i - 1].yKey : Infinity;
         const lowerBound = i < dRows.length - 1 ? dRows[i + 1].yKey : -Infinity;
 
@@ -713,9 +713,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       }
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 6: Limpeza e normalização de cada registro
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 6: Limpeza e normalizaÃ§Ã£o de cada registro
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const pdfEntries = [];
     let turmaNomePdf = null; // turma identificada pela coluna "Turma" do PDF
 
@@ -723,7 +723,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       const re = (r.re || "").replace(/\D/g, "").trim();
       if (!/^\d{4,7}$/.test(re)) continue;
 
-      // Nome: remove fragmentos de data e números que possam ter vazado
+      // Nome: remove fragmentos de data e nÃºmeros que possam ter vazado
       const estudante = (r.nome || "")
         .replace(/\d{2}\/\d{2}\/\d{4}/g, "")
         .replace(/\s{2,}/g, " ")
@@ -734,7 +734,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       const dataMatch = (r.dataNasc || "").match(/(\d{2}\/\d{2}\/\d{4})/);
       const dataBr = dataMatch ? dataMatch[1] : "";
 
-      // CPF do aluno (11 dígitos)
+      // CPF do aluno (11 dÃ­gitos)
       const cpfAlunoDigitos = (r.cpfAluno || "").replace(/\D/g, "");
       const cpfAluno = cpfAlunoDigitos.length === 11 ? cpfAlunoDigitos : null;
 
@@ -744,13 +744,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
                  : /feminino/i.test(sexoRaw)  ? "Feminino"
                  : null;
 
-      // Série
+      // SÃ©rie
       const serie = (r.serie || "").trim() || null;
 
-      // Turma: captura uma vez (todas as linhas terão o mesmo valor)
+      // Turma: captura uma vez (todas as linhas terÃ£o o mesmo valor)
       const turmaRaw = (r.turma || "").trim();
       if (turmaRaw && !turmaNomePdf) {
-        // Normaliza "7º Ano - A" → "7º ANO A"
+        // Normaliza "7Âº Ano - A" â†’ "7Âº ANO A"
         turmaNomePdf = turmaRaw
           .toUpperCase()
           .replace(/\s*-\s*/g, " ")
@@ -758,16 +758,16 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
           .trim();
       }
 
-      // Contato Emergencial = telefone do responsável
+      // Contato Emergencial = telefone do responsÃ¡vel
       const contatoRaw = (r.contato || "").trim();
       const telefone = contatoRaw && contatoRaw !== "-"
         ? contatoRaw.replace(/\D/g, "").substring(0, 20) || null
         : null;
 
-      // Nome do responsável
+      // Nome do responsÃ¡vel
       const nomeResp = (r.nomeResp || "").trim() || null;
 
-      // CPF do responsável
+      // CPF do responsÃ¡vel
       const cpfRespDigitos = (r.cpfResp || "").replace(/\D/g, "");
       const cpfResponsavel = cpfRespDigitos.length === 11 ? cpfRespDigitos : null;
 
@@ -785,29 +785,29 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     }
 
     console.log(
-      `[importar-pdf-novo] Extraídos: ${pdfEntries.length} alunos | Turma PDF: "${turmaNomePdf}"`
+      `[importar-pdf-novo] ExtraÃ­dos: ${pdfEntries.length} alunos | Turma PDF: "${turmaNomePdf}"`
     );
 
     if (pdfEntries.length === 0) {
       return res.status(400).json({
         message:
-          "Nenhum aluno encontrado no PDF. Verifique se o arquivo está no formato EDUCADF 2025.",
+          "Nenhum aluno encontrado no PDF. Verifique se o arquivo estÃ¡ no formato EDUCADF 2025.",
       });
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 7: Identificação da turma no BD via coluna "Turma" do PDF
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 7: IdentificaÃ§Ã£o da turma no BD via coluna "Turma" do PDF
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let turma_id = null;
 
     if (!semTurma) {
       if (!turmaNomePdf) {
         return res.status(400).json({
-          message: "Não foi possível identificar a turma no PDF.",
+          message: "NÃ£o foi possÃ­vel identificar a turma no PDF.",
         });
       }
 
-      // Busca exata (UPPER + TRIM + normaliza " - " → " ")
+      // Busca exata (UPPER + TRIM + normaliza " - " â†’ " ")
       const [[turma]] = await pool.query(
         `SELECT id, nome FROM turmas
          WHERE UPPER(TRIM(REPLACE(nome, ' - ', ' '))) = ?
@@ -821,7 +821,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
         // Retorna estruturado para o frontend exibir modal premium
         return res.status(404).json({
           code: "TURMA_NAO_ENCONTRADA",
-          message: `Turma "${turmaNomePdf}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          message: `Turma "${turmaNomePdf}" nÃ£o encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
           turmaNaoEncontrada: turmaNomePdf,
         });
       }
@@ -830,9 +830,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       console.log(`[importar-pdf-novo] Turma encontrada: id=${turma_id} nome="${turma.nome}"`);
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 8: Situação atual no BD para a turma (duas fontes)
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 8: SituaÃ§Ã£o atual no BD para a turma (duas fontes)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const atuaisIdSet = new Set();
     const atuais = [];
 
@@ -878,13 +878,13 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       const cod = String(e.codigo);
       let atual = atuaisMap.get(cod);
 
-      // Fallback: match por nome (cobre migração ieducar→educadf com RE diferente)
+      // Fallback: match por nome (cobre migraÃ§Ã£o ieducarâ†’educadf com RE diferente)
       if (!atual) {
         const nomeKey = normName(e.estudante);
         const porNome = atuaisNomeMap.get(nomeKey);
         if (porNome) {
           console.log(
-            `[importar-pdf-novo] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`
+            `[importar-pdf-novo] Match por nome: "${e.estudante}" â€” cÃ³digo ${porNome.codigo} â†’ ${e.codigo}`
           );
           await pool.query(
             "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
@@ -903,7 +903,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       } else if (atual.status === "inativo") {
         toReactivate.push(e);
       } else {
-        // Aluno já existe e está ativo — complementa campos NULL
+        // Aluno jÃ¡ existe e estÃ¡ ativo â€” complementa campos NULL
         jaExistiam++;
         const sets = [];
         const params = [];
@@ -938,12 +938,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     }
 
     if (atualizadosCodigo > 0) {
-      console.log(`[importar-pdf-novo] ${atualizadosCodigo} código(s) atualizado(s) (ieducar→educadf)`);
+      console.log(`[importar-pdf-novo] ${atualizadosCodigo} cÃ³digo(s) atualizado(s) (ieducarâ†’educadf)`);
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 9: Inserir novos alunos
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let inseridos = 0;
     for (const e of toInsert) {
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
@@ -1002,9 +1002,9 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       inseridos++;
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 10: Reativar inativos que voltaram
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let reativados = 0;
     for (const e of toReactivate) {
       const atualObj = atuaisMap.get(String(e.codigo));
@@ -1058,10 +1058,10 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
       reativados++;
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 11: Detectar ausentes (alunos no BD que não estão no PDF)
-    // Não inativa automaticamente — retorna para confirmação manual
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 11: Detectar ausentes (alunos no BD que nÃ£o estÃ£o no PDF)
+    // NÃ£o inativa automaticamente â€” retorna para confirmaÃ§Ã£o manual
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const pendentesInativacao = [];
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
@@ -1080,7 +1080,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
 
     if (pendentesInativacao.length > 0) {
       console.log(
-        `[importar-pdf-novo] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) — pendentes de confirmação`
+        `[importar-pdf-novo] âš  ${pendentesInativacao.length} aluno(s) ausente(s) â€” pendentes de confirmaÃ§Ã£o`
       );
     }
 
@@ -1104,12 +1104,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: Upsert de responsável com telefone (novo campo)
-// Regra de proteção: não sobrescreve nome/telefone já existente no BD
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helper: Upsert de responsÃ¡vel com telefone (novo campo)
+// Regra de proteÃ§Ã£o: nÃ£o sobrescreve nome/telefone jÃ¡ existente no BD
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function upsertResponsavelPdf(pool, e, alunoId, escola_id) {
-  if (!e.cpfResponsavel) return; // CPF é chave natural — sem ele não há upsert seguro
+  if (!e.cpfResponsavel) return; // CPF Ã© chave natural â€” sem ele nÃ£o hÃ¡ upsert seguro
   const nomeResp = (e.responsavel || "").trim();
   try {
     const [respResult] = await pool.query(
@@ -1135,13 +1135,13 @@ async function upsertResponsavelPdf(pool, e, alunoId, escola_id) {
       }
     }
   } catch (err) {
-    console.warn(`[importar-pdf] Falha ao vincular responsável do aluno ${e.codigo}:`, err.message);
+    console.warn(`[importar-pdf] Falha ao vincular responsÃ¡vel do aluno ${e.codigo}:`, err.message);
   }
 }
 
 
 /* ============================================================================
- * 11b) IMPORTAR CSV — Formato EDUCADF (portal oficial SEEDF)
+ * 11b) IMPORTAR CSV â€” Formato EDUCADF (portal oficial SEEDF)
 
 
 
@@ -1151,18 +1151,18 @@ async function upsertResponsavelPdf(pool, e, alunoId, escola_id) {
  * POST /api/alunos/importar-csv (arquivo: file)
  *
  * Colunas esperadas (separador ;):
- *   Nº | RE do Estudante | NOME | MATRÍCULA | DATA_DE_NASCIMENTO | CPF | SEXO |
- *   CONTATO_EMERGENCIAL | STATUS_MATRÍCULA | INÍCIO DA MATRÍCULA | FIM DA MATRÍCULA |
- *   OUTRAS INFORMAÇÕES | NOME FILIAÇÃO 1 | CPF FILIAÇÃO 1 | NOME FILIAÇÃO 2 |
- *   CPF FILIAÇÃO 2 | NOME RESPONSÁVEL | CPF RESPONSÁVEL | ENDEREÇO | ANEES
+ *   NÂº | RE do Estudante | NOME | MATRÃCULA | DATA_DE_NASCIMENTO | CPF | SEXO |
+ *   CONTATO_EMERGENCIAL | STATUS_MATRÃCULA | INÃCIO DA MATRÃCULA | FIM DA MATRÃCULA |
+ *   OUTRAS INFORMAÃ‡Ã•ES | NOME FILIAÃ‡ÃƒO 1 | CPF FILIAÃ‡ÃƒO 1 | NOME FILIAÃ‡ÃƒO 2 |
+ *   CPF FILIAÃ‡ÃƒO 2 | NOME RESPONSÃVEL | CPF RESPONSÃVEL | ENDEREÃ‡O | ANEES
  *
- * Turma: extraída do nome do arquivo (ex: "7º ANO A.csv" → "7º ANO A")
- *        confirmada pelo título da linha 0 do CSV
- * Série e Turno: já cadastrados pelo secretário — não sobrescritos
+ * Turma: extraÃ­da do nome do arquivo (ex: "7Âº ANO A.csv" â†’ "7Âº ANO A")
+ *        confirmada pelo tÃ­tulo da linha 0 do CSV
+ * SÃ©rie e Turno: jÃ¡ cadastrados pelo secretÃ¡rio â€” nÃ£o sobrescritos
  * ========================================================================== */
 router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: "CSV não enviado." });
+    return res.status(400).json({ message: "CSV nÃ£o enviado." });
   }
 
   try {
@@ -1172,21 +1172,21 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         ? anoLetivoPadrao()
         : String(new Date().getFullYear());
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 1: Decodifica CSV (UTF-8 + BOM aware)
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const raw = req.file.buffer.toString("utf8").replace(/^\uFEFF/, "");
     const lines = raw.split(/\r?\n/).filter((l) => l.trim());
 
     if (lines.length < 3) {
-      return res.status(400).json({ message: "CSV inválido ou vazio." });
+      return res.status(400).json({ message: "CSV invÃ¡lido ou vazio." });
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 2: Identificação da turma
-    // Prioridade: turma_id explícito no body (enviado pelo frontend após
-    // o usuário selecionar o turno no modal de conflito) > lookup por nome.
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 2: IdentificaÃ§Ã£o da turma
+    // Prioridade: turma_id explÃ­cito no body (enviado pelo frontend apÃ³s
+    // o usuÃ¡rio selecionar o turno no modal de conflito) > lookup por nome.
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const normTurma = (s) =>
       (s || "")
         .toUpperCase()
@@ -1200,7 +1200,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     const turmaIdExplicito = req.body?.turma_id ? Number(req.body.turma_id) : null;
 
     if (turmaIdExplicito) {
-      // Frontend resolveu o conflito de turno — usa o id diretamente
+      // Frontend resolveu o conflito de turno â€” usa o id diretamente
       const [[turmaRow]] = await pool.query(
         "SELECT id, nome, serie, turno FROM turmas WHERE id = ? AND escola_id = ?",
         [turmaIdExplicito, escola_id]
@@ -1208,30 +1208,30 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       if (!turmaRow) {
         return res.status(404).json({
           code: "TURMA_NAO_ENCONTRADA",
-          message: `Turma id=${turmaIdExplicito} não encontrada.`,
+          message: `Turma id=${turmaIdExplicito} nÃ£o encontrada.`,
         });
       }
       turma = turmaRow;
-      console.log(`[importar-csv] Turma via turma_id explícito: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
+      console.log(`[importar-csv] Turma via turma_id explÃ­cito: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
     } else {
       // Lookup por nome do arquivo
       let turmaNome = (req.file.originalname || "")
         .replace(/\.csv$/i, "")
-        .replace(/Âº/g, "º")
-        .replace(/Âª/g, "ª")
+        .replace(/Ã‚Âº/g, "Âº")
+        .replace(/Ã‚Âª/g, "Âª")
         .trim();
 
-      // Fonte B: linha 0 do CSV contém "Lista de alunos da Turma 7º Ano - A"
+      // Fonte B: linha 0 do CSV contÃ©m "Lista de alunos da Turma 7Âº Ano - A"
       const linha0 = lines[0].replace(/"/g, "").trim();
       const matchTitulo = linha0.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
       if (matchTitulo) {
         const turmaTitulo = matchTitulo[1].trim();
         if (!turmaNome) turmaNome = turmaTitulo;
-        console.log(`[importar-csv] Turma — arquivo: "${turmaNome}" | título CSV: "${turmaTitulo}"`);
+        console.log(`[importar-csv] Turma â€” arquivo: "${turmaNome}" | tÃ­tulo CSV: "${turmaTitulo}"`);
       }
 
       if (!turmaNome) {
-        return res.status(400).json({ message: "Não foi possível identificar a turma pelo nome do arquivo CSV." });
+        return res.status(400).json({ message: "NÃ£o foi possÃ­vel identificar a turma pelo nome do arquivo CSV." });
       }
 
       const turmaNomeNorm = normTurma(turmaNome);
@@ -1240,8 +1240,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
          FROM turmas
          WHERE UPPER(TRIM(REPLACE(
            REPLACE(
-             REPLACE(nome COLLATE utf8mb4_general_ci, 'Â', ''),
-             'º', 'º'
+             REPLACE(nome COLLATE utf8mb4_general_ci, 'Ã‚', ''),
+             'Âº', 'Âº'
            ), ' - ', ' '
          ))) = ? AND escola_id = ? AND ano = ?
          ORDER BY id DESC`,
@@ -1251,13 +1251,13 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       if (turmasEncontradas.length === 0) {
         return res.status(404).json({
           code: "TURMA_NAO_ENCONTRADA",
-          message: `Turma "${turmaNome}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          message: `Turma "${turmaNome}" nÃ£o encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
           turmaNaoEncontrada: turmaNome,
         });
       }
 
-      // Se houver mais de uma (frontend não enviou turma_id), usa a primeira
-      // (situação improvável pois o frontend detecta e pede seleção)
+      // Se houver mais de uma (frontend nÃ£o enviou turma_id), usa a primeira
+      // (situaÃ§Ã£o improvÃ¡vel pois o frontend detecta e pede seleÃ§Ã£o)
       turma = turmasEncontradas[0];
       console.log(`[importar-csv] Turma por nome: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
     }
@@ -1265,8 +1265,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     const turma_id = turma.id;
 
     // FASE 3: Parse do CSV
-    // Linha 0 = título escola | Linha 1 = cabeçalho | Linhas 2+ = dados
-    // ─────────────────────────────────────────────────────────────────
+    // Linha 0 = tÃ­tulo escola | Linha 1 = cabeÃ§alho | Linhas 2+ = dados
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     function parseCSVLine(line) {
       const campos = [];
       let campo = "";
@@ -1309,7 +1309,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     if (idxRE < 0 || idxNome < 0) {
       return res.status(400).json({
         message:
-          "CSV fora do formato esperado. Verifique se é o arquivo exportado pelo portal EDUCADF.",
+          "CSV fora do formato esperado. Verifique se Ã© o arquivo exportado pelo portal EDUCADF.",
       });
     }
 
@@ -1356,17 +1356,17 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       });
     }
 
-    console.log(`[importar-csv] Extraídos: ${pdfEntries.length} alunos | Turma: "${turma.nome}"`);
+    console.log(`[importar-csv] ExtraÃ­dos: ${pdfEntries.length} alunos | Turma: "${turma.nome}"`);
 
     if (pdfEntries.length === 0) {
       return res.status(400).json({
-        message: "Nenhum aluno encontrado no CSV. Verifique se o arquivo está no formato correto.",
+        message: "Nenhum aluno encontrado no CSV. Verifique se o arquivo estÃ¡ no formato correto.",
       });
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 4: Situação atual no BD (duas fontes — matrícula e aluno direto)
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 4: SituaÃ§Ã£o atual no BD (duas fontes â€” matrÃ­cula e aluno direto)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [atuaisMatricula] = await pool.query(
       `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
        FROM matriculas m
@@ -1420,7 +1420,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         const porNome = atuaisNomeMap.get(nomeKey);
         if (porNome) {
           console.log(
-            `[importar-csv] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`
+            `[importar-csv] Match por nome: "${e.estudante}" â€” cÃ³digo ${porNome.codigo} â†’ ${e.codigo}`
           );
           await pool.query(
             "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
@@ -1439,7 +1439,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       } else if (atual.status === "inativo") {
         toReactivate.push(e);
       } else {
-        // Aluno ativo — complementa campos NULL sem sobrescrever existentes
+        // Aluno ativo â€” complementa campos NULL sem sobrescrever existentes
         jaExistiam++;
         const sets = [];
         const params = [];
@@ -1472,12 +1472,12 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     }
 
     if (atualizadosCodigo > 0) {
-      console.log(`[importar-csv] ${atualizadosCodigo} código(s) atualizado(s)`);
+      console.log(`[importar-csv] ${atualizadosCodigo} cÃ³digo(s) atualizado(s)`);
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 5: Inserir novos alunos
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let inseridos = 0;
     for (const e of toInsert) {
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
@@ -1544,9 +1544,9 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       inseridos++;
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 6: Reativar inativos
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let reativados = 0;
     for (const e of toReactivate) {
       const atualObj = atuaisMap.get(String(e.codigo));
@@ -1590,9 +1590,9 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       reativados++;
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // FASE 7: Detectar ausentes (alunos no BD mas não no CSV)
-    // ─────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // FASE 7: Detectar ausentes (alunos no BD mas nÃ£o no CSV)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const pendentesInativacao = [];
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
@@ -1611,7 +1611,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
 
     if (pendentesInativacao.length > 0) {
       console.log(
-        `[importar-csv] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) — pendentes de confirmação`
+        `[importar-csv] âš  ${pendentesInativacao.length} aluno(s) ausente(s) â€” pendentes de confirmaÃ§Ã£o`
       );
     }
 
@@ -1635,20 +1635,20 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: Upsert de responsável com endereço e telefone (via CSV)
-// Regra de proteção: não sobrescreve dados já preenchidos no BD
-// Correções:
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helper: Upsert de responsÃ¡vel com endereÃ§o e telefone (via CSV)
+// Regra de proteÃ§Ã£o: nÃ£o sobrescreve dados jÃ¡ preenchidos no BD
+// CorreÃ§Ãµes:
 //   1. Salva em telefone_celular (campo "Telefone Principal" no modal)
-//   2. Ignora telefones fictícios (ex: 99999999999 — todos dígitos iguais)
+//   2. Ignora telefones fictÃ­cios (ex: 99999999999 â€” todos dÃ­gitos iguais)
 //   3. Usa SELECT como fallback quando insertId=0 (ON DUPLICATE KEY)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
-  if (!e.cpfResponsavel) return; // CPF é chave natural obrigatória
+  if (!e.cpfResponsavel) return; // CPF Ã© chave natural obrigatÃ³ria
   const nomeResp = (e.responsavel || "").trim();
 
-  // Descarta telefones fictícios: todos dígitos iguais (ex: 99999999999, 00000000000)
-  // ou com menos de 8 dígitos após limpar não-numéricos
+  // Descarta telefones fictÃ­cios: todos dÃ­gitos iguais (ex: 99999999999, 00000000000)
+  // ou com menos de 8 dÃ­gitos apÃ³s limpar nÃ£o-numÃ©ricos
   const telDigits = (e.telefone || "").replace(/\D/g, "");
   const telValido =
     telDigits.length >= 8 && !/^(\d)\1+$/.test(telDigits)
@@ -1667,7 +1667,7 @@ async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
       [nomeResp || null, e.cpfResponsavel, telValido, e.endereco || null]
     );
 
-    // ON DUPLICATE KEY retorna insertId=0 quando o registro já existe.
+    // ON DUPLICATE KEY retorna insertId=0 quando o registro jÃ¡ existe.
     // Nesse caso fazemos SELECT para obter o id real.
     let responsavelId = respResult.insertId;
     if (!responsavelId) {
@@ -1691,17 +1691,17 @@ async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
       }
     }
   } catch (err) {
-    console.warn(`[importar-csv] Falha ao vincular responsável do aluno ${e.codigo}:`, err.message);
+    console.warn(`[importar-csv] Falha ao vincular responsÃ¡vel do aluno ${e.codigo}:`, err.message);
   }
 }
 
 /* ============================================================================
- * 11c) INATIVAR EM LOTE (confirmação manual pelo secretário)
+ * 11c) INATIVAR EM LOTE (confirmaÃ§Ã£o manual pelo secretÃ¡rio)
  * POST /api/alunos/inativar-lote
  * Body: { alunoIds: [1, 2, 3] }
  *
- * Inativa alunos selecionados pelo secretário após importação de PDF.
- * Usado quando o PDF não contém alunos que estão no banco (transferidos).
+ * Inativa alunos selecionados pelo secretÃ¡rio apÃ³s importaÃ§Ã£o de PDF.
+ * Usado quando o PDF nÃ£o contÃ©m alunos que estÃ£o no banco (transferidos).
  * ========================================================================== */
 router.post("/inativar-lote", async (req, res) => {
   try {
@@ -1712,10 +1712,10 @@ router.post("/inativar-lote", async (req, res) => {
       return res.status(400).json({ message: "Lista de alunos vazia." });
     }
 
-    // Segurança: só inativa alunos que pertencem à escola do usuário
+    // SeguranÃ§a: sÃ³ inativa alunos que pertencem Ã  escola do usuÃ¡rio
     const ids = alunoIds.map(Number).filter(n => n > 0);
     if (ids.length === 0) {
-      return res.status(400).json({ message: "IDs inválidos." });
+      return res.status(400).json({ message: "IDs invÃ¡lidos." });
     }
 
     const [result] = await pool.query(
@@ -1723,7 +1723,7 @@ router.post("/inativar-lote", async (req, res) => {
       [ids, escola_id]
     );
 
-    // Inativa matrículas correspondentes
+    // Inativa matrÃ­culas correspondentes
     const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
     await pool.query(
       `UPDATE matriculas SET status = 'inativo' WHERE aluno_id IN (?) AND escola_id = ? AND ano_letivo = ?`,
@@ -1744,14 +1744,14 @@ router.post("/inativar-lote", async (req, res) => {
 });
 
 /* ============================================================================
- * 12) IMPORTAR XLSX (lógica similar ao PDF; converte datas e processa status)
+ * 12) IMPORTAR XLSX (lÃ³gica similar ao PDF; converte datas e processa status)
  * POST /api/alunos/importar-xlsx (arquivo: file)
- * - Nome do arquivo (sem extensão) = nome da turma
+ * - Nome do arquivo (sem extensÃ£o) = nome da turma
  * ========================================================================== */
 const uploadXlsx = multer(); // usa buffer
 router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: "XLSX não enviado." });
+    return res.status(400).json({ message: "XLSX nÃ£o enviado." });
   }
 
   try {
@@ -1764,17 +1764,17 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
 
     const dados = XLSX.utils.sheet_to_json(sheet, {
       header: ["codigo", "estudante", "data_nascimento", "sexo"],
-      range: 1,  // pula cabeçalho (linha 0)
+      range: 1,  // pula cabeÃ§alho (linha 0)
       defval: "",
     });
 
     let turmaNomeStr = req.body.turmaNome || req.file.originalname.replace(/\.[^.]+$/i, "").trim();
-    // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Âº em vez de 6º
-    const turmaNome = turmaNomeStr.replace(/Âº/g, 'º').replace(/Âª/g, 'ª');
+    // Corrige erro de parse do multer (latin1 vs utf-8) que causa 6Ã‚Âº em vez de 6Âº
+    const turmaNome = turmaNomeStr.replace(/Ã‚Âº/g, 'Âº').replace(/Ã‚Âª/g, 'Âª');
 
     const [[turma]] = await pool.query("SELECT id FROM turmas WHERE nome = ? AND escola_id = ?", [turmaNome, escola_id]);
     if (!turma) {
-      return res.status(404).json({ message: `Turma "${turmaNome}" não encontrada.` });
+      return res.status(404).json({ message: `Turma "${turmaNome}" nÃ£o encontrada.` });
     }
     const turma_id = turma.id;
 
@@ -1792,7 +1792,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
         const str = String(linha.data_nascimento).trim().replace(/-/g, "/");
         const partes = str.split("/");
         if (partes.length === 3) {
-          // heurística de dia/mês/ano
+          // heurÃ­stica de dia/mÃªs/ano
           const [p0, p1, p2] = partes;
           if (p0.length === 2 && p1.length === 2 && p2.length === 4) {
             dataBr = `${p0}/${p1}/${p2}`;
@@ -1832,7 +1832,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       } else if (atual.status === "inativo") {
         toReactivate.push({ entry: e, atual });
       } else {
-        // Ativo: verifica se há dados faltantes no banco que o XLSX pode preencher
+        // Ativo: verifica se hÃ¡ dados faltantes no banco que o XLSX pode preencher
         const precisaAtualizar =
           (e.dataBr && !atual.data_nascimento) ||
           (e.sexo   && !atual.sexo);
@@ -1935,7 +1935,7 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
       }
     }
 
-    // Inativar não listados
+    // Inativar nÃ£o listados
     let inativados = 0;
     for (const r of toInactivate) {
       const correspondente = xlsxEntries.find((e) => e.codigo === String(r.codigo));
@@ -2002,7 +2002,7 @@ router.get("/testetodosalunos", async (req, res) => {
 });
 
 /* ============================================================================
- * 15) OCORRÊNCIAS DISCIPLINARES
+ * 15) OCORRÃŠNCIAS DISCIPLINARES
  * GET /api/alunos/:id/ocorrencias
  * POST /api/alunos/:id/ocorrencias
  * ========================================================================== */
@@ -2021,7 +2021,7 @@ router.get("/:id/proxima-ocorrencia", verificarEscola, async (req, res) => {
     res.json({ proximoRegistro: registroFormatado });
   } catch (err) {
     console.error("Erro ao buscar proximo registro:", err);
-    res.status(500).json({ message: "Erro ao buscar próximo registro de ocorrência." });
+    res.status(500).json({ message: "Erro ao buscar prÃ³ximo registro de ocorrÃªncia." });
   }
 });
 router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
@@ -2029,11 +2029,11 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const { id } = req.params;
     const { escola_id } = req.user;
 
-    // Atualiza bônus de média bimestral em tempo real antes de retornar ocorrências
+    // Atualiza bÃ´nus de mÃ©dia bimestral em tempo real antes de retornar ocorrÃªncias
     await calcularEUpsertBonusMedia(id, escola_id);
 
     // Query principal: inclui atenuantes/agravantes (Art. 34/35)
-    // Fallback automático caso a migration ainda não tenha sido executada no servidor
+    // Fallback automÃ¡tico caso a migration ainda nÃ£o tenha sido executada no servidor
     const QUERY_FULL = `
       SELECT o.id,
               LPAD(o.id, 4, '0') AS registro,
@@ -2103,8 +2103,8 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
       [rows] = await pool.query(QUERY_FULL, [id, escola_id]);
     } catch (queryErr) {
       if (queryErr.code === 'ER_BAD_FIELD_ERROR') {
-        // Migration atenuantes/agravantes ainda não rodou — fallback compatível
-        console.warn('[disciplinar] Colunas atenuantes/agravantes ausentes — usando query de compatibilidade. Execute run_migration_atenuantes_agravantes.js no servidor.');
+        // Migration atenuantes/agravantes ainda nÃ£o rodou â€” fallback compatÃ­vel
+        console.warn('[disciplinar] Colunas atenuantes/agravantes ausentes â€” usando query de compatibilidade. Execute run_migration_atenuantes_agravantes.js no servidor.');
         [rows] = await pool.query(QUERY_COMPAT, [id, escola_id]);
       } else {
         throw queryErr;
@@ -2113,8 +2113,8 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
 
     res.json(rows);
   } catch (err) {
-    console.error("Erro ao buscar ocorrências:", err);
-    res.status(500).json({ message: "Erro ao buscar ocorrências disciplinares." });
+    console.error("Erro ao buscar ocorrÃªncias:", err);
+    res.status(500).json({ message: "Erro ao buscar ocorrÃªncias disciplinares." });
   }
 });
 
@@ -2126,16 +2126,16 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     const { data, motivo, tipoOcorrencia, descricao, registroInterno, convocarResponsavel, diasSuspensao, atenuantes, agravantes, dataConvocacao } = req.body;
 
     if (!data || !motivo) {
-      return res.status(400).json({ message: "Preencha os campos obrigatórios." });
+      return res.status(400).json({ message: "Preencha os campos obrigatÃ³rios." });
     }
 
     // Serializar atenuantes/agravantes como JSON (Art. 34/35)
     const atenuantesJson = Array.isArray(atenuantes) && atenuantes.length > 0 ? JSON.stringify(atenuantes) : null;
     const agravantesJson = Array.isArray(agravantes) && agravantes.length > 0 ? JSON.stringify(agravantes) : null;
-    // Normalizar data de convocação (aceita YYYY-MM-DD ou null/undefined)
+    // Normalizar data de convocaÃ§Ã£o (aceita YYYY-MM-DD ou null/undefined)
     const dataConvocacaoVal = dataConvocacao || null;
 
-    // Fallback: se atenuantes/agravantes ou data_convocacao ainda não existirem no BD, insere sem elas
+    // Fallback: se atenuantes/agravantes ou data_convocacao ainda nÃ£o existirem no BD, insere sem elas
     let result;
     try {
       [result] = await pool.query(
@@ -2149,7 +2149,7 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
       );
     } catch (insertErr) {
       if (insertErr.code === 'ER_BAD_FIELD_ERROR') {
-        // Colunas ausentes — insere sem elas
+        // Colunas ausentes â€” insere sem elas
         [result] = await pool.query(
           `INSERT INTO ocorrencias_disciplinares
              (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno,
@@ -2165,16 +2165,16 @@ router.post("/:id/ocorrencias", verificarEscola, async (req, res) => {
     }
 
     res.status(201).json({
-      message: "Ocorrência registrada com sucesso.",
+      message: "OcorrÃªncia registrada com sucesso.",
       id: result.insertId
     });
   } catch (err) {
-    console.error("Erro ao registrar ocorrência:", err);
-    res.status(500).json({ message: "Erro ao registrar ocorrência." });
+    console.error("Erro ao registrar ocorrÃªncia:", err);
+    res.status(500).json({ message: "Erro ao registrar ocorrÃªncia." });
   }
 });
 
-// ─── F.O. COLETIVO: Registro em Lote ────────────────────────────────────────
+// â”€â”€â”€ F.O. COLETIVO: Registro em Lote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/alunos/ocorrencias/lote
 // Body: { data, motivo, tipoOcorrencia, descricao, registroInterno, diasSuspensao, alunos:[{alunoId, convocarResponsavel}] }
 router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
@@ -2184,13 +2184,13 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
     const { data, motivo, tipoOcorrencia, descricao, registroInterno, diasSuspensao, alunos } = req.body;
 
     if (!data || !motivo) {
-      return res.status(400).json({ message: "Campos obrigatórios: data e motivo." });
+      return res.status(400).json({ message: "Campos obrigatÃ³rios: data e motivo." });
     }
     if (!Array.isArray(alunos) || alunos.length === 0) {
       return res.status(400).json({ message: "Informe ao menos um aluno no lote." });
     }
 
-    // UUID único que vincula todos os registros deste lote
+    // UUID Ãºnico que vincula todos os registros deste lote
     const { randomUUID } = await import("crypto");
     const loteId = randomUUID();
 
@@ -2198,7 +2198,7 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
     let falhas  = 0;
     const erros = [];
 
-    // Detectar se atenuantes/agravantes existem (teste único antes do loop)
+    // Detectar se atenuantes/agravantes existem (teste Ãºnico antes do loop)
     let colunasExtrasExistem = true;
     try {
       await pool.query(
@@ -2262,9 +2262,9 @@ router.post("/ocorrencias/lote", verificarEscola, async (req, res) => {
     return res.status(500).json({ message: "Erro ao registrar lote." });
   }
 });
-// ─── FIM F.O. COLETIVO ───────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ FIM F.O. COLETIVO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── F.O. COLETIVO: Buscar registros por data (impressão em lote) ────────────────────
+// â”€â”€â”€ F.O. COLETIVO: Buscar registros por data (impressÃ£o em lote) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/alunos/ocorrencias/coletivos?data=YYYY-MM-DD
 router.get("/ocorrencias/coletivos", verificarEscola, async (req, res) => {
   try {
@@ -2341,7 +2341,7 @@ router.get("/ocorrencias/coletivos", verificarEscola, async (req, res) => {
     res.status(500).json({ message: "Erro ao buscar registros coletivos." });
   }
 });
-// ─── FIM COLETIVOS ───────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ FIM COLETIVOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) => {
   try {
@@ -2379,10 +2379,10 @@ router.put("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res) =
       }
     }
 
-    res.json({ message: "Ocorrência atualizada com sucesso." });
+    res.json({ message: "OcorrÃªncia atualizada com sucesso." });
   } catch (err) {
-    console.error("Erro ao atualizar ocorrência:", err);
-    res.status(500).json({ message: "Erro ao atualizar ocorrência." });
+    console.error("Erro ao atualizar ocorrÃªncia:", err);
+    res.status(500).json({ message: "Erro ao atualizar ocorrÃªncia." });
   }
 });
 
@@ -2399,22 +2399,22 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
 
     let registroFinal = '';
     if (modo === 'telefone') {
-      registroFinal = `[FINALIZAÇÃO] Contato realizado via telefone em ${dataStr}.`;
+      registroFinal = `[FINALIZAÃ‡ÃƒO] Contato realizado via telefone em ${dataStr}.`;
     } else if (modo === 'nao_compareceu') {
-      registroFinal = `[FINALIZAÇÃO] Responsável convocado e não compareceu. Registro finalizado em ${dataStr}.`;
+      registroFinal = `[FINALIZAÃ‡ÃƒO] ResponsÃ¡vel convocado e nÃ£o compareceu. Registro finalizado em ${dataStr}.`;
     } else if (modo === 'nao_convocado') {
-      registroFinal = `[FINALIZAÇÃO] Responsável tomou conhecimento do registro disciplinar através do aplicativo. Registro finalizado em ${dataStr}.`;
+      registroFinal = `[FINALIZAÃ‡ÃƒO] ResponsÃ¡vel tomou conhecimento do registro disciplinar atravÃ©s do aplicativo. Registro finalizado em ${dataStr}.`;
     }
-    // modo = 'presenca' → data_comparecimento_responsavel já registra
+    // modo = 'presenca' â†’ data_comparecimento_responsavel jÃ¡ registra
 
 
-    // Se modo = 'presenca' → grava data de comparecimento (quando há convocação)
-    // Se modo = 'telefone' ou 'nao_compareceu' → NÃO grava data de comparecimento
+    // Se modo = 'presenca' â†’ grava data de comparecimento (quando hÃ¡ convocaÃ§Ã£o)
+    // Se modo = 'telefone' ou 'nao_compareceu' â†’ NÃƒO grava data de comparecimento
     const setComparecimento = modo === 'presenca'
       ? `data_comparecimento_responsavel = CASE WHEN convocar_responsavel = 1 THEN DATE_SUB(NOW(), INTERVAL 3 HOUR) ELSE data_comparecimento_responsavel END,`
       : '';
 
-    // Append ao registro_interno existente (não sobrescreve)
+    // Append ao registro_interno existente (nÃ£o sobrescreve)
     const setRegistroInterno = registroFinal
       ? `registro_interno = CASE 
            WHEN registro_interno IS NULL OR registro_interno = '' THEN ?
@@ -2439,20 +2439,20 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Ocorrência não encontrada." });
+      return res.status(404).json({ message: "OcorrÃªncia nÃ£o encontrada." });
     }
 
-    res.json({ message: "Ocorrência finalizada com sucesso.", modo });
+    res.json({ message: "OcorrÃªncia finalizada com sucesso.", modo });
   } catch (err) {
-    console.error("Erro ao finalizar ocorrência:", err);
-    res.status(500).json({ message: "Erro ao finalizar ocorrência." });
+    console.error("Erro ao finalizar ocorrÃªncia:", err);
+    res.status(500).json({ message: "Erro ao finalizar ocorrÃªncia." });
   }
 });
 
 // ============================================================================
 // PUT /api/alunos/:id/ocorrencias/:ocorrenciaId/cancelamento
-// Cancela uma medida disciplinar — reverte a pontuação do aluno
-// Registra o usuário que realizou o cancelamento
+// Cancela uma medida disciplinar â€” reverte a pontuaÃ§Ã£o do aluno
+// Registra o usuÃ¡rio que realizou o cancelamento
 // ============================================================================
 router.put("/:id/ocorrencias/:ocorrenciaId/cancelamento", verificarEscola, async (req, res) => {
   try {
@@ -2469,7 +2469,7 @@ router.put("/:id/ocorrencias/:ocorrenciaId/cancelamento", verificarEscola, async
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Ocorrência não encontrada ou já cancelada." });
+      return res.status(404).json({ message: "OcorrÃªncia nÃ£o encontrada ou jÃ¡ cancelada." });
     }
 
     res.json({ message: "Medida disciplinar cancelada com sucesso." });
@@ -2491,22 +2491,22 @@ router.delete("/:id/ocorrencias/:ocorrenciaId", verificarEscola, async (req, res
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Ocorrência não encontrada ou não pode ser excluída." });
+      return res.status(404).json({ message: "OcorrÃªncia nÃ£o encontrada ou nÃ£o pode ser excluÃ­da." });
     }
 
-    res.json({ message: "Ocorrência excluída com sucesso." });
+    res.json({ message: "OcorrÃªncia excluÃ­da com sucesso." });
   } catch (err) {
-    console.error("Erro ao excluir ocorrência:", err);
-    res.status(500).json({ message: "Erro ao excluir ocorrência." });
+    console.error("Erro ao excluir ocorrÃªncia:", err);
+    res.status(500).json({ message: "Erro ao excluir ocorrÃªncia." });
   }
 });
 
 /* ============================================================================
- * 16) OCORRÊNCIAS PEDAGÓGICAS
- * CRUD completo — mesma lógica de status das disciplinares (sem pontuação)
+ * 16) OCORRÃŠNCIAS PEDAGÃ“GICAS
+ * CRUD completo â€” mesma lÃ³gica de status das disciplinares (sem pontuaÃ§Ã£o)
  * ========================================================================== */
 
-// GET — listar ocorrências pedagógicas de um aluno
+// GET â€” listar ocorrÃªncias pedagÃ³gicas de um aluno
 router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2523,6 +2523,7 @@ router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => 
               o.convocar_responsavel,
               DATE_FORMAT(o.data_comparecimento_responsavel, '%d/%m/%Y %H:%i') AS data_comparecimento_responsavel,
               o.status,
+              o.usuario_registro_id,
               ur.nome AS nome_usuario_registro,
               uf.nome AS nome_usuario_finalizacao
        FROM ocorrencias_pedagogicas o
@@ -2535,12 +2536,12 @@ router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => 
 
     res.json(rows);
   } catch (err) {
-    console.error("Erro ao buscar ocorrências pedagógicas:", err);
-    res.status(500).json({ message: "Erro ao buscar ocorrências pedagógicas." });
+    console.error("Erro ao buscar ocorrÃªncias pedagÃ³gicas:", err);
+    res.status(500).json({ message: "Erro ao buscar ocorrÃªncias pedagÃ³gicas." });
   }
 });
 
-// GET — próximo registro (auto-increment)
+// GET â€” prÃ³ximo registro (auto-increment)
 router.get("/:id/proxima-ocorrencia-pedagogica", verificarEscola, async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -2552,12 +2553,12 @@ router.get("/:id/proxima-ocorrencia-pedagogica", verificarEscola, async (req, re
     const proximoId = rows[0]?.AUTO_INCREMENT || 1;
     res.json({ proximoRegistro: String(proximoId).padStart(4, '0') });
   } catch (err) {
-    console.error("Erro ao buscar próximo registro pedagógico:", err);
-    res.status(500).json({ message: "Erro ao buscar próximo registro." });
+    console.error("Erro ao buscar prÃ³ximo registro pedagÃ³gico:", err);
+    res.status(500).json({ message: "Erro ao buscar prÃ³ximo registro." });
   }
 });
 
-// POST — criar nova ocorrência pedagógica
+// POST â€” criar nova ocorrÃªncia pedagÃ³gica
 router.post("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2566,7 +2567,7 @@ router.post("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) =>
     const { data, categoria, motivo, descricao, registroInterno, convocarResponsavel } = req.body;
 
     if (!data || !motivo || !categoria) {
-      return res.status(400).json({ message: "Preencha os campos obrigatórios (data, categoria, motivo)." });
+      return res.status(400).json({ message: "Preencha os campos obrigatÃ³rios (data, categoria, motivo)." });
     }
 
     const [result] = await pool.query(
@@ -2577,21 +2578,34 @@ router.post("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) =>
     );
 
     res.status(201).json({
-      message: "Registro pedagógico criado com sucesso.",
+      message: "Registro pedagÃ³gico criado com sucesso.",
       id: result.insertId,
     });
   } catch (err) {
-    console.error("Erro ao registrar ocorrência pedagógica:", err);
-    res.status(500).json({ message: "Erro ao registrar ocorrência pedagógica." });
+    console.error("Erro ao registrar ocorrÃªncia pedagÃ³gica:", err);
+    res.status(500).json({ message: "Erro ao registrar ocorrÃªncia pedagÃ³gica." });
   }
 });
 
-// PUT — editar ocorrência pedagógica (apenas descricao e registro interno)
+// PUT — editar ocorrência pedagógica (apenas pelo autor do registro)
 router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, async (req, res) => {
   try {
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
+    const usuarioId = req.user.usuarioId || req.user.id || req.user.usuario_id;
     const { descricao, registroInterno, convocarResponsavel } = req.body;
+
+    // Valida autoria: apenas quem criou pode editar
+    const [[registro]] = await pool.query(
+      'SELECT usuario_registro_id FROM ocorrencias_pedagogicas WHERE id = ? AND aluno_id = ? AND escola_id = ?',
+      [ocorrenciaId, id, escola_id]
+    );
+    if (!registro) {
+      return res.status(404).json({ message: 'Registro não encontrado.' });
+    }
+    if (registro.usuario_registro_id && registro.usuario_registro_id !== usuarioId) {
+      return res.status(403).json({ message: 'Sem permissão: você não é o autor deste registro.' });
+    }
 
     await pool.query(
       `UPDATE ocorrencias_pedagogicas
@@ -2600,14 +2614,14 @@ router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, async 
       [descricao, registroInterno || null, convocarResponsavel ? 1 : 0, ocorrenciaId, id, escola_id]
     );
 
-    res.json({ message: "Registro pedagógico atualizado." });
+    res.json({ message: 'Registro pedagógico atualizado.' });
   } catch (err) {
-    console.error("Erro ao atualizar ocorrência pedagógica:", err);
-    res.status(500).json({ message: "Erro ao atualizar registro pedagógico." });
+    console.error('Erro ao atualizar ocorrência pedagógica:', err);
+    res.status(500).json({ message: 'Erro ao atualizar registro pedagógico.' });
   }
 });
 
-// PUT — finalizar ocorrência pedagógica
+// PUT â€” finalizar ocorrÃªncia pedagÃ³gica
 router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/finalizar", verificarEscola, async (req, res) => {
   try {
     const { id, ocorrenciaId } = req.params;
@@ -2624,17 +2638,17 @@ router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/finalizar", verificarEsco
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Registro pedagógico não encontrado." });
+      return res.status(404).json({ message: "Registro pedagÃ³gico nÃ£o encontrado." });
     }
 
-    res.json({ message: "Registro pedagógico finalizado." });
+    res.json({ message: "Registro pedagÃ³gico finalizado." });
   } catch (err) {
-    console.error("Erro ao finalizar registro pedagógico:", err);
-    res.status(500).json({ message: "Erro ao finalizar registro pedagógico." });
+    console.error("Erro ao finalizar registro pedagÃ³gico:", err);
+    res.status(500).json({ message: "Erro ao finalizar registro pedagÃ³gico." });
   }
 });
 
-// PUT — cancelar ocorrência pedagógica
+// PUT â€” cancelar ocorrÃªncia pedagÃ³gica
 router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/cancelamento", verificarEscola, async (req, res) => {
   try {
     const { id, ocorrenciaId } = req.params;
@@ -2650,21 +2664,34 @@ router.put("/:id/ocorrencias-pedagogicas/:ocorrenciaId/cancelamento", verificarE
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Registro não encontrado ou já cancelado." });
+      return res.status(404).json({ message: "Registro nÃ£o encontrado ou jÃ¡ cancelado." });
     }
 
-    res.json({ message: "Registro pedagógico cancelado." });
+    res.json({ message: "Registro pedagÃ³gico cancelado." });
   } catch (err) {
-    console.error("Erro ao cancelar registro pedagógico:", err);
-    res.status(500).json({ message: "Erro ao cancelar registro pedagógico." });
+    console.error("Erro ao cancelar registro pedagÃ³gico:", err);
+    res.status(500).json({ message: "Erro ao cancelar registro pedagÃ³gico." });
   }
 });
 
-// DELETE — excluir ocorrência pedagógica (apenas REGISTRADA)
+// DELETE — excluir ocorrência pedagógica (apenas REGISTRADA e pelo autor)
 router.delete("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, async (req, res) => {
   try {
     const { id, ocorrenciaId } = req.params;
     const { escola_id } = req.user;
+    const usuarioId = req.user.usuarioId || req.user.id || req.user.usuario_id;
+
+    // Valida autoria antes de excluir
+    const [[registro]] = await pool.query(
+      'SELECT usuario_registro_id, status FROM ocorrencias_pedagogicas WHERE id = ? AND aluno_id = ? AND escola_id = ?',
+      [ocorrenciaId, id, escola_id]
+    );
+    if (!registro) {
+      return res.status(404).json({ message: 'Registro não encontrado.' });
+    }
+    if (registro.usuario_registro_id && registro.usuario_registro_id !== usuarioId) {
+      return res.status(403).json({ message: 'Sem permissão: você não é o autor deste registro.' });
+    }
 
     const [result] = await pool.query(
       `DELETE FROM ocorrencias_pedagogicas
@@ -2673,13 +2700,13 @@ router.delete("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, asy
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Registro não encontrado ou não pode ser excluído." });
+      return res.status(404).json({ message: 'Registro não encontrado ou não pode ser excluído.' });
     }
 
-    res.json({ message: "Registro pedagógico excluído." });
+    res.json({ message: 'Registro pedagógico excluído.' });
   } catch (err) {
-    console.error("Erro ao excluir registro pedagógico:", err);
-    res.status(500).json({ message: "Erro ao excluir registro pedagógico." });
+    console.error('Erro ao excluir registro pedagógico:', err);
+    res.status(500).json({ message: 'Erro ao excluir registro pedagógico.' });
   }
 });
 
