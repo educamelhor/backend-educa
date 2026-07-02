@@ -30,8 +30,20 @@ const router = express.Router();
 // ────────────────────────────────────────────────────────────────────────────────
 // Perfis que recebem acesso IRRESTRITO (null = sem filtragem alguma)
 const PERFIS_SUPER = new Set(['super_admin', 'admin_global', 'ceo', 'plataforma']);
-// ✅ [GOVERNANÇA v2] 'militar' renomeado para 'diretor_disciplinar'
-const PERFIS_DIRECAO = new Set(['diretor', 'vice_diretor', 'diretor_disciplinar', 'comandante']);
+
+// Perfis MILITARES: sempre recebem disciplinar.* do teto geral da escola.
+// Regra de Ouro — não passam pelo CEO por-perfil (escola_perfil_modulos).
+// 'disciplinar' = Agente Disciplinar, perfil base dos militares não-diretores.
+const PERFIS_MILITARES = new Set([
+  'diretor_disciplinar', 'comandante',
+  'disciplinar', 'subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar',
+]);
+
+// Perfis de DIREÇÃO PEDAGÓGICA: recebem a UNIÃO de tudo que o CEO configurou (sem disciplinar)
+const PERFIS_DIRECAO_PEDAGOGICO = new Set(['diretor', 'vice_diretor']);
+
+// Legado: mantido para compatibilidade com outros usos no arquivo
+const PERFIS_DIRECAO = new Set([...PERFIS_DIRECAO_PEDAGOGICO, ...PERFIS_MILITARES]);
 
 async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const perfilNorm = String(perfil || '').toLowerCase().trim();
@@ -57,16 +69,18 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
   const ceoCeilingSet = new Set(ceoCeiling);
 
-  // ── Diretor Disciplinar (CCMDF): APENAS módulos disciplinar.* ────────────────
-  if (perfilNorm === 'diretor_disciplinar') {
+  // ── Perfis MILITARES: SEMPRE recebem disciplinar.* — Regra de Ouro ───────────
+  // Não passam pelo CEO por-perfil: disciplinar é fixo para qualquer perfil militar.
+  // Cobre: diretor_disciplinar, comandante, disciplinar (agente), subcomandante,
+  //        supervisor_disciplinar, monitor_disciplinar
+  if (PERFIS_MILITARES.has(perfilNorm)) {
     return normalizarPais(ceoCeiling.filter(m => m.startsWith('disciplinar')));
   }
 
-  // ── Diretor Pedagógico / Vice-Diretor / Comandante: ─────────────────────────
+  // ── Direção Pedagógica (diretor, vice_diretor): ──────────────────────────────
   //  = UNIÃO de todos os perfis configurados pelo CEO em escola_perfil_modulos
   //  Se o CEO AINDA NÃO configurou nenhum perfil → [] (só HOME + SUPORTE no front)
-  //  O CEO precisa configurar antes de qualquer módulo aparecer além dos genéricos.
-  if (PERFIS_DIRECAO.has(perfilNorm)) {
+  if (PERFIS_DIRECAO_PEDAGOGICO.has(perfilNorm)) {
     const [uniaoRows] = await dbPool.query(
       'SELECT DISTINCT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND ativo = 1',
       [escolaIdNum]
