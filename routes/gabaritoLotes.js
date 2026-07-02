@@ -615,9 +615,9 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
       }
     }
 
-    // Buscar gabarito oficial da avaliação
+    // Buscar gabarito oficial da avaliação (inclui questoes_canceladas)
     const [avRows] = await pool.query(
-      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
+      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config, questoes_canceladas
        FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
       [arq.avaliacao_id, escola_id]
     );
@@ -625,61 +625,129 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
       return res.status(404).json({ error: "Avaliação não encontrada." });
     }
 
-    const avaliacao = avRows[0];
-    const gabOficial = safeJson(avaliacao.gabarito_oficial) || [];
-    const numQuestoes = avaliacao.num_questoes || gabOficial.length;
-    const notaTotal = avaliacao.nota_total || 10;
+    const avaliacao    = avRows[0];
+    const gabOficial   = safeJson(avaliacao.gabarito_oficial) || [];
+    const numQuestoes  = avaliacao.num_questoes || gabOficial.length;
+    const notaTotal    = Number(avaliacao.nota_total) || 10;
     const disciplinasConfig = safeJson(avaliacao.disciplinas_config) || [];
+    const canceladas   = safeJson(avaliacao.questoes_canceladas) || [];
 
-    // Comparar respostas — padronizar para numQuestoes
-    const detalhes = [];
+    // Mapear questões canceladas
+    const cancelMap = {};
+    for (const c of canceladas) cancelMap[c.numero] = c.modo; // "bonificar" | "desconsiderar"
+
+    const numDesconsideradas  = canceladas.filter(c => c.modo === "desconsiderar").length;
+    const numQuestoesEfetivas = Math.max(1, numQuestoes - numDesconsideradas);
+
+    // ─── Buscar ajustes manuais existentes para este arquivo ─────────────────
+    // aprovados  → aplicados no DB (nota oficial)
+    // pendentes  → aplicados na exibição ao professor (nota com ajuste pendente)
+    const [ajustesRows] = await pool.query(
+      `SELECT questao_numero, tipo_ajuste, status
+         FROM gabarito_ajustes_manuais
+        WHERE arquivo_id = ? AND status IN ('aprovado', 'pendente')`,
+      [arquivoId]
+    );
+
+    const ajustesAprovados = {};  // questao_numero → tipo_ajuste (só aprovados)
+    const ajustesTodos     = {};  // questao_numero → tipo_ajuste (aprovados + pendentes)
+    let temAjustePendente  = false;
+
+    for (const aj of ajustesRows) {
+      ajustesTodos[aj.questao_numero] = aj.tipo_ajuste;
+      if (aj.status === "aprovado") {
+        ajustesAprovados[aj.questao_numero] = aj.tipo_ajuste;
+      } else {
+        temAjustePendente = true;
+      }
+    }
+
+    // ─── Cálculo OFICIAL (apenas ajustes aprovados) → salvo no banco ─────────
+    const detalhesOficial = [];
     for (let i = 0; i < numQuestoes; i++) {
-      const resp = respostasAluno[i] || null;
+      const questaoNum    = i + 1;
+      const modoCancelada = cancelMap[questaoNum];
+      if (modoCancelada === "desconsiderar") continue;
+
+      const resp    = respostasAluno[i] || null;
       const correto = gabOficial[i] || "";
-      // "N" = nulo (múltiplas marcações) → sempre errado
-      const isNulo = resp === "N";
-      detalhes.push({
-        numero: i + 1,
-        resposta: resp,
-        correto,
-        acertou: !isNulo && resp !== null && resp === correto,
+      const isNulo  = resp === "N";
+      let acertou   = !isNulo && resp !== null && resp === correto;
+
+      if (ajustesAprovados[questaoNum] !== undefined) {
+        acertou = ajustesAprovados[questaoNum] === "acerto"; // ajuste aprovado tem prioridade
+      } else if (modoCancelada === "bonificar") {
+        acertou = true;
+      }
+
+      detalhesOficial.push({
+        numero: questaoNum, resposta: resp, correto, acertou,
+        ...(modoCancelada === "bonificar" ? { cancelada: "bonificada" } : {}),
+        ...(ajustesAprovados[questaoNum] !== undefined ? { ajuste_manual: ajustesAprovados[questaoNum] } : {}),
       });
     }
 
-    const acertos = detalhes.filter(d => d.acertou).length;
-    const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
-    const nota = parseFloat((acertos * valorQuestao).toFixed(2));
+    const acertosOficial  = detalhesOficial.filter(d => d.acertou).length;
+    const valorQOficial   = numQuestoesEfetivas > 0 ? notaTotal / numQuestoesEfetivas : 0;
+    const notaOficial     = parseFloat((acertosOficial * valorQOficial).toFixed(2));
 
-    // Acertos por disciplina
+    // ─── Cálculo DISPLAY (aprovados + pendentes) → retornado ao frontend ──────
+    const detalhes = [];
+    for (let i = 0; i < numQuestoes; i++) {
+      const questaoNum    = i + 1;
+      const modoCancelada = cancelMap[questaoNum];
+      if (modoCancelada === "desconsiderar") continue;
+
+      const resp    = respostasAluno[i] || null;
+      const correto = gabOficial[i] || "";
+      const isNulo  = resp === "N";
+      let acertou   = !isNulo && resp !== null && resp === correto;
+
+      if (ajustesTodos[questaoNum] !== undefined) {
+        acertou = ajustesTodos[questaoNum] === "acerto";
+      } else if (modoCancelada === "bonificar") {
+        acertou = true;
+      }
+
+      detalhes.push({
+        numero: questaoNum, resposta: resp, correto, acertou,
+        ...(modoCancelada === "bonificar" ? { cancelada: "bonificada" } : {}),
+        ...(ajustesTodos[questaoNum] !== undefined ? { ajuste_manual: ajustesTodos[questaoNum] } : {}),
+      });
+    }
+
+    const acertos     = detalhes.filter(d => d.acertou).length;
+    const valorQuestao = numQuestoesEfetivas > 0 ? notaTotal / numQuestoesEfetivas : 0;
+    const nota        = parseFloat((acertos * valorQuestao).toFixed(2));
+
+    // Acertos por disciplina (baseado no cálculo display)
     let acertosPorDisciplina = null;
     if (disciplinasConfig.length > 0) {
       acertosPorDisciplina = disciplinasConfig.map(dc => {
         const questoesDisciplina = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
-        const acertosDisciplina = questoesDisciplina.filter(d => d.acertou).length;
+        const acertosDisciplina  = questoesDisciplina.filter(d => d.acertou).length;
         return {
           nome: dc.nome,
           disciplina_id: dc.disciplina_id,
-          de: dc.de,
-          ate: dc.ate,
+          de: dc.de, ate: dc.ate,
           total: questoesDisciplina.length,
           acertos: acertosDisciplina,
         };
       });
     }
 
-    // Atualizar arquivo
+    // Persistir nota OFICIAL (apenas ajustes aprovados) no banco
     await pool.query(
       `UPDATE gabarito_arquivos SET
         status = 'corrigido', acertos = ?, nota = ?,
         corrigido_em = CURRENT_TIMESTAMP, corrigido_por = ?
       WHERE id = ?`,
-      [acertos, nota, userId, arquivoId]
+      [acertosOficial, notaOficial, userId, arquivoId]
     );
 
-    // Salvar em gabarito_respostas (mesmo formato da Etapa 2 tradicional)
-    // Fallback: se codigo_aluno é null (QR não processado), usa "ARQ_<id>"
+    // Salvar em gabarito_respostas (nota oficial)
     const codigoAluno = arq.codigo_aluno || `ARQ_${arquivoId}`;
-    const nomeAluno = arq.nome_aluno || arq.arquivo_nome || `Arquivo ${arquivoId}`;
+    const nomeAluno   = arq.nome_aluno || arq.arquivo_nome || `Arquivo ${arquivoId}`;
 
     // Buscar turma_nome do lote
     const [loteRows] = await pool.query("SELECT turma_nome FROM gabarito_lotes WHERE id = ?", [arq.lote_id]);
@@ -700,18 +768,13 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
          detalhes = VALUES(detalhes),
          corrigido_em = CURRENT_TIMESTAMP`,
       [
-        arq.avaliacao_id,
-        escola_id,
-        codigoAluno,
-        nomeAluno,
-        arq.turma_id,
-        turmaNome,
+        arq.avaliacao_id, escola_id,
+        codigoAluno, nomeAluno,
+        arq.turma_id, turmaNome,
         JSON.stringify(respostasAluno),
-        acertos,
-        numQuestoes,
-        nota,
+        acertosOficial, numQuestoesEfetivas, notaOficial,
         acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
-        JSON.stringify(detalhes),
+        JSON.stringify(detalhesOficial),
       ]
     );
 
@@ -730,12 +793,13 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
 
     res.json({
       success: true,
-      acertos,
-      totalQuestoes: numQuestoes,
-      nota,
+      acertos,                          // com todos os ajustes (para exibição)
+      totalQuestoes: numQuestoesEfetivas,
+      nota,                             // com todos os ajustes (para exibição)
       notaTotal,
       resultado: detalhes,
       acertosPorDisciplina,
+      tem_ajuste_pendente: temAjustePendente,  // sinaliza ao frontend que há ajuste aguardando aprovação
       nome_aluno: arq.nome_aluno || null,
       codigo_aluno: arq.codigo_aluno || null,
     });
