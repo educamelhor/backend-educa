@@ -18,12 +18,15 @@ const router = express.Router();
 // ────────────────────────────────────────────────────────────────────────────────
 // HELPER: resolveModulosAtivos — arquitetura de permissões em 3 camadas
 //
-//  Camada 1 (CEO):     escola_modulos → TETO da escola
-//  Camada 2 (Diretor): escola_perfil_modulos → o que cada perfil pode acessar
-//  Camada 3 (Usuário): intersection(CEO ceiling, config Diretor) = acesso real
+//  Camada 1 (CEO / escola_modulos):       teto geral da escola
+//  Camada 2 (CEO / escola_perfil_modulos): o que o CEO libera por perfil
+//  Camada 3 (Diretor / direcao_modulos):  o que o Diretor mantém ou restringe
 //
-//  Regra: Diretor NUNCA pode conceder mais do que o CEO liberou.
-//  Retrocompatível: sem config do Diretor → usa CEO ceiling diretamente.
+//  Regra de Ouro:
+//   • Diretor NUNCA pode conceder mais do que o CEO liberou.
+//   • Diretor = UNIÃO de todos os perfis configurados pelo CEO (ele vislumbra tudo).
+//   • Perfil sem config do Diretor → fallback = o que o CEO definiu para esse perfil.
+//   • Retrocompatível: sem nenhuma config (nova tabela vazia) → escola_modulos como fallback.
 // ────────────────────────────────────────────────────────────────────────────────
 // Perfis que recebem acesso IRRESTRITO (null = sem filtragem alguma)
 const PERFIS_SUPER = new Set(['super_admin', 'admin_global', 'ceo', 'plataforma']);
@@ -34,51 +37,78 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   const perfilNorm = String(perfil || '').toLowerCase().trim();
 
   // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
-  // Esses perfis nunca devem ter menus bloqueados, independente da escola.
   if (PERFIS_SUPER.has(perfilNorm)) return null;
 
   // ── Sem escola_id válido: acesso irrestrito (ex: CEO acessando portal escola) ──
   const escolaIdNum = Number(escola_id);
   if (!escola_id || isNaN(escolaIdNum) || escolaIdNum <= 0) return null;
 
-  const [ceoCeilingRows] = await dbPool.query(
-    'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-    [escolaIdNum]
-  ).catch(() => [[]]);
-
-  const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
-  const ceoCeilingSet = new Set(ceoCeiling);
-
+  // ── Helpers ──────────────────────────────────────────────────────────────────
   const normalizarPais = (lista) => {
     const pais = lista.filter(m => m.includes('.')).map(m => m.split('.')[0]);
     return [...new Set([...lista, ...pais])];
   };
 
-  // ✅ [GOVERNANÇA v2] Isolamento estrutural CCMDF
-  // Diretor Disciplinar: APENAS módulos disciplinar.*
+  // ── Camada 1: teto geral da escola (escola_modulos) ──────────────────────────
+  const [ceoCeilingRows] = await dbPool.query(
+    'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
+    [escolaIdNum]
+  ).catch(() => [[]]);
+  const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
+  const ceoCeilingSet = new Set(ceoCeiling);
+
+  // ── Diretor Disciplinar (CCMDF): APENAS módulos disciplinar.* ────────────────
   if (perfilNorm === 'diretor_disciplinar') {
     return normalizarPais(ceoCeiling.filter(m => m.startsWith('disciplinar')));
   }
 
-  // Diretor Pedagógico / Escola Comum / Vice-Diretor: teto CEO exceto disciplinar.*
+  // ── Diretor Pedagógico / Vice-Diretor / Comandante: ───────────────────────
+  //  = UNIÃO de todos os perfis configurados pelo CEO em escola_perfil_modulos
+  //  (ele sempre vislumbra tudo que qualquer perfil pode acessar)
+  //  Se o CEO ainda não configurou por perfil → fallback para teto geral (escola_modulos)
   if (PERFIS_DIRECAO.has(perfilNorm)) {
-    return normalizarPais(ceoCeiling.filter(m => !m.startsWith('disciplinar')));
+    const [uniaoRows] = await dbPool.query(
+      'SELECT DISTINCT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND ativo = 1',
+      [escolaIdNum]
+    ).catch(() => [[]]);
+
+    let uniaoList;
+    if (uniaoRows && uniaoRows.length > 0) {
+      // CEO já configurou por perfil: Diretor = UNIÃO de todos os perfis (sem disciplinar)
+      uniaoList = uniaoRows.map(r => r.modulo).filter(m => !m.startsWith('disciplinar'));
+    } else {
+      // Fallback retrocompatível: nenhum perfil configurado ainda → usa teto geral
+      uniaoList = ceoCeiling.filter(m => !m.startsWith('disciplinar'));
+    }
+    return normalizarPais(uniaoList);
   }
 
-  // Demais perfis: intersection(CEO ceiling, config do Diretor)
-  const [perfilRows] = await dbPool.query(
+  // ── Demais perfis (professor, coordenador, secretario, etc.) ────────────────
+  //  Prioridade:
+  //   1) Config do Diretor (direcao_perfil_modulos) filtrada pelo teto CEO ← futura Camada 3
+  //   2) Config do CEO para este perfil (escola_perfil_modulos) ← Passo 5
+  //   3) [] (acesso zero) se nem o CEO configurou ainda
+
+  // [Passo 5] Busca o que o CEO definiu para este perfil nesta escola
+  const [ceoPorPerfilRows] = await dbPool.query(
     'SELECT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ? AND ativo = 1',
     [escolaIdNum, perfilNorm]
   ).catch(() => [[]]);
 
-  // ✅ [GOVERNANÇA v2] Fallback zero: sem config do Diretor = menu vazio
-  if (!perfilRows || perfilRows.length === 0) {
-    return []; // Acesso zero — Diretor deve configurar os módulos do perfil
+  // Se o CEO não configurou nada para este perfil → acesso zero (Diretor precisa configurar)
+  if (!ceoPorPerfilRows || ceoPorPerfilRows.length === 0) {
+    return []; // Acesso zero — CEO precisa configurar os módulos deste perfil
   }
 
-  const perfilList = perfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
-  return normalizarPais(perfilList);
+  // Lista do CEO por perfil (já é o teto do Diretor para este perfil)
+  const ceoPorPerfil = ceoPorPerfilRows.map(r => r.modulo).filter(m => ceoCeilingSet.has(m));
+
+  // [Futura Camada 3] Verifica se o Diretor restringiu além do CEO
+  // Tabela direcao_perfil_modulos será criada quando implementarmos a Governança do Diretor
+  // Por ora, usa direto a config do CEO como acesso efetivo (conforme regra: CEO = padrão inicial)
+  return normalizarPais(ceoPorPerfil);
 }
+
 
 // ────────────────────────────────────────────────────────────────────────────────
 // HELPER: resolveEscolaTipo — retorna o array de tipos da escola (ex: ['CCMDF'])
@@ -1907,8 +1937,9 @@ router.post("/upload-foto-professor", (req, res) => {
 
 
 // ─── GET /api/auth/modulos ───────────────────────────────────────────────────
-// Retorna modulos_ativos atualizados para o usuário logado a partir do banco.
-// Usado pelo Sidebar para sincronizar sem precisar de logout/login após CEO mudar config.
+// Retorna modulos_ativos atualizados para o usuário logado.
+// Chamado pelo Sidebar para sincronizar sem logout/login após CEO ou Diretor
+// mudarem configuração de módulos. Usa resolveModulosAtivos (mesma lógica do login).
 router.get('/modulos', async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1921,26 +1952,22 @@ router.get('/modulos', async (req, res) => {
       return res.json({ ok: false, modulos_ativos: [] });
     }
 
-    const escola_id = payload.escola_id;
+    const { escola_id, perfil } = payload;
+
     // Sem escola_id → acesso irrestrito (CEO, super_admin, conta global)
     if (!escola_id) return res.json({ ok: true, modulos_ativos: null });
 
-    const [rows] = await pool.query(
-      'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
-      [Number(escola_id)]
-    ).catch(() => [[]]);
+    // Usa resolveModulosAtivos com perfil do JWT — hierarquia completa
+    const modulos_ativos = await resolveModulosAtivos(pool, escola_id, perfil || 'diretor');
 
-    const lista = rows.map(r => r.modulo);
-    const pais = lista.filter(m => m.includes('.')).map(m => m.split('.')[0]);
-    const modulos_ativos = [...new Set([...lista, ...pais])];
-
-    console.log(`[AUTH/modulos] escola_id=${escola_id} → ${modulos_ativos.length} módulos ativos`);
+    console.log(`[AUTH/modulos] escola_id=${escola_id} perfil=${perfil} → ${Array.isArray(modulos_ativos) ? modulos_ativos.length : 'null (irrestrito)'} módulos`);
     return res.json({ ok: true, modulos_ativos });
   } catch (err) {
     console.error('[AUTH/modulos] erro:', err);
     return res.json({ ok: false, modulos_ativos: [] });
   }
 });
+
 
 
 export default router;
