@@ -1,0 +1,1955 @@
+// api/routes/conteudos_admin.js
+import { Router } from "express";
+import { autorizarPermissao } from "../middleware/autorizarPermissao.js";
+
+const router = Router();
+
+// ✅ PING público (diagnóstico) — sem auth, confirma que o módulo está ativo
+router.get("/conteudos/admin/ping", (_req, res) =>
+  res.json({ ok: true, module: "conteudos_admin", ts: new Date().toISOString(), routes: router.stack?.length })
+);
+
+/**
+ * =========================================================
+ * EDUCA.MELHOR — MÓDULO CONTEÚDOS (Admin)
+ *
+ * Este router é montado no server.js em "/api" e já passa por:
+ * - autenticarToken
+ * - verificarEscola
+ *
+ * Endpoints mínimos (PASSO 4.3):
+ * 1) GET  /conteudos/admin/contexto/opcoes
+ * 2) GET  /conteudos/admin/plano/itens
+ *
+ * Observação:
+ * - req.db é injetado no server.js (pool).
+ * =========================================================
+ */
+
+function assertAuthEscola(req, res) {
+  const escolaId = req?.escola_id ?? req?.user?.escola_id;
+
+  if (!escolaId) {
+    res.status(403).json({ ok: false, message: "Acesso negado: escola não definida." });
+    return false;
+  }
+  return true;
+}
+
+function normSerie(raw) {
+  // Mantemos string livre ("8º Ano", "8", etc). Apenas trim.
+  return String(raw || "").trim();
+}
+
+function normTxt(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+// Mapeamento BNCC (componente_id) por "nome da disciplina" (fallback)
+// Ajuste/expansão conforme seu catálogo interno de disciplinas evoluir.
+
+function mapDisciplinaNomeToComponenteId(nomeDisciplina) {
+  const n = normTxt(nomeDisciplina);
+
+  if (!n) return null;
+
+  // BNCC componentes (padrão comum):
+  // 1 LP, 2 MAT, 3 CIÊNCIAS, 4 GEOG, 5 HIST, 6 ARTE, 7 ED.FÍSICA, 8 INGLÊS
+  if (n.includes("matemat")) return 2;
+  if (n.includes("portugues") || n.includes("lingua portuguesa")) return 1;
+  if (n.includes("ciencia")) return 3;
+  if (n.includes("geograf")) return 4;
+  if (n.includes("histor")) return 5;
+  if (n.includes("arte")) return 6;
+  if (n.includes("educacao fisica") || n.includes("ed fisica") || n.includes("educacao fis")) return 7;
+  if (n.includes("ingles") || n.includes("lingua inglesa")) return 8;
+
+  return null;
+}
+
+async function isDisciplinaGeometria(db, disciplina_id) {
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT nome
+      FROM disciplinas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [Number(disciplina_id)]
+    );
+
+    const nome = rows?.[0]?.nome;
+    const n = normTxt(nome);
+    return !!n && n.includes("geometria");
+  } catch (e) {
+    return false;
+  }
+}
+
+async function resolveBnccComponenteId(db, disciplina_id) {
+
+  // 1) Aceita direto SOMENTE se for um componente BNCC válido conhecido (1..10)
+  // Evita confundir disciplina_id interno (ex.: 21 = Matemática) com componente BNCC
+  if (
+    Number.isFinite(Number(disciplina_id)) &&
+    Number(disciplina_id) > 0 &&
+    Number(disciplina_id) <= 10
+  ) {
+    return Number(disciplina_id);
+  }
+
+  // 2) Tenta buscar nome na tabela disciplinas (se existir) e mapear para componente_id.
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT nome
+      FROM disciplinas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [Number(disciplina_id)]
+    );
+
+    const nome = rows?.[0]?.nome;
+    const mapped = mapDisciplinaNomeToComponenteId(nome);
+    if (Number.isFinite(Number(mapped))) return Number(mapped);
+  } catch (e) {
+    // silencioso: nem toda base tem a tabela/coluna exatamente assim
+  }
+
+  // 3) Fallback: null (para não filtrar errado)
+  return null;
+}
+
+
+/**
+ * POST /api/conteudos/admin/solicitacoes/edicao
+ *
+ * Professor registra solicitação de edição (governança premium).
+ * - NÃO libera edição
+ * - Apenas cria registro na fila (conteudos_solicitacoes_edicao)
+ *
+ * Body obrigatório:
+ * - escopo: 'CONTEXTO' | 'ITEM_EDIT' | 'ITEM_DELETE'
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ *
+ * Body condicional:
+ * - item_id (obrigatório se escopo != 'CONTEXTO')
+ * - motivo (opcional)
+ *
+ * Anti-duplicação:
+ * - Não permite 2 solicitações PENDENTE iguais
+ */
+router.post(
+  "/conteudos/admin/solicitacoes/edicao",
+  autorizarPermissao("conteudos.enviar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const solicitado_por_usuario_id = Number(req.user.usuarioId ?? req.user.id);
+
+    const {
+      escopo,
+      disciplina_id,
+      serie,
+      bimestre,
+      ano_letivo,
+      item_id,
+      motivo,
+    } = req.body ?? {};
+
+    if (
+      !escopo ||
+      !disciplina_id ||
+      !serie ||
+      !bimestre ||
+      !ano_letivo
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: "Campos obrigatórios não informados.",
+      });
+    }
+
+    if (escopo !== "CONTEXTO" && !item_id) {
+      return res.status(400).json({
+        ok: false,
+        message: "item_id é obrigatório para solicitações por item.",
+      });
+    }
+
+    const db = req.db;
+
+    // 🔒 Anti-duplicação: já existe solicitação PENDENTE igual?
+    const [existente] = await db.query(
+      `
+      SELECT id
+      FROM conteudos_solicitacoes_edicao
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND bimestre = ?
+        AND ano_letivo = ?
+        AND escopo = ?
+        AND (
+          (? IS NULL AND item_id IS NULL)
+          OR item_id = ?
+        )
+        AND status = 'PENDENTE'
+      LIMIT 1
+      `,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        escopo,
+        item_id ?? null,
+        item_id ?? null,
+      ]
+    );
+
+    if (existente?.length) {
+      return res.json({
+        ok: true,
+        ja_existente: true,
+        message: "Solicitação já registrada e aguardando análise da direção.",
+      });
+    }
+
+    // ➕ Criar solicitação
+    const [ins] = await db.query(
+      `
+      INSERT INTO conteudos_solicitacoes_edicao (
+        escola_id,
+        disciplina_id,
+        serie,
+        bimestre,
+        ano_letivo,
+        escopo,
+        item_id,
+        motivo,
+        solicitado_por_usuario_id,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE')
+      `,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        escopo,
+        item_id ?? null,
+        motivo ?? null,
+        solicitado_por_usuario_id,
+      ]
+    );
+
+    return res.status(201).json({
+      ok: true,
+      id: ins?.insertId,
+      status: "PENDENTE",
+    });
+  } catch (err) {
+    console.error("Erro POST /conteudos/admin/solicitacoes/edicao:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao registrar solicitação de edição.",
+    });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/lista
+ *
+ * Listagem geral dos conteúdos programáticos da escola.
+ * Todos os parâmetros são opcionais (filtros).
+ *
+ * Query: serie?, disciplina_id?, bimestre?, status?, ano_letivo?
+ * Retorna: { ok, total, registros: [...] }
+ */
+router.get(
+  "/conteudos/admin/lista",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const db = req.db;
+
+    const { serie, disciplina_id, disciplina_nome, bimestre, status, ano_letivo } = req.query;
+
+    const params = [escola_id];
+    let where = "WHERE coe.escola_id = ? AND coe.ativo = 1";
+
+    if (serie)           { where += " AND coe.serie = ?";         params.push(normSerie(serie)); }
+    if (disciplina_id)   { where += " AND coe.disciplina_id = ?"; params.push(Number(disciplina_id)); }
+    else if (disciplina_nome) {
+      // Busca pelo nome da disciplina da escola
+      const [discRow] = await db.query(
+        "SELECT id FROM disciplinas WHERE escola_id = ? AND nome = ? LIMIT 1",
+        [escola_id, disciplina_nome]
+      );
+      if (discRow && discRow.length > 0) {
+        where += " AND coe.disciplina_id = ?";
+        params.push(Number(discRow[0].id));
+      }
+    }
+    if (bimestre)        { where += " AND coe.bimestre = ?";      params.push(Number(bimestre)); }
+    if (status)          { where += " AND coe.status = ?";        params.push(String(status).toUpperCase()); }
+    if (ano_letivo)      { where += " AND coe.ano_letivo = ?";    params.push(Number(ano_letivo)); }
+
+
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         d.nome          AS disciplina,
+         coe.disciplina_id,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.status,
+         coe.bncc_unidade_tematica_id,
+         coe.seedf_conteudo_id,
+         bt.nome         AS unidade,
+         sc.texto        AS conteudo,
+         coe.texto       AS objetivo_texto,
+         coe.created_at
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN disciplinas d        ON d.id  = coe.disciplina_id
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc   ON sc.id = coe.seedf_conteudo_id
+       ${where}
+       ORDER BY coe.serie, coe.bimestre, d.nome, coe.id DESC
+       LIMIT 1000`,
+      params
+    );
+
+    const registros = (rows || []).map(r => {
+      // Conta quantos tópicos/objetivos existem no texto
+      const linhas = (r.objetivo_texto || "").split("\n")
+        .filter(l => l.match(/^\s*\d+\.\s/));
+      return {
+        id:                        Number(r.id),
+        serie:                     r.serie || "",
+        disciplina:                r.disciplina || "",
+        disciplina_id:             Number(r.disciplina_id),
+        bimestre:                  Number(r.bimestre),
+        bimestre_label:            `${r.bimestre}º Bimestre`,
+        ano_letivo:                Number(r.ano_letivo),
+        status:                    r.status || "RASCUNHO",
+        bncc_unidade_tematica_id:  r.bncc_unidade_tematica_id ? Number(r.bncc_unidade_tematica_id) : null,
+        seedf_conteudo_id:         r.seedf_conteudo_id ? Number(r.seedf_conteudo_id) : null,
+        unidade:                   r.unidade || "",
+        conteudo:                  r.conteudo || "",
+        objetivo_preview:          (r.objetivo_texto || "").substring(0, 120),
+        texto_completo:            r.objetivo_texto || "",
+        itens:                     linhas.length || 1,
+        created_at:                r.created_at,
+      };
+    });
+
+    return res.json({ ok: true, total: registros.length, registros });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/lista:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar lista de conteúdos." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/planejamento/check
+ *
+ * Verifica se já existe um registro de objetivo para a combinação
+ * (escola, disciplina, serie, bimestre, ano_letivo, UT, conteúdo SEEDF).
+ * Retorna { ok, found, registro } — usado pelo modal para pré-carregar edição.
+ */
+router.get(
+  "/conteudos/admin/planejamento/check",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const { disciplina_id, serie, bimestre, ano_letivo, bncc_unidade_tematica_id, seedf_conteudo_id } = req.query;
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo || !seedf_conteudo_id) {
+      return res.status(400).json({ ok: false, message: "Parâmetros insuficientes." });
+    }
+
+    const db = req.db;
+    const [[row]] = await db.query(
+      `SELECT id, texto, status, bncc_unidade_tematica_id, seedf_conteudo_id
+       FROM conteudos_objetivos_escola
+       WHERE escola_id = ?
+         AND disciplina_id = ?
+         AND serie = ?
+         AND bimestre = ?
+         AND ano_letivo = ?
+         AND (seedf_conteudo_id = ? OR (seedf_conteudo_id IS NULL AND ? IS NULL))
+         AND ativo = 1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
+      [
+        escola_id,
+        Number(disciplina_id),
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        seedf_conteudo_id ? Number(seedf_conteudo_id) : null,
+        seedf_conteudo_id ? Number(seedf_conteudo_id) : null,
+      ]
+    );
+
+    return res.json({ ok: true, found: !!row, registro: row || null });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/planejamento/check:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao verificar registro." });
+  }
+});
+
+
+/**
+ * POST /api/conteudos/admin/planejamento
+ *
+ * SALVAR do modal Conteúdos:
+ * - BNCC e SEEDF são catálogos globais (somente leitura)
+ * - Isolamento acontece aqui (conteudos_objetivos_escola)
+ */
+router.post(
+  "/conteudos/admin/planejamento",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.escola_id ?? req.user.escola_id);
+    const professor_id = Number(req.user.usuarioId ?? req.user.id);
+    const created_by = professor_id;
+
+    if (!Number.isFinite(professor_id) || professor_id <= 0) {
+      return res.status(403).json({
+        ok: false,
+        message: "Acesso negado: professor_id inválido no token (esperado usuarioId).",
+      });
+    }
+
+    const body = req.body ?? {};
+
+    const {
+      disciplina_id,
+      serie,
+      bimestre,
+      ano_letivo,
+      bncc_unidade_tematica_id,
+      seedf_conteudo_id,
+      texto,
+    } = body;
+
+    if (!req.body) {
+      return res.status(400).json({
+        ok: false,
+        message: "Body ausente. Envie JSON (Content-Type: application/json).",
+      });
+    }
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "Campos obrigatórios: disciplina_id, serie, bimestre, ano_letivo.",
+      });
+    }
+
+    const db = req.db;
+
+    const [result] = await db.query(
+      `
+      INSERT INTO conteudos_objetivos_escola
+      (
+        escola_id,
+        professor_id,
+        created_by,
+        disciplina_id,
+        serie,
+        bimestre,
+        ano_letivo,
+        bncc_unidade_tematica_id,
+        seedf_conteudo_id,
+        texto,
+        ativo,
+        status,
+        edicao_liberada
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0)
+      ON DUPLICATE KEY UPDATE
+        texto = VALUES(texto),
+        ativo = 1,
+        status = 1,
+        edicao_liberada = 0,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [
+        escola_id,
+        professor_id,
+        created_by,
+        disciplina_id,
+        normSerie(serie),
+        Number(bimestre),
+        Number(ano_letivo),
+        Number(bncc_unidade_tematica_id),
+        Number(seedf_conteudo_id),
+        texto ?? null,
+      ]
+    );
+
+    return res.json({
+      ok: true,
+      id: result.insertId || null,
+    });
+  } catch (err) {
+    console.error("Erro POST /conteudos/admin/planejamento:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao salvar planejamento.",
+    });
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// ENDPOINTS DE CASCATA BNCC — Novo Conteúdo Programático
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Helper: resolve componente_id BNCC a partir do nome da disciplina da escola
+ * (matching por keyword contra bncc_componentes.nome)
+ */
+async function resolveComponenteByNome(db, nomeDisc) {
+  // normTxt: lowercase + remove acentos  
+  const n = normTxt(nomeDisc || "");
+  let keyword = null;
+  // Keywords sem acentos (normTxt já normalizou `n`; o LIKE usa CONVERT para também normalizar o BD)
+  if      (n.includes("matemat"))                        keyword = "matem";
+  else if (n.includes("portugues"))                      keyword = "portugu";
+  else if (n.includes("cienc"))                          keyword = "cienc";
+  else if (n.includes("geograf"))                        keyword = "geogr";
+  else if (n.includes("histor"))                         keyword = "hist";
+  else if (n.includes("arte"))                           keyword = "arte";
+  else if (n.includes("fisica") || (n.includes("ed") && n.includes("fis"))) keyword = "sica";
+  else if (n.includes("ingl"))                           keyword = "ingl";
+
+  if (!keyword) return null;
+  try {
+    // CONVERT...USING ASCII descarta acentos no lado do BD antes do LIKE
+    const [rows] = await db.query(
+      `SELECT id, disciplina_id FROM bncc_componentes
+       WHERE ativo = 1
+       AND LOWER(CONVERT(nome USING ASCII)) LIKE ? LIMIT 1`,
+      [`%${keyword}%`]
+    );
+    return rows?.[0] || null;
+  } catch { return null; }
+}
+
+/**
+ * GET /api/conteudos/admin/bncc/etapas-e-disciplinas
+ * Retorna etapas disponíveis e disciplinas DA ESCOLA, com flag de compatibilidade BNCC
+ * Usado no BÁSICO para popular os dois primeiros dropdowns
+ */
+router.get(
+  "/conteudos/admin/bncc/etapas-e-disciplinas",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      // Usa o mesmo padrão de escola_id do restante do sistema
+      const escola_id = Number(req.escola_id ?? req.user?.escola_id);
+      const db = req.db;
+
+      if (!escola_id || escola_id <= 0) {
+        console.warn("[etapas-e-disciplinas] escola_id inválido:", req.escola_id, req.user?.escola_id);
+        return res.status(403).json({ ok: false, message: "escola_id não encontrado no token." });
+      }
+
+      // Disciplinas registradas pela escola (Secretaria > Disciplinas)
+      const [discs] = await db.query(
+        `SELECT id, nome, etapa FROM disciplinas
+         WHERE escola_id = ? ORDER BY etapa, nome`,
+        [escola_id]
+      );
+
+      console.log(`[etapas-e-disciplinas] escola_id=${escola_id} => ${discs.length} disciplinas`);
+
+      // Etapas distintas da escola (upper-case para normalizar "Fundamental" e "FUNDAMENTAL")
+      const etapas = [...new Set(discs.map(d => (d.etapa || "").toUpperCase()))]
+        .filter(Boolean).sort();
+
+      // Para cada disciplina, verifica se tem mapeamento BNCC (por nome)
+      const disciplinas = await Promise.all(discs.map(async d => {
+        const comp = await resolveComponenteByNome(db, d.nome);
+        return { id: d.id, nome: d.nome, etapa: (d.etapa || "").toUpperCase(), tem_bncc: !!comp };
+      }));
+
+      return res.json({ ok: true, etapas, disciplinas });
+    } catch (err) {
+      console.error("Erro GET /bncc/etapas-e-disciplinas:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar etapas e disciplinas.", detail: err.message });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/bncc/unidades?disciplina_nome=MATEMÁTICA&ano_id=6
+ * Unidades Temáticas BNCC — resolve componente por NOME da disciplina da escola
+ */
+router.get(
+  "/conteudos/admin/bncc/unidades",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const disciplina_nome = req.query.disciplina_nome || "";
+      const ano_id = Number(req.query.ano_id);
+      if (!disciplina_nome || !ano_id) {
+        return res.status(400).json({ ok: false, message: "disciplina_nome e ano_id são obrigatórios." });
+      }
+      const db = req.db;
+      const comp = await resolveComponenteByNome(db, disciplina_nome);
+      if (!comp) return res.json({ ok: true, unidades: [] });
+
+      const [rows] = await db.query(
+        `SELECT id, nome AS texto FROM bncc_unidades_tematicas
+         WHERE componente_id = ? AND ano_id = ?
+         ORDER BY nome ASC LIMIT 500`,
+        [comp.id, ano_id]
+      );
+      return res.json({ ok: true, unidades: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /bncc/unidades:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar unidades temáticas." });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/bncc/objetos?unidade_tematica_id=X
+ * Objetos de Conhecimento para a Unidade Temática selecionada (2ª cascata)
+ */
+router.get(
+  "/conteudos/admin/bncc/objetos",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const unidade_tematica_id = Number(req.query.unidade_tematica_id);
+      if (!unidade_tematica_id) {
+        return res.status(400).json({ ok: false, message: "unidade_tematica_id é obrigatório." });
+      }
+      const db = req.db;
+      const [rows] = await db.query(
+        `SELECT id, nome AS texto FROM bncc_objetos_conhecimento
+         WHERE unidade_tematica_id = ?
+         ORDER BY nome ASC LIMIT 500`,
+        [unidade_tematica_id]
+      );
+      return res.json({ ok: true, objetos: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /bncc/objetos:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar objetos de conhecimento." });
+    }
+  }
+);
+
+/**
+ * GET /api/conteudos/admin/seedf/conteudos?disciplina_nome=PORTUGUÊS&serie=6º ANO[&unidade_tematica_id=Z]
+ * Conteúdos SEE-DF — resolve disciplina_id real via nome da disciplina da escola
+ */
+router.get(
+  "/conteudos/admin/seedf/conteudos",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+    try {
+      const disciplina_nome = req.query.disciplina_nome || "";
+      const serie = normSerie(req.query.serie || "");
+      const unidade_tematica_id = req.query.unidade_tematica_id
+        ? Number(req.query.unidade_tematica_id)
+        : null;
+      if (!disciplina_nome || !serie) {
+        return res.status(400).json({ ok: false, message: "disciplina_nome e serie são obrigatórios." });
+      }
+      const db = req.db;
+
+      // Resolve disciplina_id BNCC via nome (bncc_componentes.disciplina_id = seedf original id)
+      const comp = await resolveComponenteByNome(db, disciplina_nome);
+      if (!comp) return res.json({ ok: true, conteudos: [] });
+
+      const params = [comp.disciplina_id, serie];
+      let whereExtra = "";
+      if (unidade_tematica_id) {
+        whereExtra = " AND bncc_unidade_tematica_id = ?";
+        params.push(unidade_tematica_id);
+      }
+      const [rows] = await db.query(
+        `SELECT id, texto FROM seedf_conteudos
+         WHERE disciplina_id = ? AND serie = ? AND ativo = 1 ${whereExtra}
+         ORDER BY texto ASC LIMIT 800`,
+        params
+      );
+      return res.json({ ok: true, conteudos: rows || [] });
+    } catch (err) {
+      console.error("Erro GET /seedf/conteudos:", err);
+      return res.status(500).json({ ok: false, message: "Erro ao carregar conteúdos SEE-DF." });
+    }
+  }
+);
+
+
+/**
+ * GET /api/conteudos/admin/contexto/opcoes
+ *
+ * Query:
+ * - disciplina_id (obrigatório)
+ * - serie        (obrigatório)  -> vem da turma (frontend manda)
+ * - bncc_unidade_tematica_id (opcional) -> filtrar SEEDF/OBJETIVOS
+ * - seedf_conteudo_id        (opcional) -> filtrar OBJETIVOS
+ *
+ * Retorna:
+ * {
+ *   temas:     [{id, texto}],
+ *   conteudos: [{id, texto}],
+ *   objetivos: [{id, texto}]
+ * }
+ */
+router.get(
+  "/conteudos/admin/contexto/opcoes",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
+
+    // ✅ Novo contrato: serie (string) é o parâmetro oficial do contexto curricular.
+    // Compatibilidade: se vier ano_id (legado), derivamos serie como "7º ANO".
+    const ano_id = req.query.ano_id ? Number(req.query.ano_id) : null;
+    let serie = req.query.serie ? normSerie(req.query.serie) : "";
+
+    if (!serie && Number.isFinite(ano_id)) {
+      serie = `${ano_id}º ANO`;
+    }
+
+    // BNCC exige ano_id (numérico). Se não veio, derivamos do início da série (ex.: "7º ANO" -> 7).
+    const ano_bncc = Number.isFinite(ano_id)
+      ? Number(ano_id)
+      : (() => {
+          const m = String(serie || "").trim().match(/^(\d+)/);
+          const n = m ? Number(m[1]) : null;
+          return Number.isFinite(n) ? n : null;
+        })();
+
+    const bncc_unidade_tematica_id = req.query.bncc_unidade_tematica_id
+      ? Number(req.query.bncc_unidade_tematica_id)
+      : null;
+
+    const seedf_conteudo_id = req.query.seedf_conteudo_id
+      ? Number(req.query.seedf_conteudo_id)
+      : null;
+
+    if (!disciplina_id || !serie || !Number.isFinite(ano_bncc)) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id e serie são obrigatórios (e a serie deve permitir derivar ano_id para BNCC).",
+      });
+    }
+
+    const db = req.db;
+
+    // 1) TEMAS — modo híbrido
+    // - Se disciplina interna for "Geometria": usa tabela interna geometria_tema (por escola/ano)
+    // - Caso contrário: usa BNCC oficial (bncc_unidades_tematicas)
+    const isGeo = await isDisciplinaGeometria(db, disciplina_id);
+
+    let temas = [];
+
+    if (isGeo) {
+      const [rowsTemasGeo] = await db.query(
+        `
+        SELECT
+          id,
+          nome AS texto
+        FROM geometria_tema
+        WHERE escola_id = ?
+          AND ano_id = ?
+          AND ativo = 1
+        ORDER BY nome ASC
+        LIMIT 500
+        `,
+        [escola_id, ano_bncc]
+      );
+
+      temas = rowsTemasGeo || [];
+    } else {
+      // ✅ disciplina_id (interno) ≠ componente_id (BNCC)
+      // Precisamos mapear antes de consultar bncc_unidades_tematicas.
+      const componente_id =
+        req.query.componente_id != null && Number.isFinite(Number(req.query.componente_id))
+          ? Number(req.query.componente_id)
+          : await resolveBnccComponenteId(db, disciplina_id);
+
+      const [rowsTemasBncc] = await db.query(
+        `
+        SELECT
+          id,
+          nome AS texto
+        FROM bncc_unidades_tematicas
+        WHERE componente_id = ?
+          AND ano_id = ?
+        ORDER BY nome ASC
+        LIMIT 500
+        `,
+        [componente_id ?? -1, ano_bncc]
+      );
+
+      temas = rowsTemasBncc || [];
+    }
+
+    // 2) CONTEÚDOS (SEEDF) — somente leitura para professor
+    const paramsConteudos = [disciplina_id, String(serie)];
+    let whereBncc = "";
+    if (bncc_unidade_tematica_id) {
+      whereBncc = " AND (bncc_unidade_tematica_id = ?) ";
+      paramsConteudos.push(bncc_unidade_tematica_id);
+    }
+
+    const [rowsConteudos] = await db.query(
+      `
+      SELECT
+        id,
+        texto
+      FROM seedf_conteudos
+      WHERE disciplina_id = ?
+        AND serie = ?
+        AND ativo = 1
+        ${whereBncc}
+      ORDER BY texto ASC
+      LIMIT 800
+      `,
+      paramsConteudos
+    );
+
+    // 3) OBJETIVOS (ESCOLA) — catálogo reutilizável
+    // Regras:
+    // - escola_id obrigatório
+    // - filtra por disciplina/serie
+    // - se houver bncc/seedf selecionados, estreita
+    const paramsObj = [escola_id, disciplina_id, String(serie)];
+    let whereObj = "";
+
+    if (bncc_unidade_tematica_id) {
+      whereObj += " AND (bncc_unidade_tematica_id = ? OR bncc_unidade_tematica_id IS NULL) ";
+      paramsObj.push(bncc_unidade_tematica_id);
+    }
+
+    if (seedf_conteudo_id) {
+      whereObj += " AND (seedf_conteudo_id = ? OR seedf_conteudo_id IS NULL) ";
+      paramsObj.push(seedf_conteudo_id);
+    }
+
+    const [rowsObjetivos] = await db.query(
+      `
+      SELECT
+        id,
+        texto
+      FROM conteudos_objetivos_escola
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND ativo = 1
+        ${whereObj}
+      ORDER BY texto ASC
+      LIMIT 800
+      `,
+      paramsObj
+    );
+
+    return res.json({
+      ok: true,
+      temas: temas.map((t) => ({ id: t.id, texto: t.texto })),
+      conteudos: (rowsConteudos || []).map((c) => ({ id: c.id, texto: c.texto })),
+      objetivos: (rowsObjetivos || []).map((o) => ({ id: o.id, texto: o.texto })),
+    });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/contexto/opcoes:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar opções do contexto." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/solicitacoes/edicao
+ *
+ * Retorna as solicitações de edição PENDENTES do contexto (e itens) para:
+ * disciplina_id + serie + bimestre + ano_letivo, sempre filtrado por escola_id do token.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ *
+ * Retorna:
+ * {
+ *   ok: true,
+ *   contexto_pendente: boolean,
+ *   itens_pendentes: [{ id, escopo, item_id, status, created_at }],
+ *   solicitacoes: [{ id, escopo, item_id, status, motivo, created_at }]
+ * }
+ */
+router.get(
+  "/conteudos/admin/solicitacoes/edicao",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.query?.disciplina_id);
+    const serie = req.query?.serie ? normSerie(req.query.serie) : "";
+    const bimestre = Number(req.query?.bimestre);
+    const ano_letivo = Number(req.query?.ano_letivo);
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "Parâmetros obrigatórios: disciplina_id, serie, bimestre, ano_letivo.",
+      });
+    }
+
+    const db = req.db;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        escopo,
+        item_id,
+        status,
+        motivo,
+        created_at
+      FROM conteudos_solicitacoes_edicao
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND bimestre = ?
+        AND ano_letivo = ?
+        AND status = 'PENDENTE'
+      ORDER BY created_at DESC
+      LIMIT 300
+      `,
+      [escola_id, disciplina_id, serie, bimestre, ano_letivo]
+    );
+
+    const solicitacoes = (rows || []).map((r) => ({
+      id: Number(r.id),
+      escopo: String(r.escopo || ""),
+      item_id: r.item_id === null || r.item_id === undefined ? null : Number(r.item_id),
+      status: String(r.status || ""),
+      motivo: r.motivo ?? null,
+      created_at: r.created_at ?? null,
+    }));
+
+    const contexto_pendente = solicitacoes.some((s) => s.escopo === "CONTEXTO");
+
+    const itens_pendentes = solicitacoes
+      .filter((s) => s.escopo !== "CONTEXTO" && Number.isFinite(Number(s.item_id)))
+      .map((s) => ({
+        id: s.id,
+        escopo: s.escopo,
+        item_id: Number(s.item_id),
+        status: s.status,
+        created_at: s.created_at,
+      }));
+
+    return res.json({
+      ok: true,
+      contexto_pendente,
+      itens_pendentes,
+      solicitacoes,
+    });
+  } catch (err) {
+    console.error("Erro GET /conteudos/admin/solicitacoes/edicao:", err);
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erro ao carregar solicitações de edição." });
+  }
+});
+
+
+
+/**
+ * DELETE /api/conteudos/admin/planejamento/itens/:id
+ *
+ * Remove (soft delete) um item do planejamento salvo (conteudos_objetivos_escola)
+ * - Marca ativo = 0
+ * - Garante que pertence à escola do token
+ */
+router.delete(
+  "/conteudos/admin/planejamento/itens/:id",
+  autorizarPermissao("conteudos.editar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const id = Number(req.params.id);
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido." });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
+      `
+      UPDATE conteudos_objetivos_escola
+      SET ativo = 0,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND escola_id = ?
+      LIMIT 1
+      `,
+      [id, escola_id]
+    );
+
+    if (!r?.affectedRows) {
+      return res.status(404).json({
+        ok: false,
+        message: "Item não encontrado (ou não pertence a esta escola).",
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Erro DELETE /conteudos/admin/planejamento/itens/:id:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao excluir item do planejamento." });
+  }
+});
+
+
+/**
+ * PATCH /api/conteudos/admin/direcao/planejamento/itens/:id/edicao
+ *
+ * Direção/Coordenação libera (ou revoga) edição de UMA linha do planejamento (conteudos_objetivos_escola).
+ * Body:
+ * - edicao_liberada: 0 | 1
+ *
+ * Observação:
+ * - Por enquanto, não fazemos checagem de perfil/role aqui (depende do seu modelo de auth).
+ *   Se você já tiver "req.user.perfil", podemos travar isso em seguida.
+ */
+router.patch(
+  "/conteudos/admin/direcao/planejamento/itens/:id/edicao",
+  autorizarPermissao("conteudos.aprovar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const id = Number(req.params.id);
+
+    const edicao_liberada = Number(req.body?.edicao_liberada) === 1 ? 1 : 0;
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido." });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
+      `
+      UPDATE conteudos_objetivos_escola
+      SET edicao_liberada = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND escola_id = ?
+        AND ativo = 1
+      LIMIT 1
+      `,
+      [edicao_liberada, id, escola_id]
+    );
+
+    if (!r?.affectedRows) {
+      return res.status(404).json({
+        ok: false,
+        message: "Item não encontrado (ou não pertence a esta escola).",
+      });
+    }
+
+    return res.json({ ok: true, id, edicao_liberada });
+  } catch (err) {
+    console.error("Erro PATCH /conteudos/admin/direcao/planejamento/itens/:id/edicao:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao atualizar liberação de edição do item." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/planejamento/itens
+ *
+ * Lista o planejamento salvo via POST /planejamento/lote
+ * Fonte: conteudos_objetivos_escola
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - ano_letivo
+ * - bimestre
+ *
+ * Retorna:
+ * { ok:true, itens:[...] }
+ *
+ * Observação:
+ * - Mantém nomes compatíveis com o frontend (tema_texto_snapshot, conteudo_texto_snapshot, objetivo_texto)
+ */
+/**
+ * PATCH /api/conteudos/admin/direcao/planejamento/contexto/edicao
+ *
+ * Direção/Coordenação libera (ou revoga) edição de TODAS as linhas do contexto (set em massa).
+ *
+ * Body obrigatório:
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ * - edicao_liberada: 0 | 1
+ *
+ * Observação:
+ * - Por enquanto, sem checagem de perfil/role (depende do seu auth).
+ */
+router.patch(
+  "/conteudos/admin/direcao/planejamento/contexto/edicao",
+  autorizarPermissao("conteudos.aprovar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const serie = req.body?.serie ? normSerie(req.body.serie) : "";
+    const bimestre = Number(req.body?.bimestre);
+    const ano_letivo = Number(req.body?.ano_letivo);
+
+    const edicao_liberada = Number(req.body?.edicao_liberada) === 1 ? 1 : 0;
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, bimestre e ano_letivo são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    const [r] = await db.query(
+      `
+      UPDATE conteudos_objetivos_escola
+      SET edicao_liberada = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE escola_id = ?
+        AND disciplina_id = ?
+        AND serie = ?
+        AND bimestre = ?
+        AND ano_letivo = ?
+        AND ativo = 1
+      `,
+      [edicao_liberada, escola_id, disciplina_id, serie, bimestre, ano_letivo]
+    );
+
+    return res.json({
+      ok: true,
+      edicao_liberada,
+      afetados: r?.affectedRows ?? 0,
+      contexto: { escola_id, disciplina_id, serie, bimestre, ano_letivo },
+    });
+  } catch (err) {
+    console.error("Erro PATCH /conteudos/admin/direcao/planejamento/contexto/edicao:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao atualizar liberação de edição do contexto." });
+  }
+});
+
+router.get(
+  "/conteudos/admin/planejamento/itens",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    const disciplina_id = Number(req.query.disciplina_id);
+    const ano_letivo = Number(req.query.ano_letivo);
+    const bimestre = Number(req.query.bimestre);
+    const serie = req.query.serie ? normSerie(req.query.serie) : "";
+
+    if (!disciplina_id || !ano_letivo || !bimestre || !serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, ano_letivo e bimestre são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        coe.id,
+        NULL AS turma_id,
+        coe.disciplina_id,
+        coe.serie,
+        coe.ano_letivo,
+        coe.bimestre,
+        coe.bncc_unidade_tematica_id,
+        bt.nome AS tema_texto_snapshot,
+        coe.seedf_conteudo_id,
+        sc.texto AS conteudo_texto_snapshot,
+        coe.texto AS objetivo_texto,
+                    coe.status,
+                    coe.edicao_liberada,
+                    coe.created_at
+      FROM conteudos_objetivos_escola coe
+      LEFT JOIN bncc_unidades_tematicas bt
+        ON bt.id = coe.bncc_unidade_tematica_id
+      LEFT JOIN seedf_conteudos sc
+        ON sc.id = coe.seedf_conteudo_id
+      WHERE coe.escola_id = ?
+        AND coe.disciplina_id = ?
+        AND coe.serie = ?
+        AND coe.ano_letivo = ?
+        AND coe.bimestre = ?
+        AND coe.ativo = 1
+      ORDER BY coe.id DESC
+      LIMIT 500
+      `,
+      [escola_id, disciplina_id, serie, ano_letivo, bimestre]
+    );
+
+    return res.json({ ok: true, itens: rows || [] });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/planejamento/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar itens do planejamento." });
+  }
+});
+
+
+/**
+ * GET /api/conteudos/admin/relatorio/pdf-data
+ *
+ * Retorna dados para geração do PDF de Conteúdo Programático.
+ * Agrupa por série (todas), filtrado por disciplina_id + bimestre + ano_letivo.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ * - bimestre
+ * - ano_letivo
+ *
+ * Retorna:
+ * { ok:true, disciplina_nome, escola_nome, itens:[...] }
+ */
+router.get(
+  "/conteudos/admin/relatorio/pdf-data",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id     = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
+    const bimestre      = req.query.bimestre ? Number(req.query.bimestre) : null;
+    const serie         = req.query.serie    ? String(req.query.serie).trim() : null;
+    const ano_letivo    = Number(req.query.ano_letivo) || 2026;
+
+    if (!disciplina_id) {
+      return res.status(400).json({ ok: false, message: "disciplina_id é obrigatório." });
+    }
+
+    const db = req.db;
+
+    // Nome da disciplina e da escola
+    const [[disc]] = await db.query(
+      `SELECT nome FROM disciplinas WHERE id = ? LIMIT 1`, [disciplina_id]
+    );
+    const [[escola]] = await db.query(
+      `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escola_id]
+    );
+
+    // Filtros opcionais
+    const params = [escola_id, disciplina_id, ano_letivo];
+    let where = `
+      WHERE coe.escola_id    = ?
+        AND coe.disciplina_id = ?
+        AND coe.ano_letivo   = ?
+        AND coe.ativo        = 1
+        AND coe.texto IS NOT NULL
+        AND coe.texto != ''
+    `;
+    if (bimestre) {
+      where += " AND coe.bimestre = ?";
+      params.push(bimestre);
+    }
+    if (serie) {
+      where += " AND UPPER(coe.serie) = UPPER(?)";
+      params.push(serie);
+    }
+
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.texto AS objetivo_texto,
+         bt.nome  AS unidade_tematica,
+         sc.texto AS conteudo_seedf,
+         coe.status
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc ON sc.id = coe.seedf_conteudo_id
+       ${where}
+       ORDER BY coe.bimestre ASC, coe.serie ASC, bt.nome ASC, coe.id ASC
+       LIMIT 2000`,
+      params
+    );
+
+    return res.json({
+      ok:              true,
+      disciplina_nome: disc?.nome || "Disciplina",
+      escola_nome:     escola?.apelido || escola?.nome || "Escola",
+      ano_letivo,
+      bimestre:        bimestre || null,
+      serie:           serie || null,
+      itens:           rows || [],
+    });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/relatorio/pdf-data:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar dados do relatório." });
+  }
+});
+
+
+
+
+
+/**
+ * GET /api/conteudos/admin/plano/itens
+ *
+ * Query (obrigatório):
+ * - turma_id
+ * - disciplina_id
+ * - ano_letivo
+ * - bimestre
+ *
+ * Retorna:
+ * { ok:true, itens:[...] }
+ */
+router.get(
+  "/conteudos/admin/plano/itens",
+  autorizarPermissao("conteudos.visualizar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    // ✅ Novo contrato: plano é por SÉRIE (não por turma)
+    // Compatibilidade: se vier turma_id (legado), derivamos a série como antes.
+    const turma_id = req.query.turma_id ? Number(req.query.turma_id) : null;
+    const disciplina_id = Number(req.query.disciplina_id);
+    const ano_letivo = Number(req.query.ano_letivo);
+    const bimestre = Number(req.query.bimestre);
+    const serieParam = req.query.serie ? normSerie(req.query.serie) : "";
+
+    if (!disciplina_id || !ano_letivo || !bimestre) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, ano_letivo e bimestre são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    let serie = serieParam;
+
+    // Compatibilidade: deriva série a partir da turma_id (se necessário)
+    if (!serie && turma_id) {
+      const [rowsTurma] = await db.query(
+        `
+        SELECT serie
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+        LIMIT 1
+        `,
+        [turma_id, escola_id]
+      );
+
+      serie = String(rowsTurma?.[0]?.serie || "").trim();
+    }
+
+    if (!serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "serie é obrigatória (ou informe turma_id para derivação).",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        turma_id, -- turma de referência (para manter compatibilidade de schema)
+        disciplina_id,
+        serie,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        status,
+        created_at
+      FROM conteudos_plano_itens
+      WHERE escola_id = ?
+        AND serie = ?
+        AND disciplina_id = ?
+        AND ano_letivo = ?
+        AND bimestre = ?
+      ORDER BY id DESC
+      LIMIT 500
+      `,
+      [escola_id, serie, disciplina_id, ano_letivo, bimestre]
+    );
+
+    return res.json({ ok: true, itens: rows || [] });
+  } catch (err) {
+    console.error("Erro /conteudos/admin/plano/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar itens do plano." });
+  }
+});
+
+/**
+ * POST /api/conteudos/admin/plano/itens
+ *
+ * Body (obrigatório):
+ * - turma_id
+ * - disciplina_id
+ * - ano_letivo
+ * - bimestre
+ * - tema_texto_snapshot
+ * - conteudo_texto_snapshot
+ *
+ * Body (opcional):
+ * - bncc_unidade_tematica_id
+ * - seedf_conteudo_id
+ * - objetivo_texto (aceita null)
+ * - serie (fallback, caso não seja possível derivar pela turma)
+ */
+router.post(
+  "/conteudos/admin/plano/itens",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+
+    // ✅ Novo contrato: plano por SÉRIE
+    // Compatibilidade: aceita turma_id (legado) para derivar série.
+    const turma_id_body = req.body?.turma_id ? Number(req.body.turma_id) : null;
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const ano_letivo = Number(req.body?.ano_letivo);
+    const bimestre = Number(req.body?.bimestre);
+
+    const serieBody = req.body?.serie ? normSerie(req.body.serie) : "";
+
+    const bncc_unidade_tematica_id = req.body?.bncc_unidade_tematica_id
+      ? Number(req.body.bncc_unidade_tematica_id)
+      : null;
+
+    const seedf_conteudo_id = req.body?.seedf_conteudo_id
+      ? Number(req.body.seedf_conteudo_id)
+      : null;
+
+    const tema_texto_snapshot = String(req.body?.tema_texto_snapshot || "").trim();
+    const conteudo_texto_snapshot = String(req.body?.conteudo_texto_snapshot || "").trim();
+
+    // objetivo_texto pode ser null (opcional)
+    const objetivo_texto =
+      req.body?.objetivo_texto === null || typeof req.body?.objetivo_texto === "undefined"
+        ? null
+        : String(req.body.objetivo_texto).trim() || null;
+
+    if (!disciplina_id || !ano_letivo || !bimestre) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, ano_letivo e bimestre são obrigatórios.",
+      });
+    }
+
+    if (!tema_texto_snapshot || !conteudo_texto_snapshot) {
+      return res.status(400).json({
+        ok: false,
+        message: "tema_texto_snapshot e conteudo_texto_snapshot são obrigatórios.",
+      });
+    }
+
+    const db = req.db;
+
+    let serie = serieBody;
+
+    // Compatibilidade: deriva série pela turma (se necessário)
+    if (!serie && turma_id_body) {
+      const [rowsTurma] = await db.query(
+        `
+        SELECT serie
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+        LIMIT 1
+        `,
+        [turma_id_body, escola_id]
+      );
+
+      serie = String(rowsTurma?.[0]?.serie || "").trim();
+    }
+
+    if (!serie) {
+      return res.status(400).json({
+        ok: false,
+        message: "serie é obrigatória (ou informe turma_id para derivação).",
+      });
+    }
+
+    // ✅ Mantém compatibilidade do schema: escolhe uma turma de referência desta série
+    // Preferência: turma_id enviado (se bater com a mesma série); caso contrário, usa a primeira turma da série.
+    let turma_id = null;
+
+    if (turma_id_body) {
+      const [chk] = await db.query(
+        `
+        SELECT id
+        FROM turmas
+        WHERE id = ?
+          AND escola_id = ?
+          AND TRIM(serie) = TRIM(?)
+        LIMIT 1
+        `,
+        [turma_id_body, escola_id, serie]
+      );
+
+      if (chk?.length) {
+        turma_id = Number(turma_id_body);
+      }
+    }
+
+    if (!turma_id) {
+      const [pick] = await db.query(
+        `
+        SELECT id
+        FROM turmas
+        WHERE escola_id = ?
+          AND TRIM(serie) = TRIM(?)
+          AND (ano IS NULL OR ano = ?)
+        ORDER BY id ASC
+        LIMIT 1
+        `,
+        [escola_id, serie, ano_letivo]
+      );
+
+      turma_id = pick?.[0]?.id ? Number(pick[0].id) : null;
+    }
+
+    if (!turma_id) {
+      return res.status(400).json({
+        ok: false,
+        message: "Não foi possível localizar uma turma de referência para a série informada.",
+      });
+    }
+
+    const [ins] = await db.query(
+      `
+      INSERT INTO conteudos_plano_itens (
+        escola_id,
+        turma_id,
+        disciplina_id,
+        serie,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        escola_id,
+        turma_id,
+        disciplina_id,
+        serie || null,
+        ano_letivo,
+        bimestre,
+        bncc_unidade_tematica_id,
+        tema_texto_snapshot,
+        seedf_conteudo_id,
+        conteudo_texto_snapshot,
+        objetivo_texto,
+        "ATIVO",
+      ]
+    );
+
+    const item = {
+      id: ins?.insertId,
+      escola_id,
+      turma_id,
+      disciplina_id,
+      serie: serie || null,
+      ano_letivo,
+      bimestre,
+      bncc_unidade_tematica_id,
+      tema_texto_snapshot,
+      seedf_conteudo_id,
+      conteudo_texto_snapshot,
+      objetivo_texto,
+      status: "ATIVO",
+    };
+
+    return res.status(201).json({ ok: true, item });
+
+
+
+
+
+  } catch (err) {
+    console.error("Erro POST /conteudos/admin/plano/itens:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar item do plano." });
+  }
+});
+
+/**
+ * POST /api/conteudos/admin/planejamento/lote
+ *
+ * Objetivo (OPÇÃO A):
+ * - Recebe as linhas que o professor montou no FRONT (tabela)
+ * - Persiste em conteudos_objetivos_escola somente quando clicar no SALVAR (superior)
+ *
+ * Body (obrigatório):
+ * - disciplina_id
+ * - serie
+ * - bimestre
+ * - ano_letivo
+ * - itens: [{ bncc_unidade_tematica_id, seedf_conteudo_id, texto }]
+ *
+ * Observações:
+ * - "texto" é o objetivo (opcional): pode ser null/"".
+ * - professor_id e created_by virão do token (req.user.usuarioId)
+ * - escola_id vem do middleware verificarEscola (req.user.escola_id)
+ */
+router.post(
+  "/conteudos/admin/planejamento/lote",
+  autorizarPermissao("conteudos.criar"),
+  async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id = Number(req.user.escola_id);
+    const professor_id = Number(req.user.usuarioId); // token
+    const created_by = Number(req.user.usuarioId);   // token
+
+    const disciplina_id = Number(req.body?.disciplina_id);
+    const serie = normSerie(req.body?.serie);
+    const bimestre = Number(req.body?.bimestre);
+    const ano_letivo = Number(req.body?.ano_letivo);
+
+    const itens = Array.isArray(req.body?.itens) ? req.body.itens : [];
+
+    if (!professor_id || !created_by) {
+      return res.status(403).json({ ok: false, message: "Acesso negado: usuário não definido no token." });
+    }
+
+    if (!disciplina_id || !serie || !bimestre || !ano_letivo) {
+      return res.status(400).json({
+        ok: false,
+        message: "disciplina_id, serie, bimestre e ano_letivo são obrigatórios.",
+      });
+    }
+
+    if (!itens.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Nenhum item para salvar (itens vazio).",
+      });
+    }
+
+    const db = req.db;
+
+    await db.query("START TRANSACTION");
+
+    let upserts = 0;
+
+    for (const it of itens) {
+      const bncc_unidade_tematica_id = Number(it?.bncc_unidade_tematica_id);
+      const seedf_conteudo_id = Number(it?.seedf_conteudo_id);
+
+      // texto (objetivo) é opcional
+      const texto =
+        it?.texto === null || typeof it?.texto === "undefined"
+          ? null
+          : String(it.texto).trim() || null;
+
+      if (!bncc_unidade_tematica_id || !seedf_conteudo_id) {
+        await db.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          message: "Cada item deve conter bncc_unidade_tematica_id e seedf_conteudo_id.",
+        });
+      }
+
+      const [r] = await db.query(
+        `
+        INSERT INTO conteudos_objetivos_escola (
+                      escola_id,
+                      professor_id,
+                     created_by,
+                     disciplina_id,
+                     serie,
+                     bimestre,
+                    ano_letivo,
+                     bncc_unidade_tematica_id,
+                     seedf_conteudo_id,
+                    texto,
+                                                  ativo,
+                                                 status,
+                                                 edicao_liberada
+                                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0)
+                                   ON DUPLICATE KEY UPDATE
+                                         texto = VALUES(texto),
+                                         ativo = 1,
+                                         status = 1,
+                                         edicao_liberada = 0,
+                                        updated_at = CURRENT_TIMESTAMP
+        `,
+        [
+          escola_id,
+          professor_id,
+          created_by,
+          disciplina_id,
+          serie,
+          bimestre,
+          ano_letivo,
+          bncc_unidade_tematica_id,
+          seedf_conteudo_id,
+          texto,
+        ]
+      );
+
+      // mysql2: affectedRows = 1 (insert) ou 2 (update)
+      if (r?.affectedRows) upserts += 1;
+    }
+
+    await db.query("COMMIT");
+
+    return res.status(200).json({
+      ok: true,
+      message: "Planejamento salvo com sucesso.",
+      total_recebido: itens.length,
+      total_processado: upserts,
+    });
+  } catch (err) {
+    try {
+      req?.db?.query?.("ROLLBACK");
+    } catch (_) {}
+
+    console.error("Erro POST /conteudos/admin/planejamento/lote:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar planejamento (lote)." });
+  }
+});
+
+/**
+ * =========================================================
+ * GET /api/conteudos/professor/meus-conteudos
+ *
+ * Endpoint para PROFESSORES consultarem os conteúdos programáticos
+ * das suas próprias disciplinas (sem permissão de admin).
+ *
+ * Já passa por autenticarToken + verificarEscola (via server.js).
+ * NÃO usa autorizarPermissao — qualquer professor autenticado pode acessar.
+ *
+ * Query (obrigatório):
+ * - disciplina_id
+ *
+ * Query (opcional):
+ * - bimestre (1|2|3|4)
+ * - serie
+ * - ano_letivo (default: 2026)
+ *
+ * Validação de segurança:
+ * - Confirma que a disciplina_id pertence ao professor logado via CPF + modulação.
+ * - Impede acesso a disciplinas de outros professores.
+ *
+ * Retorna: { ok, disciplina_nome, escola_nome, itens: [...] }
+ * =========================================================
+ */
+router.get("/conteudos/professor/meus-conteudos", async (req, res) => {
+  try {
+    if (!assertAuthEscola(req, res)) return;
+
+    const escola_id     = Number(req.user.escola_id);
+    const disciplina_id = Number(req.query.disciplina_id);
+    const bimestre      = req.query.bimestre ? Number(req.query.bimestre) : null;
+    const serie         = req.query.serie    ? String(req.query.serie).trim() : null;
+    const ano_letivo    = Number(req.query.ano_letivo) || 2026;
+
+    if (!disciplina_id) {
+      return res.status(400).json({ ok: false, message: "disciplina_id é obrigatório." });
+    }
+
+    const db = req.db;
+
+    // ── Resolve CPF do professor logado ──────────────────────────────────────
+    let cpf = req.user?.cpf;
+    const userId =
+      req.user?.id         ||
+      req.user?.usuario_id ||
+      req.user?.userId     ||
+      req.user?.user_id    ||
+      req.user?.id_usuario ||
+      req.user?.sub;
+
+    if (!cpf && userId) {
+      const [urows] = await db.query(
+        "SELECT cpf FROM usuarios WHERE id = ? LIMIT 1",
+        [userId]
+      );
+      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    }
+
+    if (!cpf) {
+      return res.status(403).json({ ok: false, message: "CPF do professor não identificado no token." });
+    }
+
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+
+    // ── Valida que a disciplina_id pertence ao professor via modulação ───────
+    // (professor só pode consultar disciplinas que ele leciona)
+    const [modRows] = await db.query(
+      `SELECT COUNT(*) AS cnt
+       FROM modulacao m
+       JOIN professores p  ON p.id = m.professor_id
+       JOIN turmas t        ON t.id = m.turma_id
+       WHERE p.escola_id = ?
+         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND m.disciplina_id = ?
+         AND t.escola_id = ?
+       LIMIT 1`,
+      [escola_id, cleanCpf, disciplina_id, escola_id]
+    );
+
+    if (!modRows?.[0]?.cnt || Number(modRows[0].cnt) === 0) {
+      return res.status(403).json({
+        ok: false,
+        message: "Você não tem permissão para acessar conteúdos desta disciplina.",
+      });
+    }
+
+    // ── Nome da disciplina e da escola ───────────────────────────────────────
+    const [[disc]] = await db.query(
+      `SELECT nome FROM disciplinas WHERE id = ? LIMIT 1`,
+      [disciplina_id]
+    );
+    const [[escola]] = await db.query(
+      `SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1`,
+      [escola_id]
+    );
+    const discNome = disc?.nome || "";
+
+    // ── Query principal dos conteúdos ─────────────────────────────────────────
+    // Busca por disciplina_id E por nome da disciplina (fallback de mismatch de IDs)
+    const params = [escola_id, disciplina_id, escola_id, discNome, ano_letivo];
+    let where = `
+      WHERE coe.escola_id    = ?
+        AND (
+          coe.disciplina_id = ?
+          OR coe.disciplina_id IN (
+            SELECT id FROM disciplinas
+            WHERE escola_id = ? AND LOWER(nome) = LOWER(?)
+          )
+        )
+        AND coe.ano_letivo   = ?
+        AND coe.ativo        = 1
+        AND coe.texto IS NOT NULL
+        AND coe.texto != ''
+    `;
+
+    if (bimestre) {
+      where += " AND coe.bimestre = ?";
+      params.push(bimestre);
+    }
+    if (serie) {
+      where += " AND UPPER(coe.serie) = UPPER(?)";
+      params.push(serie);
+    }
+
+    const [rows] = await db.query(
+      `SELECT
+         coe.id,
+         coe.serie,
+         coe.bimestre,
+         coe.ano_letivo,
+         coe.texto       AS objetivo_texto,
+         bt.nome         AS unidade_tematica,
+         sc.texto        AS conteudo_seedf,
+         coe.status
+       FROM conteudos_objetivos_escola coe
+       LEFT JOIN bncc_unidades_tematicas bt ON bt.id = coe.bncc_unidade_tematica_id
+       LEFT JOIN seedf_conteudos sc         ON sc.id = coe.seedf_conteudo_id
+       ${where}
+       ORDER BY coe.bimestre ASC, coe.serie ASC, bt.nome ASC, coe.id ASC
+       LIMIT 2000`,
+      params
+    );
+
+    console.log(`[professor/meus-conteudos] escola=${escola_id} disc=${disciplina_id}(${discNome}) bim=${bimestre} => ${rows?.length ?? 0} itens`);
+
+    return res.json({
+      ok:              true,
+      disciplina_nome: discNome || "Disciplina",
+      escola_nome:     escola?.apelido || escola?.nome || "Escola",
+      ano_letivo,
+      bimestre:        bimestre || null,
+      serie:           serie || null,
+      itens:           rows || [],
+    });
+
+  } catch (err) {
+    console.error("Erro GET /conteudos/professor/meus-conteudos:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar conteúdos." });
+  }
+});
+
+export default router;

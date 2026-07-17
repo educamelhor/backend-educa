@@ -1,0 +1,2 @@
+ALTER TABLE ocorrencias_disciplinares
+ADD COLUMN data_comparecimento_responsavel DATETIME NULL AFTER convocar_responsavel;

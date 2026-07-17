@@ -1,0 +1,74 @@
+{
+  "data_execucao": "2026-04-09T21:24:20.499952",
+  "status": "sucesso",
+  "etapa_scraping": {
+    "total_turmas": 1,
+    "pdfs_baixados": 1,
+    "pdfs_falha": 0,
+    "detalhes": [
+      {
+        "turma_educadf": "6º Ano - A",
+        "turma_educa": "6º ANO A",
+        "pdf_path": "C:\\projetos\\sistema_educacional\\apps\\educa-backend\\educa-agent\\downloads\\6º ANO A.pdf",
+        "status": "pdf_baixado",
+        "error": null
+      }
+    ]
+  },
+  "etapa_importacao": {
+    "total_turmas": 1,
+    "sucesso": 1,
+    "erro": 0,
+    "skip": 0,
+    "total_inseridos": 0,
+    "total_reativados": 0,
+    "total_inativados": 0,
+    "total_localizados": 25,
+    "detalhes": [
+      {
+        "turma": "6º ANO A",
+        "status": "sucesso",
+        "localizados": 25,
+        "inseridos": 0,
+        "reativados": 0,
+        "jaExistiam": 25,
+        "inativados": 0,
+        "error": null,
+        "pendentesInativacao": 0,
+        "pendentesInativacaoLista": []
+      }
+    ]
+  },
+  "resumo": {
+    "pdfs_baixados": 1,
+    "pdfs_falha": 0,
+    "importados": 1,
+    "erros_importacao": 0,
+    "alunos_localizados": 25,
+    "alunos_inseridos": 0,
+    "alunos_reativados": 0,
+    "alunos_inativados": 0,
+    "duracao_s": 93.5,
+    "turmas_vazias": 0,
+    "turmas_ok": 1,
+    "turmas_total": 1,
+    "total_alunos_verificados": 1090
+  },
+  "duracao_total_s": 93.5,
+  "etapa_verificacao": {
+    "status": "ok",
+    "turmas_total": 1,
+    "turmas_ok": 1,
+    "turmas_vazias": [],
+    "turmas_erro": [],
+    "total_alunos_verificados": 1090,
+    "detalhes": [
+      {
+        "turma": "6º ANO A",
+        "turma_id": 202,
+        "total_alunos": 1090,
+        "status": "ok"
+      }
+    ]
+  }
+}
