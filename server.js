@@ -197,8 +197,8 @@ const FF_QUESTOES = ff("FF_QUESTOES", true);             // ✅ pronto para prod
 // ✅ Cargas Horárias é CADASTRO BÁSICO (core operacional), independente do solver Urania
 const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 
-// ⚠️ Horários/Grade (Urania/solver) fica separado e pode continuar OFF em produção
-const FF_HORARIOS = ff("FF_HORARIOS", DEFAULT_ON_DEV);
+// ✅ Horários/Grade - ativo em produção (configuracao-grade, disponibilidade, diagnóstico)
+const FF_HORARIOS = ff("FF_HORARIOS", true);
 
 // IMPORTANTE: appPaisRouter DEVE ser atribuído incondicionalmente aqui
 // (antes do middleware na ~linha 405). O bloco if abaixo só valida ENVs.
