@@ -283,10 +283,34 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       payload.config_pedagogica.regras = payload.config_pedagogica.regras || {};
     }
 
-    // 4) Executa o solver mock (greedy)
+    // 4) Executa o solver mock (greedy) com Multi-Start (Monte Carlo)
     if (!isProd()) console.log("[grade/run-mock] (4) runGreedySolver: INÍCIO", "traceId=", traceId);
 
-    const result = runGreedySolver(payload);
+    let bestResult = null;
+    let maxAulas = -1;
+    const TOTAL_RUNS = 25; // Número de tentativas aleatórias rápidas
+
+    for (let i = 0; i < TOTAL_RUNS; i++) {
+      // Primeira run é determinística, as outras têm random jitter
+      const isRandomized = i > 0;
+      const result = runGreedySolver(payload, isRandomized);
+      
+      const alocadas = result.metrics.aulas_alocadas || 0;
+      const demanda = result.metrics.aulas_demanda || 1;
+      
+      if (alocadas > maxAulas) {
+        maxAulas = alocadas;
+        bestResult = result;
+      }
+      
+      // Se alcançou 100% perfeito, pode parar mais cedo
+      if (alocadas === demanda) {
+        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${i}!`);
+        break;
+      }
+    }
+
+    const result = bestResult;
 
     if (!isProd()) {
       console.log("[grade/run-mock] (4) runGreedySolver: OK", "traceId=", traceId);

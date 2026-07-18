@@ -386,7 +386,7 @@ function normalizeDemandas(payload) {
     );
 }
 
-function expandDemandasToLessons(demandas) {
+function expandDemandasToLessons(demandas, randomize = false) {
   const lessons = [];
   for (const d of demandas) {
     for (let i = 0; i < d.aulas_semanais; i++) {
@@ -394,13 +394,14 @@ function expandDemandasToLessons(demandas) {
         turma_id: d.turma_id,
         disciplina_id: d.disciplina_id,
         professor_id: d.professor_id,
-        // índice local ajuda a manter determinismo
         seq: i + 1,
+        // Random jitter to break ties if randomize is true
+        __jitter: randomize ? Math.random() : 0,
       });
     }
   }
 
-  // Ordena estável: primeiro maior carga (para garantir cobertura), depois por ids
+  // Ordena: primeiro maior carga (para garantir cobertura)
   const countKey = new Map();
   for (const d of demandas) {
     const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
@@ -412,6 +413,11 @@ function expandDemandasToLessons(demandas) {
     .sort((a, b) => {
       // maior peso primeiro
       if (b.__peso !== a.__peso) return b.__peso - a.__peso;
+      
+      if (randomize) {
+         if (a.__jitter !== b.__jitter) return a.__jitter - b.__jitter;
+      }
+      
       // depois, determinístico
       if (a.turma_id !== b.turma_id) return a.turma_id - b.turma_id;
       if (a.disciplina_id !== b.disciplina_id) return a.disciplina_id - b.disciplina_id;
@@ -419,7 +425,7 @@ function expandDemandasToLessons(demandas) {
       if (a.seq !== b.seq) return a.seq - b.seq;
       return a.__idx - b.__idx;
     })
-    .map(({ __idx, __peso, ...rest }) => rest);
+    .map(({ __idx, __peso, __jitter, ...rest }) => rest);
 }
 
 // --------------------------------------------------------------------------------------
@@ -438,7 +444,7 @@ function expandDemandasToLessons(demandas) {
  *   metrics: object
  * }}
  */
-export function runGreedySolver(payload) {
+export function runGreedySolver(payload, randomize = false) {
   const daysCount = 5;
 
   // periodos_por_dia pode vir no payload; default 6 (fundamental II matutino)
@@ -451,7 +457,7 @@ export function runGreedySolver(payload) {
 
   const turmaIds = normalizeTurmaIds(payload);
   const demandasNorm = normalizeDemandas(payload);
-  const lessons = expandDemandasToLessons(demandasNorm);
+  const lessons = expandDemandasToLessons(demandasNorm, randomize);
 
   const professoresIds = uniq(lessons.map((l) => l.professor_id));
 
