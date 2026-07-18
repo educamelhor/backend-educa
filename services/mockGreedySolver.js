@@ -387,79 +387,39 @@ function normalizeDemandas(payload) {
 }
 
 function expandDemandasToLessons(demandas) {
-  // ──────────────────────────────────────────────────────────────────────────
-  // ESTRATÉGIA ROUND-ROBIN INTERLEAVED
-  //
-  // O algoritmo greedy simples (processar todas as aulas do prof A antes do B)
-  // falha quando múltiplos professores competem pelos slots da mesma turma.
-  // Com turmas em 100% de capacidade (30 aulas/30 slots), qualquer desvio
-  // causa COLISAO_PROFESSOR.
-  //
-  // Solução: em vez de [A1,A2,A3,B1,B2,B3], usar [A1,B1,A2,B2,A3,B3]
-  // → cada professor avança UMA aula por vez, garantindo acesso justo.
-  // → professores mais carregados (30/30) têm prioridade dentro de cada rodada.
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // 1) Carga total por professor
-  const profTotalLoad = new Map();
+  const lessons = [];
   for (const d of demandas) {
-    profTotalLoad.set(d.professor_id, (profTotalLoad.get(d.professor_id) || 0) + d.aulas_semanais);
-  }
-
-  // 2) Agrupa aulas por professor, ordenando turmas com MAIOR carga por turma primeiro
-  //    (dentro do mesmo professor, priorizamos as turmas com mais aulas a colocar)
-  const byProf = new Map();
-  for (const d of demandas) {
-    if (!byProf.has(d.professor_id)) byProf.set(d.professor_id, []);
-    // Expande: cada (turma|disc) vira N entradas conforme carga
     for (let i = 0; i < d.aulas_semanais; i++) {
-      byProf.get(d.professor_id).push({
-        turma_id:     d.turma_id,
+      lessons.push({
+        turma_id: d.turma_id,
         disciplina_id: d.disciplina_id,
-        professor_id:  d.professor_id,
+        professor_id: d.professor_id,
+        // índice local ajuda a manter determinismo
         seq: i + 1,
-        __cargaTurma: d.aulas_semanais,
       });
     }
   }
 
-  // 3) Dentro de cada professor: ordena turmas com maior carga primeiro (mais difíceis primeiro)
-  for (const [, lista] of byProf) {
-    lista.sort((a, b) => {
-      if (b.__cargaTurma !== a.__cargaTurma) return b.__cargaTurma - a.__cargaTurma;
+  // Ordena estável: primeiro maior carga (para garantir cobertura), depois por ids
+  const countKey = new Map();
+  for (const d of demandas) {
+    const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
+    countKey.set(k, d.aulas_semanais);
+  }
+
+  return lessons
+    .map((l, idx) => ({ ...l, __idx: idx, __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0 }))
+    .sort((a, b) => {
+      // maior peso primeiro
+      if (b.__peso !== a.__peso) return b.__peso - a.__peso;
+      // depois, determinístico
       if (a.turma_id !== b.turma_id) return a.turma_id - b.turma_id;
-      return a.seq - b.seq;
-    });
-  }
-
-  // 4) Ordem dos professores: mais sobrecarregados primeiro (prioridade de acesso)
-  const profOrder = Array.from(byProf.keys()).sort((a, b) => {
-    const la = profTotalLoad.get(a) || 0;
-    const lb = profTotalLoad.get(b) || 0;
-    if (lb !== la) return lb - la;
-    return a - b; // determinístico por id
-  });
-
-  // 5) Intercala em round-robin: uma aula por professor por rodada
-  //    Rodada 1: [A.aula1, B.aula1, C.aula1, ...]
-  //    Rodada 2: [A.aula2, B.aula2, C.aula2, ...]  ← professores com mais aulas continuam
-  //    Etc.
-  const interleaved = [];
-  let rodada = 0;
-  let hayMore = true;
-  while (hayMore) {
-    hayMore = false;
-    for (const profId of profOrder) {
-      const lista = byProf.get(profId);
-      if (rodada < lista.length) {
-        interleaved.push(lista[rodada]);
-        hayMore = true;
-      }
-    }
-    rodada++;
-  }
-
-  return interleaved.map(({ __cargaTurma, ...rest }) => rest);
+      if (a.disciplina_id !== b.disciplina_id) return a.disciplina_id - b.disciplina_id;
+      if (a.professor_id !== b.professor_id) return a.professor_id - b.professor_id;
+      if (a.seq !== b.seq) return a.seq - b.seq;
+      return a.__idx - b.__idx;
+    })
+    .map(({ __idx, __peso, ...rest }) => rest);
 }
 
 // --------------------------------------------------------------------------------------
@@ -618,20 +578,118 @@ export function runGreedySolver(payload) {
 
       alocadas++;
     } else {
-      // Registra diagnóstico da aula não alocada (PASSO 2.1)
-      const motivo = inferirMotivoNaoAlocacao({
-        turmaGrade,
-        profGrade,
-        professorId,
-      });
+      // ─────────────────────────────────────────────────────────────
+      // PASSO DE REPAIR / SWAP LOCAL (Backtracking raso)
+      // Tenta chutar uma aula existente que está num slot onde este
+      // professor está livre, movendo a aula chutada para outro buraco.
+      // ─────────────────────────────────────────────────────────────
+      let swapped = false;
 
-      diagnosticoNaoAlocadas.push({
-        turma_id: turmaId,
-        disciplina_id: disciplinaId,
-        professor_id: professorId,
-        motivo,
-      });
-      diagInc(motivo);
+      // 1) Onde a Turma ESTÁ livre, mas o Professor atual NÃO ESTÁ?
+      //    (Ou seja, professor ocupado com Turma B)
+      for (let d = 1; d <= daysCount; d++) {
+        for (let p = 1; p <= periodosPorDia; p++) {
+          if (!turmaGrade?.[d]?.[p]) { // Turma atual livre
+            const cellProf = profGrade?.[d]?.[p]; // Prof atual ocupado com Turma B
+            if (cellProf) {
+              const turmaB = cellProf.turma_id;
+              const discB = cellProf.disciplina_id;
+              // Será que turmaB tem um slot livre onde o professor atual também tem?
+              for (let d2 = 1; d2 <= daysCount; d2++) {
+                for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+                  if (!gradePorTurma[turmaB]?.[d2]?.[p2] && 
+                      !gradePorProfessor[professorId]?.[d2]?.[p2] &&
+                      professorPode(dispoIdx, professorId, d2, p2)) {
+                    
+                    // ACHAMOS! Swap!
+                    // a) Limpa posicao original (opcional, sobrescrita abaixo)
+                    // b) Move turmaB para d2, p2
+                    ensurePath(gradePorTurma, turmaB, d2);
+                    ensurePath(gradePorProfessor, professorId, d2);
+                    gradePorTurma[turmaB][d2][p2] = { disciplina_id: discB, professor_id: professorId };
+                    gradePorProfessor[professorId][d2][p2] = { turma_id: turmaB, disciplina_id: discB };
+
+                    // c) Põe a aula original no d, p
+                    ensurePath(gradePorTurma, turmaId, d);
+                    ensurePath(gradePorProfessor, professorId, d);
+                    gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
+                    gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
+
+                    swapped = true;
+                    alocadas++;
+                    break;
+                  }
+                }
+                if (swapped) break;
+              }
+            }
+          }
+          if (swapped) break;
+        }
+        if (swapped) break;
+      }
+
+      if (!swapped) {
+        // 2) Onde o Professor ESTÁ livre, mas a Turma NÃO ESTÁ?
+        //    (Ou seja, Turma ocupada com Professor B)
+        for (let d = 1; d <= daysCount; d++) {
+          for (let p = 1; p <= periodosPorDia; p++) {
+            if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) { // Prof atual livre
+              const cellTurma = turmaGrade?.[d]?.[p]; // Turma ocupada com Prof B
+              if (cellTurma) {
+                const profB = cellTurma.professor_id;
+                const discB = cellTurma.disciplina_id;
+                // Será que profB tem um slot livre onde a Turma atual também tem?
+                for (let d2 = 1; d2 <= daysCount; d2++) {
+                  for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+                    if (!gradePorProfessor[profB]?.[d2]?.[p2] &&
+                        !gradePorTurma[turmaId]?.[d2]?.[p2] &&
+                        professorPode(dispoIdx, profB, d2, p2)) {
+                      
+                      // ACHAMOS! Swap!
+                      // a) Move profB para d2, p2
+                      ensurePath(gradePorTurma, turmaId, d2);
+                      ensurePath(gradePorProfessor, profB, d2);
+                      gradePorTurma[turmaId][d2][p2] = { disciplina_id: discB, professor_id: profB };
+                      gradePorProfessor[profB][d2][p2] = { turma_id: turmaId, disciplina_id: discB };
+
+                      // b) Põe a aula original no d, p
+                      ensurePath(gradePorTurma, turmaId, d);
+                      ensurePath(gradePorProfessor, professorId, d);
+                      gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
+                      gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
+
+                      swapped = true;
+                      alocadas++;
+                      break;
+                    }
+                  }
+                  if (swapped) break;
+                }
+              }
+            }
+            if (swapped) break;
+          }
+          if (swapped) break;
+        }
+      }
+
+      if (!swapped) {
+        // Registra diagnóstico da aula não alocada (PASSO 2.1)
+        const motivo = inferirMotivoNaoAlocacao({
+          turmaGrade,
+          profGrade,
+          professorId,
+        });
+
+        diagnosticoNaoAlocadas.push({
+          turma_id: turmaId,
+          disciplina_id: disciplinaId,
+          professor_id: professorId,
+          motivo,
+        });
+        diagInc(motivo);
+      }
     }
   }
 
