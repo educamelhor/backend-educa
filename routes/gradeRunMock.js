@@ -288,12 +288,19 @@ router.post("/run-mock", requireEscola, async (req, res) => {
 
     let bestResult = null;
     let maxAulas = -1;
-    const TOTAL_RUNS = 25; // Número de tentativas aleatórias rápidas
+    const TOTAL_RUNS = 100; // Número de tentativas aleatórias rápidas (Monte Carlo turbinado)
 
     for (let i = 0; i < TOTAL_RUNS; i++) {
-      // Primeira run é determinística, as outras têm random jitter
-      const isRandomized = i > 0;
-      const result = runGreedySolver(payload, isRandomized);
+      // Determina estratégia de ordenação e jitter
+      let strategy = "default";
+      let isRandomized = i > 0;
+      
+      if (i >= 20 && i < 40) strategy = "prof_load_desc";
+      else if (i >= 40 && i < 60) strategy = "reverse_weight";
+      else if (i >= 60 && i < 80) strategy = "random";
+      // 80-100 usa "default" com random novamente
+
+      const result = runGreedySolver(payload, isRandomized, strategy);
       
       const alocadas = result.metrics.aulas_alocadas || 0;
       const demanda = result.metrics.aulas_demanda || 1;
@@ -305,7 +312,7 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       
       // Se alcançou 100% perfeito, pode parar mais cedo
       if (alocadas === demanda) {
-        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${i}!`);
+        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${i} com estratégia '${strategy}'!`);
         break;
       }
     }
