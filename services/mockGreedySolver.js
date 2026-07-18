@@ -394,32 +394,48 @@ function expandDemandasToLessons(demandas) {
         turma_id: d.turma_id,
         disciplina_id: d.disciplina_id,
         professor_id: d.professor_id,
-        // índice local ajuda a manter determinismo
         seq: i + 1,
       });
     }
   }
 
-  // Ordena estável: primeiro maior carga (para garantir cobertura), depois por ids
+  // Pré-computa: carga individual por (turma|disc|prof)
   const countKey = new Map();
   for (const d of demandas) {
     const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
     countKey.set(k, d.aulas_semanais);
   }
 
+  // *** CORREÇÃO CRÍTICA: carga TOTAL do professor por semana ***
+  // Professores com mais aulas no total são mais "apertados" (menos slack).
+  // Eles devem ser alocados PRIMEIRO para garantir que encontrem slots.
+  // Ex.: professor com 30/30 slots precisa de prioridade máxima.
+  const profTotalLoad = new Map();
+  for (const d of demandas) {
+    const prev = profTotalLoad.get(d.professor_id) || 0;
+    profTotalLoad.set(d.professor_id, prev + d.aulas_semanais);
+  }
+
   return lessons
-    .map((l, idx) => ({ ...l, __idx: idx, __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0 }))
+    .map((l, idx) => ({
+      ...l,
+      __idx: idx,
+      __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0,
+      __profLoad: profTotalLoad.get(l.professor_id) || 0,
+    }))
     .sort((a, b) => {
-      // maior peso primeiro
+      // 1º: professor mais sobrecarregado primeiro (carga total DESC)
+      if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
+      // 2º: dentro do mesmo professor, maior carga por turma primeiro
       if (b.__peso !== a.__peso) return b.__peso - a.__peso;
-      // depois, determinístico
+      // 3º: determinístico
       if (a.turma_id !== b.turma_id) return a.turma_id - b.turma_id;
       if (a.disciplina_id !== b.disciplina_id) return a.disciplina_id - b.disciplina_id;
       if (a.professor_id !== b.professor_id) return a.professor_id - b.professor_id;
       if (a.seq !== b.seq) return a.seq - b.seq;
       return a.__idx - b.__idx;
     })
-    .map(({ __idx, __peso, ...rest }) => rest);
+    .map(({ __idx, __peso, __profLoad, ...rest }) => rest);
 }
 
 // --------------------------------------------------------------------------------------

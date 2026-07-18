@@ -293,9 +293,39 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       console.log("[grade/run-mock] resultPreview=", safePreview(result));
     }
 
+    // 5) Analisa utilização dos professores para avisos na UI
+    const periodosPorDia = 6;
+    const diasSemana = 5;
+    const maxSlotsProf = periodosPorDia * diasSemana;
+    const dem = Array.isArray(payload.demanda) ? payload.demanda : [];
+    const mod = Array.isArray(payload.modulacao) ? payload.modulacao : [];
+    const profIndex = new Map();
+    for (const m of mod) {
+      const k = `${m.turma_id}|${m.disciplina_id}`;
+      if (!profIndex.has(k)) profIndex.set(k, { id: m.professor_id, nome: m.professor_nome });
+    }
+    const profCarga = new Map();
+    for (const d of dem) {
+      const prof = profIndex.get(`${d.turma_id}|${d.disciplina_id}`);
+      if (!prof) continue;
+      const prev = profCarga.get(prof.id) || { id: prof.id, nome: prof.nome, aulas: 0 };
+      prev.aulas += Number(d.carga || 0);
+      profCarga.set(prof.id, prev);
+    }
+    const warnings_payload = Array.from(profCarga.values())
+      .filter(p => p.aulas >= maxSlotsProf)
+      .map(p => ({
+        professor_id: p.id,
+        professor_nome: p.nome,
+        aulas_demanda: p.aulas,
+        slots_disponiveis: maxSlotsProf,
+        utilization_pct: Math.round((p.aulas / maxSlotsProf) * 100),
+      }));
+
     return res.json({
       ok: true,
-      traceId, // útil para correlacionar frontend ↔ backend
+      traceId,
+      warnings_payload,
       payload_summary: {
         escola_id: payload.escola_id || req.escolaId,
         turno: payload.turno || turnoNorm,
