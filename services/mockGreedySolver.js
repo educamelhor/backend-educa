@@ -387,55 +387,79 @@ function normalizeDemandas(payload) {
 }
 
 function expandDemandasToLessons(demandas) {
-  const lessons = [];
+  // ──────────────────────────────────────────────────────────────────────────
+  // ESTRATÉGIA ROUND-ROBIN INTERLEAVED
+  //
+  // O algoritmo greedy simples (processar todas as aulas do prof A antes do B)
+  // falha quando múltiplos professores competem pelos slots da mesma turma.
+  // Com turmas em 100% de capacidade (30 aulas/30 slots), qualquer desvio
+  // causa COLISAO_PROFESSOR.
+  //
+  // Solução: em vez de [A1,A2,A3,B1,B2,B3], usar [A1,B1,A2,B2,A3,B3]
+  // → cada professor avança UMA aula por vez, garantindo acesso justo.
+  // → professores mais carregados (30/30) têm prioridade dentro de cada rodada.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // 1) Carga total por professor
+  const profTotalLoad = new Map();
   for (const d of demandas) {
+    profTotalLoad.set(d.professor_id, (profTotalLoad.get(d.professor_id) || 0) + d.aulas_semanais);
+  }
+
+  // 2) Agrupa aulas por professor, ordenando turmas com MAIOR carga por turma primeiro
+  //    (dentro do mesmo professor, priorizamos as turmas com mais aulas a colocar)
+  const byProf = new Map();
+  for (const d of demandas) {
+    if (!byProf.has(d.professor_id)) byProf.set(d.professor_id, []);
+    // Expande: cada (turma|disc) vira N entradas conforme carga
     for (let i = 0; i < d.aulas_semanais; i++) {
-      lessons.push({
-        turma_id: d.turma_id,
+      byProf.get(d.professor_id).push({
+        turma_id:     d.turma_id,
         disciplina_id: d.disciplina_id,
-        professor_id: d.professor_id,
+        professor_id:  d.professor_id,
         seq: i + 1,
+        __cargaTurma: d.aulas_semanais,
       });
     }
   }
 
-  // Pré-computa: carga individual por (turma|disc|prof)
-  const countKey = new Map();
-  for (const d of demandas) {
-    const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
-    countKey.set(k, d.aulas_semanais);
-  }
-
-  // *** CORREÇÃO CRÍTICA: carga TOTAL do professor por semana ***
-  // Professores com mais aulas no total são mais "apertados" (menos slack).
-  // Eles devem ser alocados PRIMEIRO para garantir que encontrem slots.
-  // Ex.: professor com 30/30 slots precisa de prioridade máxima.
-  const profTotalLoad = new Map();
-  for (const d of demandas) {
-    const prev = profTotalLoad.get(d.professor_id) || 0;
-    profTotalLoad.set(d.professor_id, prev + d.aulas_semanais);
-  }
-
-  return lessons
-    .map((l, idx) => ({
-      ...l,
-      __idx: idx,
-      __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0,
-      __profLoad: profTotalLoad.get(l.professor_id) || 0,
-    }))
-    .sort((a, b) => {
-      // 1º: professor mais sobrecarregado primeiro (carga total DESC)
-      if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
-      // 2º: dentro do mesmo professor, maior carga por turma primeiro
-      if (b.__peso !== a.__peso) return b.__peso - a.__peso;
-      // 3º: determinístico
+  // 3) Dentro de cada professor: ordena turmas com maior carga primeiro (mais difíceis primeiro)
+  for (const [, lista] of byProf) {
+    lista.sort((a, b) => {
+      if (b.__cargaTurma !== a.__cargaTurma) return b.__cargaTurma - a.__cargaTurma;
       if (a.turma_id !== b.turma_id) return a.turma_id - b.turma_id;
-      if (a.disciplina_id !== b.disciplina_id) return a.disciplina_id - b.disciplina_id;
-      if (a.professor_id !== b.professor_id) return a.professor_id - b.professor_id;
-      if (a.seq !== b.seq) return a.seq - b.seq;
-      return a.__idx - b.__idx;
-    })
-    .map(({ __idx, __peso, __profLoad, ...rest }) => rest);
+      return a.seq - b.seq;
+    });
+  }
+
+  // 4) Ordem dos professores: mais sobrecarregados primeiro (prioridade de acesso)
+  const profOrder = Array.from(byProf.keys()).sort((a, b) => {
+    const la = profTotalLoad.get(a) || 0;
+    const lb = profTotalLoad.get(b) || 0;
+    if (lb !== la) return lb - la;
+    return a - b; // determinístico por id
+  });
+
+  // 5) Intercala em round-robin: uma aula por professor por rodada
+  //    Rodada 1: [A.aula1, B.aula1, C.aula1, ...]
+  //    Rodada 2: [A.aula2, B.aula2, C.aula2, ...]  ← professores com mais aulas continuam
+  //    Etc.
+  const interleaved = [];
+  let rodada = 0;
+  let hayMore = true;
+  while (hayMore) {
+    hayMore = false;
+    for (const profId of profOrder) {
+      const lista = byProf.get(profId);
+      if (rodada < lista.length) {
+        interleaved.push(lista[rodada]);
+        hayMore = true;
+      }
+    }
+    rodada++;
+  }
+
+  return interleaved.map(({ __cargaTurma, ...rest }) => rest);
 }
 
 // --------------------------------------------------------------------------------------
