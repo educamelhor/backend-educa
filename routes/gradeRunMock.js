@@ -288,17 +288,23 @@ router.post("/run-mock", requireEscola, async (req, res) => {
 
     let bestResult = null;
     let maxAulas = -1;
-    const TOTAL_RUNS = 100; // Número de tentativas aleatórias rápidas (Monte Carlo turbinado)
+    
+    // O usuário permitiu que leve mais tempo para atingir 100%. 
+    // Vamos rodar o Monte Carlo intensamente por até 15 segundos ou até achar 100%.
+    const MAX_TIME_MS = 15000; 
+    const startTime = Date.now();
+    let iter = 0;
+    let perfectFound = false;
 
-    for (let i = 0; i < TOTAL_RUNS; i++) {
-      // Determina estratégia de ordenação e jitter
+    while (Date.now() - startTime < MAX_TIME_MS) {
+      // Determina estratégia de ordenação e jitter ciclicamente
       let strategy = "default";
-      let isRandomized = i > 0;
+      let isRandomized = iter > 0;
       
-      if (i >= 20 && i < 40) strategy = "prof_load_desc";
-      else if (i >= 40 && i < 60) strategy = "reverse_weight";
-      else if (i >= 60 && i < 80) strategy = "random";
-      // 80-100 usa "default" com random novamente
+      const cycle = iter % 100;
+      if (cycle >= 20 && cycle < 40) strategy = "prof_load_desc";
+      else if (cycle >= 40 && cycle < 60) strategy = "reverse_weight";
+      else if (cycle >= 60 && cycle < 80) strategy = "random";
 
       const result = runGreedySolver(payload, isRandomized, strategy);
       
@@ -310,11 +316,17 @@ router.post("/run-mock", requireEscola, async (req, res) => {
         bestResult = result;
       }
       
-      // Se alcançou 100% perfeito, pode parar mais cedo
+      // Se alcançou 100% perfeito, para imediatamente
       if (alocadas === demanda) {
-        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${i} com estratégia '${strategy}'!`);
+        perfectFound = true;
+        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${iter} com estratégia '${strategy}'! Tempo: ${Date.now() - startTime}ms`);
         break;
       }
+      iter++;
+    }
+
+    if (!perfectFound && !isProd()) {
+      console.log(`[grade/run-mock] Fim do tempo (${MAX_TIME_MS}ms). Total de iterações: ${iter}. Melhor alocação: ${maxAulas}`);
     }
 
     const result = bestResult;
