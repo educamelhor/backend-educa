@@ -198,7 +198,8 @@ const FF_QUESTOES = ff("FF_QUESTOES", true);             // ✅ pronto para prod
 const FF_CARGAS_HORARIAS = ff("FF_CARGAS_HORARIAS", DEFAULT_ON_DEV);
 
 // ✅ Horários/Grade - ativo em produção (configuracao-grade, disponibilidade, diagnóstico)
-const FF_HORARIOS = ff("FF_HORARIOS", true);
+// Força true como FF_CONTEUDOS_ADMIN — variável FF_HORARIOS=false no DO bloqueava
+const FF_HORARIOS = true;
 
 // IMPORTANTE: appPaisRouter DEVE ser atribuído incondicionalmente aqui
 // (antes do middleware na ~linha 405). O bloco if abaixo só valida ENVs.
