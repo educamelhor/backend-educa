@@ -332,4 +332,79 @@ router.post("/run-mock", requireEscola, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/grade/debug-payload
+ * Retorna o payload do solver SEM executar o motor.
+ * Útil para diagnosticar problemas de dados.
+ */
+router.post("/debug-payload", requireEscola, async (req, res) => {
+  try {
+    const turnoNorm = normalizeTurno(req.body?.turno);
+    if (!turnoNorm) return res.status(400).json({ error: "turno inválido." });
+
+    const ids = parseTurmaIds(req.body?.turma_ids);
+    if (!ids.length) return res.status(400).json({ error: "turma_ids inválido." });
+
+    const payload = await buildSolverPayload({
+      escolaId: req.escolaId,
+      turno: turnoNorm,
+      turmaIds: ids,
+    });
+
+    // Contagens de carga por professor
+    const dem = Array.isArray(payload?.demanda) ? payload.demanda : [];
+    const mod = Array.isArray(payload?.modulacao) ? payload.modulacao : [];
+    const periodosPorDia = 6;
+    const diasSemana = 5;
+    const maxSlots = periodosPorDia * diasSemana;
+
+    // Build profIndex (turma|disc -> profId)
+    const profIndex = new Map();
+    for (const m of mod) {
+      const k = `${m.turma_id}|${m.disciplina_id}`;
+      if (!profIndex.has(k)) profIndex.set(k, m.professor_id);
+    }
+
+    // Carga total por professor
+    const cargaPorProf = new Map();
+    for (const d of dem) {
+      const profId = d.professor_id || profIndex.get(`${d.turma_id}|${d.disciplina_id}`) || 0;
+      if (!profId) continue;
+      const atual = cargaPorProf.get(profId) || { professor_id: profId, nome: "?", aulas: 0, turmas: [] };
+      atual.aulas += Number(d.carga || 0);
+      atual.turmas.push(d.turma_id);
+      cargaPorProf.set(profId, atual);
+    }
+
+    // Enriquece com nome do professor via modulacao
+    for (const m of mod) {
+      const entry = cargaPorProf.get(m.professor_id);
+      if (entry && entry.nome === "?") entry.nome = m.professor_nome || "?";
+    }
+
+    const profSobrecarregados = Array.from(cargaPorProf.values())
+      .sort((a, b) => b.aulas - a.aulas)
+      .map(p => ({
+        ...p,
+        turmas: [...new Set(p.turmas)],
+        sobrecarga: p.aulas > maxSlots,
+        maxSlots,
+      }));
+
+    return res.json({
+      ok: true,
+      turmas_count: payload.turmas?.length || 0,
+      demanda_count: dem.length,
+      modulacao_count: mod.length,
+      disponibilidades_count: payload.disponibilidades?.length || 0,
+      max_slots_por_professor: maxSlots,
+      professores_carga: profSobrecarregados,
+      sobrecarga_total: profSobrecarregados.filter(p => p.sobrecarga).length,
+    });
+  } catch (e) {
+    console.error("POST /api/grade/debug-payload", e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;
