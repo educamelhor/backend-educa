@@ -55,6 +55,47 @@ router.post("/solve", requireEscola, async (req, res) => {
       turmaIds,
     });
 
+    // 3) Validação de Carga de Professores (vs Slots Totais)
+    const periodosPorDia = 6;
+    const diasSemana = 5; // TODO: Obter da grade_base
+    let maxSlots = periodosPorDia * diasSemana;
+
+    if (payload.grade_base) {
+      let slotsTotais = 0;
+      for (const dia in payload.grade_base) {
+        slotsTotais += payload.grade_base[dia].length;
+      }
+      if (slotsTotais > 0) maxSlots = slotsTotais;
+    }
+
+    const dem = Array.isArray(payload.demanda) ? payload.demanda : [];
+    const mod = Array.isArray(payload.modulacao) ? payload.modulacao : [];
+    
+    const profIndex = new Map();
+    for (const m of mod) {
+      const k = `${m.turma_id}|${m.disciplina_id}`;
+      if (!profIndex.has(k)) profIndex.set(k, { id: m.professor_id, nome: m.professor_nome });
+    }
+    
+    const profCarga = new Map();
+    for (const d of dem) {
+      const profId = d.professor_id || profIndex.get(`${d.turma_id}|${d.disciplina_id}`)?.id;
+      const profNome = profIndex.get(`${d.turma_id}|${d.disciplina_id}`)?.nome || "?";
+      if (!profId) continue;
+      
+      const prev = profCarga.get(profId) || { id: profId, nome: profNome, aulas: 0 };
+      prev.aulas += Number(d.carga || 0);
+      profCarga.set(profId, prev);
+    }
+
+    for (const prof of profCarga.values()) {
+      if (prof.aulas > maxSlots) {
+        pre.errors.push(`Professor(a) ${prof.nome} possui carga superior ao limite de slots da grade (${prof.aulas} aulas para ${maxSlots} slots). Reduza a carga modular deste professor.`);
+      } else if (prof.aulas >= maxSlots - 2) {
+        pre.warnings.push(`Professor(a) ${prof.nome} possui carga altíssima (${prof.aulas} aulas para ${maxSlots} slots). Isso dificulta ou impossibilita a geração de um horário sem colisões.`);
+      }
+    }
+
     // Observação: mesmo havendo 'errors' no pré-solve, devolvemos payload
     // para inspeção no front. O front decide se bloqueia o próximo passo.
     return res.json({

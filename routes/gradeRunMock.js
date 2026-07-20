@@ -356,13 +356,14 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       profCarga.set(prof.id, prev);
     }
     const warnings_payload = Array.from(profCarga.values())
-      .filter(p => p.aulas >= maxSlotsProf)
+      .filter(p => p.aulas >= maxSlotsProf - 2)
       .map(p => ({
         professor_id: p.id,
         professor_nome: p.nome,
         aulas_demanda: p.aulas,
         slots_disponiveis: maxSlotsProf,
         utilization_pct: Math.round((p.aulas / maxSlotsProf) * 100),
+        is_100_percent: p.aulas >= maxSlotsProf
       }));
 
     return res.json({

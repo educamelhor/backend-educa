@@ -731,9 +731,12 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 
   const demandaTotal = lessons.length;
 
-  // Cobertura robusta: evita 10000% etc.
-  const cobertura =
-    demandaTotal > 0 ? Math.round((alocadas / demandaTotal) * 100) : 100;
+  // Cobertura robusta: evita 10000% e arredondamentos enganosos para 100%
+  let cobertura = 100;
+  if (demandaTotal > 0) {
+    cobertura = (alocadas / demandaTotal) * 100;
+    cobertura = alocadas < demandaTotal ? Math.floor(cobertura) : 100;
+  }
 
   // payload_summary coerente (não depender do frontend)
   const payloadSummary = {
