@@ -299,23 +299,55 @@ router.get("/", verificarEscola, async (req, res) => {
   try {
     // ✅ NOVO MODELO: retorna 1 linha por professor (não por disciplina)
     // Os vínculos (turno + disciplina + aulas) vêm em professor.vinculos[]
-    const [rows] = await pool.query(
-      `SELECT
-        p.id,
-        p.cpf,
-        p.nome,
-        p.foto,
-        p.data_nascimento,
-        p.sexo,
-        p.status,
-        e.nome AS nome_escola
-      FROM professores p
-      LEFT JOIN escolas e ON p.escola_id = e.id
-      WHERE p.escola_id = ?
-      GROUP BY p.id
-      ORDER BY p.nome`,
-      [escola_id]
-    );
+    // Suporta ?turno=X para retornar apenas professores com vínculo no turno
+    const turnoFiltro = req.query.turno ? String(req.query.turno).toLowerCase() : null;
+
+    let rows;
+    if (turnoFiltro) {
+      // Filtra no banco: só professores que têm ao menos 1 vínculo no turno informado
+      [rows] = await pool.query(
+        `SELECT
+          p.id,
+          p.cpf,
+          p.nome,
+          p.foto,
+          p.data_nascimento,
+          p.sexo,
+          p.status,
+          e.nome AS nome_escola
+        FROM professores p
+        LEFT JOIN escolas e ON p.escola_id = e.id
+        WHERE p.escola_id = ?
+          AND p.status != 'inativo'
+          AND EXISTS (
+            SELECT 1 FROM professor_vinculos pv
+            WHERE pv.professor_id = p.id
+              AND pv.escola_id = p.escola_id
+              AND LOWER(pv.turno) = ?
+          )
+        GROUP BY p.id
+        ORDER BY p.nome`,
+        [escola_id, turnoFiltro]
+      );
+    } else {
+      [rows] = await pool.query(
+        `SELECT
+          p.id,
+          p.cpf,
+          p.nome,
+          p.foto,
+          p.data_nascimento,
+          p.sexo,
+          p.status,
+          e.nome AS nome_escola
+        FROM professores p
+        LEFT JOIN escolas e ON p.escola_id = e.id
+        WHERE p.escola_id = ?
+        GROUP BY p.id
+        ORDER BY p.nome`,
+        [escola_id]
+      );
+    }
 
     // Busca vínculos de todos os professores de uma vez (performance)
     const profIds = rows.map(r => r.id);
