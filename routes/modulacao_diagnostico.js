@@ -63,18 +63,19 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
 
     // 2) OFERTA: professores ATIVOS nesse turno (por disciplina)
     //    soma de aulas + contagem de professores.
+    //    NOVO MODELO: baseia-se em professor_vinculos.
     const [ofertaRows] = await pool.query(
       `
       SELECT
-        p.disciplina_id,
-        COUNT(*) AS professores_ativos,
-        SUM(p.aulas + 0) AS aulas_ofertadas
-      FROM professores p
-      WHERE p.escola_id = ?
-        AND p.status = 'ativo'
-        AND p.turno = ?
-        AND p.disciplina_id IS NOT NULL
-      GROUP BY p.disciplina_id
+        pv.disciplina_id,
+        COUNT(DISTINCT pv.professor_id) AS professores_ativos,
+        SUM(pv.aulas + 0) AS aulas_ofertadas
+      FROM professor_vinculos pv
+      JOIN professores p ON p.id = pv.professor_id
+      WHERE pv.escola_id = ?
+        AND p.status != 'inativo'
+        AND LOWER(pv.turno) = LOWER(?)
+      GROUP BY pv.disciplina_id
       `,
       [escola_id, turno]
     );
