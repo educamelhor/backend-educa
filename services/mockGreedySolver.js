@@ -218,15 +218,14 @@ function countDiscInDay(gradeTurma, dia, disciplinaId) {
 // Disponibilidades do professor (se vier vazio, assume "livre")
 // --------------------------------------------------------------------------------------
 
-function buildDisponibilidadeIndex(disponibilidades, daysCount, periodosPorDia, masterProfMap = {}) {
-  // Map: master_professor_id -> Set("dia|periodo")
+function buildDisponibilidadeIndex(disponibilidades, daysCount, periodosPorDia) {
+  // Map: professor_id -> Set("dia|periodo")
   const idx = new Map();
 
   const list = Array.isArray(disponibilidades) ? disponibilidades : [];
 
   for (const d of list) {
-    const rawProfId = toInt(d.professor_id, 0);
-    const profId = masterProfMap[rawProfId] || rawProfId; // Usa o master ID
+    const profId = toInt(d.professor_id, 0);
     const dia = toInt(d.dia, toInt(d.dia_semana, 0));
     const periodo = toInt(d.periodo, toInt(d.aula, 0));
 
@@ -481,32 +480,16 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 
   const turmaIds = normalizeTurmaIds(payload);
   const demandasNorm = normalizeDemandas(payload);
-  
-  // ── Mapeamento de Professores com Mesmo Nome ──────────────────
-  // Resolve o problema de professores duplicados na base (ex: mesmo professor, disciplinas diferentes)
-  const profNameMap = {};
-  const masterProfMap = {};
-  (payload.modulacao || []).forEach(m => {
-    const pId = toInt(m.professor_id ?? m.professorId, 0);
-    if (!pId) return;
-    const name = String(m.professor_nome || `PROF ${pId}`).trim().toUpperCase();
-    if (!profNameMap[name]) profNameMap[name] = pId; // O primeiro ID vira o Master
-    masterProfMap[pId] = profNameMap[name];
-  });
-  // Injeta o master_id em cada aula da demanda
-  const lessons = expandDemandasToLessons(demandasNorm, randomize, strategy).map(l => ({
-    ...l,
-    master_professor_id: masterProfMap[l.professor_id] || l.professor_id
-  }));
+  const lessons = expandDemandasToLessons(demandasNorm, randomize, strategy);
 
-  const professoresIds = uniq(lessons.map((l) => l.master_professor_id));
+  const professoresIds = uniq(lessons.map((l) => l.professor_id));
 
   // Grades sempre completas por turma/professor (mesmo que vazias, mas com keys ao alocar)
   const gradePorTurma = initGradePorTurma(turmaIds, daysCount, periodosPorDia);
   const gradePorProfessor = initGradePorProfessor(professoresIds, daysCount, periodosPorDia);
 
   // Index de disponibilidade (se não houver, assume livre)
-  const dispoIdx = buildDisponibilidadeIndex(payload?.disponibilidades, daysCount, periodosPorDia, masterProfMap);
+  const dispoIdx = buildDisponibilidadeIndex(payload?.disponibilidades, daysCount, periodosPorDia);
 
   // Alocação
   let alocadas = 0;
@@ -568,8 +551,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
   for (const lesson of lessons) {
     const turmaId = lesson.turma_id;
     const disciplinaId = lesson.disciplina_id;
-    const originalProfessorId = lesson.professor_id;
-    const professorId = lesson.master_professor_id; // MASTER ID para checagem de colisões
+    const professorId = lesson.professor_id;
 
     // Segurança: se a turma não existir na lista (payload inconsistente), inicializa on-the-fly
     if (!gradePorTurma[turmaId]) {
@@ -614,7 +596,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 
     if (best) {
       // Salva o professor_id original na turma para persistência correta!
-      const cellTurma = { disciplina_id: disciplinaId, professor_id: originalProfessorId };
+      const cellTurma = { disciplina_id: disciplinaId, professor_id: professorId };
       const cellProf = { turma_id: turmaId, disciplina_id: disciplinaId };
 
       // Garantia de estrutura (evita undefined)
@@ -664,7 +646,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
                     // c) Põe a aula original no d, p
                     ensurePath(gradePorTurma, turmaId, d);
                     ensurePath(gradePorProfessor, professorId, d);
-                    gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: originalProfessorId };
+                    gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
                     gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
 
                     swapped = true;
@@ -710,7 +692,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
                       // b) Põe a aula original no d, p
                       ensurePath(gradePorTurma, turmaId, d);
                       ensurePath(gradePorProfessor, professorId, d);
-                      gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: originalProfessorId };
+                      gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
                       gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
 
                       swapped = true;
@@ -739,7 +721,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
         diagnosticoNaoAlocadas.push({
           turma_id: turmaId,
           disciplina_id: disciplinaId,
-          professor_id: originalProfessorId, // Salva o original no erro tbm
+          professor_id: professorId, // Salva o original no erro tbm
           motivo,
         });
         diagInc(motivo);

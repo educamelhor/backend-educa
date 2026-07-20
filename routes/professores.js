@@ -297,32 +297,69 @@ const profUpload = multer({
 router.get("/", verificarEscola, async (req, res) => {
   const { escola_id } = req.user;
   try {
+    // ✅ NOVO MODELO: retorna 1 linha por professor (não por disciplina)
+    // Os vínculos (turno + disciplina + aulas) vêm em professor.vinculos[]
     const [rows] = await pool.query(
-      `
-      SELECT
+      `SELECT
         p.id,
         p.cpf,
         p.nome,
         p.foto,
         p.data_nascimento,
         p.sexo,
-        p.aulas,
         p.status,
-        p.disciplina_id,
-        p.turno,                       -- ← agora vem de "professores"
-        d.nome AS disciplina_nome,
-        t.nome AS turma_nome,
         e.nome AS nome_escola
       FROM professores p
-      LEFT JOIN disciplinas d ON p.disciplina_id = d.id
-      LEFT JOIN turmas t      ON p.turma_id     = t.id
-      LEFT JOIN escolas e     ON p.escola_id    = e.id
+      LEFT JOIN escolas e ON p.escola_id = e.id
       WHERE p.escola_id = ?
-      ORDER BY p.nome
-      `,
+      GROUP BY p.id
+      ORDER BY p.nome`,
       [escola_id]
     );
-    res.json(rows);
+
+    // Busca vínculos de todos os professores de uma vez (performance)
+    const profIds = rows.map(r => r.id);
+    let vinculosMap = {};
+    if (profIds.length) {
+      const ph = profIds.map(() => "?").join(",");
+      const [vinRows] = await pool.query(
+        `SELECT pv.id, pv.professor_id, pv.turno, pv.disciplina_id, pv.aulas, pv.status AS vinculo_status,
+                d.nome AS disciplina_nome
+           FROM professor_vinculos pv
+           LEFT JOIN disciplinas d ON d.id = pv.disciplina_id
+          WHERE pv.professor_id IN (${ph}) AND pv.escola_id = ?
+          ORDER BY pv.turno, d.nome`,
+        [...profIds, escola_id]
+      ).catch(() => [[]]); // tabela ainda pode não existir durante transição
+      for (const v of vinRows) {
+        if (!vinculosMap[v.professor_id]) vinculosMap[v.professor_id] = [];
+        vinculosMap[v.professor_id].push(v);
+      }
+
+      // Fallback: se professor_vinculos ainda não existir, usa dados legados de professores
+      if (Object.keys(vinculosMap).length === 0) {
+        const [legRows] = await pool.query(
+          `SELECT p.id AS professor_id, p.turno, p.disciplina_id, p.aulas, p.status AS vinculo_status,
+                  d.nome AS disciplina_nome
+             FROM professores p
+             LEFT JOIN disciplinas d ON d.id = p.disciplina_id
+            WHERE p.escola_id = ? AND p.disciplina_id IS NOT NULL
+            ORDER BY p.nome`,
+          [escola_id]
+        );
+        for (const v of legRows) {
+          if (!vinculosMap[v.professor_id]) vinculosMap[v.professor_id] = [];
+          vinculosMap[v.professor_id].push(v);
+        }
+      }
+    }
+
+    const result = rows.map(p => ({
+      ...p,
+      vinculos: vinculosMap[p.id] || []
+    }));
+
+    res.json(result);
   } catch (err) {
     console.error("Erro ao listar professores:", err);
     res.status(500).json({ message: "Erro ao listar professores." });
@@ -703,9 +740,46 @@ router.get("/me/foto", autenticarToken, verificarEscola, async (req, res) => {
 
 
 // ────────────────────────────────────────────────
-// GET: Verificar duplicidade CPF + Disciplina antes de cadastrar
+// GET: Buscar professor por CPF (novo modelo — retorna com vinculos)
 // ✅ FIX ALTO: rota específica ANTES de /:id para não ser capturada como parâmetro
-// Retorna o professor se existir (frontend usa para bloquear duplicata), 404 se não existir
+// Frontend usa para verificar se CPF já existe ao cadastrar novo professor.
+// ────────────────────────────────────────────────
+router.get("/por-cpf/:cpf", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const cpfLimpo = String(req.params.cpf).replace(/\D/g, "");
+
+    const [[prof]] = await pool.query(
+      `SELECT id, nome, cpf, foto, data_nascimento, sexo, status
+         FROM professores
+        WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+          AND escola_id = ?
+        LIMIT 1`,
+      [cpfLimpo, escola_id]
+    );
+
+    if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
+
+    // Busca vínculos atuais
+    const [vinculos] = await pool.query(
+      `SELECT pv.id, pv.turno, pv.disciplina_id, pv.aulas, pv.status AS vinculo_status,
+              d.nome AS disciplina_nome
+         FROM professor_vinculos pv
+         LEFT JOIN disciplinas d ON d.id = pv.disciplina_id
+        WHERE pv.professor_id = ? AND pv.escola_id = ?
+        ORDER BY pv.turno, d.nome`,
+      [prof.id, escola_id]
+    ).catch(() => [[]]);
+
+    return res.json({ ...prof, vinculos });
+  } catch (err) {
+    console.error("Erro ao verificar CPF:", err);
+    return res.status(500).json({ message: "Erro ao verificar CPF." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// Mantém rota legada por compatibilidade (módulos antigos)
 // ────────────────────────────────────────────────
 router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", verificarEscola, async (req, res) => {
   try {
@@ -716,16 +790,12 @@ router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", verificarEscola, async (
     const [[prof]] = await pool.query(
       `SELECT id, nome, cpf, status FROM professores
        WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-         AND disciplina_id = ?
          AND escola_id = ?
        LIMIT 1`,
-      [cpfLimpo, disciplinaId, escola_id]
+      [cpfLimpo, escola_id]
     );
 
-    if (!prof) {
-      return res.status(404).json({ message: "Professor não encontrado." });
-    }
-
+    if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
     return res.json(prof);
   } catch (err) {
     console.error("Erro ao verificar CPF/disciplina:", err);
@@ -995,10 +1065,11 @@ router.get("/:id", verificarEscola, async (req, res) => {
 
 // ────────────────────────────────────────────────
 /*
-POST: Criar professor
-- Unicidade lógica esperada (na camada de dados) permanece a mesma.
-- Agora exige: cpf, nome, disciplina_id e turno.
-- turma_id permanece OPCIONAL para compatibilidade; caso enviado, será gravado.
+POST: Criar professor — NOVO MODELO UNIFICADO
+- Unicidade: 1 CPF = 1 professor por escola (sem duplicata por disciplina)
+- Se CPF já existe → retorna 409 com dados do professor existente
+  (frontend usa isso para perguntar "Este é o professor? Adicionar vínculo?")
+- Vínculo de disciplina/turno é adicionado SEPARADAMENTE via POST /:id/vinculos
 */
 // ────────────────────────────────────────────────
 router.post("/", verificarEscola, async (req, res) => {
@@ -1008,57 +1079,142 @@ router.post("/", verificarEscola, async (req, res) => {
       nome,
       data_nascimento,
       sexo,
-      disciplina_id,
-      turma_id = null, // opcional
+      // Campos de vínculo (opcionais — para compatibilidade com fluxo legado)
+      disciplina_id = null,
+      turno = null,
       aulas = 0,
-      turno,           // ← obrigatório
     } = req.body;
     const { escola_id } = req.user;
 
     const cpfLimpo = String(cpf || "").replace(/\D/g, "");
 
-    if (!cpfLimpo || cpfLimpo.length !== 11 || !nome || !disciplina_id || !turno) {
-      return res.status(400).json({ message: "CPF (11 dígitos), nome, disciplina e turno são obrigatórios." });
-    }
-    if (aulas < 0 || aulas > 40) {
-      return res.status(400).json({ message: "Número de aulas deve estar entre 0 e 40." });
+    if (!cpfLimpo || cpfLimpo.length !== 11 || !nome) {
+      return res.status(400).json({ message: "CPF (11 dígitos) e nome são obrigatórios." });
     }
 
+    // ✅ Verifica duplicata por CPF puro (não mais por CPF+disciplina)
     const [[existente]] = await pool.query(
-      "SELECT id FROM professores WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? AND disciplina_id = ? AND turno = ? LIMIT 1",
-      [cpfLimpo, escola_id, disciplina_id, turno]
+      `SELECT id, nome, cpf, status FROM professores
+        WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? LIMIT 1`,
+      [cpfLimpo, escola_id]
     );
 
     if (existente) {
-      return res.status(409).json({ message: "Já existe um pré-cadastro para este professor com esta mesma disciplina no mesmo turno." });
+      // Retorna 409 com os dados do professor existente para o frontend decidir
+      return res.status(409).json({
+        message: "Professor já cadastrado com este CPF.",
+        professor_existente: existente
+      });
     }
 
-    await pool.query(
-      `
-      INSERT INTO professores
-        (cpf, nome, data_nascimento, sexo, disciplina_id, turma_id, aulas, turno, escola_id, status)
-      VALUES
-        (?,   UPPER(?), ?,               ?,   ?,             ?,        ?,     ?,     ?,         'ativo')
-      `,
-      [cpfLimpo, nome, data_nascimento || null, sexo || null, disciplina_id, turma_id, aulas, turno, escola_id]
+    // Insere o professor (sem disciplina_id/turno — agora ficam em professor_vinculos)
+    const [insertResult] = await pool.query(
+      `INSERT INTO professores (cpf, nome, data_nascimento, sexo, escola_id, status,
+                                disciplina_id, turno, aulas)
+       VALUES (?, UPPER(?), ?, ?, ?, 'ativo', ?, ?, ?)`,
+      [cpfLimpo, nome, data_nascimento || null, sexo || null, escola_id,
+       disciplina_id, turno, aulas]
     );
 
+    const novoProfId = insertResult.insertId;
+
+    // Se vieram dados de vínculo no body, cria o primeiro vínculo automaticamente
+    if (disciplina_id && turno) {
+      await pool.query(
+        `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
+         VALUES (?, ?, ?, ?, ?, 'ativo')`,
+        [novoProfId, escola_id, turno, disciplina_id, aulas || 0]
+      ).catch(() => null); // Falha silenciosa: tabela pode não existir ainda
+    }
+
+    // Cria/atualiza registro na tabela usuarios para habilitar login
     await pool.query(
       `INSERT INTO usuarios (cpf, nome, perfil, escola_id, senha_hash, ativo)
          VALUES (?, UPPER(?), 'professor', ?, '', 1)
-         ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1, senha_hash='', email=NULL, celular=NULL`,
+         ON DUPLICATE KEY UPDATE nome=VALUES(nome), perfil='professor', ativo=1`,
       [cpfLimpo, nome, escola_id]
     );
 
-    res.status(201).json({ message: "Professor cadastrado com sucesso." });
+    res.status(201).json({ message: "Professor cadastrado com sucesso.", id: novoProfId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
-      return res
-        .status(409)
-        .json({ message: "Conflito de restrição no banco. Já existe este professor cadastrado com esta configuração exclusiva." });
+      return res.status(409).json({ message: "Conflito: professor já cadastrado com esta configuração." });
     }
     console.error("Erro ao cadastrar professor:", err);
     res.status(500).json({ message: "Erro ao cadastrar professor." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// POST: Adicionar vínculo a professor existente
+// Body: { turno, disciplina_id, aulas }
+// ────────────────────────────────────────────────
+router.post("/:id/vinculos", verificarEscola, async (req, res) => {
+  try {
+    const profId = Number(req.params.id);
+    const { escola_id } = req.user;
+    const { turno, disciplina_id, aulas = 0 } = req.body;
+
+    if (!turno || !disciplina_id) {
+      return res.status(400).json({ message: "turno e disciplina_id são obrigatórios." });
+    }
+    if (aulas < 0 || aulas > 40) {
+      return res.status(400).json({ message: "aulas deve ser entre 0 e 40." });
+    }
+
+    // Verifica se professor pertence à escola
+    const [[prof]] = await pool.query(
+      `SELECT id FROM professores WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [profId, escola_id]
+    );
+    if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
+
+    // Insere o vínculo
+    await pool.query(
+      `INSERT INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
+       VALUES (?, ?, ?, ?, ?, 'ativo')
+       ON DUPLICATE KEY UPDATE aulas = VALUES(aulas), status = 'ativo'`,
+      [profId, escola_id, turno, disciplina_id, aulas]
+    );
+
+    // Atualiza legado (compatibilidade com módulos que ainda leem professores.disciplina_id)
+    await pool.query(
+      `UPDATE professores SET disciplina_id = ?, turno = ?, aulas = ? WHERE id = ? AND escola_id = ?`,
+      [disciplina_id, turno, aulas, profId, escola_id]
+    );
+
+    res.status(201).json({ message: "Vínculo adicionado com sucesso." });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: "Professor já tem este vínculo (turno + disciplina)." });
+    }
+    console.error("Erro ao adicionar vínculo:", err);
+    res.status(500).json({ message: "Erro ao adicionar vínculo." });
+  }
+});
+
+// ────────────────────────────────────────────────
+// DELETE: Remover vínculo específico de professor
+// ────────────────────────────────────────────────
+router.delete("/:id/vinculos/:vinculo_id", verificarEscola, async (req, res) => {
+  try {
+    const profId = Number(req.params.id);
+    const vinculoId = Number(req.params.vinculo_id);
+    const { escola_id } = req.user;
+
+    const [result] = await pool.query(
+      `DELETE FROM professor_vinculos WHERE id = ? AND professor_id = ? AND escola_id = ?`,
+      [vinculoId, profId, escola_id]
+    );
+
+    if (!result.affectedRows) {
+      return res.status(404).json({ message: "Vínculo não encontrado." });
+    }
+
+    res.json({ message: "Vínculo removido com sucesso." });
+  } catch (err) {
+    console.error("Erro ao remover vínculo:", err);
+    res.status(500).json({ message: "Erro ao remover vínculo." });
   }
 });
 
