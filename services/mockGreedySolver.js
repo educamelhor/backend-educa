@@ -514,10 +514,6 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
     diagnosticoContadores[k] = (diagnosticoContadores[k] || 0) + 1;
   }
 
-  function inferirMotivoNaoAlocacao({ turmaGrade, profGrade, professorId }) {
-    // Como o RC01/RC02 entram como penalidade no score (não como filtro),
-    // a não alocação ocorre tipicamente por:
-    // - turma sem slot livre
     // - colisão total do professor
     // - indisponibilidade total do professor (quando há agenda/grade de disponibilidade)
     let anyTurmaLivre = false;
@@ -612,107 +608,24 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
     } else {
       // ─────────────────────────────────────────────────────────────
       // PASSO DE REPAIR / SWAP LOCAL (Backtracking raso)
-      // Tenta chutar uma aula existente que está num slot onde este
-      // professor está livre, movendo a aula chutada para outro buraco.
       // ─────────────────────────────────────────────────────────────
-      let swapped = false;
-
-      // 1) Onde a Turma ESTÁ livre, mas o Professor atual NÃO ESTÁ?
-      //    (Ou seja, professor ocupado com Turma B)
-      for (let d = 1; d <= daysCount; d++) {
-        for (let p = 1; p <= periodosPorDia; p++) {
-          if (!turmaGrade?.[d]?.[p]) { // Turma atual livre
-            const cellProf = profGrade?.[d]?.[p]; // Prof atual ocupado com Turma B
-            if (cellProf) {
-              const turmaB = cellProf.turma_id;
-              const discB = cellProf.disciplina_id;
-              // Será que turmaB tem um slot livre onde o professor atual também tem?
-              for (let d2 = 1; d2 <= daysCount; d2++) {
-                for (let p2 = 1; p2 <= periodosPorDia; p2++) {
-                  if (!gradePorTurma[turmaB]?.[d2]?.[p2] && 
-                      !gradePorProfessor[professorId]?.[d2]?.[p2] &&
-                      professorPode(dispoIdx, professorId, d2, p2)) {
-                    
-                    // ACHAMOS! Swap!
-                    // a) Limpa posicao original (opcional, sobrescrita abaixo)
-                    // b) Move turmaB para d2, p2
-                    ensurePath(gradePorTurma, turmaB, d2);
-                    ensurePath(gradePorProfessor, professorId, d2);
-                    gradePorTurma[turmaB][d2][p2] = { disciplina_id: discB, professor_id: turmaGrade[d]?.[''+p]?.professor_id || professorId }; // Mantém ID original se puder, mas aqui profB era o dono... Na verdade, profB é professorId aqui. Se turmaB mudou, ela tem seu original ID em turmaB? Na matriz do professor não tem. Mas a matriz da turma sim!
-                    
-                    // O valor correto do professor original que estava em turmaB[d][p]:
-                    const originalProfBId = gradePorTurma[turmaB]?.[d]?.[p]?.professor_id || professorId;
-                    gradePorTurma[turmaB][d2][p2] = { disciplina_id: discB, professor_id: originalProfBId };
-                    gradePorProfessor[professorId][d2][p2] = { turma_id: turmaB, disciplina_id: discB };
-
-                    // c) Põe a aula original no d, p
-                    ensurePath(gradePorTurma, turmaId, d);
-                    ensurePath(gradePorProfessor, professorId, d);
-                    gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
-                    gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
-
-                    swapped = true;
-                    alocadas++;
-                    break;
-                  }
-                }
-                if (swapped) break;
-              }
-            }
-          }
-          if (swapped) break;
-        }
-        if (swapped) break;
-      }
+      let swapped = trySingleSwap(
+        gradePorTurma, gradePorProfessor, dispoIdx, 
+        turmaId, professorId, disciplinaId, 
+        daysCount, periodosPorDia
+      );
 
       if (!swapped) {
-        // 2) Onde o Professor ESTÁ livre, mas a Turma NÃO ESTÁ?
-        //    (Ou seja, Turma ocupada com Professor B)
-        for (let d = 1; d <= daysCount; d++) {
-          for (let p = 1; p <= periodosPorDia; p++) {
-            if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) { // Prof atual livre
-              const cellTurma = turmaGrade?.[d]?.[p]; // Turma ocupada com Prof B
-              if (cellTurma) {
-                const profB = cellTurma.professor_id;
-                const discB = cellTurma.disciplina_id;
-                // Será que profB tem um slot livre onde a Turma atual também tem?
-                for (let d2 = 1; d2 <= daysCount; d2++) {
-                  for (let p2 = 1; p2 <= periodosPorDia; p2++) {
-                    if (!gradePorProfessor[profB]?.[d2]?.[p2] &&
-                        !gradePorTurma[turmaId]?.[d2]?.[p2] &&
-                        professorPode(dispoIdx, profB, d2, p2)) {
-                      
-                      // ACHAMOS! Swap!
-                      // a) Move profB para d2, p2
-                      ensurePath(gradePorTurma, turmaId, d2);
-                      ensurePath(gradePorProfessor, profB, d2);
-                      // O professor que estava aqui era profB, vamos pegar o originalId dele
-                      const originalProfBId = gradePorTurma[turmaId]?.[d]?.[p]?.professor_id || profB;
-                      gradePorTurma[turmaId][d2][p2] = { disciplina_id: discB, professor_id: originalProfBId };
-                      gradePorProfessor[profB][d2][p2] = { turma_id: turmaId, disciplina_id: discB };
-
-                      // b) Põe a aula original no d, p
-                      ensurePath(gradePorTurma, turmaId, d);
-                      ensurePath(gradePorProfessor, professorId, d);
-                      gradePorTurma[turmaId][d][p] = { disciplina_id: disciplinaId, professor_id: professorId };
-                      gradePorProfessor[professorId][d][p] = { turma_id: turmaId, disciplina_id: disciplinaId };
-
-                      swapped = true;
-                      alocadas++;
-                      break;
-                    }
-                  }
-                  if (swapped) break;
-                }
-              }
-            }
-            if (swapped) break;
-          }
-          if (swapped) break;
-        }
+        swapped = tryDoubleSwap(
+          gradePorTurma, gradePorProfessor, dispoIdx, 
+          turmaId, professorId, disciplinaId, 
+          daysCount, periodosPorDia
+        );
       }
 
-      if (!swapped) {
+      if (swapped) {
+        alocadas++;
+      } else {
         // Registra diagnóstico da aula não alocada (PASSO 2.1)
         const motivo = inferirMotivoNaoAlocacao({
           turmaGrade,
