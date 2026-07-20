@@ -207,7 +207,13 @@ router.post('/credenciais', async (req, res) => {
         `DELETE FROM agente_credenciais WHERE escola_id = ? AND usuario_id = ?`,
         [escolaId, usuarioId]
       );
-    } catch { /* coluna usuario_id pode nao existir */ }
+    } catch { 
+      // Se falhar (ex: usuario_id nao existe), usa apenas professor_id
+      await db.query(
+        `DELETE FROM agente_credenciais WHERE escola_id = ? AND professor_id = ?`,
+        [escolaId, usuarioId]
+      ).catch(() => {});
+    }
 
     // Também limpa órfãs (usuario_id=0 ou professor_id=0) desta escola
     try {
@@ -227,22 +233,26 @@ router.post('/credenciais', async (req, res) => {
         [escolaId, usuarioId, usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
       );
     } catch (insErr) {
-      // Se ainda falhar (uk antiga em professor_id?), tenta com professor_id = usuario_id
-      // para evitar conflitos constantes com professor_id=0
-      console.warn('[agente.routes] INSERT falhou:', insErr.code, insErr.sqlMessage);
+      console.warn('[agente.routes] INSERT principal falhou:', insErr.code, insErr.sqlMessage);
 
-      // Delete TUDO desta escola que possa conflitar (nuclear option)
+      // Limpeza nuclear antes do fallback
       await db.query(
-        `DELETE FROM agente_credenciais WHERE escola_id = ? AND (professor_id = 0 OR professor_id = ? OR usuario_id = ? OR usuario_id = 0)`,
-        [escolaId, usuarioId, usuarioId]
+        `DELETE FROM agente_credenciais WHERE escola_id = ? AND (professor_id = 0 OR professor_id = ?)`,
+        [escolaId, usuarioId]
       ).catch(() => {});
 
-      [insertResult] = await db.query(
-        `INSERT INTO agente_credenciais
-          (escola_id, usuario_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-        [escolaId, usuarioId, usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
-      );
+      try {
+        // Fallback sem a coluna usuario_id (bancos mais antigos)
+        [insertResult] = await db.query(
+          `INSERT INTO agente_credenciais
+            (escola_id, professor_id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ativo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+          [escolaId, usuarioId, String(educadf_login).trim(), encrypted, iv, tag, perfilId]
+        );
+      } catch (fallbackErr) {
+        console.error('[agente.routes] INSERT de fallback falhou:', fallbackErr.message);
+        throw fallbackErr;
+      }
     }
 
     const credId = insertResult.insertId;
