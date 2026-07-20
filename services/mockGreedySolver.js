@@ -514,37 +514,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
     diagnosticoContadores[k] = (diagnosticoContadores[k] || 0) + 1;
   }
 
-    // - colisão total do professor
-    // - indisponibilidade total do professor (quando há agenda/grade de disponibilidade)
-    let anyTurmaLivre = false;
-    let anyTurmaProfLivre = false;
-    let anyTurmaProfLivreEDisponivel = false;
 
-    for (let dia = 1; dia <= daysCount; dia++) {
-      for (let periodo = 1; periodo <= periodosPorDia; periodo++) {
-        const turmaOcupado = !!turmaGrade?.[dia]?.[periodo];
-        if (!turmaOcupado) {
-          anyTurmaLivre = true;
-
-          const profOcupado = !!profGrade?.[dia]?.[periodo];
-          if (!profOcupado) {
-            anyTurmaProfLivre = true;
-
-            if (professorPode(dispoIdx, professorId, dia, periodo)) {
-              anyTurmaProfLivreEDisponivel = true;
-              break;
-            }
-          }
-        }
-      }
-      if (anyTurmaProfLivreEDisponivel) break;
-    }
-
-    if (!anyTurmaLivre) return "SEM_SLOT_LIVRE_TURMA";
-    if (!anyTurmaProfLivre) return "COLISAO_PROFESSOR";
-    if (!anyTurmaProfLivreEDisponivel) return "SEM_DISPONIBILIDADE_PROFESSOR";
-    return "OUTRO";
-  }
 
   for (const lesson of lessons) {
     const turmaId = lesson.turma_id;
@@ -694,3 +664,191 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 // Default export (compatibilidade caso alguém importe sem destructuring)
 // --------------------------------------------------------------------------------------
 export default { runGreedySolver };
+function inferirMotivoNaoAlocacao({ turmaGrade, profGrade, professorId, periodosPorDia, daysCount }) {
+  let isProfLotado = true;
+  let isTurmaLotada = true;
+  
+  if (profGrade) {
+    for(let d=1; d<= (daysCount || 5); d++){
+      for(let p=1; p<= (periodosPorDia || 6); p++){
+        if (!profGrade[d]?.[p]) isProfLotado = false;
+      }
+    }
+  }
+  
+  if (turmaGrade) {
+    for(let d=1; d<= (daysCount || 5); d++){
+      for(let p=1; p<= (periodosPorDia || 6); p++){
+        if (!turmaGrade[d]?.[p]) isTurmaLotada = false;
+      }
+    }
+  }
+
+  if (isProfLotado) return "COLISAO_PROFESSOR";
+  if (isTurmaLotada) return "TURMA_SEM_HORARIO";
+  return "SEM_SLOT_LIVRE_TURMA"; // A intersecção é vazia
+}
+function clearSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p) {
+  if (gradePorTurma[turmaId]?.[d]) gradePorTurma[turmaId][d][p] = null;
+  if (gradePorProfessor[profId]?.[d]) gradePorProfessor[profId][d][p] = null;
+}
+
+function setSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p, discId, originalProfId = profId) {
+  ensurePath(gradePorTurma, turmaId, d);
+  ensurePath(gradePorProfessor, profId, d);
+  gradePorTurma[turmaId][d][p] = { disciplina_id: discId, professor_id: originalProfId };
+  gradePorProfessor[profId][d][p] = { turma_id: turmaId, disciplina_id: discId };
+}
+
+function trySingleSwap(
+  gradePorTurma, gradePorProfessor, dispoIdx, 
+  turmaId, professorId, disciplinaId, 
+  daysCount, periodosPorDia
+) {
+  const turmaGrade = gradePorTurma[turmaId] || {};
+  const profGrade = gradePorProfessor[professorId] || {};
+
+  // Caso 1: Turma Livre, Professor Ocupado com Turma B
+  for (let d = 1; d <= daysCount; d++) {
+    for (let p = 1; p <= periodosPorDia; p++) {
+      if (!turmaGrade?.[d]?.[p]) {
+        const cellProf = profGrade?.[d]?.[p];
+        if (cellProf) {
+          const turmaB = cellProf.turma_id;
+          const discB = cellProf.disciplina_id;
+          
+          for (let d2 = 1; d2 <= daysCount; d2++) {
+            for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+              if (!gradePorTurma[turmaB]?.[d2]?.[p2] && 
+                  !gradePorProfessor[professorId]?.[d2]?.[p2] &&
+                  professorPode(dispoIdx, professorId, d2, p2)) {
+                
+                const originalProfBId = gradePorTurma[turmaB]?.[d]?.[p]?.professor_id || professorId;
+                
+                // Mover Turma B para d2, p2
+                clearSlot(gradePorTurma, gradePorProfessor, turmaB, professorId, d, p);
+                setSlot(gradePorTurma, gradePorProfessor, turmaB, professorId, d2, p2, discB, originalProfBId);
+                
+                // Colocar nova aula em d, p
+                setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
+                
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Caso 2: Turma Ocupada com Prof B, Professor Livre
+  for (let d = 1; d <= daysCount; d++) {
+    for (let p = 1; p <= periodosPorDia; p++) {
+      if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) {
+        const cellTurma = turmaGrade?.[d]?.[p];
+        if (cellTurma) {
+          const profB = cellTurma.professor_id;
+          const discB = cellTurma.disciplina_id;
+          
+          for (let d2 = 1; d2 <= daysCount; d2++) {
+            for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+              if (!gradePorTurma[turmaId]?.[d2]?.[p2] && 
+                  !gradePorProfessor[profB]?.[d2]?.[p2] &&
+                  professorPode(dispoIdx, profB, d2, p2)) {
+                
+                const originalProfBId = gradePorTurma[turmaId]?.[d]?.[p]?.professor_id || profB;
+                
+                // Mover Prof B para d2, p2
+                clearSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d, p);
+                setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB, originalProfBId);
+                
+                // Colocar nova aula em d, p
+                setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
+                
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function tryDoubleSwap(
+  gradePorTurma, gradePorProfessor, dispoIdx, 
+  turmaId, professorId, disciplinaId, 
+  daysCount, periodosPorDia
+) {
+  const turmaGrade = gradePorTurma[turmaId] || {};
+  const profGrade = gradePorProfessor[professorId] || {};
+
+  // O foco principal é a Turma ocupada com Prof B e Professor Livre. (Erro SEM_SLOT_LIVRE_TURMA)
+  for (let d = 1; d <= daysCount; d++) {
+    for (let p = 1; p <= periodosPorDia; p++) {
+      if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) {
+        const cellTurma = turmaGrade?.[d]?.[p]; // Turma ocupada com Prof B
+        if (cellTurma) {
+          const profB = cellTurma.professor_id;
+          const discB = cellTurma.disciplina_id;
+          
+          // No single swap, tentamos mover profB para d2,p2 onde profB e turmaId estivessem livres.
+          // Falhou pq profB não tem d2,p2 livre em conjunto com turmaId.
+          // Talvez profB esteja LIVRE em d2,p2, MAS turmaId está OCUPADA por profC em d2,p2!
+          // Se movermos profC para d3,p3, liberamos d2,p2 para profB, que libera d,p para professorId!
+          for (let d2 = 1; d2 <= daysCount; d2++) {
+            for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+              if (d === d2 && p === p2) continue;
+              
+              // Se profB está livre em d2,p2
+              if (!gradePorProfessor[profB]?.[d2]?.[p2] && professorPode(dispoIdx, profB, d2, p2)) {
+                
+                const cellTurma2 = gradePorTurma[turmaId]?.[d2]?.[p2];
+                // E a turma está ocupada por profC
+                if (cellTurma2) {
+                  const profC = cellTurma2.professor_id;
+                  const discC = cellTurma2.disciplina_id;
+                  
+                  // Tentar mover profC para d3,p3
+                  for (let d3 = 1; d3 <= daysCount; d3++) {
+                    for (let p3 = 1; p3 <= periodosPorDia; p3++) {
+                      if (d3 === d && p3 === p) continue;
+                      if (d3 === d2 && p3 === p2) continue;
+                      
+                      if (!gradePorTurma[turmaId]?.[d3]?.[p3] && 
+                          !gradePorProfessor[profC]?.[d3]?.[p3] &&
+                          professorPode(dispoIdx, profC, d3, p3)) {
+                        
+                        // SUUUUUCCEEESSS!!!
+                        const originalProfBId = gradePorTurma[turmaId]?.[d]?.[p]?.professor_id || profB;
+                        const originalProfCId = gradePorTurma[turmaId]?.[d2]?.[p2]?.professor_id || profC;
+                        
+                        // 1. Move profC de d2,p2 para d3,p3
+                        clearSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d2, p2);
+                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d3, p3, discC, originalProfCId);
+                        
+                        // 2. Move profB de d,p para d2,p2
+                        clearSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d, p);
+                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB, originalProfBId);
+                        
+                        // 3. Coloca professorId em d,p
+                        setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
+                        
+                        return true;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Oposto (Turma Livre, Prof Ocupado com Turma B) também pode ser estendido se houver muitos erros do outro tipo.
+  return false;
+}
