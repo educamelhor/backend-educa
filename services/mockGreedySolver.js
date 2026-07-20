@@ -427,12 +427,14 @@ function expandDemandasToLessons(demandas, randomize = false, strategy = "defaul
       if (strategy === "reverse_weight") {
         // Menor peso primeiro (turmas com 1 aula, ex: Artes, Prática)
         if (a.__peso !== b.__peso) return a.__peso - b.__peso;
-      } else if (strategy === "prof_load_desc") {
-        // Professor mais sobrecarregado primeiro (ex: 30/30)
-        if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
+      } else if (strategy === "weight_desc") {
+        // Maior peso primeiro, sem considerar carga do professor
         if (b.__peso !== a.__peso) return b.__peso - a.__peso;
       } else {
-        // default: maior peso (blocos grandes) primeiro
+        // default: "scarce_first" (prof_load_desc)
+        // Professor mais sobrecarregado primeiro (ex: 30/30)
+        if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
+        // Depois, disciplinas com maior peso desse professor
         if (b.__peso !== a.__peso) return b.__peso - a.__peso;
       }
       

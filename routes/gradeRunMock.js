@@ -302,9 +302,16 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       let isRandomized = iter > 0;
       
       const cycle = iter % 100;
-      if (cycle >= 20 && cycle < 40) strategy = "prof_load_desc";
+      // 0-19: scarce_first (default, best for 100% load)
+      // 20-39: weight_desc (classic greedy)
+      // 40-59: reverse_weight
+      // 60-79: random
+      // 80-99: scarce_first again (very effective)
+      
+      if (cycle >= 20 && cycle < 40) strategy = "weight_desc";
       else if (cycle >= 40 && cycle < 60) strategy = "reverse_weight";
       else if (cycle >= 60 && cycle < 80) strategy = "random";
+      else strategy = "default"; // scarce_first
 
       const result = runGreedySolver(payload, isRandomized, strategy);
       
