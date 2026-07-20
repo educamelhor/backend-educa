@@ -265,7 +265,7 @@ router.post('/credenciais', async (req, res) => {
     });
   } catch (err) {
     console.error('[agente.routes] Erro POST /credenciais:', err);
-    return res.status(500).json({ ok: false, message: 'Erro ao cadastrar credencial.' });
+    return res.status(500).json({ ok: false, message: err.message || 'Erro ao cadastrar credencial.' });
   }
 });
 
