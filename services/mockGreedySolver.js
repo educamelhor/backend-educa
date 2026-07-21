@@ -705,10 +705,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
         );
       }
 
-      if (swapped) {
-        alocadas++;
-      } else {
-        // Tenta Triple Swap (cadeia de 3 niveis) como último recurso
+      if (!swapped) {
         swapped = tryTripleSwap(
           gradePorTurma, gradePorProfessor, dispoIdx,
           turmaId, professorId, disciplinaId,
@@ -729,10 +726,11 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
         diagnosticoNaoAlocadas.push({
           turma_id: turmaId,
           disciplina_id: disciplinaId,
-          professor_id: professorId, // Salva o original no erro tbm
+          professor_id: professorId,
           motivo,
         });
         diagInc(motivo);
+
       }
     }
   }
