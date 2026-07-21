@@ -494,10 +494,14 @@ function expandDemandasToLessons(demandas, randomize = false, strategy = "defaul
   // Pre-computa pesos e cargas globais
   const countKey = new Map();
   const profTotalLoad = new Map();
+  // Jitter por grupo (prof+turma) para que toda a turma de um prof seja shuffled junto
+  const groupJitter = new Map();
   for (const d of demandas) {
     const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
+    const gk = `${d.professor_id}|${d.turma_id}`;
     countKey.set(k, d.aulas_semanais);
     profTotalLoad.set(d.professor_id, (profTotalLoad.get(d.professor_id) || 0) + d.aulas_semanais);
+    if (!groupJitter.has(gk)) groupJitter.set(gk, Math.random());
   }
 
   return lessons
@@ -506,12 +510,26 @@ function expandDemandasToLessons(demandas, randomize = false, strategy = "defaul
       __idx: idx, 
       __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0,
       __profLoad: profTotalLoad.get(l.professor_id) || 0,
+      __groupJitter: groupJitter.get(`${l.professor_id}|${l.turma_id}`) || 0,
     }))
     .sort((a, b) => {
       if (strategy === "random") {
         return a.__strongJitter - b.__strongJitter;
       }
-      
+
+      if (strategy === "group_turma") {
+        // Agrupa por professor (mais carregado primeiro) e dentro do prof, embaralha GRUPOS de turma
+        // assim todas as aulas de (prof+turma) ficam juntas - ideal para germinação
+        if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
+        // Dentro do mesmo prof: shuffle por grupo (prof+turma), cada iteração tem ordem diferente
+        const gA = `${a.professor_id}|${a.turma_id}`;
+        const gB = `${b.professor_id}|${b.turma_id}`;
+        if (gA !== gB) return a.__groupJitter - b.__groupJitter;
+        // Dentro do grupo: menor carga primeiro (mais difíceis de encaixar)
+        if (a.__peso !== b.__peso) return a.__peso - b.__peso;
+        return a.seq - b.seq;
+      }
+
       if (strategy === "reverse_weight") {
         // Menor peso primeiro (turmas com 1 aula, ex: Artes, Prática)
         if (a.__peso !== b.__peso) return a.__peso - b.__peso;
@@ -522,8 +540,9 @@ function expandDemandasToLessons(demandas, randomize = false, strategy = "defaul
         // default: "scarce_first" (prof_load_desc)
         // Professor mais sobrecarregado primeiro (ex: 30/30)
         if (b.__profLoad !== a.__profLoad) return b.__profLoad - a.__profLoad;
-        // Depois, disciplinas com maior peso desse professor
-        if (b.__peso !== a.__peso) return b.__peso - a.__peso;
+        // DENTRO DO MESMO PROFESSOR: menor carga (mais difíceis = menos opções) vêm primeiro.
+        // Ex: ARTES (2) antes de MATEMÁTICA (5), pois ARTES tem menos slots disponíveis.
+        if (a.__peso !== b.__peso) return a.__peso - b.__peso;
       }
       
       // Empates
@@ -538,7 +557,7 @@ function expandDemandasToLessons(demandas, randomize = false, strategy = "defaul
       if (a.seq !== b.seq) return a.seq - b.seq;
       return a.__idx - b.__idx;
     })
-    .map(({ __idx, __peso, __profLoad, __jitter, __strongJitter, ...rest }) => rest);
+    .map(({ __idx, __peso, __profLoad, __jitter, __strongJitter, __groupJitter, ...rest }) => rest);
 }
 
 // --------------------------------------------------------------------------------------
@@ -689,6 +708,17 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
       if (swapped) {
         alocadas++;
       } else {
+        // Tenta Triple Swap (cadeia de 3 niveis) como último recurso
+        swapped = tryTripleSwap(
+          gradePorTurma, gradePorProfessor, dispoIdx,
+          turmaId, professorId, disciplinaId,
+          daysCount, periodosPorDia
+        );
+      }
+
+      if (swapped) {
+        alocadas++;
+      } else {
         // Registra diagnóstico da aula não alocada (PASSO 2.1)
         const motivo = inferirMotivoNaoAlocacao({
           turmaGrade,
@@ -751,6 +781,103 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
       periodos_por_dia: periodosPorDia,
     },
   };
+}
+
+// --------------------------------------------------------------------------------------
+// Triple Swap: busca em cadeia de 3 níveis para resolver deadlocks complexos
+// --------------------------------------------------------------------------------------
+
+/**
+ * tryTripleSwap: quando professores estão 100% lotados, single e double swap não bastam.
+ * Esta função tenta uma cadeia de 3 movimentos:
+ *   Queremos colocar ProfA em (Turma T, slot d/p).
+ *   Turma T está ocupada por ProfB em d/p.
+ *   ProfB quer ir para (Turma T, d2/p2), mas ProfC está lá.
+ *   ProfC quer ir para (Turma T, d3/p3), mas ProfD está lá.
+ *   ProfD pode ir para (Turma T, d4/p4) que está livre.
+ *   → Rotação: ProfD→d4/p4, ProfC→d3/p3, ProfB→d2/p2, ProfA→d/p.
+ */
+function tryTripleSwap(
+  gradePorTurma, gradePorProfessor, dispoIdx,
+  turmaId, professorId, disciplinaId,
+  daysCount, periodosPorDia
+) {
+  const turmaGrade = gradePorTurma[turmaId] || {};
+  const profGrade  = gradePorProfessor[professorId] || {};
+
+  for (let d = 1; d <= daysCount; d++) {
+    for (let p = 1; p <= periodosPorDia; p++) {
+      // ProfA (professorId) está livre no slot d/p
+      if (profGrade?.[d]?.[p]) continue;
+      if (!professorPode(dispoIdx, professorId, d, p)) continue;
+
+      const cellB = turmaGrade?.[d]?.[p];
+      if (!cellB) continue; // turma também livre → double swap já teria resolvido
+      const profB = cellB.professor_id;
+      const discB = cellB.disciplina_id;
+
+      // Procura d2/p2 onde ProfB está livre mas turma está ocupada por ProfC
+      for (let d2 = 1; d2 <= daysCount; d2++) {
+        for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+          if (d2 === d && p2 === p) continue;
+          if (gradePorProfessor[profB]?.[d2]?.[p2]) continue;
+          if (!professorPode(dispoIdx, profB, d2, p2)) continue;
+
+          const cellC = gradePorTurma[turmaId]?.[d2]?.[p2];
+          if (!cellC) continue; // livre → double swap teria resolvido
+          const profC = cellC.professor_id;
+          const discC = cellC.disciplina_id;
+
+          // Procura d3/p3 onde ProfC está livre mas turma está ocupada por ProfD
+          for (let d3 = 1; d3 <= daysCount; d3++) {
+            for (let p3 = 1; p3 <= periodosPorDia; p3++) {
+              if (d3 === d && p3 === p) continue;
+              if (d3 === d2 && p3 === p2) continue;
+              if (gradePorProfessor[profC]?.[d3]?.[p3]) continue;
+              if (!professorPode(dispoIdx, profC, d3, p3)) continue;
+
+              const cellD = gradePorTurma[turmaId]?.[d3]?.[p3];
+              if (!cellD) continue; // livre → double swap teria resolvido
+              const profD = cellD.professor_id;
+              const discD = cellD.disciplina_id;
+
+              // Procura d4/p4 onde ProfD está livre E turma também está livre
+              for (let d4 = 1; d4 <= daysCount; d4++) {
+                for (let p4 = 1; p4 <= periodosPorDia; p4++) {
+                  if (d4 === d && p4 === p) continue;
+                  if (d4 === d2 && p4 === p2) continue;
+                  if (d4 === d3 && p4 === p3) continue;
+                  if (gradePorTurma[turmaId]?.[d4]?.[p4]) continue;
+                  if (gradePorProfessor[profD]?.[d4]?.[p4]) continue;
+                  if (!professorPode(dispoIdx, profD, d4, p4)) continue;
+
+                  // ✅ Rotação tripla encontrada!
+                  // 1. Move ProfD: d3/p3 → d4/p4
+                  clearSlot(gradePorTurma, gradePorProfessor, turmaId, profD, d3, p3);
+                  setSlot(gradePorTurma, gradePorProfessor, turmaId, profD, d4, p4, discD);
+
+                  // 2. Move ProfC: d2/p2 → d3/p3
+                  clearSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d2, p2);
+                  setSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d3, p3, discC);
+
+                  // 3. Move ProfB: d/p → d2/p2
+                  clearSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d, p);
+                  setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB);
+
+                  // 4. Coloca ProfA em d/p
+                  setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
+
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return false;
 }
 
 // --------------------------------------------------------------------------------------

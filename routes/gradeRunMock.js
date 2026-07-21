@@ -331,16 +331,19 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       let strategy = "default";
       let isRandomized = iter > 0;
       
-      const cycle = iter % 100;
-      // 0-19: scarce_first (default, best for 100% load)
-      // 20-39: weight_desc (classic greedy)
-      // 40-59: reverse_weight
-      // 60-79: random
-      // 80-99: scarce_first again (very effective)
+      const cycle = iter % 120;
+      // 0-19:   scarce_first (default, best for 100% load)
+      // 20-39:  group_turma (agrupa prof+turma juntos - ideal para germinação e profs lotados)
+      // 40-59:  weight_desc (classic greedy)
+      // 60-79:  reverse_weight
+      // 80-99:  random
+      // 100-119: group_turma again (muito eficaz para profs 100%)
       
-      if (cycle >= 20 && cycle < 40) strategy = "weight_desc";
-      else if (cycle >= 40 && cycle < 60) strategy = "reverse_weight";
-      else if (cycle >= 60 && cycle < 80) strategy = "random";
+      if (cycle >= 20 && cycle < 40) strategy = "group_turma";
+      else if (cycle >= 40 && cycle < 60) strategy = "weight_desc";
+      else if (cycle >= 60 && cycle < 80) strategy = "reverse_weight";
+      else if (cycle >= 80 && cycle < 100) strategy = "random";
+      else if (cycle >= 100 && cycle < 120) strategy = "group_turma";
       else strategy = "default"; // scarce_first
 
       const result = runGreedySolver(payload, isRandomized, strategy);
