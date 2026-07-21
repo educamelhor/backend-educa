@@ -261,6 +261,7 @@ function computeSlotScore({
   rc02Cfg,
   regrasGerais,
   turno,
+  preferenciasProfessor,
 }) {
   let score = 0;
 
@@ -279,6 +280,16 @@ function computeSlotScore({
   if (consec > rc01MaxConsecutivas) {
     // Penalidade forte; se insistir, derruba cobertura antes (deixa para último caso)
     score += 1000 + (consec - rc01MaxConsecutivas) * 200;
+  }
+
+  // (C.2) Preferência do professor: Aula Simples (prefere_aula_unica)
+  // Se ele prefere aula única, tentamos evitar colocar na mesma disciplina logo após ou antes.
+  if (preferenciasProfessor?.prefere_aula_unica) {
+    const leftSame = periodo > 1 && turmaGrade?.[dia]?.[periodo - 1]?.disciplina_id === disciplinaId;
+    const rightSame = turmaGrade?.[dia]?.[periodo + 1]?.disciplina_id === disciplinaId;
+    if (leftSame || rightSame) {
+      score += 2000; // Penalidade forte, tenta espalhar ao invés de grudar
+    }
   }
 
   // (D) RC02: por dia
@@ -301,11 +312,40 @@ function computeSlotScore({
   // (E) evita sobrecarga de professor no mesmo dia cedo demais (leve)
   //     Se professor já tem aula no mesmo dia, prefere agrupar (reduz score) para reduzir janelas.
   let profDayCount = 0;
+  let hasEarlyClasses = false;
+  let hasLateClasses = false;
   const profRow = profGrade?.[dia] || {};
   for (const p of Object.keys(profRow)) {
-    if (profRow[p]) profDayCount++;
+    if (profRow[p]) {
+      profDayCount++;
+      if (Number(p) < periodo) hasEarlyClasses = true;
+      if (Number(p) > periodo) hasLateClasses = true;
+    }
   }
   if (profDayCount > 0) score -= 0.3;
+
+  // (E.2) Preferência: Evitar janela interna (evitar_janela_interna)
+  // Se o professor já tem aula ANTES deste período, mas NÃO imediatamente antes, 
+  // OU tem aula DEPOIS, mas NÃO imediatamente depois, estamos possivelmente criando (ou preenchendo) uma janela.
+  // Uma forma mais segura de evitar janelas: preferir slots adjacentes ao bloco já existente dele.
+  if (preferenciasProfessor?.evitar_janela_interna) {
+    const profLeftOcc = periodo > 1 && !!profGrade?.[dia]?.[periodo - 1];
+    const profRightOcc = !!profGrade?.[dia]?.[periodo + 1];
+    
+    // Se ele já dá aula no dia, mas o novo slot não encosta em nenhuma aula existente, é janela.
+    if (profDayCount > 0 && !profLeftOcc && !profRightOcc) {
+      // Slot está flutuando longe das aulas já alocadas neste dia!
+      // Se há aulas antes e depois, ele está PREENCHENDO uma janela (isso é MUITO BOM).
+      if (hasEarlyClasses && hasLateClasses) {
+        score -= 5000; // Forte bônus: tapa-buraco!
+      } else {
+        score += 3000; // Forte penalidade: está criando uma nova ilha separada.
+      }
+    } else if (profDayCount > 0 && (profLeftOcc || profRightOcc)) {
+      // Está grudado no bloco, o que é ótimo!
+      score -= 500;
+    }
+  }
 
   // (F) desempate estável por dia: preferir segunda/terça (estabiliza)
   score += dia * 0.05;
@@ -591,6 +631,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
           rc02Cfg,
           regrasGerais,
           turno,
+          preferenciasProfessor: payload?.preferencias?.[professorId] || {},
         });
 
         if (best === null || score < best.score) {

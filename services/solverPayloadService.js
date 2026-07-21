@@ -179,6 +179,8 @@ async function fetchDisponibilidades(escolaId, turno, profIdsOpt = []) {
 async function fetchPreferencias(escolaId, turno, profIdsOpt = []) {
   let sql = `
     SELECT professor_id,
+           prefere_aula_unica,
+           evitar_janela_interna,
            COALESCE(JSON_EXTRACT(regras_json,'$'), JSON_OBJECT()) AS regras_json
       FROM grade_preferencias_professor
      WHERE turno=?`;
@@ -206,6 +208,9 @@ async function fetchPreferencias(escolaId, turno, profIdsOpt = []) {
     } catch {
       obj = {};
     }
+    // Mixin the top-level flags so the solver can read them easily
+    obj.prefere_aula_unica = !!r.prefere_aula_unica;
+    obj.evitar_janela_interna = !!r.evitar_janela_interna;
     map.set(toInt(r.professor_id), obj);
   }
   return map; // Map<prof_id, regras_json>
