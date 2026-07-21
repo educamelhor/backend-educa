@@ -231,6 +231,11 @@ export async function uploadFileBufferToSpaces({ buffer, contentType, objectKey,
     ACL: "public-read",
   });
 
+  if (bucket === "mock_bucket") {
+    console.log(`[spacesUpload] (LOCAL BYPASS) Simulando upload de ${buffer.length} bytes para ${key}`);
+    return { bucket, objectKey: key, publicUrl: `https://mock.digitaloceanspaces.com/${key}` };
+  }
+
   const out = await s3.send(cmd);
 
   const publicUrl = `${endpoint.replace(/\/$/, "")}/${bucket}/${key}`;

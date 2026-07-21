@@ -16,7 +16,7 @@ router.get("/produtos", async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM merenda_produtos WHERE escola_id = ? ORDER BY id DESC",
+      "SELECT * FROM merenda_produtos WHERE escola_id = ? ORDER BY produto ASC",
       [escola_id]
     );
     return res.json(rows);

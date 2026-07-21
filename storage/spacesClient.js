@@ -1,4 +1,4 @@
-﻿import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
 
 /**
  * DigitalOcean Spaces (S3-compatible) ÔÇö Client oficial (AWS SDK v3)
@@ -27,11 +27,20 @@ function normalizeEndpoint(raw) {
 let _client = null;
 
 export function getSpacesConfig() {
-  const key = requireEnv("DO_SPACES_KEY");
-  const secret = requireEnv("DO_SPACES_SECRET");
-  const region = requireEnv("DO_SPACES_REGION");
-  const bucket = requireEnv("DO_SPACES_BUCKET");
-  const endpoint = normalizeEndpoint(requireEnv("DO_SPACES_ENDPOINT"));
+  const isProd = process.env.NODE_ENV === "production";
+  
+  const key = process.env.DO_SPACES_KEY || (isProd ? "" : "mock_key");
+  const secret = process.env.DO_SPACES_SECRET || (isProd ? "" : "mock_secret");
+  const region = process.env.DO_SPACES_REGION || "nyc3";
+  const bucket = process.env.DO_SPACES_BUCKET || (isProd ? "" : "mock_bucket");
+  const endpoint = normalizeEndpoint(process.env.DO_SPACES_ENDPOINT || (isProd ? "" : "nyc3.digitaloceanspaces.com"));
+
+  if (isProd) {
+    requireEnv("DO_SPACES_KEY");
+    requireEnv("DO_SPACES_SECRET");
+    requireEnv("DO_SPACES_BUCKET");
+    requireEnv("DO_SPACES_ENDPOINT");
+  }
 
   return {
     key,
