@@ -35,7 +35,7 @@ router.get("/", async (req, res) => {
       turno,
       prefere_aula_dupla: 0,
       prefere_aula_unica: 0,
-      evitar_janela_interna: 1,
+      evitar_janela_interna: 0,
       janela_no_inicio_ok: 1,
       janela_no_fim_ok: 1,
       max_slots_mesma_turma_dia: 2,
