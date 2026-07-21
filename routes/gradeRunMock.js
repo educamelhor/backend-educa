@@ -321,7 +321,7 @@ router.post("/run-mock", requireEscola, async (req, res) => {
     
     // O usuário permitiu que leve mais tempo para atingir 100%. 
     // Vamos rodar o Monte Carlo intensamente por até 15 segundos ou até achar 100%.
-    const MAX_TIME_MS = 15000; 
+    const MAX_TIME_MS = 8000; 
     const startTime = Date.now();
     let iter = 0;
     let perfectFound = false;

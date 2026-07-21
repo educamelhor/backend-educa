@@ -277,18 +277,32 @@ function computeSlotScore({
 
   // (C) RC01: consecutivas
   const consec = countConsecutiveSameDisc(turmaGrade, dia, periodo, disciplinaId);
-  if (consec > rc01MaxConsecutivas) {
-    // Penalidade forte; se insistir, derruba cobertura antes (deixa para último caso)
-    score += 1000 + (consec - rc01MaxConsecutivas) * 200;
+  if (consec >= rc01MaxConsecutivas) {
+    // Penalidade EXTREMA; bloqueia a 3ª aula consecutiva.
+    score += 100000;
   }
 
-  // (C.2) Preferência do professor: Aula Simples (prefere_aula_unica)
-  // Se ele prefere aula única, tentamos evitar colocar na mesma disciplina logo após ou antes.
+  // (C.2) Preferências e Aulas Germinadas (Duplas)
+  const leftSame = periodo > 1 && turmaGrade?.[dia]?.[periodo - 1]?.disciplina_id === disciplinaId;
+  const rightSame = turmaGrade?.[dia]?.[periodo + 1]?.disciplina_id === disciplinaId;
+
   if (preferenciasProfessor?.prefere_aula_unica) {
-    const leftSame = periodo > 1 && turmaGrade?.[dia]?.[periodo - 1]?.disciplina_id === disciplinaId;
-    const rightSame = turmaGrade?.[dia]?.[periodo + 1]?.disciplina_id === disciplinaId;
+    // Se ele prefere aula única, tentamos evitar colocar na mesma disciplina logo após ou antes.
     if (leftSame || rightSame) {
       score += 2000; // Penalidade forte, tenta espalhar ao invés de grudar
+    }
+  } else {
+    // POR PADRÃO, AULAS SÃO GERMINADAS (DUPLAS)!
+    // O algoritmo deve dar um bônus imenso se estiver colocando encostado em outra aula da mesma matéria.
+    // Assim as peças se atraem magneticamente e formam pares.
+    if (leftSame || rightSame) {
+      if (consec < rc01MaxConsecutivas) {
+        score -= 2500; // Bônus magnético para colar as aulas!
+      }
+    } else {
+      // Se a aula está sendo alocada isolada (sem encostar), aplicamos uma leve penalidade.
+      // O solver vai preferir o slot que dá os -2500.
+      score += 500;
     }
   }
 
@@ -302,10 +316,11 @@ function computeSlotScore({
   if (inDay >= maxDia) {
     if (strictCap || rc02Cfg.modo === "hard" || (rc02Cfg.bloqueioHard && maxDia === rc02Cfg.maxHardPadrao)) {
       // inviabiliza na prática
-      score += 50000;
+      score += 100000;
     } else {
-      // modo soft: permite exceder com penalidade crescente
-      score += 1500 + (inDay - maxDia + 1) * 400;
+      // modo soft: alterado para ser muito mais rigoroso!
+      // URÂNIA dificilmente perdoa uma 3ª aula no dia. Então mesmo no soft, custará muito caro.
+      score += 20000 + (inDay - maxDia + 1) * 5000;
     }
   }
 
