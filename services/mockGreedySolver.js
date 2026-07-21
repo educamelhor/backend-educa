@@ -755,6 +755,10 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
     professores: professoresIds.length,
   };
 
+  // 🔧 Validação pós-alocação: remove entradas excedentes de disciplinas
+  // (pode ocorrer em edge cases dos swaps). Chamado aqui onde demandasNorm já está normalizado.
+  validateAndCleanGrade(gradePorTurma, gradePorProfessor, demandasNorm);
+
   return {
     ok: true,
     traceId: null,
