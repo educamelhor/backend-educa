@@ -103,6 +103,40 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// ─── GET /api/gabarito-avaliacoes/:id/turmas-vinculadas ─────────────────────
+// Retorna os nomes das turmas vinculadas a esta avaliação
+router.get("/:id/turmas-vinculadas", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { id } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT turmas_ids FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Avaliação não encontrada." });
+    }
+
+    const turmasIds = safeJson(rows[0].turmas_ids) || [];
+    if (turmasIds.length === 0) {
+      return res.json([]);
+    }
+
+    // Busca o nome dessas turmas
+    const [turmasRows] = await pool.query(
+      `SELECT id, nome FROM turmas WHERE id IN (?) AND escola_id = ? ORDER BY nome ASC`,
+      [turmasIds, escola_id]
+    );
+
+    res.json(turmasRows);
+  } catch (err) {
+    console.error("Erro ao buscar turmas vinculadas:", err);
+    res.status(500).json({ error: "Erro interno ao buscar turmas." });
+  }
+});
+
 // ─── GET /api/gabarito-avaliacoes/verificar-duplicidade ──────────────────────
 // Verifica se já existe avaliação similar (mesmo tipo+titulo+bimestre)
 router.get("/verificar-duplicidade", async (req, res) => {

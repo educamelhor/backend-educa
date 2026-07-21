@@ -622,7 +622,7 @@ router.post('/', async (req, res) => {
   const userId = req.user?.id;
   if (!escolaId) return res.status(400).json({ ok: false, message: 'escola_id inválido.' });
 
-  const { titulo, area, serie, turno, bimestre, ano, template_id, instrucoes } = req.body;
+  const { titulo, area, serie, turno, bimestre, ano, template_id, instrucoes, avaliacao_id, turma_id } = req.body;
   if (!titulo || !area || !bimestre || !ano)
     return res.status(400).json({ ok: false, message: 'titulo, area, bimestre e ano são obrigatórios.' });
   if (!AREAS[area]) return res.status(400).json({ ok: false, message: 'area inválida.' });
@@ -637,9 +637,9 @@ router.post('/', async (req, res) => {
   const qrToken = crypto.randomBytes(16).toString('hex');
   try {
     const [result] = await db.query(
-      `INSERT INTO capa_provas (escola_id, titulo, area, serie, turno, bimestre, ano, template_id, instrucoes, qr_token, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [escolaId, titulo.trim(), area, serie||null, turno||null, Number(bimestre), Number(ano), tid, instrucoes||null, qrToken, userId||null]
+      `INSERT INTO capa_provas (escola_id, titulo, area, serie, turno, bimestre, ano, template_id, instrucoes, qr_token, criado_por, avaliacao_id, turma_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [escolaId, titulo.trim(), area, serie||null, turno||null, Number(bimestre), Number(ano), tid, instrucoes||null, qrToken, userId||null, avaliacao_id ? Number(avaliacao_id) : null, turma_id ? Number(turma_id) : null]
     );
     return res.status(201).json({ ok: true, id: result.insertId, qr_token: qrToken });
   } catch (err) {
@@ -720,7 +720,12 @@ router.get('/:id/pdf', async (req, res) => {
     ]);
 
     // QR
-    const qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
+    let qrPayload;
+    if (capa.avaliacao_id && capa.turma_id) {
+      qrPayload = { tipo: 'prova', avaliacao_id: capa.avaliacao_id, turma_id: capa.turma_id, capa_id: capa.id };
+    } else {
+      qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
+    }
     const qrBuf = await gerarQRBuffer(qrPayload);
 
     // ── Apply custom color override if provided ──────────────────────────────

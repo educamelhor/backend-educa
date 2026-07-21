@@ -2175,7 +2175,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
 // Chamado ao escanear o QR do GABARITO DO ALUNO.
 // Busca aluno pelo código, retorna dados e arquivo_id do lote.
 router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
-  const { codigo, avaliacao_id, lote_id } = req.query;
+  const { codigo, avaliacao_id, lote_id, turma_id_lote } = req.query;
   const { escola_id } = req.user;
 
   if (!codigo) {
@@ -2186,19 +2186,19 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
     // 1. Buscar aluno
     const [alunoRows] = await pool.query(
       `SELECT a.id, a.estudante AS nome, a.codigo, a.foto, a.escola_id,
-              t.nome AS turma,
+              t.nome AS turma, a.turma_id AS turma_id,
               e.apelido AS escola_apelido
        FROM alunos a
        LEFT JOIN turmas t ON a.turma_id = t.id
        LEFT JOIN escolas e ON a.escola_id = e.id
        WHERE a.codigo = ? AND a.escola_id = ?
        LIMIT 1`,
-      [codigo, school_id || escola_id] // Fallback in case of variable name differences
+      [codigo, escola_id]
     ).catch(() => {
       // Fallback in case school_id or school_apelido query fails
       return pool.query(
         `SELECT a.id, a.estudante AS nome, a.codigo, a.foto, a.escola_id,
-                t.nome AS turma
+                t.nome AS turma, a.turma_id AS turma_id
          FROM alunos a
          LEFT JOIN turmas t ON a.turma_id = t.id
          WHERE a.codigo = ? AND a.escola_id = ?
@@ -2269,7 +2269,12 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
       }
     }
 
-    console.log(`[aluno-by-codigo] codigo=${codigo} aluno=${aluno.nome} arquivo=${arquivoId} foto=${fotoUrl}`);
+    let turmaCorreta = true;
+    if (turma_id_lote && aluno.turma_id) {
+      turmaCorreta = Number(turma_id_lote) === Number(aluno.turma_id);
+    }
+
+    console.log(`[aluno-by-codigo] codigo=${codigo} aluno=${aluno.nome} arquivo=${arquivoId} foto=${fotoUrl} turmaCorreta=${turmaCorreta}`);
 
     res.json({
       alunoId:   aluno.id,
@@ -2277,6 +2282,8 @@ router.get("/scan-mobile/aluno-by-codigo", async (req, res) => {
       re:        aluno.codigo, // Mapeia o RE de forma correta (aluno.codigo)
       codigo:    aluno.codigo,
       turma:     aluno.turma,
+      turma_id:  aluno.turma_id,
+      turmaCorreta,
       fotoUrl,                // Foto do estudante resolvida
       arquivoId,
       jaCapturado,
