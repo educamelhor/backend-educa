@@ -6,7 +6,7 @@
 import express from "express";
 import pool from "../db.js";
 import { buildSolverPayload } from "../services/solverPayloadService.js";
-import { runGreedySolver } from "../services/mockGreedySolver.js";
+import { runGreedySolver, validateAndCleanGrade } from "../services/mockGreedySolver.js";
 
 const router = express.Router();
 
@@ -371,10 +371,22 @@ router.post("/run-mock", requireEscola, async (req, res) => {
 
     const result = bestResult;
 
+    // 🔧 Validação pós-seleção: garante que nenhuma turma tem mais aulas de uma
+    // disciplina do que o demandado (pode ocorrer em edge cases dos swaps).
+    if (result?.grade_por_turma && result?.grade_por_professor) {
+      try {
+        const demandasNorm = payload.demanda?.length ? payload.demanda : (payload.modulacao || []);
+        validateAndCleanGrade(result.grade_por_turma, result.grade_por_professor, demandasNorm);
+      } catch(e) {
+        if (!isProd()) console.warn('[grade/run-mock] Erro na validação pós-alocação:', e.message);
+      }
+    }
+
     if (!isProd()) {
       console.log("[grade/run-mock] (4) runGreedySolver: OK", "traceId=", traceId);
       console.log("[grade/run-mock] resultPreview=", safePreview(result));
     }
+
 
     // 5) Analisa utilização dos professores para avisos na UI
     const periodosPorDia = 6;

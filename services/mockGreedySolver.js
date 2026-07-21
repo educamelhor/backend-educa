@@ -776,10 +776,58 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
         bloqueio_hard: rc02Cfg.bloqueioHard,
         strict_cap_mock: rc02Cfg.strictCapMock,
       },
-      periodos_por_dia: periodosPorDia,
+    periodos_por_dia: periodosPorDia,
     },
   };
 }
+
+// ─── Validação pós-alocação ────────────────────────────────────────────────
+// Garante que nenhuma turma possui mais aulas de uma disciplina do que o
+// demandado. Isso pode ocorrer em edge cases dos swaps.
+// ─────────────────────────────────────────────────────────────────────────
+function validateAndCleanGrade(gradePorTurma, gradePorProfessor, demandasNorm) {
+  // Mapa de demanda: turma_id|disciplina_id → aulas_semanais
+  const demandaMap = new Map();
+  for (const d of demandasNorm) {
+    const k = `${d.turma_id}|${d.disciplina_id}`;
+    demandaMap.set(k, (demandaMap.get(k) || 0) + d.aulas_semanais);
+  }
+
+  for (const [turmaIdStr, dias] of Object.entries(gradePorTurma)) {
+    const turmaId = Number(turmaIdStr);
+    // Conta instâncias por disciplina nesta turma
+    const countByDisc = new Map();
+    const slotsByDisc = new Map(); // disciplina_id → [{d, p, profId}]
+
+    for (const [dStr, perSlot] of Object.entries(dias || {})) {
+      const dia = Number(dStr);
+      for (const [pStr, cell] of Object.entries(perSlot || {})) {
+        const periodo = Number(pStr);
+        if (!cell) continue;
+        const discId = cell.disciplina_id;
+        countByDisc.set(discId, (countByDisc.get(discId) || 0) + 1);
+        if (!slotsByDisc.has(discId)) slotsByDisc.set(discId, []);
+        slotsByDisc.get(discId).push({ d: dia, p: periodo, profId: cell.professor_id });
+      }
+    }
+
+    // Remove entradas excedentes
+    for (const [discId, count] of countByDisc) {
+      const maxAllowed = demandaMap.get(`${turmaId}|${discId}`) || 0;
+      if (count > maxAllowed) {
+        const slots = slotsByDisc.get(discId) || [];
+        const toRemove = count - maxAllowed;
+        // Remove os últimos slots (heurística: remover o excesso do fim)
+        for (let i = 0; i < toRemove; i++) {
+          const slot = slots[slots.length - 1 - i];
+          if (!slot) continue;
+          clearSlot(gradePorTurma, gradePorProfessor, turmaId, slot.profId, slot.d, slot.p);
+        }
+      }
+    }
+  }
+}
+
 
 // --------------------------------------------------------------------------------------
 // Triple Swap: busca em cadeia de 3 níveis para resolver deadlocks complexos
@@ -813,6 +861,7 @@ function tryTripleSwap(
       if (!cellB) continue; // turma também livre → double swap já teria resolvido
       const profB = cellB.professor_id;
       const discB = cellB.disciplina_id;
+      if (!profB) continue;
 
       // Procura d2/p2 onde ProfB está livre mas turma está ocupada por ProfC
       for (let d2 = 1; d2 <= daysCount; d2++) {
@@ -825,6 +874,7 @@ function tryTripleSwap(
           if (!cellC) continue; // livre → double swap teria resolvido
           const profC = cellC.professor_id;
           const discC = cellC.disciplina_id;
+          if (!profC || profC === profB) continue; // Impede loop no mesmo professor
 
           // Procura d3/p3 onde ProfC está livre mas turma está ocupada por ProfD
           for (let d3 = 1; d3 <= daysCount; d3++) {
@@ -838,6 +888,7 @@ function tryTripleSwap(
               if (!cellD) continue; // livre → double swap teria resolvido
               const profD = cellD.professor_id;
               const discD = cellD.disciplina_id;
+              if (!profD || profD === profB || profD === profC) continue; // Impede loops
 
               // Procura d4/p4 onde ProfD está livre E turma também está livre
               for (let d4 = 1; d4 <= daysCount; d4++) {
@@ -849,7 +900,16 @@ function tryTripleSwap(
                   if (gradePorProfessor[profD]?.[d4]?.[p4]) continue;
                   if (!professorPode(dispoIdx, profD, d4, p4)) continue;
 
-                  // ✅ Rotação tripla encontrada!
+                  // Verificação de consistência: os slots que vamos limpar devem
+                  // realmente pertencer aos professores que identificamos
+                  const checkB = gradePorProfessor[profB]?.[d]?.[p];
+                  const checkC = gradePorProfessor[profC]?.[d2]?.[p2];
+                  const checkD = gradePorProfessor[profD]?.[d3]?.[p3];
+                  if (!checkB || checkB.turma_id !== turmaId) continue;
+                  if (!checkC || checkC.turma_id !== turmaId) continue;
+                  if (!checkD || checkD.turma_id !== turmaId) continue;
+
+                  // ✅ Rotação tripla validada!
                   // 1. Move ProfD: d3/p3 → d4/p4
                   clearSlot(gradePorTurma, gradePorProfessor, turmaId, profD, d3, p3);
                   setSlot(gradePorTurma, gradePorProfessor, turmaId, profD, d4, p4, discD);
@@ -882,6 +942,8 @@ function tryTripleSwap(
 // Default export (compatibilidade caso alguém importe sem destructuring)
 // --------------------------------------------------------------------------------------
 export default { runGreedySolver };
+export { validateAndCleanGrade };
+
 function inferirMotivoNaoAlocacao({ turmaGrade, profGrade, professorId, periodosPorDia, daysCount }) {
   let isProfLotado = true;
   let isTurmaLotada = true;
