@@ -801,7 +801,8 @@ function trySingleSwap(
   const turmaGrade = gradePorTurma[turmaId] || {};
   const profGrade = gradePorProfessor[professorId] || {};
 
-  // Caso 1: Turma Livre, Professor Ocupado com Turma B
+  // Caso 1: Turma A Livre, Professor A está ocupado numa Turma B nesse slot.
+  // Solucao: move a aula de Turma B para outro slot livre, liberando o slot para a nova aula.
   for (let d = 1; d <= daysCount; d++) {
     for (let p = 1; p <= periodosPorDia; p++) {
       if (!turmaGrade?.[d]?.[p]) {
@@ -809,20 +810,22 @@ function trySingleSwap(
         if (cellProf) {
           const turmaB = cellProf.turma_id;
           const discB = cellProf.disciplina_id;
+          // O professor que está REALMENTE no slot é o professorId (pois está em profGrade)
+          const profBId = professorId; // é o mesmo professor que tem esta aula em TurmaB
           
           for (let d2 = 1; d2 <= daysCount; d2++) {
             for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+              if (d2 === d && p2 === p) continue;
+              // Slot d2,p2 deve estar livre PARA TURMA B e PARA o professor
               if (!gradePorTurma[turmaB]?.[d2]?.[p2] && 
-                  !gradePorProfessor[professorId]?.[d2]?.[p2] &&
-                  professorPode(dispoIdx, professorId, d2, p2)) {
+                  !gradePorProfessor[profBId]?.[d2]?.[p2] &&
+                  professorPode(dispoIdx, profBId, d2, p2)) {
                 
-                const originalProfBId = gradePorTurma[turmaB]?.[d]?.[p]?.professor_id || professorId;
+                // Mover a aula de TurmaB do slot (d,p) para (d2,p2)
+                clearSlot(gradePorTurma, gradePorProfessor, turmaB, profBId, d, p);
+                setSlot(gradePorTurma, gradePorProfessor, turmaB, profBId, d2, p2, discB);
                 
-                // Mover Turma B para d2, p2
-                clearSlot(gradePorTurma, gradePorProfessor, turmaB, professorId, d, p);
-                setSlot(gradePorTurma, gradePorProfessor, turmaB, professorId, d2, p2, discB, originalProfBId);
-                
-                // Colocar nova aula em d, p
+                // Agora (d,p) está livre para o professor A: colocar nova aula de TurmaA
                 setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
                 
                 return true;
@@ -834,7 +837,8 @@ function trySingleSwap(
     }
   }
 
-  // Caso 2: Turma Ocupada com Prof B, Professor Livre
+  // Caso 2: Turma A Ocupada com Prof B, Professor A está livre nesse slot.
+  // Solucao: move a aula de ProfB para outro slot livre, liberando o slot para a nova aula.
   for (let d = 1; d <= daysCount; d++) {
     for (let p = 1; p <= periodosPorDia; p++) {
       if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) {
@@ -845,17 +849,17 @@ function trySingleSwap(
           
           for (let d2 = 1; d2 <= daysCount; d2++) {
             for (let p2 = 1; p2 <= periodosPorDia; p2++) {
+              if (d2 === d && p2 === p) continue;
+              // Slot d2,p2 deve estar livre PARA TURMA A e PARA profB
               if (!gradePorTurma[turmaId]?.[d2]?.[p2] && 
                   !gradePorProfessor[profB]?.[d2]?.[p2] &&
                   professorPode(dispoIdx, profB, d2, p2)) {
                 
-                const originalProfBId = gradePorTurma[turmaId]?.[d]?.[p]?.professor_id || profB;
-                
-                // Mover Prof B para d2, p2
+                // Mover a aula de ProfB do slot (d,p) para (d2,p2)
                 clearSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d, p);
-                setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB, originalProfBId);
+                setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB);
                 
-                // Colocar nova aula em d, p
+                // Agora (d,p) está livre: colocar nova aula
                 setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
                 
                 return true;
@@ -878,53 +882,47 @@ function tryDoubleSwap(
   const turmaGrade = gradePorTurma[turmaId] || {};
   const profGrade = gradePorProfessor[professorId] || {};
 
-  // O foco principal é a Turma ocupada com Prof B e Professor Livre. (Erro SEM_SLOT_LIVRE_TURMA)
+  // Turma ocupada com Prof B e Professor A livre (SEM_SLOT_LIVRE_TURMA)
+  // Tentativa: mover ProfC de d2,p2 para d3,p3, liberando d2,p2 para ProfB,
+  // que libera d,p para o ProfessorA.
   for (let d = 1; d <= daysCount; d++) {
     for (let p = 1; p <= periodosPorDia; p++) {
       if (!profGrade?.[d]?.[p] && professorPode(dispoIdx, professorId, d, p)) {
-        const cellTurma = turmaGrade?.[d]?.[p]; // Turma ocupada com Prof B
+        const cellTurma = turmaGrade?.[d]?.[p];
         if (cellTurma) {
           const profB = cellTurma.professor_id;
           const discB = cellTurma.disciplina_id;
           
-          // No single swap, tentamos mover profB para d2,p2 onde profB e turmaId estivessem livres.
-          // Falhou pq profB não tem d2,p2 livre em conjunto com turmaId.
-          // Talvez profB esteja LIVRE em d2,p2, MAS turmaId está OCUPADA por profC em d2,p2!
-          // Se movermos profC para d3,p3, liberamos d2,p2 para profB, que libera d,p para professorId!
           for (let d2 = 1; d2 <= daysCount; d2++) {
             for (let p2 = 1; p2 <= periodosPorDia; p2++) {
               if (d === d2 && p === p2) continue;
               
-              // Se profB está livre em d2,p2
+              // profB está livre em d2,p2
               if (!gradePorProfessor[profB]?.[d2]?.[p2] && professorPode(dispoIdx, profB, d2, p2)) {
-                
                 const cellTurma2 = gradePorTurma[turmaId]?.[d2]?.[p2];
-                // E a turma está ocupada por profC
+                // A turma está ocupada por profC em d2,p2
                 if (cellTurma2) {
                   const profC = cellTurma2.professor_id;
                   const discC = cellTurma2.disciplina_id;
                   
-                  // Tentar mover profC para d3,p3
+                  // Tentar mover profC de d2,p2 para d3,p3
                   for (let d3 = 1; d3 <= daysCount; d3++) {
                     for (let p3 = 1; p3 <= periodosPorDia; p3++) {
                       if (d3 === d && p3 === p) continue;
                       if (d3 === d2 && p3 === p2) continue;
                       
+                      // d3,p3 deve estar livre tanto para a turma quanto para profC
                       if (!gradePorTurma[turmaId]?.[d3]?.[p3] && 
                           !gradePorProfessor[profC]?.[d3]?.[p3] &&
                           professorPode(dispoIdx, profC, d3, p3)) {
                         
-                        // SUUUUUCCEEESSS!!!
-                        const originalProfBId = gradePorTurma[turmaId]?.[d]?.[p]?.professor_id || profB;
-                        const originalProfCId = gradePorTurma[turmaId]?.[d2]?.[p2]?.professor_id || profC;
-                        
                         // 1. Move profC de d2,p2 para d3,p3
                         clearSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d2, p2);
-                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d3, p3, discC, originalProfCId);
+                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profC, d3, p3, discC);
                         
                         // 2. Move profB de d,p para d2,p2
                         clearSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d, p);
-                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB, originalProfBId);
+                        setSlot(gradePorTurma, gradePorProfessor, turmaId, profB, d2, p2, discB);
                         
                         // 3. Coloca professorId em d,p
                         setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, d, p, disciplinaId);
@@ -942,6 +940,5 @@ function tryDoubleSwap(
     }
   }
 
-  // Oposto (Turma Livre, Prof Ocupado com Turma B) também pode ser estendido se houver muitos erros do outro tipo.
   return false;
 }
