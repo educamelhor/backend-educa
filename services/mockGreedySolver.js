@@ -259,6 +259,8 @@ function computeSlotScore({
   disciplinaId,
   rc01MaxConsecutivas,
   rc02Cfg,
+  regrasGerais,
+  turno,
 }) {
   let score = 0;
 
@@ -307,6 +309,37 @@ function computeSlotScore({
 
   // (F) desempate estável por dia: preferir segunda/terça (estabiliza)
   score += dia * 0.05;
+
+  if (regrasGerais) {
+    // (G) Recreio separando aula dupla
+    // Se a aula anterior (periodo - 1) é a mesma disciplina, essa é uma aula dupla.
+    // Vamos checar se cruzou o recreio.
+    if (!regrasGerais.aulas_duplas_separar_recreio) {
+      const rcApos = regrasGerais.recreio_apos_periodo || {};
+      const rcAtual = rcApos[turno] || rcApos.matutino || 3;
+      
+      // Se o período atual (segunda aula) é (rcAtual + 1) E a aula anterior era mesma disciplina, cruzou o recreio.
+      if (periodo === rcAtual + 1) {
+        const discAnterior = turmaGrade?.[dia]?.[periodo - 1]?.disciplina_id;
+        if (discAnterior == disciplinaId) {
+          score += 100000; // BLOQUEIO!
+        }
+      }
+    }
+
+    // (H) Disciplinas Excludentes no mesmo dia (ex: Mat e Geo)
+    if (regrasGerais.disciplinas_excludentes?.length > 0) {
+      const todayClasses = Object.values(turmaGrade?.[dia] || {}).map(c => String(c?.disciplina_id));
+      for (const par of regrasGerais.disciplinas_excludentes) {
+        if (String(disciplinaId) === String(par[0]) && todayClasses.includes(String(par[1]))) {
+          score += 50000; // Forte penalidade para evitar mistura no dia
+        }
+        if (String(disciplinaId) === String(par[1]) && todayClasses.includes(String(par[0]))) {
+          score += 50000;
+        }
+      }
+    }
+  }
 
   return score;
 }
@@ -479,6 +512,8 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 
   const rc01MaxConsecutivas = readRc01MaxConsecutivas(configPedagogica);
   const rc02Cfg = readRc02Config(configPedagogica);
+  const regrasGerais = configPedagogica?.regras_gerais || null;
+  const turno = payload?.turno || "matutino";
 
   const turmaIds = normalizeTurmaIds(payload);
   const demandasNorm = normalizeDemandas(payload);
@@ -554,6 +589,8 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
           disciplinaId,
           rc01MaxConsecutivas,
           rc02Cfg,
+          regrasGerais,
+          turno,
         });
 
         if (best === null || score < best.score) {

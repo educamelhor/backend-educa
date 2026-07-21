@@ -21,11 +21,17 @@ router.get('/', async (req, res) => {
       [escola_id]
     );
     if (!row) return res.json(null);
+    
+    const parsedPeriodos = parseJson(row.periodos, {});
+    const regras_gerais = parsedPeriodos._regras_gerais || {};
+    delete parsedPeriodos._regras_gerais;
+
     return res.json({
       id:           row.id,
       turnos:       parseJson(row.turnos,      []),
       dias_semana:  parseJson(row.dias_semana, [1, 2, 3, 4, 5]),
-      periodos:     parseJson(row.periodos,    {}),
+      periodos:     parsedPeriodos,
+      regras_gerais,
       criado_em:    row.criado_em,
       atualizado_em: row.atualizado_em,
     });
@@ -40,7 +46,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { turnos, dias_semana, periodos } = req.body || {};
+    const { turnos, dias_semana, periodos, regras_gerais } = req.body || {};
 
     if (!Array.isArray(turnos) || turnos.length === 0)
       return res.status(400).json({ message: 'Informe ao menos um turno.' });
@@ -51,7 +57,10 @@ router.post('/', async (req, res) => {
 
     const turnosJson   = JSON.stringify(turnos.map(t => String(t).toLowerCase()));
     const diasJson     = JSON.stringify(dias_semana.map(Number));
-    const periodosJson = JSON.stringify(periodos);
+    
+    // Anexa as regras gerais no JSON de períodos para evitar necessidade de ALTER TABLE imediato
+    const periodosPayload = { ...periodos, _regras_gerais: regras_gerais || {} };
+    const periodosJson = JSON.stringify(periodosPayload);
 
     const [[exists]] = await pool.query(
       'SELECT id FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1',

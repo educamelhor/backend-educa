@@ -278,9 +278,39 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       payload.config_pedagogica = configPersistida;
     } else {
       // fallback defensivo: garante estrutura mínima esperada pelo solver
-      payload.config_pedagogica = payload.config_pedagogica || { nivel, regras: {} };
-      payload.config_pedagogica.nivel = payload.config_pedagogica.nivel || nivel;
-      payload.config_pedagogica.regras = payload.config_pedagogica.regras || {};
+      payload.config_pedagogica = { regras: {} };
+    }
+    
+    if (!payload.config_pedagogica.regras) payload.config_pedagogica.regras = {};
+
+    // 3.5) Injeta regras_gerais (globais da escola) no payload
+    try {
+      const [[escolaCfg]] = await pool.query(
+        'SELECT periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1',
+        [req.escolaId]
+      );
+      if (escolaCfg && escolaCfg.periodos) {
+        let parsedPeriodos = typeof escolaCfg.periodos === 'string' ? JSON.parse(escolaCfg.periodos) : escolaCfg.periodos;
+        if (Buffer.isBuffer(escolaCfg.periodos)) parsedPeriodos = JSON.parse(escolaCfg.periodos.toString('utf8'));
+        
+        if (parsedPeriodos && parsedPeriodos._regras_gerais) {
+          payload.config_pedagogica.regras_gerais = parsedPeriodos._regras_gerais;
+          
+          // Compatibilidade RC01 e RC02 forçada pelas regras gerais
+          if (parsedPeriodos._regras_gerais.preferencia_aulas_duplas) {
+             payload.config_pedagogica.regras.rc01_distribuicao_disciplina = {
+               modo: 'hard', max_consecutivas: 2
+             };
+          }
+          if (parsedPeriodos._regras_gerais.max_aulas_mesmo_dia) {
+             payload.config_pedagogica.regras.rc02_max_por_dia_disciplina = {
+               modo: 'hard', max_por_dia_padrao: parsedPeriodos._regras_gerais.max_aulas_mesmo_dia, bloqueio_hard: true
+             };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[grade/run-mock] Falha ao injetar regras_gerais:", err.message);
     }
 
     // 4) Executa o solver mock (greedy) com Multi-Start (Monte Carlo)
