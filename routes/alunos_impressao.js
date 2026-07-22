@@ -57,7 +57,7 @@ router.get("/impressao/boletins", async (req, res) => {
 
     // ── Descobrir o ano letivo da turma (usa o maior ano_letivo nas matrículas) ──
     const [[turmaInfo]] = await pool.query(
-      `SELECT t.id, t.nome AS turma, t.turno, t.etapa, t.escola_id,
+      `SELECT t.id, t.nome AS turma, t.turno, t.etapa, t.escola_id, t.regime,
               MAX(m.ano_letivo) AS ano_letivo
          FROM turmas t
          LEFT JOIN matriculas m ON m.turma_id = t.id AND m.status = 'ativo'
@@ -86,7 +86,8 @@ router.get("/impressao/boletins", async (req, res) => {
          ? AS turma_id,
          a.status,
          a.escola_id,
-         ? AS etapa
+         ? AS etapa,
+         ? AS regime
        FROM matriculas m
        INNER JOIN alunos a ON a.id = m.aluno_id
        WHERE m.turma_id = ?
@@ -99,6 +100,7 @@ router.get("/impressao/boletins", async (req, res) => {
         turmaInfo.turno,
         turmaInfo.id,
         turmaInfo.etapa,
+        turmaInfo.regime || null,
         turma_id,
         escolaIdTurma,
         anoLetivo,
@@ -147,6 +149,8 @@ router.get("/impressao/boletins", async (req, res) => {
         nome: aluno.nome,
         turma: aluno.turma,
         turno: aluno.turno,
+        turma_id: aluno.turma_id,
+        regime: aluno.regime,
         situacao: aluno.status,
         ranking: rankings[aluno.codigo] || null,
         notas: notas
