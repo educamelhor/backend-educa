@@ -100,7 +100,7 @@ async function enablePrintMedia(page) {
 
 /**
  * Gera um buffer de PDF em A4 landscape, com margens ajustadas.
- * - top 14mm: compensa a área não imprimível da maioria das impressoras.
+ * - top 22mm: margem superior generosa para compensar área não imprimível.
  * - bottom 8mm: evita espaço em branco excessivo no rodapé.
  * - left/right 18mm: margens laterais elegantes (colunas compactadas no CSS).
  * - preferCSSPageSize: respeita o @page do CSS Module.
@@ -110,7 +110,7 @@ async function makePDF(page) {
     format: "A4",
     landscape: true,
     printBackground: true,
-    margin: { top: "14mm", bottom: "8mm", left: "18mm", right: "18mm" },
+    margin: { top: "22mm", bottom: "8mm", left: "18mm", right: "18mm" },
     preferCSSPageSize: false, // usa format+landscape acima
   });
 }
