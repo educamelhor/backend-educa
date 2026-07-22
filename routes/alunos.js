@@ -479,9 +479,11 @@ router.get("/:id", async (req, res) => {
         a.atendimento_diferencial,
         a.foto,
         a.status,
+        t.id AS turma_id,
         t.nome AS turma,
         t.turno,
         t.etapa AS etapa,
+        t.regime,
         -- Verifica se algum responsÃ¡vel ativo concedeu consentimento de imagem
         COALESCE(
           (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
