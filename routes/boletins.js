@@ -85,8 +85,22 @@ async function waitRenderComplete(page) {
     state: "attached",
     timeout: 120_000,
   });
-  // Grace period para fontes/imagens terminarem de renderizar
-  await new Promise((r) => setTimeout(r, 1200));
+  
+  // Aguarda todas as imagens serem completamente carregadas
+  await page.evaluate(() => {
+    return Promise.all(
+      Array.from(document.images).map((img) => {
+        if (img.complete) return Promise.resolve();
+        return new Promise((resolve) => {
+          img.onload = resolve;
+          img.onerror = resolve; // Resolve mesmo com erro para não travar
+        });
+      })
+    );
+  });
+
+  // Grace period mínimo para fontes terminarem de renderizar
+  await new Promise((r) => setTimeout(r, 600));
 }
 
 /**
