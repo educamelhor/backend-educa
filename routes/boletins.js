@@ -100,18 +100,17 @@ async function enablePrintMedia(page) {
 
 /**
  * Gera um buffer de PDF em A4 landscape, com margens ajustadas.
- * - top 22mm: margem superior generosa para compensar área não imprimível.
- * - bottom 8mm: evita espaço em branco excessivo no rodapé.
- * - left/right 18mm: margens laterais elegantes (colunas compactadas no CSS).
- * - preferCSSPageSize: respeita o @page do CSS Module.
+ * - top 28mm: margem superior generosa. O CSS @page usa margin:0 para não
+ *   conflitar — o Playwright é o único responsável pelas margens do PDF.
+ * - bottom 10mm / left+right 18mm.
  */
 async function makePDF(page) {
   return page.pdf({
     format: "A4",
     landscape: true,
     printBackground: true,
-    margin: { top: "22mm", bottom: "8mm", left: "18mm", right: "18mm" },
-    preferCSSPageSize: false, // usa format+landscape acima
+    margin: { top: "28mm", bottom: "10mm", left: "18mm", right: "18mm" },
+    preferCSSPageSize: false,
   });
 }
 
