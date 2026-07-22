@@ -1,9 +1,10 @@
 // api/routes/cargasHorarias.js
 // ============================================================================
-// Cargas Horárias por Turma
-// - Todas as rotas exigem usuário autenticado com req.user.escola_id
-// - GET: lista as cargas já definidas para uma turma (somente da escola do login)
-// - POST /definir: substitui a definição inteira da turma, em transação
+// Cargas Horárias por Turma — com suporte a semestres
+// - GET: lista cargas da turma por semestre (default: semestre 1)
+// - POST /definir: substitui definição inteira da turma por semestre
+// - POST /definir-lote: define para múltiplas turmas por semestre
+// - POST /copiar-semestre: copia cargas do 1º para o 2º semestre
 // ============================================================================
 
 import express from "express";
@@ -22,17 +23,39 @@ function verificarEscola(req, res, next) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /api/cargas-horarias?turma_id=123
-// Lista cargas da turma, restrito à escola do login
+// Utilitário: busca o regime da turma (anual | semestral)
+// Retorna 'anual' como default seguro se a coluna ainda não existir no banco.
+// ----------------------------------------------------------------------------
+async function getRegimeTurma(turmaId, escolaId) {
+  try {
+    const [[row]] = await pool.query(
+      `SELECT COALESCE(regime, 'anual') AS regime FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [turmaId, escolaId]
+    );
+    return row?.regime ?? 'anual';
+  } catch {
+    return 'anual';
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /api/cargas-horarias?turma_id=123[&semestre=2]
+// Lista cargas da turma, restrito à escola do login.
+// Para turmas anuais: sempre retorna semestre 1 (ignora parâmetro).
+// Para turmas semestrais: filtra pelo semestre informado (default 1).
 // ----------------------------------------------------------------------------
 router.get("/", verificarEscola, async (req, res) => {
   try {
     const { turma_id } = req.query;
     const { escola_id } = req.user;
+    const semestreParam = parseInt(req.query.semestre) === 2 ? 2 : 1;
 
     if (!turma_id) {
       return res.status(400).json({ message: "turma_id é obrigatório" });
     }
+
+    const regime = await getRegimeTurma(turma_id, escola_id);
+    const semestre = regime === 'semestral' ? semestreParam : 1;
 
     const [rows] = await pool.query(
       `SELECT
@@ -40,18 +63,20 @@ router.get("/", verificarEscola, async (req, res) => {
          tc.escola_id,
          tc.turma_id,
          tc.disciplina_id,
+         tc.semestre,
          tc.carga,
          UPPER(d.nome) AS disciplina_nome
        FROM turma_cargas tc
        JOIN disciplinas d ON d.id = tc.disciplina_id
       WHERE tc.turma_id = ?
         AND tc.escola_id = ?
+        AND tc.semestre = ?
       ORDER BY d.nome`,
-      [turma_id, escola_id]
+      [turma_id, escola_id, semestre]
     );
 
     const total = rows.reduce((acc, r) => acc + (Number(r.carga) || 0), 0);
-    return res.status(200).json({ itens: rows, totalCarga: total });
+    return res.status(200).json({ itens: rows, totalCarga: total, semestre, regime });
   } catch (err) {
     console.error("Erro ao listar cargas da turma:", err);
     return res.status(500).json({ message: "Não foi possível carregar as cargas da turma." });
@@ -60,36 +85,32 @@ router.get("/", verificarEscola, async (req, res) => {
 
 // ----------------------------------------------------------------------------
 // POST /api/cargas-horarias/definir
-// Body:
-// {
-//   turma_id: number,
-//   itens: (string[] | number[]) // lista de disciplina_id selecionadas
-// }
-// Regras:
-// - Ignora escola_id do body (se houver). Usa sempre req.user.escola_id.
-// - Apaga definição anterior da turma (da escola do login) e insere a nova.
-// - Carga é lida da tabela 'disciplinas' (campo 'carga').
+// Body: { turma_id, semestre (1|2, default 1), itens: number[] }
+// Substitui a definição do semestre informado. Para turmas anuais, sempre semestre 1.
 // ----------------------------------------------------------------------------
 router.post("/definir", verificarEscola, async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const { turma_id, itens } = req.body;
     const { escola_id } = req.user;
+    const semestreParam = parseInt(req.body.semestre) === 2 ? 2 : 1;
 
     if (!turma_id || !Array.isArray(itens)) {
       return res.status(400).json({ message: "turma_id e itens são obrigatórios." });
     }
 
+    const regime = await getRegimeTurma(turma_id, escola_id);
+    const semestre = regime === 'semestral' ? semestreParam : 1;
+
     await conn.beginTransaction();
 
-    // Exclui definição anterior da turma (apenas da escola do usuário)
+    // Exclui apenas o semestre selecionado (preserva o outro semestre intacto)
     await conn.query(
-      "DELETE FROM turma_cargas WHERE turma_id = ? AND escola_id = ?",
-      [turma_id, escola_id]
+      "DELETE FROM turma_cargas WHERE turma_id = ? AND escola_id = ? AND semestre = ?",
+      [turma_id, escola_id, semestre]
     );
 
     if (itens.length > 0) {
-      // Busca as disciplinas selecionadas *desta escola* e suas cargas
       const placeholders = itens.map(() => "?").join(",");
       const params = [escola_id, ...itens];
 
@@ -101,43 +122,44 @@ router.post("/definir", verificarEscola, async (req, res) => {
         params
       );
 
-      // Monta valores para insert em massa
       const valores = disciplinas.map((d) => [
         escola_id,
         turma_id,
         d.id,
+        semestre,
         Number(d.carga) || 0,
       ]);
 
       if (valores.length > 0) {
         await conn.query(
-          "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, carga) VALUES ?",
+          "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
           [valores]
         );
       }
     }
 
-    // Retorna o que ficou salvo
     const [rows] = await conn.query(
       `SELECT
          tc.id,
          tc.escola_id,
          tc.turma_id,
          tc.disciplina_id,
+         tc.semestre,
          tc.carga,
-          UPPER(d.nome) AS disciplina_nome
+         UPPER(d.nome) AS disciplina_nome
        FROM turma_cargas tc
        JOIN disciplinas d ON d.id = tc.disciplina_id
       WHERE tc.turma_id = ?
         AND tc.escola_id = ?
+        AND tc.semestre = ?
       ORDER BY d.nome`,
-      [turma_id, escola_id]
+      [turma_id, escola_id, semestre]
     );
 
     await conn.commit();
 
     const total = rows.reduce((acc, r) => acc + (Number(r.carga) || 0), 0);
-    return res.status(200).json({ ok: true, itens: rows, totalCarga: total });
+    return res.status(200).json({ ok: true, itens: rows, totalCarga: total, semestre, regime });
   } catch (err) {
     try { await conn.rollback(); } catch {}
     console.error("Erro ao definir cargas da turma:", err);
@@ -149,21 +171,16 @@ router.post("/definir", verificarEscola, async (req, res) => {
 
 // ----------------------------------------------------------------------------
 // POST /api/cargas-horarias/definir-lote
-// Body:
-// {
-//   turma_ids: number[],   // uma ou mais turmas
-//   itens:     number[]    // disciplina_ids (mesmo conjunto para todas as turmas)
-// }
-// Regras:
-// - Usa req.user.escola_id (ignora escola_id do body).
-// - Apaga cargas anteriores de TODAS as turma_ids informadas.
-// - Insere o mesmo conjunto de disciplinas em todas elas.
+// Body: { turma_ids, semestre (1|2, default 1), itens: number[] }
+// Define o mesmo conjunto de disciplinas para várias turmas no mesmo semestre.
+// Para turmas anuais dentro do lote: sempre usa semestre 1.
 // ----------------------------------------------------------------------------
 router.post("/definir-lote", verificarEscola, async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const { turma_ids, itens } = req.body;
     const { escola_id } = req.user;
+    const semestreParam = parseInt(req.body.semestre) === 2 ? 2 : 1;
 
     if (!Array.isArray(turma_ids) || turma_ids.length === 0 || !Array.isArray(itens)) {
       return res.status(400).json({ message: "turma_ids e itens são obrigatórios." });
@@ -171,37 +188,54 @@ router.post("/definir-lote", verificarEscola, async (req, res) => {
 
     await conn.beginTransaction();
 
-    // Remove cargas anteriores de todas as turmas selecionadas
+    // Busca regime de todas as turmas do lote
     const phTurmas = turma_ids.map(() => "?").join(",");
-    await conn.query(
-      `DELETE FROM turma_cargas WHERE turma_id IN (${phTurmas}) AND escola_id = ?`,
+    const [regimes] = await conn.query(
+      `SELECT id, COALESCE(regime, 'anual') AS regime FROM turmas WHERE id IN (${phTurmas}) AND escola_id = ?`,
       [...turma_ids, escola_id]
     );
+    const regimeMap = Object.fromEntries(regimes.map(r => [r.id, r.regime]));
 
+    // Agrupa turmas por semestre efetivo
+    const turmasPorSemestre = { 1: [], 2: [] };
+    for (const tid of turma_ids) {
+      const regime = regimeMap[tid] ?? 'anual';
+      const sem = regime === 'semestral' ? semestreParam : 1;
+      turmasPorSemestre[sem].push(Number(tid));
+    }
+
+    // Busca disciplinas e suas cargas
     if (itens.length > 0) {
-      // Busca disciplinas e suas cargas
       const phDiscs = itens.map(() => "?").join(",");
       const [disciplinas] = await conn.query(
-        `SELECT id, (carga + 0) AS carga
-           FROM disciplinas
-          WHERE escola_id = ?
-            AND id IN (${phDiscs})`,
+        `SELECT id, (carga + 0) AS carga FROM disciplinas WHERE escola_id = ? AND id IN (${phDiscs})`,
         [escola_id, ...itens]
       );
 
-      // Monta matriz turma × disciplina
-      const valores = [];
-      for (const turma_id of turma_ids) {
-        for (const d of disciplinas) {
-          valores.push([escola_id, Number(turma_id), d.id, Number(d.carga) || 0]);
-        }
-      }
+      for (const [sem, turmasDoSem] of Object.entries(turmasPorSemestre)) {
+        if (turmasDoSem.length === 0) continue;
+        const semNum = Number(sem);
 
-      if (valores.length > 0) {
+        // Remove cargas anteriores apenas do semestre selecionado
+        const phT = turmasDoSem.map(() => "?").join(",");
         await conn.query(
-          "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, carga) VALUES ?",
-          [valores]
+          `DELETE FROM turma_cargas WHERE turma_id IN (${phT}) AND escola_id = ? AND semestre = ?`,
+          [...turmasDoSem, escola_id, semNum]
         );
+
+        const valores = [];
+        for (const turma_id of turmasDoSem) {
+          for (const d of disciplinas) {
+            valores.push([escola_id, turma_id, d.id, semNum, Number(d.carga) || 0]);
+          }
+        }
+
+        if (valores.length > 0) {
+          await conn.query(
+            "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
+            [valores]
+          );
+        }
       }
     }
 
@@ -220,16 +254,78 @@ router.post("/definir-lote", verificarEscola, async (req, res) => {
   }
 });
 
-
 // ----------------------------------------------------------------------------
+// POST /api/cargas-horarias/copiar-semestre
+// Body: { turma_ids: number[], de: 1, para: 2 }
+// Copia cargas do semestre 'de' para o semestre 'para'.
+// Só funciona para turmas com regime = 'semestral'.
+// ----------------------------------------------------------------------------
+router.post("/copiar-semestre", verificarEscola, async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { turma_ids, de, para } = req.body;
+    const { escola_id } = req.user;
+
+    if (!Array.isArray(turma_ids) || turma_ids.length === 0) {
+      return res.status(400).json({ message: "turma_ids é obrigatório." });
+    }
+    if (![1, 2].includes(Number(de)) || ![1, 2].includes(Number(para)) || de === para) {
+      return res.status(400).json({ message: "de e para devem ser 1 ou 2 e diferentes entre si." });
+    }
+
+    // Filtra apenas turmas semestrais
+    const phTurmas = turma_ids.map(() => "?").join(",");
+    const [turmasSemestrais] = await conn.query(
+      `SELECT id FROM turmas WHERE id IN (${phTurmas}) AND escola_id = ? AND regime = 'semestral'`,
+      [...turma_ids, escola_id]
+    );
+
+    if (turmasSemestrais.length === 0) {
+      return res.status(400).json({ message: "Nenhuma turma semestral encontrada." });
+    }
+
+    const idsSemestrais = turmasSemestrais.map(t => t.id);
+    const phS = idsSemestrais.map(() => "?").join(",");
+
+    await conn.beginTransaction();
+
+    // Remove cargas do semestre destino
+    await conn.query(
+      `DELETE FROM turma_cargas WHERE turma_id IN (${phS}) AND escola_id = ? AND semestre = ?`,
+      [...idsSemestrais, escola_id, Number(para)]
+    );
+
+    // Copia do semestre origem para o destino
+    await conn.query(
+      `INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga)
+       SELECT escola_id, turma_id, disciplina_id, ?, carga
+       FROM turma_cargas
+       WHERE turma_id IN (${phS}) AND escola_id = ? AND semestre = ?`,
+      [Number(para), ...idsSemestrais, escola_id, Number(de)]
+    );
+
+    await conn.commit();
+    return res.status(200).json({
+      ok: true,
+      turmas_atualizadas: idsSemestrais.length,
+      message: `Cargas copiadas do ${de}º para o ${para}º semestre em ${idsSemestrais.length} turma(s).`,
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch {}
+    console.error("Erro ao copiar semestre:", err);
+    return res.status(500).json({ message: "Não foi possível copiar as cargas." });
+  } finally {
+    try { conn.release(); } catch {}
+  }
+});
+
+
 // ============================================================================
 // ROTAS MODULAÇÃO INTELIGENTE: config-segmento
 // Configuração de carga por disciplina × etapa × turno por escola.
-// Alimenta a lógica de "quanto essa disciplina consome por turma" na modulação.
 // ============================================================================
 
 // GET /api/cargas-horarias/config-segmento
-// Lista todas as configs da escola (ou filtra por disciplina_id)
 router.get("/config-segmento", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
@@ -266,7 +362,6 @@ router.get("/config-segmento", verificarEscola, async (req, res) => {
 });
 
 // POST /api/cargas-horarias/config-segmento
-// Upsert: cria ou atualiza a config (escola, disciplina, etapa, turno) → carga
 router.post("/config-segmento", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
@@ -288,7 +383,6 @@ router.post("/config-segmento", verificarEscola, async (req, res) => {
       [escola_id, Number(disciplina_id), String(etapa).trim(), String(turno).trim(), cargaNum]
     );
 
-    // Retorna o registro atualizado/criado
     const [[row]] = await pool.query(
       `SELECT dcs.id, dcs.disciplina_id, d.nome AS disciplina_nome, dcs.etapa, dcs.turno, dcs.carga
        FROM disciplina_carga_segmento dcs
@@ -305,7 +399,6 @@ router.post("/config-segmento", verificarEscola, async (req, res) => {
 });
 
 // DELETE /api/cargas-horarias/config-segmento/:id
-// Remove uma configuração específica da escola
 router.delete("/config-segmento/:id", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;

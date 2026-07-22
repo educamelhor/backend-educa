@@ -95,7 +95,7 @@ router.get("/recall/check", async (req, res) => {
 router.get("/me", async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { ano, bimestre } = req.query;
+    const { ano, bimestre, semestre } = req.query;
 
     // Resolve CPF do professor logado (mesmo padrão dos outros /me endpoints)
     let cpf = req.user?.cpf;
@@ -117,7 +117,7 @@ router.get("/me", async (req, res) => {
     const cleanCpf = String(cpf).replace(/\D/g, "");
     const anoParam = ano ? Number(ano) : new Date().getFullYear();
 
-    // ── Passo 1: turmas e disciplinas DO professor neste ano (via modulação) ──────────────
+    // ── Passo 1: turmas e disciplinas DO professor neste ano (via modulação) ───────────────────
     // Usa turmas.ano para garantir que são turmas do ano letivo correto.
     const [vinculos] = await pool.query(
       `SELECT DISTINCT
@@ -160,6 +160,12 @@ router.get("/me", async (req, res) => {
       params.push(bimestre);
     }
 
+    // Filtro por semestre: NULL = regime anual (sem filtro), 1 ou 2 = semestral
+    if (semestre && ["1", "2"].includes(String(semestre))) {
+      sql += ` AND semestre = ?`;
+      params.push(Number(semestre));
+    }
+
     sql += ` ORDER BY disciplina, turmas`;
 
     const [planos] = await pool.query(sql, params);
@@ -173,12 +179,12 @@ router.get("/me", async (req, res) => {
 
 /**
  * 1) GET /api/avaliacoes
- * Busca todos os planos de avaliação de uma escola, opcionalmente filtrando por ano, disciplina, bimestre.
+ * Busca todos os planos de avaliação de uma escola, opcionalmente filtrando por ano, disciplina, bimestre, semestre.
  */
 router.get("/", async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { ano, disciplina, bimestre } = req.query;
+    const { ano, disciplina, bimestre, semestre } = req.query;
 
     let sql = `SELECT * FROM planos_avaliacao WHERE escola_id = ?`;
     const params = [escola_id];
@@ -194,6 +200,12 @@ router.get("/", async (req, res) => {
     if (bimestre) {
       sql += ` AND bimestre = ?`;
       params.push(bimestre);
+    }
+
+    // Filtro por semestre (NULL = anual, 1 ou 2 = semestral)
+    if (semestre && ["1", "2"].includes(String(semestre))) {
+      sql += ` AND semestre = ?`;
+      params.push(Number(semestre));
     }
 
     const [planos] = await pool.query(sql, params);
@@ -520,8 +532,13 @@ router.post("/", async (req, res) => {
       ano = anoLetivoPadrao(),
       nome_codigo,
       status = "RASCUNHO",
+      semestre = null,
       itens = []
     } = req.body;
+
+    // Normaliza semestre: apenas 1 ou 2 são válidos para turmas semestrais;
+    // NULL indica regime anual (compatível com dados existentes).
+    const semestreNorm = [1, 2].includes(Number(semestre)) ? Number(semestre) : null;
 
     // Vai desmembrar as turmas em planos individuais
     const turmasArray = Array.isArray(turmas) ? turmas : turmas.split("-");
@@ -533,8 +550,9 @@ router.post("/", async (req, res) => {
       // Busca se já existe o plano especificamente para essa turma
       const [[existente]] = await conn.query(
         `SELECT id FROM planos_avaliacao 
-         WHERE escola_id = ? AND ano = ? AND bimestre = ? AND disciplina = ? AND turmas = ?`,
-        [escola_id, ano, bimestre, disciplina, turmaUnica]
+         WHERE escola_id = ? AND ano = ? AND bimestre = ? AND disciplina = ? AND turmas = ?
+           AND (semestre <=> ?)`,
+        [escola_id, ano, bimestre, disciplina, turmaUnica, semestreNorm]
       );
 
       // Cada turma recebe um nome de código individual
@@ -549,9 +567,9 @@ router.post("/", async (req, res) => {
       } else {
         const [result] = await conn.query(
           `INSERT INTO planos_avaliacao 
-            (escola_id, disciplina, bimestre, turmas, ano, status, nome_codigo, usuario_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [escola_id, disciplina, bimestre, turmaUnica, ano, status, nomeCodigoIndividual, usuario_id]
+            (escola_id, disciplina, bimestre, semestre, turmas, ano, status, nome_codigo, usuario_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [escola_id, disciplina, bimestre, semestreNorm, turmaUnica, ano, status, nomeCodigoIndividual, usuario_id]
         );
         planoId = result.insertId;
       }

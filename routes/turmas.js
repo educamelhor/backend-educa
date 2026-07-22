@@ -36,6 +36,7 @@ router.get("/", verificarEscola, async (req, res) => {
         t.ano,
         t.serie,
         t.turno,
+        COALESCE(t.regime, 'anual') AS regime,
         t.escola_id,
         e.nome AS escola
       FROM turmas t
@@ -77,17 +78,18 @@ router.get("/", verificarEscola, async (req, res) => {
  */
 router.post("/", verificarEscola, async (req, res) => {
   try {
-    const { nome, etapa, ano, serie, turno } = req.body;
+    const { nome, etapa, ano, serie, turno, regime = 'anual' } = req.body;
     const { escola_id } = req.user;
+    const regimeValido = ['anual', 'semestral'].includes(regime) ? regime : 'anual';
 
     const [result] = await pool.query(
-      "INSERT INTO turmas (nome, etapa, ano, serie, turno, escola_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [nome, etapa, ano, serie, turno, escola_id]
+      "INSERT INTO turmas (nome, etapa, ano, serie, turno, regime, escola_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [nome, etapa, ano, serie, turno, regimeValido, escola_id]
     );
     return res.status(201).json({ id: result.insertId });
   } catch (err) {
     console.error("Erro ao criar turma:", err);
-    return res.status(500).json({ error: "NÃ£o foi possÃ­vel criar a turma" });
+    return res.status(500).json({ error: "Não foi possível criar a turma" });
   }
 });
 
@@ -105,12 +107,13 @@ router.post("/", verificarEscola, async (req, res) => {
 router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, etapa, ano, serie, turno } = req.body;
+    const { nome, etapa, ano, serie, turno, regime } = req.body;
     const { escola_id } = req.user;
+    const regimeValido = ['anual', 'semestral'].includes(regime) ? regime : 'anual';
 
     const [result] = await pool.query(
-      "UPDATE turmas SET nome=?, etapa=?, ano=?, serie=?, turno=? WHERE id=? AND escola_id=?",
-      [nome, etapa, ano, serie, turno, id, escola_id]
+      "UPDATE turmas SET nome=?, etapa=?, ano=?, serie=?, turno=?, regime=? WHERE id=? AND escola_id=?",
+      [nome, etapa, ano, serie, turno, regimeValido, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
