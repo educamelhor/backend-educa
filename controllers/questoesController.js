@@ -267,6 +267,14 @@ export async function criarQuestao(req, res) {
       ]
     );
     const qid = result.insertId;
+
+    // Sincroniza questao_temas (tabela indexada para busca rápida)
+    if (temasValidos.length > 0) {
+      await pool.query('DELETE FROM questao_temas WHERE questao_id = ? AND fonte = ?', [qid, 'local']);
+      const temasRows = temasValidos.map(t => [qid, 'local', String(t).slice(0, 100)]);
+      await pool.query('INSERT INTO questao_temas (questao_id, fonte, tema) VALUES ?', [temasRows]);
+    }
+
     await registrarHistorico(qid, 'criou', uid);
     res.status(201).json({ id: qid, numero_q, message: 'Questão criada com sucesso.' });
   } catch (err) {
@@ -285,7 +293,7 @@ export async function atualizarQuestao(req, res) {
   const {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
-    imagem_base64, alternativas_json, correta,
+    imagem_base64, imagem_url, alternativas_json, correta,
     texto_apoio, fonte, explicacao, tags, temas,
     compartilhada, status,
   } = req.body;
@@ -348,6 +356,18 @@ export async function atualizarQuestao(req, res) {
 
     if (result.affectedRows === 0)
       return res.status(404).json({ message: 'Questão não encontrada ou não pertence à sua escola.' });
+
+    // Sincroniza questao_temas
+    try {
+      const temasAtualizar = Array.isArray(temas) ? temas
+        : (typeof temas === 'string' ? JSON.parse(temas || '[]') : []);
+      const temasArr = temasAtualizar.filter(Boolean);
+      if (temasArr.length > 0) {
+        await pool.query('DELETE FROM questao_temas WHERE questao_id = ? AND fonte = ?', [id, 'local']);
+        const temasRows = temasArr.map(t => [id, 'local', String(t).slice(0, 100)]);
+        await pool.query('INSERT INTO questao_temas (questao_id, fonte, tema) VALUES ?', [temasRows]);
+      }
+    } catch { /* não bloqueia a edição se questao_temas falhar */ }
 
     res.json({ message: 'Questão atualizada com sucesso.' });
   } catch (err) {

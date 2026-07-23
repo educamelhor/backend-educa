@@ -84,6 +84,8 @@ import disciplinasRouter from "./routes/disciplinas.js";
 import turmasRouter from "./routes/turmas.js";
 import questoesRouter from "./routes/questoes.js";
 import questoesUploadRouter from "./routes/questoesUpload.js";
+import questaoUploadRouter from './routes/questaoUpload.js';
+import masterRouter from './routes/master.js';
 import provasRouter from "./routes/provas.js";
 import provaPdfRouter from "./routes/prova_pdf.js";
 import provaLatexPdfRouter from "./routes/provaLatexPdf.js";
@@ -1439,6 +1441,10 @@ async function bootstrap() {
     app.use("/api/provas", autenticarToken, verificarEscola, provaPdfRouter);
     // ✅ EDUCA.PROVA — PDF Premium via LaTeX/Tectonic
     app.use("/api/provas", autenticarToken, verificarEscola, provaLatexPdfRouter);
+    // ✅ EDUCA.PROVA — Upload de imagens de questões para DO Spaces
+    app.use("/api/questoes", autenticarToken, questaoUploadRouter);
+    // ✅ EDUCA.PROVA — Banco Master (questões premium EDUCA.MELHOR)
+    app.use("/api/master", masterRouter);
   } else {
     console.log("[FF] Questões desativado");
   }
