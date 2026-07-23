@@ -619,6 +619,19 @@ export async function publicarQuestao(req, res) {
           q.global_id,
         ]
       );
+
+      // Sincroniza questao_temas para o banco global (republicação)
+      if (temasJson) {
+        try {
+          const arr = JSON.parse(temasJson);
+          if (Array.isArray(arr) && arr.length > 0) {
+            await pool.query('DELETE FROM questao_temas WHERE questao_id = ? AND fonte = ?', [q.global_id, 'global']);
+            const rows = arr.filter(Boolean).map(t => [q.global_id, 'global', String(t).slice(0, 100)]);
+            await pool.query('INSERT INTO questao_temas (questao_id, fonte, tema) VALUES ?', [rows]);
+          }
+        } catch { /* não bloqueia */ }
+      }
+
       const codigo = `EMQG-${String(q.global_id).padStart(5, "0")}`;
       return res.json({
         message: "Questão republicada no Banco Global com sucesso.",
@@ -658,6 +671,18 @@ export async function publicarQuestao(req, res) {
       [globalId, correta_texto, id]
     );
 
+    // Sincroniza questao_temas para o banco global (nova publicação)
+    if (temasJson) {
+      try {
+        const arr = JSON.parse(temasJson);
+        if (Array.isArray(arr) && arr.length > 0) {
+          await pool.query('DELETE FROM questao_temas WHERE questao_id = ? AND fonte = ?', [globalId, 'global']);
+          const rows = arr.filter(Boolean).map(t => [globalId, 'global', String(t).slice(0, 100)]);
+          await pool.query('INSERT INTO questao_temas (questao_id, fonte, tema) VALUES ?', [rows]);
+        }
+      } catch { /* não bloqueia */ }
+    }
+
     console.log(`[BancoGlobal] Questão ${id} publicada → global_id=${globalId} (${codigo})`);
     res.status(201).json({
       message: "Questão publicada no Banco Global com sucesso!",
@@ -687,7 +712,11 @@ export async function buscarBancoGlobal(req, res) {
   if (disciplina) { conds.push("g.disciplina = ?");    params.push(disciplina); }
   if (nivel)      { conds.push("g.nivel = ?");         params.push(nivel); }
   if (serie)      { conds.push("g.serie = ?");         params.push(serie); }
-  if (tema)       { conds.push("JSON_SEARCH(g.temas, 'one', ?) IS NOT NULL"); params.push(tema); }
+  if (tema) {
+    // JOIN com questao_temas (indexado) em vez de JSON_SEARCH (full table scan)
+    conds.push("EXISTS (SELECT 1 FROM questao_temas qt WHERE qt.questao_id = g.id AND qt.fonte = 'global' AND qt.tema = ?)");
+    params.push(tema);
+  }
   if (busca) {
     conds.push("(g.conteudo_bruto LIKE ? OR g.tags LIKE ? OR g.habilidade_bncc LIKE ?)");
     params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`);
