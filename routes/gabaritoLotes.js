@@ -872,6 +872,8 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'omr')
        ON DUPLICATE KEY UPDATE
          nome_aluno = VALUES(nome_aluno),
+         turma_id = VALUES(turma_id),
+         turma_nome = VALUES(turma_nome),
          respostas_aluno = VALUES(respostas_aluno),
          acertos = VALUES(acertos),
          total_questoes = VALUES(total_questoes),
