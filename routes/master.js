@@ -8,13 +8,13 @@ import {
 
 const router = express.Router();
 
-router.get('/buscar', buscarMaster);                       // pública
-router.get('/', autenticarToken, listarMaster);
-router.get('/:id', autenticarToken, obterMaster);
-router.post('/', autenticarToken, criarMasterQuestao);
-router.post('/importar-lote', autenticarToken, importarLoteMaster);
-router.patch('/:id/publicar', autenticarToken, publicarMaster);
-router.patch('/:id', autenticarToken, editarMaster);
-router.delete('/:id', autenticarToken, excluirMaster);
+router.get('/buscar',                           buscarMaster);                       // pública
+router.get('/questoes',        autenticarToken, listarMaster);
+router.get('/questoes/:id',    autenticarToken, obterMaster);
+router.post('/questoes',       autenticarToken, criarMasterQuestao);
+router.post('/importar-lote',  autenticarToken, importarLoteMaster);
+router.patch('/questoes/:id/publicar', autenticarToken, publicarMaster);
+router.patch('/questoes/:id',          autenticarToken, editarMaster);
+router.delete('/questoes/:id',         autenticarToken, excluirMaster);
 
 export default router;
