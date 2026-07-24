@@ -53,28 +53,69 @@ export const obterMaster = async (req, res) => {
   }
 };
 
+// Helper — garante que valor JSON vire string para armazenar em TEXT
+function toJsonStr(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') return v; // já é string JSON
+  return JSON.stringify(v);
+}
+
 export const criarMasterQuestao = async (req, res) => {
   try {
-    const { disciplina, conteudo, tema, nivel, enunciado, gabarito_comentado, fonte, temas, tipo = 'objetiva', alternativas_json, correta } = req.body;
-    
+    const b = req.body;
+    const criada_por = b.criada_por || (req.user?.is_agent ? 'agente_ia' : req.user?.nome || 'CEO');
+
     const [result] = await pool.query(
-      `INSERT INTO questoes_master (disciplina, conteudo, tema, nivel, enunciado, gabarito_comentado, fonte, tipo, alternativas_json, correta, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rascunho')`,
-      [disciplina, conteudo, tema, nivel, enunciado, gabarito_comentado, fonte, tipo, JSON.stringify(alternativas_json) || null, correta || null]
+      `INSERT INTO questoes_master (
+         disciplina, area_conhecimento, conteudo, tema, subtema,
+         nivel, serie, habilidade_bncc, palavras_chave, tipo,
+         enunciado, texto_apoio, imagem_url,
+         alternativas_json, correta,
+         gabarito_comentado, dicas, resolucao_completa, conceito_chave,
+         fonte, fonte_tipo, ano_fonte,
+         status, criada_por
+       ) VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, 'rascunho',?)`,
+      [
+        b.disciplina        || null,
+        b.area_conhecimento || null,
+        b.conteudo          || null,
+        b.tema              || null,
+        b.subtema           || null,
+        b.nivel             || null,
+        b.serie             || null,
+        b.habilidade_bncc   || null,
+        toJsonStr(b.palavras_chave),
+        b.tipo              || 'objetiva',
+        b.enunciado         || null,
+        b.texto_apoio       || null,
+        b.imagem_url        || null,
+        toJsonStr(b.alternativas_json),
+        b.correta           || null,
+        b.gabarito_comentado || null,
+        toJsonStr(b.dicas),
+        b.resolucao_completa || null,
+        b.conceito_chave    || null,
+        b.fonte             || null,
+        b.fonte_tipo        || null,
+        b.ano_fonte         || null,
+        criada_por,
+      ]
     );
-    
+
     const insertId = result.insertId;
     const codigo = `EMQM-${insertId.toString().padStart(5, '0')}`;
-    
     await pool.query('UPDATE questoes_master SET codigo = ? WHERE id = ?', [codigo, insertId]);
-    
-    if (Array.isArray(temas) && temas.length > 0) {
+
+    // Indexa temas
+    const temas = Array.isArray(b.temas) ? b.temas : [];
+    if (temas.length > 0) {
       const temasRows = temas.filter(Boolean).map(t => [insertId, String(t).slice(0, 100)]);
       if (temasRows.length > 0) await pool.query('INSERT INTO questao_master_temas (questao_id, tema) VALUES ?', [temasRows]);
     }
-    
+
     res.status(201).json({ id: insertId, codigo });
   } catch (err) {
+    console.error('[criarMasterQuestao]', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -183,27 +224,70 @@ export const buscarMaster = async (req, res) => {
 export const importarLoteMaster = async (req, res) => {
   try {
     const { questoes } = req.body;
-    if (!Array.isArray(questoes) || questoes.length === 0) return res.status(400).json({ error: 'Lote vazio' });
-    
+    if (!Array.isArray(questoes) || questoes.length === 0)
+      return res.status(400).json({ error: 'Lote vazio' });
+
     let inseridas = 0;
-    let codigos = [];
-    
-    for (const q of questoes) {
+    const codigos = [];
+
+    for (const b of questoes) {
+      const criada_por = b.criada_por || (req.user?.is_agent ? 'agente_ia' : 'CEO');
+
       const [result] = await pool.query(
-        `INSERT INTO questoes_master (disciplina, conteudo, tema, nivel, enunciado, gabarito_comentado, fonte, tipo, alternativas_json, correta, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rascunho')`,
-        [q.disciplina, q.conteudo, q.tema, q.nivel, q.enunciado, q.gabarito_comentado, q.fonte, q.tipo || 'objetiva', JSON.stringify(q.alternativas_json) || null, q.correta || null]
+        `INSERT INTO questoes_master (
+           disciplina, area_conhecimento, conteudo, tema, subtema,
+           nivel, serie, habilidade_bncc, palavras_chave, tipo,
+           enunciado, texto_apoio, imagem_url,
+           alternativas_json, correta,
+           gabarito_comentado, dicas, resolucao_completa, conceito_chave,
+           fonte, fonte_tipo, ano_fonte,
+           status, criada_por
+         ) VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, 'rascunho',?)`,
+        [
+          b.disciplina        || null,
+          b.area_conhecimento || null,
+          b.conteudo          || null,
+          b.tema              || null,
+          b.subtema           || null,
+          b.nivel             || null,
+          b.serie             || null,
+          b.habilidade_bncc   || null,
+          toJsonStr(b.palavras_chave),
+          b.tipo              || 'objetiva',
+          b.enunciado         || null,
+          b.texto_apoio       || null,
+          b.imagem_url        || null,
+          toJsonStr(b.alternativas_json),
+          b.correta           || null,
+          b.gabarito_comentado || null,
+          toJsonStr(b.dicas),
+          b.resolucao_completa || null,
+          b.conceito_chave    || null,
+          b.fonte             || null,
+          b.fonte_tipo        || null,
+          b.ano_fonte         || null,
+          criada_por,
+        ]
       );
+
       const insertId = result.insertId;
       const codigo = `EMQM-${insertId.toString().padStart(5, '0')}`;
       await pool.query('UPDATE questoes_master SET codigo = ? WHERE id = ?', [codigo, insertId]);
-      
+
+      // Indexa temas
+      const temas = Array.isArray(b.temas) ? b.temas : [];
+      if (temas.length > 0) {
+        const temasRows = temas.filter(Boolean).map(t => [insertId, String(t).slice(0, 100)]);
+        if (temasRows.length > 0) await pool.query('INSERT INTO questao_master_temas (questao_id, tema) VALUES ?', [temasRows]);
+      }
+
       inseridas++;
       codigos.push(codigo);
     }
-    
+
     res.json({ inseridas, codigos });
   } catch (err) {
+    console.error('[importarLoteMaster]', err);
     res.status(500).json({ error: err.message });
   }
 };
