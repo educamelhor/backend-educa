@@ -2107,7 +2107,7 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
 
     // 3. Buscar ou criar lote para essa avaliação+turma
     let [loteRows] = await pool.query(
-      `SELECT id, status FROM gabarito_lotes
+      `SELECT id, status, professor_id FROM gabarito_lotes
        WHERE avaliacao_id = ? AND turma_id = ? AND escola_id = ?
        LIMIT 1`,
       [avaliacao_id, turma_id, escola_id]
@@ -2135,6 +2135,14 @@ router.get("/scan-mobile/sessao-info", async (req, res) => {
         loteId = relook[0]?.id;
       }
     } else {
+      // Regra de Blindagem (Professor Aplicador)
+      // Se a direção vinculou este lote a UM PROFESSOR ESPECÍFICO, apenas ele pode escanear.
+      if (loteRows[0].professor_id && loteRows[0].professor_id !== req.user.id) {
+        return res.status(403).json({ 
+          error: "Acesso Negado: A correção desta turma foi atribuída a outro professor aplicador." 
+        });
+      }
+
       loteId = loteRows[0].id;
     }
 
