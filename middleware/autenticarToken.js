@@ -6,6 +6,30 @@ export function autenticarToken(req, res, next) {
     // ── CORS preflight: OPTIONS nunca carrega token por especificação HTTP ──
     if (req.method === "OPTIONS") return next();
 
+    // ── API KEY do Agente IA (alternativa ao JWT para o sub-agente) ──────────
+    // O agente usa o header: X-Agent-Key: <AGENT_API_KEY>
+    // Configurado como variável de ambiente AGENT_API_KEY no DO App Platform
+    const agentKey = req.headers["x-agent-key"];
+    if (agentKey) {
+      const validKey = process.env.AGENT_API_KEY;
+      if (validKey && agentKey === validKey) {
+        req.user = {
+          id: 0,
+          nome: "Agente IA — EDUCA.MELHOR",
+          perfil: "SUPER_ADMIN",
+          scope: "plataforma",
+          permissoes: ["plataforma.visualizar", "master.escrever"],
+          perfis: ["SUPER_ADMIN"],
+          escola_id: null,
+          is_agent: true,
+        };
+        return next();
+      }
+      // Chave informada mas inválida — rejeita imediatamente
+      return res.status(401).json({ ok: false, message: "Chave de agente inválida." });
+    }
+
+    // ── Fluxo JWT normal (usuários humanos) ──────────────────────────────────
     const authHeader = req.headers?.authorization || "";
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
