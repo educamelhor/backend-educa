@@ -1451,5 +1451,333 @@ router.get("/notas/:avaliacaoId/:turmaId", async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// LISTA DE MÉDIAS
+// ══════════════════════════════════════════════════════════════════════════
+router.get("/medias/:turmaId", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { turmaId } = req.params;
+    const { bimestre, ano, titulo: tituloParam } = req.query;
+
+    const anoLetivo = ano || anoLetivoPadrao();
+    const titulo = tituloParam ? tituloParam.toUpperCase() : `LISTA DE MÉDIAS — ${bimestre ? bimestre.toUpperCase() : ""}`;
+
+    // ── Dados da escola ──
+    const [[escola]] = await pool.query(
+      "SELECT id, nome, apelido, endereco, cidade FROM escolas WHERE id = ?",
+      [escola_id]
+    );
+
+    // ── Dados da turma ──
+    const [[turma]] = await pool.query(
+      "SELECT id, nome, turno, serie FROM turmas WHERE id = ? AND escola_id = ?",
+      [turmaId, escola_id]
+    );
+
+    if (!turma) {
+      return res.status(404).json({ error: "Turma não encontrada." });
+    }
+
+    const turmaLabel = turma.nome || "Turma";
+    const turnoLabel = turma.turno || "";
+
+    // ── Buscar alunos da turma ──
+    const [alunos] = await pool.query(
+      `SELECT a.id, a.codigo as codigo_aluno, a.estudante as nome_aluno
+       FROM matriculas m
+       INNER JOIN alunos a ON a.id = m.aluno_id
+       WHERE m.turma_id = ? AND m.escola_id = ? AND m.ano_letivo = ? AND m.status = 'ativo'
+       ORDER BY a.estudante ASC`,
+      [turmaId, escola_id, anoLetivo]
+    );
+
+    if (alunos.length === 0) {
+      return res.status(404).json({ error: "Nenhum aluno encontrado para esta turma." });
+    }
+
+    const alunoIds = alunos.map(a => a.id);
+
+    // ── Buscar notas do bimestre selecionado ──
+    const [notasRaw] = await pool.query(
+      `SELECT aluno_id, nota
+       FROM notas
+       WHERE aluno_id IN (?) AND bimestre = ? AND ano = ?`,
+      [alunoIds, bimestre, anoLetivo]
+    );
+
+    // ── Calcular média por aluno ──
+    const mapMedias = {};
+    for (const id of alunoIds) {
+      mapMedias[id] = { soma: 0, qtd: 0 };
+    }
+    for (const n of notasRaw) {
+      const valor = Number(n.nota) || 0;
+      mapMedias[n.aluno_id].soma += valor;
+      mapMedias[n.aluno_id].qtd += 1;
+    }
+
+    const respostas = alunos.map(a => {
+      const stats = mapMedias[a.id];
+      const media = stats.qtd > 0 ? (stats.soma / stats.qtd) : 0;
+      return {
+        ...a,
+        media,
+        hasNotas: stats.qtd > 0
+      };
+    });
+
+    // ── Logos ──
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(escola_id);
+
+    // ══════════════════════════════════════════════════════════════════
+    // GERAR PDF
+    // ══════════════════════════════════════════════════════════════════
+    const L = 40;
+    const R = 40;
+    const PW = 595.28 - L - R;
+    const PAGE_H = 841.89;
+    const FOOTER_Y = PAGE_H - 25;
+    const MAX_Y = FOOTER_Y - 15;
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 30, bottom: 0, left: L, right: R },
+      autoFirstPage: true,
+      info: {
+        Title: `${titulo} - ${turmaLabel}`,
+        Author: "EDUCA.MELHOR — Sistema Educacional",
+        Subject: "Lista de Médias",
+      },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="lista_medias_${turmaLabel.replace(/\s+/g, "_")}.pdf"`);
+
+    const pdfChunks = [];
+    const { PassThrough } = await import("stream");
+    const passThrough = new PassThrough();
+    passThrough.on("data", (chunk) => pdfChunks.push(chunk));
+    doc.pipe(passThrough);
+
+    let pageNum = 1;
+
+    const COR_AZUL = "#1e3a5f";
+    const COR_DOURADO = "#b8860b";
+    const COR_CINZA = "#555";
+    const COR_VERDE = "#166534";
+    const COR_VERDE_BG = "#dcfce7";
+    const COR_VERMELHO = "#991b1b";
+    const COR_VERMELHO_BG = "#fee2e2";
+
+    function drawFooter() {
+      doc
+        .font("Helvetica").fontSize(6.5).fillColor("#aaa")
+        .text(
+          `${titulo} • ${turmaLabel} • Documento gerado pelo EDUCA.MELHOR • Página ${pageNum}`,
+          L, FOOTER_Y, { width: PW, align: "center", lineBreak: false }
+        );
+    }
+
+    function ensureSpace(needed) {
+      if (doc.y + needed > MAX_Y) {
+        drawFooter();
+        doc.addPage();
+        pageNum++;
+        doc.y = 30;
+      }
+    }
+
+    // ── Cabeçalho Institucional Premium ──
+    const headerTop = doc.y;
+    const logoSize = 58;
+
+    if (hasLogoLeft) doc.image(logoLeft, L, headerTop, { width: logoSize, height: logoSize });
+    if (hasLogoRight) doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
+
+    const hx = L + logoSize + 8;
+    const hw = PW - (logoSize + 8) * 2;
+
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+      .text("SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL", hx, headerTop + 4, { width: hw, align: "center" });
+    doc.font("Helvetica-Bold").fontSize(8.5).fillColor(COR_AZUL)
+      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${(escola?.cidade || "PLANALTINA").toUpperCase()}`, hx, doc.y + 1, { width: hw, align: "center" });
+    const nomeCompleto = escola?.apelido ? `${escola.nome} — ${escola.apelido}` : (escola?.nome || "");
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(COR_AZUL)
+      .text(nomeCompleto.toUpperCase(), hx, doc.y + 1, { width: hw, align: "center" });
+    doc.font("Helvetica").fontSize(7.5).fillColor(COR_CINZA)
+      .text(escola?.endereco || "", hx, doc.y + 1, { width: hw, align: "center" });
+
+    doc.y = headerTop + logoSize + 4;
+
+    // Linhas decorativas duplas
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_DOURADO).lineWidth(2).stroke();
+    doc.y += 3;
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(0.8).stroke();
+    doc.y += 8;
+
+    // TÍTULO
+    doc.font("Helvetica-Bold").fontSize(14).fillColor(COR_AZUL)
+      .text(titulo, L, doc.y, { width: PW, align: "center" });
+    doc.y += 4;
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ccc").lineWidth(0.5).stroke();
+    doc.y += 6;
+
+    // ── Faixa de identificação premium ──
+    const infoY = doc.y;
+    const infoH = 20;
+    doc.roundedRect(L, infoY, PW, infoH, 3).fill("#f0f4ff");
+    doc.roundedRect(L, infoY, PW, infoH, 3).strokeColor("#c7d2fe").lineWidth(0.5).stroke();
+
+    const colW = PW / 5;
+    const infoCols = [
+      { label: "Turma:", value: turmaLabel },
+      { label: "Turno:", value: turnoLabel },
+      { label: "Bimestre:", value: bimestre || "—" },
+      { label: "Total alunos:", value: String(respostas.length) },
+      { label: "Ano Letivo:", value: String(anoLetivo) },
+    ];
+    const infoTextY = infoY + 6;
+    infoCols.forEach((col, i) => {
+      const cx = L + colW * i + 6;
+      doc.font("Helvetica-Bold").fontSize(7).fillColor(COR_AZUL)
+        .text(col.label, cx, infoTextY, { width: colW - 12, lineBreak: false, continued: true });
+      doc.font("Helvetica").fontSize(7).fillColor("#334155")
+        .text(` ${col.value}`, { lineBreak: false });
+    });
+    doc.y = infoY + infoH + 8;
+
+    // ── Estatísticas resumo ──
+    const mediasComNota = respostas.filter(r => r.hasNotas).map(r => r.media);
+    const mediaTurma = mediasComNota.length ? (mediasComNota.reduce((a, b) => a + b, 0) / mediasComNota.length) : 0;
+    const aprov = mediasComNota.filter(m => m >= 5.0).length;
+    const reprov = mediasComNota.length - aprov;
+    const maiorNota = mediasComNota.length ? Math.max(...mediasComNota) : 0;
+    const menorNota = mediasComNota.length ? Math.min(...mediasComNota) : 0;
+    const totalComNota = mediasComNota.length || 1; // prevent div by zero
+
+    const statY = doc.y;
+    const statH = 22;
+    const statW = PW / 5;
+    const stats = [
+      { label: "Média da Turma", value: mediaTurma.toFixed(1), cor: COR_AZUL, bg: "#f0f4ff", border: "#c7d2fe" },
+      { label: "Aprovados", value: `${aprov} (${Math.round((aprov / totalComNota) * 100)}%)`, cor: COR_VERDE, bg: COR_VERDE_BG, border: "#86efac" },
+      { label: "Reprovados", value: `${reprov} (${Math.round((reprov / totalComNota) * 100)}%)`, cor: COR_VERMELHO, bg: COR_VERMELHO_BG, border: "#fca5a5" },
+      { label: "Maior Média", value: maiorNota.toFixed(1), cor: COR_VERDE, bg: COR_VERDE_BG, border: "#86efac" },
+      { label: "Menor Média", value: menorNota.toFixed(1), cor: COR_VERMELHO, bg: COR_VERMELHO_BG, border: "#fca5a5" },
+    ];
+    stats.forEach((s, i) => {
+      const sx = L + statW * i + (i > 0 ? 3 : 0);
+      const sw = statW - (i > 0 ? 3 : 0);
+      doc.roundedRect(sx, statY, sw, statH, 3).fill(s.bg);
+      doc.roundedRect(sx, statY, sw, statH, 3).strokeColor(s.border).lineWidth(0.5).stroke();
+      doc.font("Helvetica").fontSize(6).fillColor(s.cor)
+        .text(s.label, sx + 3, statY + 3, { width: sw - 6, align: "center", lineBreak: false });
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(s.cor)
+        .text(s.value, sx + 3, statY + 10, { width: sw - 6, align: "center", lineBreak: false });
+    });
+    doc.y = statY + statH + 10;
+
+    // ════════════════════════════════════════════════════
+    // TABELA DE MÉDIAS
+    // ════════════════════════════════════════════════════
+    const COL_N_W = 26;
+    const COL_RE_W = 52;
+    const COL_MEDIA_W = 60;
+    const COL_NOME_W = PW - COL_N_W - COL_RE_W - COL_MEDIA_W;
+    const TH = 16;
+    const TR = 18;
+
+    const thY = doc.y;
+    doc.rect(L, thY, PW, TH).fill(COR_AZUL);
+    let tx = L;
+    [
+      { text: "Nº", w: COL_N_W, align: "center" },
+      { text: "RE", w: COL_RE_W, align: "center" },
+      { text: "ESTUDANTE", w: COL_NOME_W, align: "left" },
+      { text: `MÉDIA`, w: COL_MEDIA_W, align: "center" },
+    ].forEach((col) => {
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff")
+        .text(col.text, tx + 3, thY + 4, { width: col.w - 6, align: col.align, lineBreak: false });
+      tx += col.w;
+    });
+    doc.y = thY + TH;
+
+    respostas.forEach((r, i) => {
+      ensureSpace(TR + 2);
+      const rowY = doc.y;
+      const nota = r.media;
+      const aprovado = nota >= 5.0;
+
+      // Linha zebrada
+      if (i % 2 === 0) doc.rect(L, rowY, PW, TR).fill("#f8fafc");
+      doc.moveTo(L, rowY + TR).lineTo(L + PW, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+
+      // Divisórias das colunas (sem a última — fim da tabela)
+      let bx = L;
+      [COL_N_W, COL_RE_W, COL_NOME_W].forEach(w => {
+        bx += w;
+        doc.moveTo(bx, rowY).lineTo(bx, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+      });
+
+      const cy = rowY + 5;
+
+      // Número
+      doc.font("Helvetica").fontSize(7.5).fillColor("#64748b")
+        .text(String(i + 1), L + 1, cy, { width: COL_N_W - 2, align: "center", lineBreak: false });
+
+      // RE (código)
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(COR_AZUL)
+        .text(String(r.codigo_aluno || "—"), L + COL_N_W + 2, cy, { width: COL_RE_W - 4, align: "center", lineBreak: false });
+
+      // Nome
+      doc.font("Helvetica").fontSize(8.5).fillColor("#1e293b")
+        .text(r.nome_aluno || "—", L + COL_N_W + COL_RE_W + 4, cy, { width: COL_NOME_W - 8, lineBreak: false });
+
+      // Média — badge colorido
+      const bNotaX = L + COL_N_W + COL_RE_W + COL_NOME_W + 4;
+      const bNotaW = COL_MEDIA_W - 8;
+      const bNotaH = TR - 6;
+      const bNotaBg = r.hasNotas ? (aprovado ? COR_VERDE_BG : COR_VERMELHO_BG) : "#f1f5f9";
+      const bNotaCor = r.hasNotas ? (aprovado ? COR_VERDE : COR_VERMELHO) : "#64748b";
+      doc.roundedRect(bNotaX, rowY + 3, bNotaW, bNotaH, 3).fill(bNotaBg);
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(bNotaCor)
+        .text(r.hasNotas ? nota.toFixed(1) : "—", bNotaX, rowY + 5, { width: bNotaW, align: "center", lineBreak: false });
+
+      doc.y = rowY + TR;
+    });
+
+    // Borda inferior da tabela
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(1).stroke();
+    doc.y += 14;
+
+    // ── Assinaturas ──
+    ensureSpace(70);
+    const sigW = 180;
+    const sigLineY = doc.y + 30;
+    const sigNames = ["Coordenador(a) Pedagógico(a)", "Professor(a) Responsável"];
+    const sigPositions = [L + 20, L + PW - sigW - 20];
+    sigPositions.forEach((sx, i) => {
+      doc.moveTo(sx, sigLineY).lineTo(sx + sigW, sigLineY).strokeColor("#334155").lineWidth(0.5).stroke();
+      doc.font("Helvetica").fontSize(8).fillColor("#475569")
+        .text(sigNames[i], sx, sigLineY + 3, { width: sigW, align: "center", lineBreak: false });
+    });
+
+    // ── Rodapé ──
+    drawFooter();
+
+    // ── Finalize PDF ──
+    passThrough.on("end", () => {
+      const pdfBuffer = Buffer.concat(pdfChunks);
+      res.setHeader("Content-Length", pdfBuffer.length);
+      res.end(pdfBuffer);
+    });
+    doc.end();
+  } catch (err) {
+    console.error("[LISTA-MEDIAS] Erro ao gerar PDF:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Erro ao gerar Lista de Médias." });
+  }
+});
+
 export default router;
 
