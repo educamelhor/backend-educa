@@ -29,8 +29,10 @@ END$$
 DELIMITER ;
 
 -- ── FASE 1.1: Adicionar imagem_url nas tabelas existentes ─────────────
-CALL bq2_add_column('questoes',              'imagem_url', 'VARCHAR(500) NULL AFTER imagem_base64');
-CALL bq2_add_column('questoes_banco_global', 'imagem_url', 'VARCHAR(500) NULL AFTER imagem_base64');
+-- questoes tem imagem_base64, então podemos usar AFTER
+CALL bq2_add_column('questoes', 'imagem_url', 'VARCHAR(500) NULL AFTER imagem_base64');
+-- questoes_banco_global NÃO tem imagem_base64 — adiciona no final da tabela
+CALL bq2_add_column('questoes_banco_global', 'imagem_url', 'VARCHAR(500) NULL');
 
 -- ── FASE 1.2: Tabela questao_temas (índice de temas para busca) ───────
 CREATE TABLE IF NOT EXISTS questao_temas (

@@ -741,4 +741,110 @@ router.post("/conferencia", async (req, res) => {
   }
 });
 
+// ============================================================================
+// [GET] /api/merenda/distribuicoes
+// Lista as distribuições cadastradas ordenadas por data de início
+// ============================================================================
+router.get("/distribuicoes", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM merenda_distribuicoes 
+       WHERE escola_id = ? 
+       ORDER BY data_inicio ASC`,
+      [escola_id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[GET /api/merenda/distribuicoes] Erro:", err);
+    return res.status(500).json({ error: "Erro ao buscar distribuições." });
+  }
+});
+
+// ============================================================================
+// [POST] /api/merenda/distribuicoes
+// Cria uma nova distribuição
+// ============================================================================
+router.post("/distribuicoes", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
+
+  const { data_inicio, data_fim } = req.body;
+  if (!data_inicio || !data_fim) return res.status(400).json({ error: "Data início e fim são obrigatórias." });
+
+  let dInicio = data_inicio;
+  if (dInicio.length > 10) dInicio = dInicio.substring(0, 10);
+  let dFim = data_fim;
+  if (dFim.length > 10) dFim = dFim.substring(0, 10);
+
+  try {
+    const [result] = await pool.query(
+      `INSERT INTO merenda_distribuicoes (escola_id, data_inicio, data_fim) VALUES (?, ?, ?)`,
+      [escola_id, dInicio, dFim]
+    );
+    return res.status(201).json({ message: "Distribuição registrada com sucesso", id: result.insertId });
+  } catch (err) {
+    console.error("[POST /api/merenda/distribuicoes] Erro:", err);
+    return res.status(500).json({ error: "Erro ao registrar distribuição." });
+  }
+});
+
+// ============================================================================
+// [PUT] /api/merenda/distribuicoes/:id
+// Edita as datas de uma distribuição
+// ============================================================================
+router.put("/distribuicoes/:id", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
+
+  const { id } = req.params;
+  const { data_inicio, data_fim } = req.body;
+  if (!data_inicio || !data_fim) return res.status(400).json({ error: "Data início e fim são obrigatórias." });
+
+  let dInicio = data_inicio;
+  if (dInicio.length > 10) dInicio = dInicio.substring(0, 10);
+  let dFim = data_fim;
+  if (dFim.length > 10) dFim = dFim.substring(0, 10);
+
+  try {
+    const [result] = await pool.query(
+      `UPDATE merenda_distribuicoes 
+       SET data_inicio = ?, data_fim = ? 
+       WHERE id = ? AND escola_id = ?`,
+      [dInicio, dFim, id, escola_id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Distribuição não encontrada." });
+    
+    return res.json({ message: "Distribuição atualizada com sucesso" });
+  } catch (err) {
+    console.error("[PUT /api/merenda/distribuicoes/:id] Erro:", err);
+    return res.status(500).json({ error: "Erro ao atualizar distribuição." });
+  }
+});
+
+// ============================================================================
+// [DELETE] /api/merenda/distribuicoes/:id
+// Exclui uma distribuição
+// ============================================================================
+router.delete("/distribuicoes/:id", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
+
+  const { id } = req.params;
+  try {
+    const [result] = await pool.query(
+      "DELETE FROM merenda_distribuicoes WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Distribuição não encontrada." });
+    
+    return res.json({ message: "Distribuição excluída com sucesso" });
+  } catch (err) {
+    console.error("[DELETE /api/merenda/distribuicoes/:id] Erro:", err);
+    return res.status(500).json({ error: "Erro ao excluir distribuição." });
+  }
+});
+
 export default router;
