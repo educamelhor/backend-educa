@@ -701,6 +701,70 @@ router.get("/saldo-completo", async (req, res) => {
       [escola_id]
     );
 
+    const [distribuicoes] = await pool.query(
+      `SELECT * FROM merenda_distribuicoes WHERE escola_id = ? ORDER BY data_inicio ASC`,
+      [escola_id]
+    );
+
+    const [entradas] = await pool.query(
+      `SELECT produto_id, lote, validade, peso_kg, created_at 
+       FROM merenda_entradas 
+       WHERE escola_id = ? 
+       ORDER BY created_at DESC`,
+      [escola_id]
+    );
+
+    const entradasGrupadas = {};
+    for (const ent of entradas) {
+      const valStr = ent.validade ? String(ent.validade).split('T')[0] : '';
+      const key = `${ent.produto_id}||${ent.lote || ''}||${valStr}`;
+      if (!entradasGrupadas[key]) entradasGrupadas[key] = [];
+      entradasGrupadas[key].push(ent);
+    }
+
+    const getDistribuicaoName = (dateStr) => {
+      if (!dateStr) return null;
+      const d = String(dateStr).split('T')[0];
+      const index = distribuicoes.findIndex(dist => {
+         const inicio = String(dist.data_inicio).split('T')[0];
+         const fim = String(dist.data_fim).split('T')[0];
+         return d >= inicio && d <= fim;
+      });
+      return index >= 0 ? `${index + 1}ª` : null;
+    };
+
+    for (const row of rows) {
+      const saldoKg = Number(row.saldo_kg);
+      row.distribuicoes_breakdown = [];
+      
+      if (saldoKg > 0) {
+        const valStr = row.validade ? String(row.validade).split('T')[0] : '';
+        const key = `${row.produto_id}||${row.lote || ''}||${valStr}`;
+        const ents = entradasGrupadas[key] || [];
+        
+        let remaining = saldoKg;
+        const distMap = {};
+
+        for (const ent of ents) {
+          if (remaining <= 0) break;
+          
+          const entKg = Number(ent.peso_kg);
+          const distName = getDistribuicaoName(ent.created_at);
+          
+          const take = Math.min(entKg, remaining);
+          if (take > 0 && distName) {
+            distMap[distName] = (distMap[distName] || 0) + take;
+            remaining -= take;
+          }
+        }
+        
+        for (const [name, kg] of Object.entries(distMap)) {
+          row.distribuicoes_breakdown.push({ nome: name, kg });
+        }
+        row.distribuicoes_breakdown.sort((a, b) => parseInt(a.nome) - parseInt(b.nome));
+      }
+    }
+
     return res.json(rows);
   } catch (err) {
     console.error("[GET /api/merenda/saldo-completo] Erro:", err);
