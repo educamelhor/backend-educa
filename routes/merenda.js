@@ -152,7 +152,7 @@ router.post("/entradas", async (req, res) => {
   const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
   if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
 
-  const { produto_id, origem, lotes } = req.body;
+  const { produto_id, origem, data_chegada, lotes } = req.body;
 
   if (!produto_id || !lotes || !Array.isArray(lotes) || lotes.length === 0) {
     return res.status(400).json({ error: "produto_id e array de lotes são obrigatórios." });
@@ -168,11 +168,16 @@ router.post("/entradas", async (req, res) => {
       let valFinal = validade && validade.trim() !== "" ? validade : null;
       if (valFinal && valFinal.length > 10) valFinal = valFinal.substring(0, 10);
 
+      let createdAtStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      if (data_chegada && data_chegada.trim() !== "") {
+        createdAtStr = `${data_chegada.trim()} 12:00:00`;
+      }
+
       await connection.query(
         `INSERT INTO merenda_entradas 
-         (escola_id, produto_id, quantidade_unidades, peso_kg, lote, validade, origem)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [escola_id, produto_id, quantidade_unidades, peso_kg, lote || null, valFinal, origem || 'Governo (SEEDF)']
+         (escola_id, produto_id, quantidade_unidades, peso_kg, lote, validade, origem, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [escola_id, produto_id, quantidade_unidades, peso_kg, lote || null, valFinal, origem || 'Governo (SEEDF)', createdAtStr]
       );
     }
 
@@ -194,7 +199,7 @@ router.post("/entradas", async (req, res) => {
 router.put("/entradas/:id", async (req, res) => {
   const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
   const { id } = req.params;
-  const { quantidade_unidades, peso_kg, lote, validade, origem } = req.body;
+  const { quantidade_unidades, peso_kg, lote, validade, origem, data_chegada } = req.body;
 
   if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
 
@@ -202,11 +207,16 @@ router.put("/entradas/:id", async (req, res) => {
   if (valFinal && valFinal.length > 10) valFinal = valFinal.substring(0, 10);
 
   try {
+    let createdAtStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    if (data_chegada && data_chegada.trim() !== "") {
+      createdAtStr = `${data_chegada.trim()} 12:00:00`;
+    }
+
     const [result] = await pool.query(
       `UPDATE merenda_entradas 
-       SET quantidade_unidades = ?, peso_kg = ?, lote = ?, validade = ?, origem = ? 
+       SET quantidade_unidades = ?, peso_kg = ?, lote = ?, validade = ?, origem = ?, created_at = ? 
        WHERE id = ? AND escola_id = ?`,
-      [quantidade_unidades, peso_kg, lote || null, valFinal, origem || 'Governo (SEEDF)', id, escola_id]
+      [quantidade_unidades, peso_kg, lote || null, valFinal, origem || 'Governo (SEEDF)', createdAtStr, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
