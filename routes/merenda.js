@@ -688,14 +688,16 @@ router.get("/saldo-completo", async (req, res) => {
       `SELECT 
          v.*, 
          p.produto, p.marca, p.categoria, p.gramatura,
-         mc.quantidade_deposito_kg
+         mc.total_deposito_kg AS quantidade_deposito_kg
        FROM view_merenda_estoque_lotes v
        JOIN merenda_produtos p ON v.produto_id = p.id
-       LEFT JOIN merenda_conferencia mc 
+       LEFT JOIN (
+           SELECT escola_id, produto_id, SUM(quantidade_deposito_kg) as total_deposito_kg 
+           FROM merenda_conferencia 
+           GROUP BY escola_id, produto_id
+       ) mc 
          ON mc.escola_id = v.escola_id 
          AND mc.produto_id = v.produto_id 
-         AND mc.lote <=> v.lote 
-         AND mc.validade <=> v.validade
        WHERE v.escola_id = ?
        ORDER BY p.produto ASC, v.validade ASC`,
       [escola_id]
@@ -707,40 +709,86 @@ router.get("/saldo-completo", async (req, res) => {
     );
 
     const [entradas] = await pool.query(
-      `SELECT produto_id, lote, validade, peso_kg, created_at 
+      `SELECT produto_id, peso_kg, created_at 
        FROM merenda_entradas 
        WHERE escola_id = ? 
        ORDER BY created_at DESC`,
       [escola_id]
     );
 
+    const formatDate = (val) => {
+      if (!val) return '';
+      if (val instanceof Date) {
+        const y = val.getFullYear();
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+      return String(val).split('T')[0];
+    };
+
+    const formatBrDate = (isoStr) => {
+      if (!isoStr) return '';
+      const [y, m, d] = isoStr.split('-');
+      return `${d}/${m}/${y}`;
+    };
+
     const entradasGrupadas = {};
     for (const ent of entradas) {
-      const valStr = ent.validade ? String(ent.validade).split('T')[0] : '';
-      const key = `${ent.produto_id}||${ent.lote || ''}||${valStr}`;
+      const key = String(ent.produto_id);
       if (!entradasGrupadas[key]) entradasGrupadas[key] = [];
       entradasGrupadas[key].push(ent);
     }
 
-    const getDistribuicaoName = (dateStr) => {
-      if (!dateStr) return null;
-      const d = String(dateStr).split('T')[0];
+    const getDistribuicaoName = (dateVal) => {
+      if (!dateVal) return null;
+      const d = formatDate(dateVal);
       const index = distribuicoes.findIndex(dist => {
-         const inicio = String(dist.data_inicio).split('T')[0];
-         const fim = String(dist.data_fim).split('T')[0];
+         const inicio = formatDate(dist.data_inicio);
+         const fim = formatDate(dist.data_fim);
          return d >= inicio && d <= fim;
       });
       return index >= 0 ? `${index + 1}ª` : null;
     };
 
+    const aggregated = {};
     for (const row of rows) {
-      const saldoKg = Number(row.saldo_kg);
+       const pid = String(row.produto_id);
+       if (!aggregated[pid]) {
+          aggregated[pid] = {
+             produto_id: row.produto_id,
+             produto: row.produto,
+             marca: row.marca,
+             categoria: row.categoria,
+             gramatura: row.gramatura,
+             quantidade_deposito_kg: row.quantidade_deposito_kg,
+             saldo_kg: 0,
+             saldo_unidades: 0,
+             lotes: new Set(),
+             validades: new Set()
+          };
+       }
+       aggregated[pid].saldo_kg += Number(row.saldo_kg);
+       aggregated[pid].saldo_unidades += Number(row.saldo_unidades);
+       if (row.lote) aggregated[pid].lotes.add(row.lote);
+       if (row.validade) {
+          aggregated[pid].validades.add(formatBrDate(formatDate(row.validade)));
+       }
+    }
+
+    const resultRows = [];
+    for (const agg of Object.values(aggregated)) {
+      const row = {
+         ...agg,
+         lote: Array.from(agg.lotes).join(' | '),
+         validade: Array.from(agg.validades).join(' | ')
+      };
+
+      const saldoKg = row.saldo_kg;
       row.distribuicoes_breakdown = [];
       
       if (saldoKg > 0) {
-        const valStr = row.validade ? String(row.validade).split('T')[0] : '';
-        const key = `${row.produto_id}||${row.lote || ''}||${valStr}`;
-        const ents = entradasGrupadas[key] || [];
+        const ents = entradasGrupadas[String(row.produto_id)] || [];
         
         let remaining = saldoKg;
         const distMap = {};
@@ -763,9 +811,13 @@ router.get("/saldo-completo", async (req, res) => {
         }
         row.distribuicoes_breakdown.sort((a, b) => parseInt(a.nome) - parseInt(b.nome));
       }
+      
+      resultRows.push(row);
     }
+    
+    resultRows.sort((a, b) => a.produto.localeCompare(b.produto, 'pt-BR'));
 
-    return res.json(rows);
+    return res.json(resultRows);
   } catch (err) {
     console.error("[GET /api/merenda/saldo-completo] Erro:", err);
     return res.status(500).json({ error: "Erro ao buscar saldo completo." });
