@@ -504,12 +504,12 @@ router.get('/diarios', async (req, res) => {
         pa.bimestre,
         pa.ano,
         pa.disciplina      AS disciplina_nome,
-        IF(df.id IS NOT NULL, 1, 0) AS diario_fechado,
-        t.id               AS turma_id,
-        t.nome             AS turma_nome,
-        t.turno,
-        mod_prof.professor_id,
-        mod_prof.professor_nome
+        IF(MAX(df.id) IS NOT NULL, 1, 0) AS diario_fechado,
+        COALESCE(MAX(CASE WHEN mod_prof.professor_id IS NOT NULL THEN t.id END), MAX(t.id)) AS turma_id,
+        pa.turmas          AS turma_nome,
+        COALESCE(MAX(CASE WHEN mod_prof.professor_id IS NOT NULL THEN t.turno END), MAX(t.turno)) AS turno,
+        MAX(mod_prof.professor_id) AS professor_id,
+        MAX(mod_prof.professor_nome) AS professor_nome
       FROM planos_avaliacao pa
       -- Liga pelo NOME da turma com COLLATE
       JOIN turmas t
@@ -544,7 +544,8 @@ router.get('/diarios', async (req, res) => {
       WHERE pa.escola_id = ?
         AND pa.ano       = ?
         ${extraFilter}
-      ORDER BY mod_prof.professor_nome, t.nome, pa.disciplina
+      GROUP BY pa.id
+      ORDER BY professor_nome, pa.turmas, pa.disciplina
     `;
 
 
