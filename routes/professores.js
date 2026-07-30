@@ -1144,8 +1144,16 @@ router.post("/", verificarEscola, async (req, res) => {
       `INSERT INTO professores (cpf, nome, data_nascimento, sexo, escola_id, status,
                                 disciplina_id, turno, aulas)
        VALUES (?, UPPER(?), ?, ?, ?, 'ativo', ?, ?, ?)`,
-      [cpfLimpo, nome, data_nascimento || null, sexo || null, escola_id,
-       disciplina_id, turno, aulas]
+      [
+        cpfLimpo,
+        nome,
+        data_nascimento || null,
+        sexo || null,
+        escola_id,
+        disciplina_id || null, // evita erro "Incorrect integer value: ''"
+        turno || null,
+        Number(aulas) || 0
+      ]
     );
 
     const novoProfId = insertResult.insertId;
