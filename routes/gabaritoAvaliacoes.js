@@ -652,20 +652,23 @@ router.post("/:id/importar-notas", async (req, res) => {
       const key = `${discNome}::${turmaNome}`;
       if (papCache.has(key)) return papCache.get(key);
 
+      // Flexibiliza busca: remove caracteres especiais e usa curingas (%) para matching parcial (ex: "8 ANO A" bate em "8º ANO A")
+      // Tambem encontra o plano caso o professor tenha agrupado multiplas turmas (ex: "8º ANO A, 8º ANO B")
+      const turmaLike = '%' + turmaNome.replace(/[^a-zA-Z0-9]/g, '%') + '%';
+      const discLike = '%' + discNome.trim() + '%';
+
       const [rows] = await conn.query(
         `SELECT pa.id AS plano_id, ia.nota_total AS item_nota_total
          FROM planos_avaliacao pa
          JOIN itens_avaliacao ia ON ia.plano_id = pa.id AND ia.fixo_direcao = 1
          WHERE pa.escola_id = ?
-           AND CONVERT(pa.disciplina USING utf8mb4) COLLATE utf8mb4_unicode_ci
-               = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
-           AND CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci
-               = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+           AND CONVERT(pa.disciplina USING utf8mb4) COLLATE utf8mb4_unicode_ci LIKE CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
+           AND CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci LIKE CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci
            AND pa.bimestre LIKE ?
            AND pa.status IN ('APROVADO', 'ENVIADO')
          ORDER BY ia.id ASC
          LIMIT 1`,
-        [escola_id, discNome, turmaNome, `${bimestreNum}%`]
+        [escola_id, discLike, turmaLike, `${bimestreNum}%`]
       );
 
       const result = rows.length > 0 ? rows[0] : null;
