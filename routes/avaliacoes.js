@@ -122,7 +122,8 @@ router.get("/me", async (req, res) => {
     const [vinculos] = await pool.query(
       `SELECT DISTINCT
          t.nome  AS turma_nome,
-         d.nome  AS disc_nome
+         d.nome  AS disc_nome,
+         t.turno AS turno
        FROM modulacao m
        JOIN professores p  ON p.id  = m.professor_id AND p.escola_id = ?
        JOIN turmas t       ON t.id  = m.turma_id
@@ -141,8 +142,9 @@ router.get("/me", async (req, res) => {
     const discNames  = [...new Set(vinculos.map(v => v.disc_nome))];
 
     // ── Passo 2: planos da escola que cruzam as turmas e disciplinas acima ───────────────
-    // Usamos pares exatos (turma, disciplina) para evitar "data leakage" cruzando turmas e disciplinas incorretas
-    const conditions = vinculos.map(() => "(turmas = ? AND disciplina = ?)").join(" OR ");
+    // Usamos pares exatos (turma + disciplina + turno) para evitar "data leakage"
+    // turno: se o plano tem turno gravado (novo), filtra exato; se NULL (legado), inclui normalmente
+    const conditions = vinculos.map(() => "(turmas = ? AND disciplina = ? AND (turno IS NULL OR turno = ?))").join(" OR ");
     
     let sql = `
       SELECT * FROM planos_avaliacao
@@ -152,7 +154,7 @@ router.get("/me", async (req, res) => {
     `;
     const params = [escola_id, anoParam];
     vinculos.forEach(v => {
-      params.push(v.turma_nome, v.disc_nome);
+      params.push(v.turma_nome, v.disc_nome, v.turno);
     });
 
     if (bimestre) {
@@ -529,6 +531,7 @@ router.post("/", async (req, res) => {
       disciplina,
       bimestre,
       turmas,
+      turno = null,
       ano = anoLetivoPadrao(),
       nome_codigo,
       status = "RASCUNHO",
@@ -547,12 +550,13 @@ router.post("/", async (req, res) => {
     for (const turmaUnica of turmasArray) {
       let planoId;
 
-      // Busca se já existe o plano especificamente para essa turma
+      // Busca se já existe o plano especificamente para essa turma+turno
       const [[existente]] = await conn.query(
         `SELECT id FROM planos_avaliacao 
          WHERE escola_id = ? AND ano = ? AND bimestre = ? AND disciplina = ? AND turmas = ?
-           AND (semestre <=> ?)`,
-        [escola_id, ano, bimestre, disciplina, turmaUnica, semestreNorm]
+           AND (semestre <=> ?)
+           AND (turno <=> ?)`,
+        [escola_id, ano, bimestre, disciplina, turmaUnica, semestreNorm, turno || null]
       );
 
       // Cada turma recebe um nome de código individual
@@ -567,9 +571,9 @@ router.post("/", async (req, res) => {
       } else {
         const [result] = await conn.query(
           `INSERT INTO planos_avaliacao 
-            (escola_id, disciplina, bimestre, semestre, turmas, ano, status, nome_codigo, usuario_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [escola_id, disciplina, bimestre, semestreNorm, turmaUnica, ano, status, nomeCodigoIndividual, usuario_id]
+            (escola_id, disciplina, bimestre, semestre, turmas, turno, ano, status, nome_codigo, usuario_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [escola_id, disciplina, bimestre, semestreNorm, turmaUnica, turno || null, ano, status, nomeCodigoIndividual, usuario_id]
         );
         planoId = result.insertId;
       }

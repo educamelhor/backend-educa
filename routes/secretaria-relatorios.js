@@ -511,11 +511,13 @@ router.get('/diarios', async (req, res) => {
         mod_prof.professor_nome
       FROM planos_avaliacao pa
       -- Liga pelo NOME da turma com COLLATE
+      -- E pelo turno: se pa.turno preenchido (novos planos) → filtra exato; se NULL (legados) → backward compatible
       JOIN turmas t
         ON CONVERT(t.nome USING utf8mb4) COLLATE utf8mb4_unicode_ci
          = CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci
        AND t.escola_id = pa.escola_id
        AND t.ano       = pa.ano
+       AND (pa.turno IS NULL OR UPPER(t.turno) = UPPER(pa.turno))
       -- Obtém o professor via subquery consolidada por NOME da disciplina, evitando duplicatas de tabela disciplina
       LEFT JOIN (
         SELECT 
