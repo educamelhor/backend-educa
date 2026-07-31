@@ -486,7 +486,7 @@ router.get('/diarios', async (req, res) => {
     }
 
     if (turno && turno !== 'todos') {
-      extraFilter += ` AND UPPER(t.turno) = UPPER(?)`;
+      extraFilter += ` AND CONVERT(t.turno USING utf8mb4) COLLATE utf8mb4_unicode_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci`;
       params.push(turno);
     }
 
@@ -517,7 +517,9 @@ router.get('/diarios', async (req, res) => {
          = CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci
        AND t.escola_id = pa.escola_id
        AND t.ano       = pa.ano
-       AND (pa.turno IS NULL OR UPPER(t.turno) = UPPER(pa.turno))
+       AND (pa.turno IS NULL OR
+            CONVERT(t.turno USING utf8mb4) COLLATE utf8mb4_unicode_ci
+            = CONVERT(pa.turno USING utf8mb4) COLLATE utf8mb4_unicode_ci)
       -- Obtém o professor via subquery consolidada por NOME da disciplina, evitando duplicatas de tabela disciplina
       LEFT JOIN (
         SELECT 
