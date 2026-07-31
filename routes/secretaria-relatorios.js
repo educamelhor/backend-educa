@@ -496,7 +496,6 @@ router.get('/diarios', async (req, res) => {
     }
 
     // ── A ponte é: pa.turmas = t.nome  E  pa.disciplina = d.nome
-    // ── COLLATE necessário para resolver conflito de charset (utf8mb4_0900_ai_ci vs utf8mb4_unicode_ci)
     const sql = `
       SELECT
         pa.id              AS plano_id,
@@ -504,12 +503,12 @@ router.get('/diarios', async (req, res) => {
         pa.bimestre,
         pa.ano,
         pa.disciplina      AS disciplina_nome,
-        IF(MAX(df.id) IS NOT NULL, 1, 0) AS diario_fechado,
-        COALESCE(MAX(CASE WHEN mod_prof.professor_id IS NOT NULL THEN t.id END), MAX(t.id)) AS turma_id,
-        pa.turmas          AS turma_nome,
-        COALESCE(MAX(CASE WHEN mod_prof.professor_id IS NOT NULL THEN t.turno END), MAX(t.turno)) AS turno,
-        MAX(mod_prof.professor_id) AS professor_id,
-        MAX(mod_prof.professor_nome) AS professor_nome
+        IF(df.id IS NOT NULL, 1, 0) AS diario_fechado,
+        t.id               AS turma_id,
+        t.nome             AS turma_nome,
+        t.turno,
+        mod_prof.professor_id,
+        mod_prof.professor_nome
       FROM planos_avaliacao pa
       -- Liga pelo NOME da turma com COLLATE
       JOIN turmas t
@@ -517,7 +516,7 @@ router.get('/diarios', async (req, res) => {
          = CONVERT(pa.turmas USING utf8mb4) COLLATE utf8mb4_unicode_ci
        AND t.escola_id = pa.escola_id
        AND t.ano       = pa.ano
-      -- Obtém o professor via subquery consolidada por NOME da disciplina, evitando duplicatas
+      -- Obtém o professor via subquery consolidada por NOME da disciplina, evitando duplicatas de tabela disciplina
       LEFT JOIN (
         SELECT 
           mo.turma_id,
@@ -528,25 +527,22 @@ router.get('/diarios', async (req, res) => {
         FROM modulacao mo
         JOIN disciplinas d ON d.id = mo.disciplina_id
         JOIN professores p ON p.id = mo.professor_id
-        -- Usando MAX() para caso extremo de 2 professores na mesma disciplina/turma 
-        -- (embora normalmente não ocorra no fluxo atual, evita quebrar a query se ocorrer)
         GROUP BY mo.turma_id, d.nome, mo.professor_id, p.nome, mo.escola_id
       ) mod_prof
         ON mod_prof.turma_id = t.id
        AND CONVERT(mod_prof.disciplina_nome USING utf8mb4) COLLATE utf8mb4_unicode_ci 
          = CONVERT(pa.disciplina USING utf8mb4) COLLATE utf8mb4_unicode_ci
        AND mod_prof.escola_id = pa.escola_id
-      -- Verifica se o diário foi fechado (tabela separada)
+      -- Verifica se o diário foi fechado
       LEFT JOIN diario_fechamento df
         ON df.plano_id  = pa.id
        AND df.turma_id  = t.id
        AND df.escola_id = pa.escola_id
       WHERE pa.escola_id = ?
         AND pa.ano       = ?
-        ${extraFilter}
-      GROUP BY pa.id
-      ORDER BY professor_nome, pa.turmas, pa.disciplina
-    `;
+        \${extraFilter}
+      ORDER BY mod_prof.professor_nome, t.nome, pa.disciplina
+    \`;
 
 
     const [rows] = await pool.query(sql, params);
