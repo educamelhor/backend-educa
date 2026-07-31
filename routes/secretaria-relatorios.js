@@ -540,9 +540,9 @@ router.get('/diarios', async (req, res) => {
        AND df.escola_id = pa.escola_id
       WHERE pa.escola_id = ?
         AND pa.ano       = ?
-        \${extraFilter}
+        ${extraFilter}
       ORDER BY mod_prof.professor_nome, t.nome, pa.disciplina
-    \`;
+    `;
 
 
     const [rows] = await pool.query(sql, params);
