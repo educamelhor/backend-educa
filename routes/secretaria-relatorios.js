@@ -558,4 +558,37 @@ router.get('/diarios', async (req, res) => {
   }
 });
 
+// ============================================================================
+// 9) ALTERAR STATUS DO DIÁRIO (Secretaria override)
+// ============================================================================
+router.post('/diarios/toggle-status', async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { plano_id, turma_id, acao } = req.body;
+
+    if (!plano_id || !turma_id || !acao) {
+      return res.status(400).json({ ok: false, error: 'Parâmetros inválidos.' });
+    }
+
+    if (acao === 'fechar') {
+      await pool.query(
+        `INSERT IGNORE INTO diario_fechamento (escola_id, plano_id, turma_id, fechado_por, total_alunos, total_notas_exportadas)
+         VALUES (?, ?, ?, ?, 0, 0)`,
+        [escola_id, plano_id, turma_id, req.user.id]
+      );
+    } else if (acao === 'abrir') {
+      await pool.query(
+        `DELETE FROM diario_fechamento
+         WHERE escola_id = ? AND plano_id = ? AND turma_id = ?`,
+        [escola_id, plano_id, turma_id]
+      );
+    }
+
+    return res.json({ ok: true, message: `Diário ${acao === 'abrir' ? 'aberto' : 'fechado'} com sucesso.` });
+  } catch (err) {
+    console.error('[relatorios] toggle-status:', err);
+    return res.status(500).json({ ok: false, error: 'Erro ao alterar status do diário.' });
+  }
+});
+
 export default router;
