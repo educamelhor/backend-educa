@@ -1177,6 +1177,25 @@ async function bootstrap() {
 
   try {
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS biblioteca_perguntas (
+        id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id   INT NOT NULL,
+        pergunta    VARCHAR(1000) NOT NULL,
+        ativa       TINYINT(1) NOT NULL DEFAULT 1,
+        ordem       INT NOT NULL DEFAULT 0,
+        criado_em   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        INDEX idx_escola (escola_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Banco de perguntas para resenhas'
+    `);
+    console.log("[MIGRATION] Tabela biblioteca_perguntas garantida ✅");
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao criar biblioteca_perguntas (não crítico):", migErr.message);
+  }
+
+  try {
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS biblioteca_concurso (
         id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
         escola_id   INT NOT NULL,

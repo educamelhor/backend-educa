@@ -658,6 +658,79 @@ router.get('/turmas/leitores', async (req, res) => {
 });
 
 // ============================================================================
+// PERGUNTAS — Banco de Perguntas para Resenhas
+// ============================================================================
+
+/** GET /api/biblioteca/perguntas — listar perguntas ativas (ou todas) da escola */
+router.get('/perguntas', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { todas } = req.query; // se true, retorna até inativas
+  try {
+    let q = 'SELECT * FROM biblioteca_perguntas WHERE escola_id = ?';
+    if (!todas) q += ' AND ativa = 1';
+    q += ' ORDER BY ordem ASC, id ASC';
+    const [perguntas] = await db.query(q, [eid]);
+    res.json({ ok: true, perguntas });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** POST /api/biblioteca/perguntas — criar nova pergunta */
+router.post('/perguntas', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { pergunta, ordem = 0 } = req.body;
+  if (!pergunta) return res.status(400).json({ ok: false, error: 'Pergunta é obrigatória' });
+  try {
+    const [result] = await db.query(
+      'INSERT INTO biblioteca_perguntas (escola_id, pergunta, ordem) VALUES (?, ?, ?)',
+      [eid, pergunta, ordem]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** PUT /api/biblioteca/perguntas/:id — editar/inativar pergunta */
+router.put('/perguntas/:id', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { id } = req.params;
+  const { pergunta, ativa, ordem } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    if (pergunta !== undefined) { fields.push('pergunta = ?'); values.push(pergunta); }
+    if (ativa !== undefined)    { fields.push('ativa = ?'); values.push(ativa ? 1 : 0); }
+    if (ordem !== undefined)    { fields.push('ordem = ?'); values.push(ordem); }
+    
+    if (fields.length === 0) return res.json({ ok: true });
+    
+    values.push(id, eid);
+    await db.query(`UPDATE biblioteca_perguntas SET ${fields.join(', ')} WHERE id = ? AND escola_id = ?`, values);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** DELETE /api/biblioteca/perguntas/:id — apagar pergunta */
+router.delete('/perguntas/:id', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { id } = req.params;
+  try {
+    await db.query('DELETE FROM biblioteca_perguntas WHERE id = ? AND escola_id = ?', [id, eid]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============================================================================
 // RESENHAS — Leitor Destaque
 // ============================================================================
 
