@@ -510,6 +510,35 @@ router.put('/emprestimos/:id/devolver', async (req, res) => {
   }
 });
 
+/** PUT /api/biblioteca/emprestimos/:id/renovar — estende o prazo e volta a ficar ativo */
+router.put('/emprestimos/:id/renovar', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { id } = req.params;
+  const { dias_adicionais = 7 } = req.body;
+
+  try {
+    const [[emp]] = await db.query(
+      'SELECT * FROM biblioteca_emprestimos WHERE id = ? AND escola_id = ?', [id, eid]
+    );
+    if (!emp) return res.status(404).json({ ok: false, error: 'Empréstimo não encontrado' });
+    if (emp.status === 'devolvido') return res.status(409).json({ ok: false, error: 'Livro já devolvido' });
+
+    await db.query(
+      `UPDATE biblioteca_emprestimos
+       SET status = 'ativo', 
+           data_prevista_devolucao = DATE_ADD(COALESCE(data_prevista_devolucao, CURDATE()), INTERVAL ? DAY)
+       WHERE id = ?`,
+      [parseInt(dias_adicionais), id]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[BIBLIOTECA] renovar:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ============================================================================
 // ALUNOS — Histórico de leitura
 // ============================================================================
