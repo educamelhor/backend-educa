@@ -10,6 +10,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { autenticarToken } from '../middleware/autenticarToken.js';
 import { verificarEscola } from '../middleware/verificarEscola.js';
+import crypto from 'crypto';
+import sharp from 'sharp';
+import { uploadFileBufferToSpaces } from '../storage/spacesUpload.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,18 +40,8 @@ function sanitizarAno(valor) {
 }
 
 // ─── Upload de capas ────────────────────────────────────────────────────────
-const uploadsDir = join(__dirname, '..', 'uploads', 'biblioteca', 'capas');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadsDir),
-  filename:    (_req, file,  cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `capa_${Date.now()}${ext}`);
-  },
-});
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ok = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -333,9 +326,25 @@ router.post('/acervo/:id/capa', upload.single('capa'), async (req, res) => {
     );
     if (!bae) return res.status(404).json({ ok: false, error: 'Livro não encontrado' });
 
-    const capaUrl = `/uploads/biblioteca/capas/${req.file.filename}`;
-    await db.query('UPDATE biblioteca_acervo SET capa_url = ? WHERE id = ?', [capaUrl, id]);
-    res.json({ ok: true, capa_url: capaUrl });
+    const processed = await sharp(req.file.buffer)
+      .rotate()
+      .resize({ width: 800, height: 1200, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85, mozjpeg: true })
+      .toBuffer();
+
+    const ts = Date.now();
+    const rand = crypto.randomBytes(4).toString('hex');
+    const objectKey = `uploads/biblioteca/capas/${ts}_${rand}.jpg`;
+
+    const { publicUrl } = await uploadFileBufferToSpaces({
+      buffer: processed,
+      contentType: 'image/jpeg',
+      objectKey,
+      cacheControl: 'public, max-age=31536000',
+    });
+
+    await db.query('UPDATE biblioteca_acervo SET capa_url = ? WHERE id = ?', [publicUrl, id]);
+    res.json({ ok: true, capa_url: publicUrl });
   } catch (err) {
     console.error('[BIBLIOTECA] capa upload:', err.message);
     res.status(500).json({ ok: false, error: err.message });
