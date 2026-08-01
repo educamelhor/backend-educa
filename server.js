@@ -76,6 +76,8 @@ import ferramentasIndexRouter from "./routes/ferramentas/index.js";
 
 // ⚠️ BOLETINS (Migrado para Playwright)
 import boletinsRouter from "./routes/boletins.js";
+import boletimEditarRouter from "./routes/boletimEditar.js";
+import comunicadosRouter from "./routes/comunicados.js";
 
 import alunosRouter from "./routes/alunos.js";
 import matriculasRouter from "./routes/matriculas.js";
@@ -1381,6 +1383,10 @@ async function bootstrap() {
     app.use("/api/monitoramento", monitoramentoStream);
   }
 
+  app.use("/api/professor/boletim", autenticarToken, boletimEditarRouter);
+
+  // ✅ COMUNICAÇÃO
+  app.use("/api/comunicados", autenticarToken, comunicadosRouter);
 
   // ============================================================================
   // Rotas protegidas principais (mantidas como estavam)
