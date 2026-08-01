@@ -1837,6 +1837,42 @@ function startCapturePairCleanupJob() {
   });
 }
 
+// ============================================================================
+// JOB Biblioteca: Marcar Empréstimos como Atrasados
+// ============================================================================
+function startBibliotecaAtrasosJob() {
+  let running = false;
+  // roda a cada 1 hora (3600000 ms)
+  const intervalMs = 1000 * 60 * 60;
+
+  const runOnce = async () => {
+    if (running) return;
+    running = true;
+
+    try {
+      const [result] = await pool.query(`
+        UPDATE biblioteca_emprestimos
+        SET status = 'atrasado'
+        WHERE data_prevista_devolucao < CURDATE() 
+          AND status = 'ativo'
+      `);
+
+      const updated = Number(result?.affectedRows || 0);
+      if (updated > 0) {
+        console.log(`[BIBLIOTECA][ATRASOS] ok marcados=${updated}`);
+      }
+    } catch (err) {
+      console.error("[BIBLIOTECA][ATRASOS] erro:", err?.message || err);
+    } finally {
+      running = false;
+    }
+  };
+
+  runOnce();
+  setInterval(runOnce, intervalMs).unref?.();
+  console.log("[BIBLIOTECA][ATRASOS] job ativo (1h)");
+}
+
 
 // ============================================================================
 // Boot
@@ -1851,6 +1887,9 @@ bootstrap()
 
       // PASSO 3.3 — Job de limpeza de pair_codes (produção)
       startCapturePairCleanupJob();
+      
+      // Job Biblioteca
+      startBibliotecaAtrasosJob();
 
       if (process.env.NODE_ENV !== "production") {
         console.log("🔔 PINGS/DEBUGS (DEV):");
