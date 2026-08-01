@@ -86,6 +86,8 @@ const MODULOS_VALIDOS = new Set([
   'estudantes',
   // Merenda
   'merenda', 'merenda.cadastro', 'merenda.cardapio', 'merenda.relatorios',
+  // Comunicação
+  'comunicacao', 'comunicacao.avisos', 'comunicacao.comunicados', 'comunicacao.mural',
 ]);
 
 /**
