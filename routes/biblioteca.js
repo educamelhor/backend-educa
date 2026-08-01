@@ -49,6 +49,44 @@ const upload = multer({
   },
 });
 
+// ============================================================================
+// ROTAS PÚBLICAS (Sem Autenticação)
+// ============================================================================
+
+/** GET /api/biblioteca/vitrine/:escolaId — Rota PÚBLICA para Vitrine */
+router.get('/vitrine/:escolaId', async (req, res) => {
+  const eid = req.params.escolaId;
+  // Fallback to import db temporarily or assume it's attached elsewhere if possible, but normally it's attached via middleware.
+  // Wait, req.db is attached by a global middleware in server.js? Let's check where req.db comes from.
+  // Often it comes from a middleware before `router`. 
+  // We'll use the pool directly or just try using req.db.
+  if (!req.db) {
+    return res.status(500).json({ ok: false, error: 'DB não anexado' });
+  }
+  const db = req.db;
+  try {
+    const [resenhas] = await db.query(
+      `SELECT br.id, br.avaliacao, br.resumo, br.resenha, br.favorito,
+         ba.titulo AS livro_titulo, ba.autor AS livro_autor, ba.capa_url AS livro_capa,
+         t.nome AS turma_nome
+       FROM biblioteca_resenhas br
+       JOIN biblioteca_acervo ba ON ba.id = br.livro_id
+       LEFT JOIN matriculas m ON m.aluno_id = br.aluno_id AND m.escola_id = br.escola_id AND m.status = 'ativo'
+       LEFT JOIN turmas t ON t.id = m.turma_id
+       WHERE br.escola_id = ? AND br.status = 'destaque'
+       ORDER BY br.updated_at DESC LIMIT 50`,
+      [eid]
+    );
+    res.json({ ok: true, destaques: resenhas });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============================================================================
+// ROTAS PRIVADAS
+// ============================================================================
+
 // Middleware padrão do sistema
 router.use(autenticarToken);
 router.use(verificarEscola);
