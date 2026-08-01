@@ -3041,6 +3041,51 @@ router.get("/registros", authAppPais, async (req, res) => {
   }
 });
 
+// ============================================================================
+// NOTÍCIAS — GET /noticias
+// Retorna a lista de notícias ativas da escola do usuário autenticado.
+// Funciona para RESPONSÁVEL e ALUNO (mesmo token JWT, campo tipo diferente).
+// ============================================================================
+router.get("/noticias", authAppPaisOuAluno, async (req, res) => {
+  const db = pool;
+  try {
+    let escola_id = null;
+
+    // — Detecta escola_id conforme tipo do token —
+    if (req.alunoAuth) {
+      escola_id = req.alunoAuth.escola_id;
+    } else if (req.appPaisAuth) {
+      const responsavel_id = req.appPaisAuth.responsavel_id;
+      // Pega a escola do primeiro aluno vinculado ao responsável
+      const [[vinculo]] = await db.query(
+        `SELECT escola_id FROM responsaveis_alunos
+         WHERE responsavel_id = ? AND ativo = 1
+         ORDER BY id ASC LIMIT 1`,
+        [responsavel_id]
+      );
+      escola_id = vinculo?.escola_id ?? null;
+    }
+
+    if (!escola_id) {
+      return res.json({ ok: true, noticias: [] });
+    }
+
+    const [rows] = await db.query(
+      `SELECT id, titulo, descricao, imagem_url, criado_em
+       FROM noticias
+       WHERE escola_id = ? AND ativo = 1
+       ORDER BY criado_em DESC
+       LIMIT 50`,
+      [escola_id]
+    );
+
+    return res.json({ ok: true, noticias: rows });
+  } catch (err) {
+    console.error("[APP_PAIS][NOTICIAS] Erro:", err);
+    return res.status(500).json({ message: "Erro ao carregar notícias." });
+  }
+});
+
 /**
  * mountToApp â€” registra as rotas do app_pais DIRETAMENTE no app Express,
  * chamando app.get/app.post _dentro_ deste mÃ³dulo (sem cross-module extraction).
