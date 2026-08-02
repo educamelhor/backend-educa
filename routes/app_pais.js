@@ -3086,6 +3086,89 @@ router.get("/noticias", authAppPaisOuAluno, async (req, res) => {
   }
 });
 
+// ============================================================================
+// BIBLIOTECA — GET /biblioteca/acervo
+// Catálogo de livros da escola para o aluno/responsável.
+// Suporta busca por ?q=, paginação por ?page= e ?limit=
+// ============================================================================
+router.get("/biblioteca/acervo", authAppPaisOuAluno, async (req, res) => {
+  const db = pool;
+  try {
+    let escola_id = null;
+
+    if (req.alunoAuth) {
+      escola_id = req.alunoAuth.escola_id;
+    } else if (req.appPaisAuth) {
+      const responsavel_id = req.appPaisAuth.responsavel_id;
+      const [[vinculo]] = await db.query(
+        `SELECT escola_id FROM responsaveis_alunos
+         WHERE responsavel_id = ? AND ativo = 1
+         ORDER BY id ASC LIMIT 1`,
+        [responsavel_id]
+      );
+      escola_id = vinculo?.escola_id ?? null;
+    }
+
+    if (!escola_id) {
+      return res.json({ ok: true, livros: [], total: 0, page: 1, limit: 24 });
+    }
+
+    const q     = String(req.query.q     || "").trim();
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(48, Math.max(1, parseInt(req.query.limit) || 24));
+    const offset = (page - 1) * limit;
+
+    const params = [escola_id];
+    let whereClause = "WHERE bae.escola_id = ? AND bae.ativo = 1";
+
+    if (q) {
+      whereClause += " AND (ba.titulo LIKE ? OR ba.autor LIKE ? OR ba.isbn LIKE ?)";
+      const like = `%${q}%`;
+      params.push(like, like, like);
+    }
+
+    // Total para paginação
+    const [countRows] = await db.query(
+      `SELECT COUNT(*) AS total
+       FROM biblioteca_acervo_escola bae
+       JOIN biblioteca_acervo ba ON ba.id = bae.acervo_id
+       ${whereClause}`,
+      params
+    );
+    const total = countRows[0]?.total ?? 0;
+
+    // Livros paginados
+    const [livros] = await db.query(
+      `SELECT
+         ba.id,
+         ba.isbn,
+         ba.titulo,
+         ba.autor,
+         ba.editora,
+         ba.ano_publicacao,
+         ba.genero,
+         ba.categoria,
+         ba.sinopse,
+         ba.num_paginas,
+         ba.capa_url,
+         bae.id          AS estoque_id,
+         bae.exemplares,
+         bae.exemplares_disponiveis
+       FROM biblioteca_acervo_escola bae
+       JOIN biblioteca_acervo ba ON ba.id = bae.acervo_id
+       ${whereClause}
+       ORDER BY ba.titulo ASC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return res.json({ ok: true, livros, total, page, limit });
+  } catch (err) {
+    console.error("[APP_PAIS][BIBLIOTECA] Erro:", err);
+    return res.status(500).json({ message: "Erro ao carregar o acervo." });
+  }
+});
+
 /**
  * mountToApp â€” registra as rotas do app_pais DIRETAMENTE no app Express,
  * chamando app.get/app.post _dentro_ deste mÃ³dulo (sem cross-module extraction).
