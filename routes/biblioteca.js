@@ -830,6 +830,20 @@ router.put('/resenhas/:id/status', async (req, res) => {
   }
 });
 
+/** DELETE /api/biblioteca/resenhas/:id */
+router.delete('/resenhas/:id', async (req, res) => {
+  const db  = req.db;
+  const eid = escolaId(req);
+  const { id } = req.params;
+  try {
+    await db.query('DELETE FROM biblioteca_resenhas WHERE id = ? AND escola_id = ?', [id, eid]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[BIBLIOTECA] delete resenha:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ============================================================================
 // RANKING — Gamificado
 // ============================================================================
