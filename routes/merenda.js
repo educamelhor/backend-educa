@@ -587,7 +587,7 @@ router.post("/cardapio", async (req, res) => {
   const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
   if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
 
-  const { data_cardapio, nome, turno, itens } = req.body;
+  const { data_cardapio, nome, turno, refeicoes_cardapio, itens } = req.body;
 
   if (!data_cardapio || !nome) {
     return res.status(400).json({ error: "Data e Nome são obrigatórios." });
@@ -600,8 +600,8 @@ router.post("/cardapio", async (req, res) => {
     await connection.beginTransaction();
 
     const [result] = await connection.query(
-      "INSERT INTO merenda_cardapio (escola_id, data_cardapio, nome, turno) VALUES (?, ?, ?, ?)",
-      [escola_id, data_cardapio, nome, turnoFinal]
+      "INSERT INTO merenda_cardapio (escola_id, data_cardapio, nome, turno, refeicoes_cardapio) VALUES (?, ?, ?, ?, ?)",
+      [escola_id, data_cardapio, nome, turnoFinal, refeicoes_cardapio || null]
     );
 
     const cardapio_id = result.insertId;
@@ -637,7 +637,7 @@ router.post("/cardapio", async (req, res) => {
 router.put("/cardapio/:id", async (req, res) => {
   const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
   const { id } = req.params;
-  const { nome, turno, itens } = req.body;
+  const { nome, turno, refeicoes_cardapio, itens } = req.body;
 
   if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
   if (!nome) return res.status(400).json({ error: "Nome é obrigatório." });
@@ -649,8 +649,8 @@ router.put("/cardapio/:id", async (req, res) => {
     await connection.beginTransaction();
 
     const [result] = await connection.query(
-      "UPDATE merenda_cardapio SET nome = ?, turno = ? WHERE id = ? AND escola_id = ?",
-      [nome, turnoFinal, id, escola_id]
+      "UPDATE merenda_cardapio SET nome = ?, turno = ?, refeicoes_cardapio = ? WHERE id = ? AND escola_id = ?",
+      [nome, turnoFinal, refeicoes_cardapio || null, id, escola_id]
     );
 
     if (result.affectedRows === 0) {
