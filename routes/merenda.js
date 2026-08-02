@@ -27,6 +27,137 @@ router.get("/produtos", async (req, res) => {
 });
 
 // ============================================================================
+// [GET, POST, PUT, DELETE] /api/merenda/receitas
+// Gestão de Receitas e Itens da Receita
+// ============================================================================
+
+router.get("/receitas", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido no token." });
+
+  try {
+    const [receitas] = await pool.query(
+      "SELECT * FROM merenda_receitas WHERE escola_id = ? ORDER BY nome ASC",
+      [escola_id]
+    );
+
+    if (receitas.length === 0) return res.json([]);
+
+    const receitaIds = receitas.map(r => r.id);
+    const [itens] = await pool.query(
+      `SELECT i.receita_id, p.* 
+       FROM merenda_receita_itens i 
+       JOIN merenda_produtos p ON i.produto_id = p.id 
+       WHERE i.receita_id IN (?)`,
+      [receitaIds]
+    );
+
+    const formatadas = receitas.map(r => ({
+      ...r,
+      itens: itens.filter(i => i.receita_id === r.id)
+    }));
+
+    res.json(formatadas);
+  } catch (err) {
+    console.error("[GET /api/merenda/receitas] Erro:", err);
+    res.status(500).json({ error: "Erro ao buscar receitas" });
+  }
+});
+
+router.post("/receitas", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  const { nome, itens } = req.body; 
+  
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido no token." });
+  if (!nome || !itens || !Array.isArray(itens)) {
+    return res.status(400).json({ error: "Dados inválidos para receita" });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [result] = await connection.query(
+      "INSERT INTO merenda_receitas (escola_id, nome) VALUES (?, ?)",
+      [escola_id, nome]
+    );
+    const receitaId = result.insertId;
+
+    if (itens.length > 0) {
+      const values = itens.map(produto_id => [receitaId, produto_id]);
+      await connection.query(
+        "INSERT INTO merenda_receita_itens (receita_id, produto_id) VALUES ?",
+        [values]
+      );
+    }
+
+    await connection.commit();
+    res.status(201).json({ id: receitaId, message: "Receita criada com sucesso" });
+  } catch (err) {
+    await connection.rollback();
+    console.error("[POST /api/merenda/receitas] Erro:", err);
+    res.status(500).json({ error: "Erro ao salvar receita" });
+  } finally {
+    connection.release();
+  }
+});
+
+router.put("/receitas/:id", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  const { id } = req.params;
+  const { nome, itens } = req.body;
+
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido no token." });
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    await connection.query(
+      "UPDATE merenda_receitas SET nome = ? WHERE id = ? AND escola_id = ?",
+      [nome, id, escola_id]
+    );
+
+    await connection.query("DELETE FROM merenda_receita_itens WHERE receita_id = ?", [id]);
+
+    if (itens && itens.length > 0) {
+      const values = itens.map(produto_id => [id, produto_id]);
+      await connection.query(
+        "INSERT INTO merenda_receita_itens (receita_id, produto_id) VALUES ?",
+        [values]
+      );
+    }
+
+    await connection.commit();
+    res.json({ message: "Receita atualizada" });
+  } catch (err) {
+    await connection.rollback();
+    console.error("[PUT /api/merenda/receitas] Erro:", err);
+    res.status(500).json({ error: "Erro ao atualizar receita" });
+  } finally {
+    connection.release();
+  }
+});
+
+router.delete("/receitas/:id", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  const { id } = req.params;
+  
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido no token." });
+
+  try {
+    await pool.query(
+      "DELETE FROM merenda_receitas WHERE id = ? AND escola_id = ?",
+      [id, escola_id]
+    );
+    res.json({ message: "Receita excluída com sucesso" });
+  } catch (err) {
+    console.error("[DELETE /api/merenda/receitas] Erro:", err);
+    res.status(500).json({ error: "Erro ao excluir receita" });
+  }
+});
+
+// ============================================================================
 // [POST] /api/merenda/produtos
 // Cria um novo produto
 // ============================================================================

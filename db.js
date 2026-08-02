@@ -146,6 +146,21 @@ pool
         INDEX idx_aluno (aluno_id),
         INDEX idx_escola (escola_id)
       )`,
+      // Receitas da Merenda
+      `CREATE TABLE IF NOT EXISTS merenda_receitas (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          escola_id BIGINT UNSIGNED NOT NULL,
+          nome VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (escola_id) REFERENCES escolas(id) ON DELETE CASCADE
+      )`,
+      `CREATE TABLE IF NOT EXISTS merenda_receita_itens (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          receita_id BIGINT UNSIGNED NOT NULL,
+          produto_id INT NOT NULL,
+          FOREIGN KEY (receita_id) REFERENCES merenda_receitas(id) ON DELETE CASCADE
+      )`
     ];
     for (const sql of migrations) {
       try {
