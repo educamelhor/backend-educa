@@ -424,13 +424,50 @@ router.get("/percapita", async (req, res) => {
       [escola_id]
     );
 
+    // 3. Busca refeições servidas
+    const [configRow] = await pool.query(
+      `SELECT refeicoes_servidas FROM merenda_escola_config WHERE escola_id = ?`,
+      [escola_id]
+    );
+    const refeicoes_servidas = configRow.length > 0 ? configRow[0].refeicoes_servidas : null;
+
     return res.json({
       total_alunos,
+      refeicoes_servidas,
       itens: rows
     });
   } catch (err) {
     console.error("[GET /api/merenda/percapita] Erro:", err);
     return res.status(500).json({ error: "Erro ao buscar dados de percápita." });
+  }
+});
+
+// ============================================================================
+// [POST] /api/merenda/config/refeicoes-servidas
+// Salva a configuração de refeições servidas da escola
+// ============================================================================
+router.post("/config/refeicoes-servidas", async (req, res) => {
+  const escola_id = req.headers["x-escola-id"] || req.user?.escola_id;
+  if (!escola_id) return res.status(400).json({ error: "escola_id não fornecido." });
+
+  const { refeicoes_servidas } = req.body;
+
+  if (refeicoes_servidas === undefined) {
+    return res.status(400).json({ error: "refeicoes_servidas é obrigatório." });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO merenda_escola_config (escola_id, refeicoes_servidas)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE refeicoes_servidas = ?`,
+      [escola_id, refeicoes_servidas, refeicoes_servidas]
+    );
+
+    return res.json({ message: "Configuração salva com sucesso." });
+  } catch (err) {
+    console.error("[POST /api/merenda/config/refeicoes-servidas] Erro:", err);
+    return res.status(500).json({ error: "Erro ao salvar configuração." });
   }
 });
 
