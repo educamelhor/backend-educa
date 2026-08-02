@@ -838,44 +838,64 @@ router.put('/resenhas/:id/status', async (req, res) => {
 router.get('/ranking', async (req, res) => {
   const db  = req.db;
   const eid = escolaId(req);
-  const { turma_id, mes, ano } = req.query;
+  const { turma_id, mes, ano, concurso_id } = req.query;
 
   try {
     let dateFilter = '';
-    const params = [eid, eid];
-
-    if (mes && ano) {
+    let resenhaDateFilter = '';
+    const params = [];
+    
+    // Params para o INNER JOIN matriculas e os LEFT JOINs
+    const paramsBe = [eid]; // escola_id do emprestimo
+    const paramsBr = [eid]; // escola_id da resenha
+    
+    if (concurso_id) {
+      const [[concurso]] = await db.query('SELECT data_inicio, data_fim FROM biblioteca_concurso WHERE id = ? AND escola_id = ?', [concurso_id, eid]);
+      if (concurso) {
+        if (concurso.data_inicio) {
+          resenhaDateFilter += ' AND br.criado_em >= ?';
+          paramsBr.push(concurso.data_inicio);
+        }
+        if (concurso.data_fim) {
+          // Garante até o final do dia
+          resenhaDateFilter += ' AND br.criado_em <= ?';
+          paramsBr.push(concurso.data_fim + ' 23:59:59');
+        }
+      }
+    } else if (mes && ano) {
+      // Comportamento original
       dateFilter = 'AND MONTH(be.data_emprestimo) = ? AND YEAR(be.data_emprestimo) = ?';
-      params.push(parseInt(mes), parseInt(ano));
+      paramsBe.push(parseInt(mes), parseInt(ano));
     }
 
     let turmaFilter = '';
-    if (turma_id) { turmaFilter = 'AND m.turma_id = ?'; params.push(turma_id); }
+    const paramsWhere = [eid];
+    if (turma_id) { turmaFilter = 'AND m.turma_id = ?'; paramsWhere.push(turma_id); }
 
     const anoAtual = anoLetivoAtual();
+    const finalParams = [eid, ...paramsBe, ...paramsBr, ...paramsWhere];
 
     const [ranking] = await db.query(
       `SELECT
          a.id AS aluno_id, a.estudante AS aluno_nome, a.foto AS aluno_foto,
          t.nome AS turma_nome,
-         COUNT(DISTINCT be.id) AS total_livros,
+         COUNT(DISTINCT be.id) AS total_livros_emprestados,
          COALESCE(SUM(br.pontuacao), 0) AS pontuacao_total,
          COUNT(DISTINCT br.id) AS total_resenhas
        FROM alunos a
-       -- Apenas alunos matriculados no ano letivo atual
        INNER JOIN matriculas m
          ON m.aluno_id = a.id AND m.escola_id = ? AND m.ano_letivo = ${anoAtual} AND m.status = 'ativo'
        LEFT JOIN turmas t ON t.id = m.turma_id
        LEFT JOIN biblioteca_emprestimos be
          ON be.aluno_id = a.id AND be.escola_id = ? ${dateFilter}
        LEFT JOIN biblioteca_resenhas br
-         ON br.aluno_id = a.id AND br.escola_id = ? AND br.status IN ('aprovado','destaque')
+         ON br.aluno_id = a.id AND br.escola_id = ? AND br.status IN ('aprovado','destaque') ${resenhaDateFilter}
        WHERE a.escola_id = ? ${turmaFilter}
        GROUP BY a.id, a.estudante, a.foto, t.nome
-       HAVING total_livros > 0
-       ORDER BY total_livros DESC, pontuacao_total DESC
+       HAVING total_livros_emprestados > 0 OR total_resenhas > 0
+       ORDER BY pontuacao_total DESC, total_resenhas DESC, total_livros_emprestados DESC
        LIMIT 50`,
-      [...params, eid, eid]
+      finalParams
     );
 
     res.json({ ok: true, ranking });
