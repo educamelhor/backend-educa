@@ -1180,12 +1180,14 @@ async function bootstrap() {
       CREATE TABLE IF NOT EXISTS biblioteca_perguntas (
         id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
         escola_id   INT NOT NULL,
+        livro_id    INT UNSIGNED NOT NULL,
         pergunta    VARCHAR(1000) NOT NULL,
         ativa       TINYINT(1) NOT NULL DEFAULT 1,
         ordem       INT NOT NULL DEFAULT 0,
         criado_em   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
-        INDEX idx_escola (escola_id)
+        INDEX idx_escola (escola_id),
+        INDEX idx_livro (livro_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         COMMENT='Banco de perguntas para resenhas'
     `);

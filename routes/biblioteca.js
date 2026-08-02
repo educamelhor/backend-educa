@@ -661,16 +661,21 @@ router.get('/turmas/leitores', async (req, res) => {
 // PERGUNTAS — Banco de Perguntas para Resenhas
 // ============================================================================
 
-/** GET /api/biblioteca/perguntas — listar perguntas ativas (ou todas) da escola */
+/** GET /api/biblioteca/perguntas — listar perguntas ativas (ou todas) de um livro */
 router.get('/perguntas', async (req, res) => {
   const db  = req.db;
   const eid = escolaId(req);
-  const { todas } = req.query; // se true, retorna até inativas
+  const { todas, livro_id } = req.query;
+  
+  if (!livro_id) {
+    return res.status(400).json({ ok: false, error: 'livro_id é obrigatório' });
+  }
+
   try {
-    let q = 'SELECT * FROM biblioteca_perguntas WHERE escola_id = ?';
+    let q = 'SELECT * FROM biblioteca_perguntas WHERE escola_id = ? AND livro_id = ?';
     if (!todas) q += ' AND ativa = 1';
     q += ' ORDER BY ordem ASC, id ASC';
-    const [perguntas] = await db.query(q, [eid]);
+    const [perguntas] = await db.query(q, [eid, livro_id]);
     res.json({ ok: true, perguntas });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -681,12 +686,13 @@ router.get('/perguntas', async (req, res) => {
 router.post('/perguntas', async (req, res) => {
   const db  = req.db;
   const eid = escolaId(req);
-  const { pergunta, ordem = 0 } = req.body;
+  const { pergunta, ordem = 0, livro_id } = req.body;
   if (!pergunta) return res.status(400).json({ ok: false, error: 'Pergunta é obrigatória' });
+  if (!livro_id) return res.status(400).json({ ok: false, error: 'livro_id é obrigatório' });
   try {
     const [result] = await db.query(
-      'INSERT INTO biblioteca_perguntas (escola_id, pergunta, ordem) VALUES (?, ?, ?)',
-      [eid, pergunta, ordem]
+      'INSERT INTO biblioteca_perguntas (escola_id, livro_id, pergunta, ordem) VALUES (?, ?, ?, ?)',
+      [eid, livro_id, pergunta, ordem]
     );
     res.json({ ok: true, id: result.insertId });
   } catch (err) {
