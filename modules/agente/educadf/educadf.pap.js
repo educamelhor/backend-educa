@@ -324,12 +324,15 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
     return false;
   }
 
-  // Normalização para comparação robusta
+  // Normalização para comparação robusta de turmas e outros valores
+  // Converte: '9º Ano - A' / '9° Ano-A' / '9 Ano A' → '9 ANO A'
   const normalize = (s) => String(s).trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // remove acentos
     .normalize('NFC')
-    .replace(/°/g, 'º')
-    .replace(/\s+-\s+/g, ' ')  // '8º ANO - A' → '8º ANO A'
-    .replace(/\s+/g, ' ');
+    .replace(/[°º]/g, '')             // remove ordinal (º U+00BA e ° U+00B0)
+    .replace(/\s*-\s*/g, ' ')         // remove hifens com ou sem espaço: ' - ' / '-'
+    .replace(/\s+/g, ' ')
+    .trim();
 
   const target = normalize(valor);
 
@@ -357,11 +360,21 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
   const inputField = ng.locator("input[type='text']").first();
   const hasSearch = (await inputField.count()) > 0;
 
-  const searchText = valor.substring(0, 25);
+  // Usa um termo de busca simplificado para evitar problemas com Unicode (º, °, etc.)
+  // Para turmas: '9º Ano - A' → busca por 'ANO A' ou apenas o número+letra
+  // Para outros valores: usa os primeiros 25 chars mas remove o símbolo ordinal
+  let searchText = valor.substring(0, 25);
+  // Remove ordinal º/° e simplifica para melhorar filtro no ng-select do EDUCADF
+  const searchSimple = valor
+    .replace(/[°º]/g, '')           // remove ordinal
+    .replace(/\s+-\s+/g, ' ')       // '9 Ano - A' → '9 Ano A'
+    .trim()
+    .substring(0, 25);
   if (hasSearch) {
-    await inputField.fill(searchText);
+    // Tenta primeiro com o texto simplificado (sem º) — evita problemas de encoding no portal
+    await inputField.fill(searchSimple);
   } else {
-    await page.keyboard.type(searchText, { delay: 30 });
+    await page.keyboard.type(searchSimple, { delay: 30 });
   }
   await page.waitForTimeout(1500);
 
