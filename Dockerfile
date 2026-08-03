@@ -42,6 +42,10 @@ RUN npm install
 # Copia o restante do código
 COPY . .
 
+# Instala Chromium do Playwright para o Node.js
+RUN npx playwright install chromium
+
+
 # ── Python (Agente SEEDF) ────────────────────────────
 # Instala dependências Python do agente
 RUN pip3 install --break-system-packages \
