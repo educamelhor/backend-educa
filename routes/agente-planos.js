@@ -189,6 +189,9 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     // E deduplica por nome da atividade para garantir que sub-divisões do PAP não criem colunas duplicadas
     const itensComDataMap = new Map();
     itens.forEach(item => {
+      // CRÍTICO: o nomeAtividade aqui é a CHAVE de deduplicação, e é o nome que será
+      // enviado ao Playwright da Etapa 1 para criar a coluna no EDUCADF.
+      // A Etapa 2 deve usar o mesmo fallback para encontrar a coluna pelo nome.
       const nomeAtividade = (item.atividade || item.tipo_avaliacao || 'Avaliação Bimestral').trim();
       if (!itensComDataMap.has(nomeAtividade)) {
         let dataResolvida = item.data_inicio;
@@ -395,6 +398,9 @@ router.post('/:id/exportar-notas', async (req, res) => {
       const itemDef = itens[notaRaw.item_idx];
       if (!itemDef) continue;
       
+      // CRÍTICO: usar o mesmo fallback da Etapa 1 (itensComDataMap linha 192).
+      // Etapa 1 cria a coluna no EDUCADF com: atividade || tipo_avaliacao || 'Avaliação Bimestral'
+      // Etapa 2 DEVE usar o mesmo fallback para encontrar a coluna pelo nome correto no EDUCADF.
       const atividadeNome = (itemDef.atividade || itemDef.tipo_avaliacao || 'Avaliação Bimestral').trim();
       if (!notasPorAtividade[atividadeNome]) {
          notasPorAtividade[atividadeNome] = {};
