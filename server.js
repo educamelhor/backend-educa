@@ -119,6 +119,8 @@ import escolaLogosRouter from "./routes/escola_logos.js";
 import capaProvasRouter from "./routes/capa_provas.js";
 import plataformaGovernancaRouter from "./routes/plataforma_governanca.js";
 import manutencaoRouter from "./routes/manutencao.js";
+import convitesPublicoRouter from "./routes/convites_publico.js"; // ✅ Ativação de diretores — PUBLIC (sem auth)
+
 import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
@@ -1323,6 +1325,11 @@ async function bootstrap() {
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
   // ============================================================================
   app.use("/api/auth-plataforma", authPlataformaRouter);
+  // ── Convites de ativação de diretores — PÚBLICO (sem autenticarToken) ──────
+  // DEVE ficar ANTES do app.use("/api/plataforma", autenticarToken, ...)
+  // Motivo: diretor novo não tem conta/token → precisa acessar sem autenticação
+  app.use("/api/convites-ativacao", (req, _res, next) => { req.db = pool; next(); }, convitesPublicoRouter);
+
   app.use("/api/plataforma", autenticarToken, exigirEscopo("plataforma"), plataformaRouter);
   app.use("/api/plataforma/usage", autenticarToken, exigirEscopo("plataforma"), plataformaUsageRouter);
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
