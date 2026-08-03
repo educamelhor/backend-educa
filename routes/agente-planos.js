@@ -189,22 +189,22 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     // E deduplica por nome da atividade para garantir que sub-divisões do PAP não criem colunas duplicadas
     const itensComDataMap = new Map();
     itens.forEach(item => {
-      const nomeAtividade = (item.atividade || '').trim();
+      const nomeAtividade = (item.atividade || item.tipo_avaliacao || 'Avaliação Bimestral').trim();
       if (!itensComDataMap.has(nomeAtividade)) {
         let dataResolvida = item.data_inicio;
         
         if (!dataResolvida) {
           if (item.fixo_direcao && dataGabaritoSecundario) {
              dataResolvida = dataGabaritoSecundario;
-             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null → fallback secundário gabarito: ${dataResolvida}`);
+             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback secundário gabarito: ${dataResolvida}`);
           } else {
              dataResolvida = dataFallback;
-             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null → fallback genérico: ${dataResolvida}`);
+             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback genérico: ${dataResolvida}`);
           }
         }
 
         itensComDataMap.set(nomeAtividade, {
-          atividade:      item.atividade,
+          atividade:      nomeAtividade,
           tipo_avaliacao: item.tipo_avaliacao,
           data_inicio:    dataResolvida,
           data:           dataResolvida,
@@ -395,7 +395,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
       const itemDef = itens[notaRaw.item_idx];
       if (!itemDef) continue;
       
-      const atividadeNome = (itemDef.atividade || '').trim();
+      const atividadeNome = (itemDef.atividade || itemDef.tipo_avaliacao || 'Avaliação Bimestral').trim();
       if (!notasPorAtividade[atividadeNome]) {
          notasPorAtividade[atividadeNome] = {};
       }
