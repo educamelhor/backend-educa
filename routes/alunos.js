@@ -2400,6 +2400,7 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
     const { escola_id } = req.user;
     const usuarioFinalizacaoId = req.user.usuarioId || req.user.id || req.user.usuario_id;
     const modo = req.body?.modo || 'presenca'; // 'presenca' | 'telefone' | 'nao_compareceu'
+    const observacaoInterna = req.body?.observacao_interna?.trim() || '';
 
     // Texto de rastreabilidade para registro interno
     const agora = new Date(Date.now() - 3 * 60 * 60 * 1000); // UTC-3
@@ -2407,13 +2408,24 @@ router.put("/:id/ocorrencias/:ocorrenciaId/comparecimento", verificarEscola, asy
 
     let registroFinal = '';
     if (modo === 'telefone') {
-      registroFinal = `[FINALIZAÃ‡ÃƒO] Contato realizado via telefone em ${dataStr}.`;
+      registroFinal = `[FINALIZAÇÃO] Contato realizado via telefone em ${dataStr}.`;
     } else if (modo === 'nao_compareceu') {
-      registroFinal = `[FINALIZAÃ‡ÃƒO] ResponsÃ¡vel convocado e nÃ£o compareceu. Registro finalizado em ${dataStr}.`;
+      registroFinal = `[FINALIZAÇÃO] Responsável convocado e não compareceu. Registro finalizado em ${dataStr}.`;
     } else if (modo === 'nao_convocado') {
-      registroFinal = `[FINALIZAÃ‡ÃƒO] ResponsÃ¡vel tomou conhecimento do registro disciplinar atravÃ©s do aplicativo. Registro finalizado em ${dataStr}.`;
+      registroFinal = `[FINALIZAÇÃO] Responsável tomou conhecimento do registro disciplinar através do aplicativo. Registro finalizado em ${dataStr}.`;
+    } else if (modo === 'presenca' && observacaoInterna) {
+      registroFinal = `[FINALIZAÇÃO] Presença confirmada em ${dataStr}.`;
     }
-    // modo = 'presenca' â†’ data_comparecimento_responsavel jÃ¡ registra
+
+    if (observacaoInterna) {
+      if (registroFinal) {
+        registroFinal += `\n[OBSERVAÇÕES INTERNAS] ${observacaoInterna}`;
+      } else {
+        registroFinal = `[FINALIZAÇÃO] ${dataStr}\n[OBSERVAÇÕES INTERNAS] ${observacaoInterna}`;
+      }
+    }
+
+    // modo = 'presenca' -> data_comparecimento_responsavel já registra
 
 
     // Se modo = 'presenca' â†’ grava data de comparecimento (quando hÃ¡ convocaÃ§Ã£o)
