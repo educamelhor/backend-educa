@@ -125,6 +125,7 @@ import frequenciaRouter from "./routes/frequencia.js";
 import secretariaRelatoriosRouter from "./routes/secretaria-relatorios.js";
 import secretariaRelatoriosPdfRouter from "./routes/secretaria-relatorios-pdf.js";
 import pedagogicoRelatoriosRouter from "./routes/pedagogico_relatorios.js";
+import agendaPedagogicaRouter from "./routes/agendaPedagogica.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 import appPaisLoginRouter from "./routes/app_pais_login.js"; // ✅ Router público pre-auth — workaround Express 5 + Docker
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
@@ -1601,6 +1602,9 @@ async function bootstrap() {
 
   // ✅ Relatórios Pedagógicos (Plano de Avaliação, etc.)
   app.use("/api/pedagogico/relatorios", autenticarToken, verificarEscola, pedagogicoRelatoriosRouter);
+
+  // ✅ Agenda Pedagógica
+  app.use("/api/agenda-pedagogica", autenticarToken, verificarEscola, agendaPedagogicaRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {

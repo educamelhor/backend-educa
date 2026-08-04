@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS agenda_pedagogica (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    escola_id INT NOT NULL,
+    tema VARCHAR(50) NOT NULL,
+    titulo VARCHAR(255) NOT NULL,
+    bimestre VARCHAR(50),
+    data_inicio DATE NOT NULL,
+    data_fim DATE,
+    descricao TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
