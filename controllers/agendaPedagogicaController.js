@@ -1,5 +1,29 @@
 import pool from '../db.js';
 
+// Auto-criação da tabela para garantir que exista na DigitalOcean (já que a migration não rodou)
+const setupTable = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agenda_pedagogica (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          escola_id INT NOT NULL,
+          tema VARCHAR(50) NOT NULL,
+          titulo VARCHAR(255) NOT NULL,
+          bimestre VARCHAR(50),
+          data_inicio DATE NOT NULL,
+          data_fim DATE,
+          descricao TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    console.log("✅ Tabela agenda_pedagogica verificada/criada com sucesso.");
+  } catch (err) {
+    console.error("Erro ao verificar tabela agenda_pedagogica:", err);
+  }
+};
+setupTable();
+
 export const listarEventos = async (req, res) => {
   try {
     const escola_id = req.user.escola_id;
