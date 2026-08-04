@@ -51,7 +51,7 @@ const MODULOS_VALIDOS = new Set([
   // Pedagógico
   'pedagogico', 'pedagogico.conselho', 'pedagogico.conteudos',
   'pedagogico.relatorios', 'pedagogico.correcoes',
-  'pedagogico.solicitacoes', 'pedagogico.provas',
+  'pedagogico.solicitacoes', 'pedagogico.provas', 'pedagogico.agenda',
   // Gabarito
   'gabarito', 'gabarito.gerar', 'gabarito.corrigir_lote',
   'gabarito.corrigir', 'gabarito.resultados',
