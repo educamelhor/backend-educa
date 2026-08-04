@@ -1,5 +1,5 @@
 import express from 'express';
-import { autenticarToken } from '../middleware/auth.js';
+import { autenticarToken } from '../middleware/autenticarToken.js';
 import {
   listarEventos,
   criarEvento,
