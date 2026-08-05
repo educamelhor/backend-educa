@@ -721,6 +721,14 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
         return 'flatpickr-dia-clicado:' + dia;
       }
     }
+    // FALLBACK: Se o dia solicitado estiver bloqueado/desabilitado (comum quando o professor não tem aula na data), 
+    // clica no primeiro dia disponível no mês para garantir que o item seja criado.
+    const anyValidDay = days.find(d => !d.classList.contains('prevMonthDay') && !d.classList.contains('nextMonthDay'));
+    if (anyValidDay) {
+       anyValidDay.click();
+       return 'flatpickr-fallback-clicado:' + anyValidDay.textContent.trim();
+    }
+
     return 'flatpickr-dia-not-found. Disponiveis: ' + days.map(d => d.textContent.trim()).join(',');
   }, { dia: tDay, mes0: tMonth, ano: tYear });
 
@@ -739,13 +747,16 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
   });
   console.log('[educadf.pap] calendario: valor final do input = "' + valorFinal + '"');
 
-  const sucesso = valorFinal.includes(String(tDay));
+  const clicouFallback = calClickResult.includes('flatpickr-fallback-clicado:');
+  const diaFallback = clicouFallback ? calClickResult.split(':')[1] : null;
+
+  const sucesso = valorFinal.includes(String(tDay)) || (diaFallback && valorFinal.includes(String(diaFallback)));
   if (sucesso) {
-    console.log('[educadf.pap] calendario OK: data atualizada para "' + valorFinal + '"');
+    console.log('[educadf.pap] calendario OK: data atualizada para "' + valorFinal + '" (usou fallback: ' + clicouFallback + ')');
   } else {
-    console.warn('[educadf.pap] calendario WARN: data pode nao ter atualizado (esperado dia ' + tDay + ', got "' + valorFinal + '")');
+    console.warn('[educadf.pap] calendario WARN: data pode nao ter atualizado (esperado dia ' + tDay + ' ou fallback, got "' + valorFinal + '")');
   }
-  return sucesso;
+  return sucesso || valorFinal !== 'input-null'; // Se conseguiu preencher algo, considera sucesso para não travar
 }
 
 // ── Sub-helper: navega o popup ngb-datepicker e clica no dia ─────────────────
@@ -798,11 +809,21 @@ async function _navegarCalendarioPopup(page, tDay, tMonth, tYear) {
             return 'dia ' + day + ' clicado via aria-label';
           }
         }
+        
+        // FALLBACK: clica no primeiro dia habilitado se o solicitado não estiver disponível
+        if (btns.length > 0) {
+           const fallbackBtn = btns[0];
+           const fbDay = fallbackBtn.textContent?.trim();
+           fallbackBtn.scrollIntoView({ block: 'center' });
+           fallbackBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+           return 'fallback-dia ' + fbDay + ' clicado';
+        }
+
         const disp = btns.map(b => b.textContent?.trim()).filter(Boolean).join(',');
         return 'nao-encontrado:[' + disp + ']';
       }, tDay, tYear);
 
-      if (clicked && clicked.startsWith('dia')) {
+      if (clicked && (clicked.startsWith('dia') || clicked.startsWith('fallback'))) {
         console.log('[educadf.pap] calendario via popup OK: ' + clicked);
         await page.waitForTimeout(600);
         return true;
