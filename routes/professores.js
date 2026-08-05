@@ -1003,9 +1003,10 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
     const perfil = String(req.user?.perfil || "").toLowerCase().trim();
-    const isDirecao = perfil === "diretor" || perfil === "vice_diretor";
+    const perfisGestao = ["diretor", "direcao", "vice_diretor", "secretaria", "secretario", "coordenacao", "coordenador", "admin", "administrador"];
+    const isGestor = perfisGestao.includes(perfil);
 
-    if (!isDirecao) {
+    if (!isGestor) {
       // 1. Validar se o professor está modulado para esta turma e disciplina
       const [[modValidation]] = await pool.query(
         `SELECT 1

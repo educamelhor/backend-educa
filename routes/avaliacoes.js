@@ -802,12 +802,19 @@ router.post("/", async (req, res) => {
           );
 
           if (!jaExiste) {
+            // Busca a data de criacao do plano para usar como fallback da data_inicio
+            const [[planoInfo]] = await conn.query(
+              `SELECT DATE(criado_em) as data_criacao FROM planos_avaliacao WHERE id = ?`,
+              [planoId]
+            );
+            const fallbackData = planoInfo && planoInfo.data_criacao ? planoInfo.data_criacao : new Date();
+
             await conn.query(
               `INSERT INTO itens_avaliacao
                 (plano_id, atividade, tipo_avaliacao, data_inicio, data_final,
                  nota_total, oportunidades, nota_invertida, descricao, fixo_direcao)
-               VALUES (?, 'Prova Bimestral', 'PROVA', NULL, NULL, 5, 1, 0, NULL, 1)`,
-              [planoId]
+               VALUES (?, 'Prova Bimestral', 'PROVA', ?, NULL, 5, 1, 0, NULL, 1)`,
+              [planoId, fallbackData]
             );
             console.log(`[avaliacoes] Auto-item Prova Bimestral inserido no plano ${planoId}`);
           } else {
@@ -887,16 +894,13 @@ router.patch("/:id/item/:itemId/data", async (req, res) => {
       return res.status(404).json({ ok: false, error: "Plano não encontrado ou sem permissão." });
     }
 
-    // Verifica se o item existe e não é fixo_direcao
+    // Verifica se o item existe
     const [[item]] = await pool.query(
-      `SELECT id, fixo_direcao FROM itens_avaliacao WHERE id = ? AND plano_id = ?`,
+      `SELECT id FROM itens_avaliacao WHERE id = ? AND plano_id = ?`,
       [itemId, planoId]
     );
     if (!item) {
       return res.status(404).json({ ok: false, error: "Item não encontrado." });
-    }
-    if (item.fixo_direcao) {
-      return res.status(403).json({ ok: false, error: "A data da Prova Bimestral é gerenciada pela Direção e não pode ser alterada aqui." });
     }
 
     const dataFormatada = toDateOnly(data_inicio);
