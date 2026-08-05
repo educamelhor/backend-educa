@@ -451,6 +451,46 @@ router.get("/:id", async (req, res) => {
 
     plano.itens = itens;
 
+    // --- BLOCO DE FALLBACK DA PROVA BIMESTRAL ---
+    // A prova bimestral (fixo_direcao = 1) não permite edição de data pelo professor.
+    // Buscamos a data da agenda_pedagogica (Semana de Prova) ou gabarito_avaliacoes.
+    for (let item of plano.itens) {
+      if (item.fixo_direcao === 1 && !item.data_inicio) {
+        let fallbackDate = null;
+
+        try {
+          // 1. Tentar Agenda Pedagógica
+          const [agendaRows] = await pool.query(
+            "SELECT data_inicio FROM agenda_pedagogica WHERE escola_id = ? AND tema = 'semana_prova' AND bimestre = ? LIMIT 1",
+            [escola_id, plano.bimestre]
+          );
+          if (agendaRows.length > 0 && agendaRows[0].data_inicio) {
+            fallbackDate = toDateOnly(agendaRows[0].data_inicio);
+          }
+          
+          // 2. Tentar Gabarito (prova padronizada)
+          if (!fallbackDate) {
+            const [gabaritoRows] = await pool.query(
+              "SELECT data_aplicacao FROM gabarito_avaliacoes WHERE escola_id = ? AND tipo = 'prova_padronizada' AND bimestre = ? ORDER BY id DESC LIMIT 1",
+              [escola_id, plano.bimestre]
+            );
+            if (gabaritoRows.length > 0 && gabaritoRows[0].data_aplicacao) {
+              fallbackDate = toDateOnly(gabaritoRows[0].data_aplicacao);
+            }
+          }
+        } catch (e) {
+          console.error("Erro no fallback de data da Prova Bimestral:", e);
+        }
+
+        if (fallbackDate) {
+          item.data_inicio = fallbackDate;
+          item.data_final = fallbackDate;
+          item.data_fallback = true; // flag para o frontend saber
+        }
+      }
+    }
+    // ---------------------------------------------
+
     // Desserializa JSON de stats da exportação de notas (para o polling path no frontend)
     if (plano.agente_notas_resultado_json) {
       try {
