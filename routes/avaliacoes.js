@@ -1197,16 +1197,32 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       return res.status(400).json({ error: "Diário já está fechado. Solicite à Secretaria para reabrir." });
     }
 
-    // 3) Resolver disciplina_id a partir do nome
+    // 3) Resolver disciplina_id priorizando a modulação da turma (evita pegar ID de outra etapa com mesmo nome)
     const [[disc]] = await conn.query(
-      "SELECT id FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1",
-      [plano.disciplina, escola_id]
+      `SELECT d.id 
+       FROM disciplinas d
+       JOIN modulacao m ON m.disciplina_id = d.id
+       WHERE d.nome = ? 
+         AND d.escola_id = ? 
+         AND m.turma_id = ? 
+       LIMIT 1`,
+      [plano.disciplina, escola_id, turma_id]
     );
-    if (!disc) {
-      conn.release();
-      return res.status(400).json({ error: `Disciplina '${plano.disciplina}' não encontrada.` });
+    
+    let disciplinaId = disc?.id;
+
+    // Fallback: se não achar pela modulação, busca apenas pelo nome
+    if (!disciplinaId) {
+      const [[discFallback]] = await conn.query(
+        "SELECT id FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1",
+        [plano.disciplina, escola_id]
+      );
+      if (!discFallback) {
+        conn.release();
+        return res.status(400).json({ error: `Disciplina '${plano.disciplina}' não encontrada.` });
+      }
+      disciplinaId = discFallback.id;
     }
-    const disciplinaId = disc.id;
 
     // 4) Resolver bimestre numérico
     const bimestreNum = parseBimestre(plano.bimestre);
