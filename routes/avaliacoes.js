@@ -1248,15 +1248,6 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       return res.status(400).json({ error: "Nenhuma nota encontrada no diário para exportar." });
     }
 
-    // 5.5) Normalizar bimestre com base no regime da turma (semestral/anual)
-    const [[turmaInfo]] = await conn.query("SELECT regime FROM turmas WHERE id = ?", [turma_id]);
-    const regime = turmaInfo?.regime || 'anual';
-    let bimestreParaSalvar = bimestreNum;
-    if (regime === 'semestral') {
-       if (bimestreParaSalvar === 1 || bimestreParaSalvar === 2) bimestreParaSalvar = 1;
-       else if (bimestreParaSalvar === 3 || bimestreParaSalvar === 4) bimestreParaSalvar = 2;
-    }
-
     // 6) Transação: UPSERT nas notas + registrar fechamento
     await conn.beginTransaction();
 
@@ -1269,7 +1260,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
         `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
          VALUES (?, ?, ?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE nota = VALUES(nota), data_lancamento = NOW()`,
-        [escola_id, row.aluno_id, ano, bimestreParaSalvar, disciplinaId, nota]
+        [escola_id, row.aluno_id, ano, bimestreNum, disciplinaId, nota]
       );
       if (result.insertId > 0) inseridas++;
       else atualizadas++;

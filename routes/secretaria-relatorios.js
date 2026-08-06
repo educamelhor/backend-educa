@@ -347,7 +347,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
     const bimEfetivo = bimestre ? Number(bimestre) : 1;
 
     let extraFilter = '';
-    const params = [escola_id, escola_id, anoEfetivo, escola_id, anoEfetivo];
+    const params = [escola_id, escola_id, anoEfetivo, bimEfetivo, escola_id, anoEfetivo];
 
     if (turno && turno !== 'todos') {
       extraFilter += ' AND UPPER(t.turno) = UPPER(?)';
@@ -385,15 +385,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
             AND a.escola_id = ?
             AND n.disciplina_id = d.id
             AND n.ano = ?
-            AND n.bimestre = CASE
-              WHEN COALESCE(t.regime, 'anual') = 'semestral' THEN
-                CASE
-                  WHEN ${bimEfetivo} IN (1, 2) THEN 1
-                  WHEN ${bimEfetivo} IN (3, 4) THEN 2
-                  ELSE ${bimEfetivo}
-                END
-              ELSE ${bimEfetivo}
-            END
+            AND n.bimestre = ?
             AND (n.nota IS NOT NULL OR n.faltas IS NOT NULL)
         ) AS alunos_com_nota
       FROM modulacao m
@@ -444,15 +436,7 @@ router.get('/acompanhamento-notas/alunos', async (req, res) => {
       JOIN turmas t ON t.id = a.turma_id
       LEFT JOIN notas n ON n.aluno_id = a.id
         AND n.disciplina_id = ?
-        AND n.bimestre = CASE
-          WHEN COALESCE(t.regime, 'anual') = 'semestral' THEN
-            CASE
-              WHEN ${Number(bimestre)} IN (1, 2) THEN 1
-              WHEN ${Number(bimestre)} IN (3, 4) THEN 2
-              ELSE ${Number(bimestre)}
-            END
-          ELSE ${Number(bimestre)}
-        END
+        AND n.bimestre = ?
         AND n.ano = ?
         AND n.escola_id = ?
       WHERE a.turma_id = ?
@@ -463,6 +447,7 @@ router.get('/acompanhamento-notas/alunos', async (req, res) => {
 
     const [rows] = await pool.query(sql, [
       Number(disciplina_id),
+      Number(bimestre),
       anoEfetivo,
       escola_id,
       Number(turma_id),

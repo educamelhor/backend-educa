@@ -1025,15 +1025,6 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
       }
     }
 
-    // 2. Descobre o regime da turma para normalizar o bimestre
-    const [[turmaInfo]] = await pool.query("SELECT regime FROM turmas WHERE id = ?", [turma_id]);
-    const regime = turmaInfo?.regime || 'anual';
-    let bimestreParaSalvar = Number(bimestre);
-    if (regime === 'semestral') {
-       if (bimestreParaSalvar === 1 || bimestreParaSalvar === 2) bimestreParaSalvar = 1;
-       else if (bimestreParaSalvar === 3 || bimestreParaSalvar === 4) bimestreParaSalvar = 2;
-    }
-
     // 3. Iniciar transação para garantir integridade dos dados
     await conn.beginTransaction();
 
@@ -1059,7 +1050,7 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
           nota = VALUES(nota),
           faltas = VALUES(faltas),
           data_lancamento = NOW()`,
-        [escolaId, aluno_id, ano, bimestreParaSalvar, disciplina_id, notaValue, faltasValue]
+        [escolaId, aluno_id, ano, bimestre, disciplina_id, notaValue, faltasValue]
       );
     }
 
