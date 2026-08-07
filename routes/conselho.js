@@ -231,11 +231,11 @@ router.get("/resumo-turma", async (req, res) => {
 
     // 2) Busca alunos ativos na turma
     const [alunos] = await db.query(
-      `SELECT a.codigo, a.estudante AS nome, a.foto_url, m.numero_chamada
+      `SELECT a.codigo, a.estudante AS nome
        FROM alunos a
        INNER JOIN matriculas m ON m.aluno_id = a.id AND m.turma_id = ? AND m.ano_letivo = ? AND m.status = 'ativo'
        WHERE a.escola_id = ?
-       ORDER BY m.numero_chamada ASC, a.estudante ASC`,
+       ORDER BY a.estudante ASC`,
       [turma_id, ano, escola_id]
     );
 
