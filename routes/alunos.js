@@ -2861,9 +2861,12 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
         );
 
         const merged = { ...currentRow.rowData };
-        // Para o IEDUCAR, a continuation geralmente é " / 13 anos" em dataNasc, ou um 2o telefone.
-        // Iremos pegar APENAS o dado da linha principal para telefone e responsável.
-        // A data de nascimento já estará no formato dd/mm/yyyy.
+        // Merge telefone da linha de continuação (IEDUCAR coloca celular na linha de baixo)
+        for (const cont of continuations) {
+          if (cont.rowData.contato) {
+            merged.contato = merged.contato ? merged.contato + " | " + cont.rowData.contato : cont.rowData.contato;
+          }
+        }
         mergedRows.push(merged);
       }
     }
@@ -2894,11 +2897,24 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
                  : /F/i.test(sexoRaw) || /feminino/i.test(sexoRaw)  ? "Feminino"
                  : null;
 
-      // Telefone: Pega só os números do telefone principal
-      const contatoRaw = (r.contato || "").split('/')[0].trim();
-      const telefone = contatoRaw && contatoRaw !== "-"
-        ? contatoRaw.replace(/\D/g, "").substring(0, 20) || null
-        : null;
+      // Telefone: Prioriza celular (11 dígitos). Se tiver vários, procura o celular.
+      const contatoRaw = (r.contato || "").trim();
+      let telefone = null;
+      if (contatoRaw && contatoRaw !== "-") {
+        // Divide por | (linha de baixo) ou / (mesma linha)
+        const parts = contatoRaw.split(/[|\/]/);
+        let bestPhone = "";
+        for (const p of parts) {
+           const nums = p.replace(/\D/g, "");
+           if (nums.length === 11) {
+              bestPhone = nums;
+              break; // Achou celular, para a busca
+           } else if (nums.length >= 8 && !bestPhone) {
+              bestPhone = nums; // Guarda fixo caso não ache celular
+           }
+        }
+        telefone = bestPhone.substring(0, 20) || null;
+      }
 
       const nomeResp = (r.nomeResp || "").trim() || null;
 
