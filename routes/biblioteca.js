@@ -153,7 +153,7 @@ router.get('/acervo', async (req, res) => {
     );
 
     const [livros] = await db.query(
-      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis, bae.ativo,
+      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis, bae.local_estante, bae.ativo,
          (SELECT COUNT(*) FROM biblioteca_emprestimos be
           WHERE be.livro_id = ba.id AND be.escola_id = ? AND be.status = 'ativo') AS emprestados_agora,
          (SELECT COUNT(*) FROM biblioteca_resenhas br
@@ -184,7 +184,7 @@ router.post('/acervo', async (req, res) => {
   const eid = escolaId(req);
   const {
     titulo, autor, isbn, editora, ano_publicacao, genero, categoria,
-    sinopse, num_paginas, exemplares, capa_url,
+    sinopse, num_paginas, exemplares, local_estante, capa_url,
   } = req.body;
 
   if (!titulo) return res.status(400).json({ ok: false, error: 'Título obrigatório' });
@@ -257,21 +257,22 @@ router.post('/acervo', async (req, res) => {
       await db.query(
         `UPDATE biblioteca_acervo_escola
          SET exemplares = exemplares + ?, exemplares_disponiveis = exemplares_disponiveis + ?,
+             local_estante = COALESCE(?, local_estante),
              ativo = 1
          WHERE acervo_id = ? AND escola_id = ?`,
-        [exemplaresN, exemplaresN, acervoId, eid]
+        [exemplaresN, exemplaresN, local_estante||null, acervoId, eid]
       );
     } else {
       await db.query(
         `INSERT INTO biblioteca_acervo_escola
-           (acervo_id, escola_id, exemplares, exemplares_disponiveis)
-         VALUES (?,?,?,?)`,
-        [acervoId, eid, exemplaresN, exemplaresN]
+           (acervo_id, escola_id, exemplares, exemplares_disponiveis, local_estante)
+         VALUES (?,?,?,?,?)`,
+        [acervoId, eid, exemplaresN, exemplaresN, local_estante||null]
       );
     }
 
     const [[livro]] = await db.query(
-      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis
+      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis, bae.local_estante
        FROM biblioteca_acervo ba
        JOIN biblioteca_acervo_escola bae ON bae.acervo_id = ba.id AND bae.escola_id = ?
        WHERE ba.id = ?`,
@@ -292,7 +293,7 @@ router.put('/acervo/:id', async (req, res) => {
   const { id } = req.params;
   const {
     titulo, autor, isbn, editora, ano_publicacao, genero, categoria,
-    sinopse, num_paginas, exemplares, capa_url, ativo,
+    sinopse, num_paginas, exemplares, local_estante, capa_url, ativo,
   } = req.body;
 
   try {
@@ -318,26 +319,23 @@ router.put('/acervo/:id', async (req, res) => {
     );
 
     // Atualiza estoque escolar
-    if (exemplares !== undefined) {
-      const novoExemp = parseInt(exemplares) || bae.exemplares;
+    if (exemplares !== undefined || local_estante !== undefined || ativo !== undefined) {
+      const novoExemp = exemplares !== undefined ? (parseInt(exemplares) || bae.exemplares) : bae.exemplares;
       const diff      = novoExemp - bae.exemplares;
       const novoDisp  = Math.max(0, bae.exemplares_disponiveis + diff);
+      const novoLocal = local_estante !== undefined ? local_estante : bae.local_estante;
+      
       await db.query(
-        `UPDATE biblioteca_acervo_escola SET exemplares = ?, exemplares_disponiveis = ?, ativo = ?
+        `UPDATE biblioteca_acervo_escola SET exemplares = ?, exemplares_disponiveis = ?, local_estante = ?, ativo = ?
          WHERE acervo_id = ? AND escola_id = ?`,
-        [novoExemp, novoDisp,
+        [novoExemp, novoDisp, novoLocal,
          ativo !== undefined ? (ativo ? 1 : 0) : bae.ativo,
          id, eid]
-      );
-    } else if (ativo !== undefined) {
-      await db.query(
-        'UPDATE biblioteca_acervo_escola SET ativo = ? WHERE acervo_id = ? AND escola_id = ?',
-        [ativo ? 1 : 0, id, eid]
       );
     }
 
     const [[livro]] = await db.query(
-      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis, bae.ativo
+      `SELECT ba.*, bae.id AS estoque_id, bae.exemplares, bae.exemplares_disponiveis, bae.local_estante, bae.ativo
        FROM biblioteca_acervo ba
        JOIN biblioteca_acervo_escola bae ON bae.acervo_id = ba.id AND bae.escola_id = ?
        WHERE ba.id = ?`, [eid, id]

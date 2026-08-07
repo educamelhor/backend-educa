@@ -1105,6 +1105,7 @@ async function bootstrap() {
         escola_id              INT          NOT NULL,
         exemplares             INT          NOT NULL DEFAULT 1,
         exemplares_disponiveis INT          NOT NULL DEFAULT 1,
+        local_estante          VARCHAR(255) DEFAULT NULL,
         ativo                  TINYINT(1)   NOT NULL DEFAULT 1,
         criado_em              DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
         atualizado_em          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
