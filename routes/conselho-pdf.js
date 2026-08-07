@@ -215,34 +215,37 @@ router.get("/resumo-turma/pdf", async (req, res) => {
             ? new Date(reg.criado_em).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
             : "—";
 
-          // estima linhas do texto
-          const charsPerLine = Math.floor((PW - 32) / 5.5);
-          const nLines = Math.ceil((reg.texto || "").length / charsPerLine);
-          const regH = Math.max(40, 22 + nLines * 11);
-
-          if (doc.y + regH + 4 > CONTENT_MAX_Y) addPage();
-
           // Borda esquerda colorida por perfil
           const perfilCor = reg.usuario_perfil === "professor" ? "#3b82f6"
             : reg.usuario_perfil === "coordenador" ? "#10b981"
             : reg.usuario_perfil === "diretor" ? "#8b5cf6" : "#64748b";
 
-          doc.rect(L, doc.y, PW, regH).fill("#f8fafc");
-          doc.rect(L, doc.y, PW, regH).strokeColor(BORDER).lineWidth(0.5).stroke();
-          doc.rect(L, doc.y, 4, regH).fill(perfilCor); // barra colorida à esquerda
+          // Calcula altura real do texto no PDF
+          const textOpts = { width: PW - 24, lineGap: 2 };
+          const textHeight = doc.font("Helvetica").fontSize(8.5).heightOfString(reg.texto || "", textOpts);
+          const regH = Math.max(38, textHeight + 26); // 8 top + text + 6 gap + 8 footer + 4 bottom
+
+          if (doc.y + regH + 6 > CONTENT_MAX_Y) addPage();
+
+          const startY = doc.y;
+
+          doc.rect(L, startY, PW, regH).fill("#f8fafc");
+          doc.rect(L, startY, PW, regH).strokeColor(BORDER).lineWidth(0.5).stroke();
+          doc.rect(L, startY, 4, regH).fill(perfilCor); // barra colorida à esquerda
 
           // Texto do registro
           doc.font("Helvetica").fontSize(8.5).fillColor("#1e293b")
-            .text(reg.texto || "", L + 12, doc.y + 8, { width: PW - 24, lineGap: 2 });
+            .text(reg.texto || "", L + 12, startY + 8, textOpts);
 
           // Rodapé do registro: Autor e data
-          const rodapeY = doc.y - 11;
+          const rodapeY = startY + regH - 14;
           doc.font("Helvetica-Bold").fontSize(7).fillColor(perfilCor)
             .text(`${reg.usuario_nome || "—"}  •  ${perfilLabel}`, L + 12, rodapeY, { width: PW / 2 - 12 });
           doc.font("Helvetica").fontSize(7).fillColor("#94a3b8")
             .text(dataFormatada, L + PW / 2, rodapeY, { width: PW / 2 - 12, align: "right" });
 
-          doc.y += regH + 4;
+          // Avança o Y explicitamente
+          doc.y = startY + regH + 6;
         }
         doc.y += 6;
       }
