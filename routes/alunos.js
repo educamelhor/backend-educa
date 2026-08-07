@@ -2874,7 +2874,9 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
     
     // Tenta encontrar a turma pelo nome do arquivo PDF (que vem no req.file.originalname)
     if (req.file && req.file.originalname) {
-       turmaNomePdf = req.file.originalname.replace('.pdf', '').trim();
+       // O Multer costuma entregar o originalname em latin1. Precisamos converter para utf8 para evitar o "Âº".
+       const decodedName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+       turmaNomePdf = decodedName.replace(/\.pdf$/i, '').trim();
     }
 
     for (const r of mergedRows) {
