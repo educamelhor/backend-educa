@@ -97,6 +97,7 @@ import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
 import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
 import conselhoRouter from "./routes/conselho.js";
+import conselhoPdfRouter from "./routes/conselho-pdf.js";
 import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
@@ -1555,6 +1556,8 @@ async function bootstrap() {
 
   // ✅ Registros de Conselho de Classe — comentários rastreáveis por aluno
   app.use("/api/conselho", autenticarToken, verificarEscola, conselhoRouter);
+  // ✅ PDF do Conselho de Classe — Resumo (geração institucional)
+  app.use("/api/conselho", autenticarToken, verificarEscola, conselhoPdfRouter);
   app.use("/api/termo-consentimento", autenticarToken, verificarEscola, termoConsentimentoRouter);
   app.use("/api/tace", autenticarToken, verificarEscola, taceRouter);
   app.use("/api/disciplinar-atas", autenticarToken, verificarEscola, disciplinarAtasRouter);

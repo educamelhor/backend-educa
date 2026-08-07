@@ -206,4 +206,73 @@ router.delete("/registros/:id", async (req, res) => {
   }
 });
 
+// ============================================================================
+// GET /api/conselho/resumo-turma
+// Retorna todos os alunos de uma turma com seus registros de conselho
+// Query: turma_id (obrigatório), ano_letivo (opcional)
+// ============================================================================
+router.get("/resumo-turma", async (req, res) => {
+  try {
+    const escola_id = req.escola_id ?? req.user?.escola_id;
+    if (!escola_id) return res.status(400).json({ ok: false, error: "Escola não identificada." });
+
+    const { turma_id, ano_letivo } = req.query;
+    if (!turma_id) return res.status(400).json({ ok: false, error: "turma_id é obrigatório." });
+
+    const db = req.db || pool;
+    const ano = ano_letivo ? Number(ano_letivo) : (new Date().getMonth() + 1 <= 1 ? new Date().getFullYear() - 1 : new Date().getFullYear());
+
+    // 1) Busca dados da turma
+    const [[turmaInfo]] = await db.query(
+      `SELECT t.id, t.nome, t.turno, t.serie FROM turmas t WHERE t.id = ? AND t.escola_id = ? LIMIT 1`,
+      [turma_id, escola_id]
+    );
+    if (!turmaInfo) return res.status(404).json({ ok: false, error: "Turma não encontrada." });
+
+    // 2) Busca alunos ativos na turma
+    const [alunos] = await db.query(
+      `SELECT a.codigo, a.nome, a.foto_url, m.numero_chamada
+       FROM alunos a
+       INNER JOIN matriculas m ON m.aluno_id = a.id AND m.turma_id = ? AND m.ano_letivo = ? AND m.status = 'ativo'
+       WHERE a.escola_id = ?
+       ORDER BY m.numero_chamada ASC, a.nome ASC`,
+      [turma_id, ano, escola_id]
+    );
+
+    if (alunos.length === 0) {
+      return res.json({ ok: true, turma: turmaInfo, alunos: [] });
+    }
+
+    // 3) Busca TODOS os registros de conselho da turma em uma única query
+    const codigos = alunos.map(a => a.codigo);
+    const placeholders = codigos.map(() => '?').join(',');
+    const [registros] = await db.query(
+      `SELECT id, aluno_codigo, texto, usuario_id, usuario_nome, usuario_perfil, criado_em, editado_em
+       FROM registro_conselho
+       WHERE escola_id = ? AND turma_id = ? AND aluno_codigo IN (${placeholders}) AND (excluido IS NULL OR excluido = 0)
+       ORDER BY aluno_codigo ASC, criado_em ASC`,
+      [escola_id, turma_id, ...codigos]
+    );
+
+    // 4) Agrupa registros por aluno_codigo
+    const registrosPorAluno = {};
+    for (const r of registros) {
+      if (!registrosPorAluno[r.aluno_codigo]) registrosPorAluno[r.aluno_codigo] = [];
+      registrosPorAluno[r.aluno_codigo].push(r);
+    }
+
+    // 5) Monta resposta final
+    const alunosComRegistros = alunos.map(a => ({
+      ...a,
+      registros: registrosPorAluno[a.codigo] || []
+    }));
+
+    res.json({ ok: true, turma: turmaInfo, alunos: alunosComRegistros });
+  } catch (err) {
+    console.error("[CONSELHO] Erro em resumo-turma:", err);
+    res.status(500).json({ ok: false, error: "Erro interno." });
+  }
+});
+
 export default router;
+
