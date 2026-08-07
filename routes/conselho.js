@@ -229,15 +229,38 @@ router.get("/resumo-turma", async (req, res) => {
     );
     if (!turmaInfo) return res.status(404).json({ ok: false, error: "Turma não encontrada." });
 
-    // 2) Busca alunos ativos na turma
-    const [alunos] = await db.query(
-      `SELECT a.codigo, a.estudante AS nome
+    const SPACES_BASE = String(
+      process.env.SPACES_PUBLIC_BASE || "https://nyc3.digitaloceanspaces.com/educa-melhor-uploads/"
+    ).replace(/\/+$/, "") + "/";
+
+    // 2) Busca alunos ativos na turma (com foto e LGPD)
+    const [alunosRaw] = await db.query(
+      `SELECT a.codigo, a.estudante AS nome,
+              a.foto,
+              CASE
+                WHEN a.foto LIKE 'http%' THEN a.foto
+                ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
+              END AS foto_url,
+              COALESCE(
+                (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
+                   FROM responsaveis_alunos ra
+                  WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+                0
+              ) AS consentimento_imagem
        FROM alunos a
        INNER JOIN matriculas m ON m.aluno_id = a.id AND m.turma_id = ? AND m.ano_letivo = ? AND m.status = 'ativo'
+       LEFT JOIN escolas e ON e.id = a.escola_id
        WHERE a.escola_id = ?
        ORDER BY a.estudante ASC`,
-      [turma_id, ano, escola_id]
+      [SPACES_BASE, turma_id, ano, escola_id]
     );
+
+    // LGPD: apaga foto se responsável não autorizou
+    const alunos = alunosRaw.map(a => ({
+      ...a,
+      foto:     Number(a.consentimento_imagem) === 1 ? a.foto     : null,
+      foto_url: Number(a.consentimento_imagem) === 1 ? a.foto_url : null,
+    }));
 
     if (alunos.length === 0) {
       return res.json({ ok: true, turma: turmaInfo, alunos: [] });
