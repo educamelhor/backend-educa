@@ -2730,4 +2730,500 @@ router.delete("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, asy
   }
 });
 
+// =========================================================================
+// Rota EXCLUSIVA para a Lista IEDUCAR
+// =========================================================================
+router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "PDF não enviado." });
+  }
+
+  try {
+    const { escola_id } = req.user;
+    const anoLetivoAtual = typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : String(new Date().getFullYear());
+    const semTurma = req.body.semTurma === "true" || req.body.semTurma === true;
+
+    // FASE 1: Extração posicional com separação por página
+    const allItems = [];
+    let pageCounter = 0;
+
+    await pdfParse(req.file.buffer, {
+      pagerender: async (pageData) => {
+        pageCounter++;
+        const pg = pageCounter;
+        const tc = await pageData.getTextContent();
+        for (const item of tc.items) {
+          const txt = (item.str || "").trim();
+          if (!txt) continue;
+          allItems.push({
+            text: txt,
+            x: Math.round(item.transform[4]),
+            y: Math.round(item.transform[5]),
+            page: pg,
+          });
+        }
+        return "";
+      },
+    });
+
+    // Agrupa por chave "página-Y" (tolerância 3px no Y)
+    const rowsMap = {};
+    for (const it of allItems) {
+      const yKey = Math.round(it.y / 3) * 3;
+      const key = `${it.page}-${yKey}`;
+      if (!rowsMap[key]) rowsMap[key] = [];
+      rowsMap[key].push(it);
+    }
+
+    // FASE 2: Detecta cabeçalho por página para IEDUCAR
+    const headerYByPage = {};
+    for (const [key, items] of Object.entries(rowsMap)) {
+      const [pgStr, yStr] = key.split("-");
+      const pg = Number(pgStr);
+      const y = Number(yStr);
+      const textos = items.map((it) => it.text.toUpperCase());
+      const hasCodigo = textos.some((t) => t === "CÓDIGO" || t === "CODIGO");
+      const hasNome = textos.some((t) => t.includes("NOME DO ESTUDANTE"));
+      if (hasCodigo && hasNome) {
+        if (!(pg in headerYByPage) || y > headerYByPage[pg]) {
+          headerYByPage[pg] = y;
+        }
+      }
+    }
+    console.log(`[importar-pdf-ieducar] ${pageCounter} página(s), cabeçalhos:`, headerYByPage);
+
+    // FASE 3: Ranges de colunas calibrados nas posições reais do IEDUCAR
+    const COL_RANGES = {
+      re:       { min: 20, max: 80 },     // Código
+      nome:     { min: 80, max: 280 },    // Nome do Estudante/Nome Social
+      dataNasc: { min: 280, max: 380 },   // Dt Nasc / Idade
+      sexo:     { min: 380, max: 410 },   // Sexo
+      contato:  { min: 410, max: 500 },   // Telefone
+      nomeResp: { min: 500, max: 1200 },  // Nome do Responsável
+    };
+
+    function getCol(x) {
+      for (const [col, range] of Object.entries(COL_RANGES)) {
+        if (x >= range.min && x < range.max) return col;
+      }
+      return null;
+    }
+
+    // FASE 4: Classifica cada linha como "data row" ou "continuation"
+    const sortedKeys = Object.keys(rowsMap).sort((a, b) => {
+      const [pa, ya] = a.split("-").map(Number);
+      const [pb, yb] = b.split("-").map(Number);
+      if (pa !== pb) return pa - pb;
+      return yb - ya; 
+    });
+
+    const classifiedRows = [];
+    for (const key of sortedKeys) {
+      const [pgStr, yStr] = key.split("-");
+      const pg = Number(pgStr);
+      const yKey = Number(yStr);
+      const headerY = headerYByPage[pg];
+      if (!headerY || yKey >= headerY) continue;
+
+      const lineItems = rowsMap[key].sort((a, b) => a.x - b.x);
+      const rowData = {};
+      for (const it of lineItems) {
+        const col = getCol(it.x);
+        if (col) {
+          rowData[col] = rowData[col] ? rowData[col] + " " + it.text : it.text;
+        }
+      }
+      const reRaw = (rowData.re || "").replace(/\D/g, "").trim();
+      const isDataRow = /^\d{4,8}$/.test(reRaw);
+      classifiedRows.push({ key, pg, yKey, rowData, isDataRow });
+    }
+
+    // FASE 5: Merge
+    const dataRowsByPage = {};
+    for (const row of classifiedRows) {
+      if (!row.isDataRow) continue;
+      if (!dataRowsByPage[row.pg]) dataRowsByPage[row.pg] = [];
+      dataRowsByPage[row.pg].push(row);
+    }
+
+    const mergedRows = [];
+    for (const pg of Object.keys(dataRowsByPage)) {
+      const dRows = dataRowsByPage[pg]; 
+      const allPageRows = classifiedRows.filter((r) => r.pg === Number(pg));
+
+      for (let i = 0; i < dRows.length; i++) {
+        const currentRow = dRows[i];
+        const upperBound = i > 0 ? dRows[i - 1].yKey : Infinity;
+        const lowerBound = i < dRows.length - 1 ? dRows[i + 1].yKey : -Infinity;
+
+        const continuations = allPageRows.filter(
+          (r) => !r.isDataRow && r.yKey < upperBound && r.yKey > lowerBound
+        );
+
+        const merged = { ...currentRow.rowData };
+        // Para o IEDUCAR, a continuation geralmente é " / 13 anos" em dataNasc, ou um 2o telefone.
+        // Iremos pegar APENAS o dado da linha principal para telefone e responsável.
+        // A data de nascimento já estará no formato dd/mm/yyyy.
+        mergedRows.push(merged);
+      }
+    }
+
+    // FASE 6: Limpeza e normalização
+    const pdfEntries = [];
+    let turmaNomePdf = null;
+    
+    // Tenta encontrar a turma pelo nome do arquivo PDF (que vem no req.file.originalname)
+    if (req.file && req.file.originalname) {
+       turmaNomePdf = req.file.originalname.replace('.pdf', '').trim();
+    }
+
+    for (const r of mergedRows) {
+      const re = (r.re || "").replace(/\D/g, "").trim();
+      if (!/^\d{4,8}$/.test(re)) continue;
+
+      const estudante = (r.nome || "").replace(/\s{2,}/g, " ").trim();
+      if (!estudante) continue;
+
+      const dataMatch = (r.dataNasc || "").match(/(\d{2}\/\d{2}\/\d{4})/);
+      const dataBr = dataMatch ? dataMatch[1] : "";
+
+      const sexoRaw = (r.sexo || "").trim();
+      const sexo = /M/i.test(sexoRaw) || /masculino/i.test(sexoRaw) ? "Masculino"
+                 : /F/i.test(sexoRaw) || /feminino/i.test(sexoRaw)  ? "Feminino"
+                 : null;
+
+      // Telefone: Pega só os números do telefone principal
+      const contatoRaw = (r.contato || "").split('/')[0].trim();
+      const telefone = contatoRaw && contatoRaw !== "-"
+        ? contatoRaw.replace(/\D/g, "").substring(0, 20) || null
+        : null;
+
+      const nomeResp = (r.nomeResp || "").trim() || null;
+
+      pdfEntries.push({
+        codigo: re,
+        estudante,
+        dataBr,
+        cpfAluno: null, // Não usamos CPF no IEDUCAR
+        sexo,
+        serie: null,
+        telefone,
+        responsavel: nomeResp,
+        cpfResponsavel: null, // Não usamos CPF
+      });
+    }
+
+    console.log(
+      `[importar-pdf-ieducar] Extraídos: ${pdfEntries.length} alunos | Turma PDF: "${turmaNomePdf}"`
+    );
+
+    if (pdfEntries.length === 0) {
+      return res.status(400).json({
+        message: "Nenhum aluno encontrado no PDF. Verifique se o arquivo está no formato IEDUCAR.",
+      });
+    }
+
+    // FASE 7: Identificação da turma
+    let turma_id = null;
+    if (!semTurma) {
+      if (!turmaNomePdf) {
+        return res.status(400).json({
+          message: "Não foi possível identificar a turma pelo nome do arquivo PDF.",
+        });
+      }
+
+      const [[turma]] = await pool.query(
+        `SELECT id, nome FROM turmas
+         WHERE UPPER(TRIM(REPLACE(nome, ' - ', ' '))) = ?
+           AND escola_id = ?
+           AND ano = ?
+         ORDER BY id DESC LIMIT 1`,
+        [turmaNomePdf.toUpperCase().replace(/\s*-\s*/g, " ").replace(/\s+/g, " ").trim(), escola_id, anoLetivoAtual]
+      );
+
+      if (!turma) {
+        return res.status(404).json({
+          code: "TURMA_NAO_ENCONTRADA",
+          message: `Turma "${turmaNomePdf}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          turmaNaoEncontrada: turmaNomePdf,
+        });
+      }
+      turma_id = turma.id;
+      console.log(`[importar-pdf-ieducar] Turma encontrada: id=${turma_id} nome="${turma.nome}"`);
+    }
+
+    // FASE 8: Situação atual no BD para a turma
+    const atuaisIdSet = new Set();
+    const atuais = [];
+
+    if (turma_id) {
+      const [atuaisMatricula] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+         FROM matriculas m
+         INNER JOIN alunos a ON a.id = m.aluno_id
+         WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
+        [turma_id, anoLetivoAtual, escola_id]
+      );
+      const [atuaisAlunos] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante, a.status
+         FROM alunos a
+         WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
+        [turma_id, escola_id]
+      );
+      for (const a of atuaisMatricula) {
+        if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+      }
+      for (const a of atuaisAlunos) {
+        if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+      }
+    }
+
+    const normName = (s) =>
+      (s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
+    const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
+    const atuaisNomeMap = new Map();
+    for (const a of atuais) {
+      const key = normName(a.estudante);
+      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+    }
+
+    const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
+    const toInsert = [];
+    const toReactivate = [];
+    let jaExistiam = 0;
+    let atualizadosCodigo = 0;
+
+    for (const e of pdfEntries) {
+      const cod = String(e.codigo);
+      let atual = atuaisMap.get(cod);
+
+      if (!atual) {
+        const nomeKey = normName(e.estudante);
+        const porNome = atuaisNomeMap.get(nomeKey);
+        if (porNome) {
+          console.log(
+            `[importar-pdf-ieducar] Match por nome: "${e.estudante}" — código ${porNome.codigo} -> ${e.codigo}`
+          );
+          await pool.query(
+            "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
+            [e.codigo, porNome.id, escola_id]
+          );
+          atualizadosCodigo++;
+          atual = porNome;
+          atuaisMap.set(cod, porNome);
+          atuaisNomeMap.delete(nomeKey);
+          entradaSet.add(String(porNome.codigo));
+        }
+      }
+
+      if (!atual) {
+        toInsert.push(e);
+      } else if (atual.status === "inativo") {
+        toReactivate.push(e);
+      } else {
+        jaExistiam++;
+        const sets = [];
+        const params = [];
+
+        const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+        if (dataValida) {
+          sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+          params.push(e.dataBr);
+        }
+        if (e.sexo) {
+          sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+          params.push(e.sexo);
+        }
+        if (sets.length > 0) {
+          params.push(atual.id, escola_id);
+          await pool.query(
+            `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
+            params
+          );
+        }
+        
+        await upsertResponsavelSemCpf(pool, e, atual.id, escola_id);
+      }
+    }
+
+    // FASE 9: Inserir novos alunos
+    let inseridos = 0;
+    for (const e of toInsert) {
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+      const baseParams = [e.codigo, e.estudante];
+      let insertSql;
+
+      if (dataValida) {
+        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
+          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams.push(e.dataBr, e.sexo || null, turma_id, escola_id);
+      } else {
+        insertSql = `INSERT INTO alunos (codigo, estudante, sexo, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, 'ativo')
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            estudante = VALUES(estudante),
+            sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
+            turma_id = VALUES(turma_id),
+            status = 'ativo'`;
+        baseParams.push(e.sexo || null, turma_id, escola_id);
+      }
+
+      const [result] = await pool.query(insertSql, baseParams);
+      const alunoId = result.insertId;
+
+      if (alunoId && turma_id) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
+
+      if (alunoId) await upsertResponsavelSemCpf(pool, e, alunoId, escola_id);
+      inseridos++;
+    }
+
+    // FASE 10: Reativar
+    let reativados = 0;
+    for (const e of toReactivate) {
+      const atualObj = atuaisMap.get(String(e.codigo));
+      const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+
+      const sets = ["status = 'ativo'", "turma_id = ?"];
+      const params = [turma_id];
+
+      if (dataValida) {
+        sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+        params.push(e.dataBr);
+      }
+      if (e.sexo) {
+        sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+        params.push(e.sexo);
+      }
+      params.push(e.codigo, escola_id);
+
+      await pool.query(
+        `UPDATE alunos SET ${sets.join(", ")} WHERE codigo = ? AND escola_id = ?`,
+        params
+      );
+
+      const alunoId = atualObj?.id;
+      if (alunoId && turma_id) {
+        const [matr] = await pool.query(
+          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+          [alunoId, anoLetivoAtual, escola_id]
+        );
+        if (matr.length > 0) {
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
+        } else {
+          await pool.query(
+            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+            [escola_id, alunoId, turma_id, anoLetivoAtual]
+          );
+        }
+      }
+      if (alunoId) await upsertResponsavelSemCpf(pool, e, alunoId, escola_id);
+      reativados++;
+    }
+
+    const pendentesInativacao = [];
+    for (const atual of atuais) {
+      if (atual.status !== "ativo") continue;
+      const cod = String(atual.codigo);
+      const nomeKey = normName(atual.estudante);
+      const noCodigoPdf = entradaSet.has(cod);
+      const noNomePdf = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
+      if (!noCodigoPdf && !noNomePdf) {
+        pendentesInativacao.push({
+          id: atual.id,
+          codigo: atual.codigo,
+          estudante: atual.estudante,
+        });
+      }
+    }
+
+    console.log(
+      `[importar-pdf-ieducar] localizados:${pdfEntries.length} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} pendentes:${pendentesInativacao.length}`
+    );
+
+    return res.json({
+      localizados: pdfEntries.length,
+      inseridos,
+      reativados,
+      jaExistiam,
+      codigosAtualizados: atualizadosCodigo,
+      inativados: 0,
+      pendentesInativacao,
+      listaAlunos: pdfEntries,
+    });
+  } catch (err) {
+    console.error("Erro ao processar /importar-pdf-ieducar:", err);
+    return res.status(500).json({ message: "Erro ao processar PDF IEDUCAR.", error: err.message });
+  }
+});
+
+async function upsertResponsavelSemCpf(pool, e, alunoId, escola_id) {
+  if (!e.responsavel) return; // Se não tem nome do responsável, não cadastra
+  const nomeResp = (e.responsavel || "").trim();
+  const telefoneResp = (e.telefone || "").trim();
+  try {
+    // Busca se já existe um responsável com mesmo nome E telefone
+    const [existente] = await pool.query(
+      `SELECT id FROM responsaveis WHERE nome = ? AND telefone = ? LIMIT 1`,
+      [nomeResp, telefoneResp]
+    );
+
+    let responsavelId = null;
+    if (existente && existente.length > 0) {
+       responsavelId = existente[0].id;
+    } else {
+       const [respResult] = await pool.query(
+         `INSERT INTO responsaveis (nome, telefone) VALUES (?, ?)`,
+         [nomeResp, telefoneResp || null]
+       );
+       responsavelId = respResult.insertId;
+    }
+
+    if (responsavelId && alunoId) {
+      const [[vinculo]] = await pool.query(
+        "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+        [responsavelId, alunoId, escola_id]
+      );
+      if (!vinculo) {
+        await pool.query(
+          "INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo) VALUES (?, ?, ?, 'RESPONSAVEL', 1)",
+          [escola_id, responsavelId, alunoId]
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[importar-pdf-ieducar] Falha ao vincular responsável do aluno ${e.codigo}:`, err.message);
+  }
+}
+
+
 export default router;
+
+
