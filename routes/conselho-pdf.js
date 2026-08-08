@@ -129,7 +129,7 @@ router.get("/resumo-turma/pdf", async (req, res) => {
 
     const doc = new PDFDocument({
       size: "A4",
-      margins: { top: 30, bottom: 20, left: L, right: R },
+      margins: { top: 30, bottom: 0, left: L, right: R },
       autoFirstPage: true,
       info: {
         Title: `Conselho de Classe — Resumo — ${turmaInfo.nome} — ${ano}`,
@@ -207,11 +207,11 @@ router.get("/resumo-turma/pdf", async (req, res) => {
       
       // Número dentro do círculo
       doc.font("Helvetica-Bold").fontSize(9).fillColor("#ffffff")
-        .text(nSeq, circleX - circleR, circleY - 4, { width: circleR * 2, align: "center" });
+        .text(nSeq, circleX - circleR, circleY - 4, { width: circleR * 2, align: "center", lineBreak: false });
         
       // Nome do estudante
       doc.font("Helvetica-Bold").fontSize(10).fillColor("#ffffff")
-        .text(aluno.nome.toUpperCase(), circleX + circleR + 12, headerY + 12);
+        .text(aluno.nome.toUpperCase(), circleX + circleR + 12, headerY + 12, { lineBreak: false });
         
       doc.y = headerY + alunoHeaderH + 6;
 
@@ -220,7 +220,7 @@ router.get("/resumo-turma/pdf", async (req, res) => {
         doc.rect(L, doc.y, PW, 20).fill(CINZA_CLARO);
         doc.rect(L, doc.y, PW, 20).strokeColor(BORDER).lineWidth(0.5).stroke();
         doc.font("Helvetica").fontSize(8).fillColor("#94a3b8")
-          .text("Nenhuma observação registrada para este aluno.", L + 10, doc.y + 6, { width: PW - 20 });
+          .text("Nenhuma observação registrada para este aluno.", L + 10, doc.y + 6, { width: PW - 20, lineBreak: false });
         doc.y += 20 + 10;
       } else {
         // Registros do aluno
@@ -255,9 +255,9 @@ router.get("/resumo-turma/pdf", async (req, res) => {
           // Rodapé do registro: Autor e data
           const rodapeY = startY + regH - 14;
           doc.font("Helvetica-Bold").fontSize(7).fillColor(perfilCor)
-            .text(`${reg.usuario_nome || "—"}  •  ${perfilLabel}`, L + 12, rodapeY, { width: PW / 2 - 12 });
+            .text(`${reg.usuario_nome || "—"}  •  ${perfilLabel}`, L + 12, rodapeY, { width: PW / 2 - 12, lineBreak: false });
           doc.font("Helvetica").fontSize(7).fillColor("#94a3b8")
-            .text(dataFormatada, L + PW / 2, rodapeY, { width: PW / 2 - 12, align: "right" });
+            .text(dataFormatada, L + PW / 2, rodapeY, { width: PW / 2 - 12, align: "right", lineBreak: false });
 
           // Avança o Y explicitamente
           doc.y = startY + regH + 6;
