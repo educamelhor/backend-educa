@@ -187,18 +187,33 @@ router.get("/resumo-turma/pdf", async (req, res) => {
     for (let idx = 0; idx < alunos.length; idx++) {
       const aluno = alunos[idx];
       const regs = registrosPorAluno[aluno.codigo] || [];
-      const nChamada = aluno.numero_chamada ? String(aluno.numero_chamada).padStart(2, "0") : "--";
+      const nSeq = String(idx + 1).padStart(2, "0");
 
       // Estimativa de espaço: cabeçalho do aluno + registros
-      const estimativa = 30 + (regs.length === 0 ? 24 : regs.length * 48) + 12;
+      const estimativa = 36 + (regs.length === 0 ? 24 : regs.length * 48) + 12;
       if (doc.y + estimativa > CONTENT_MAX_Y) addPage();
 
       // --- Card: cabeçalho do aluno ---
-      const alunoHeaderH = 26;
-      doc.rect(L, doc.y, PW, alunoHeaderH).fill(AZUL);
+      const alunoHeaderH = 34;
+      const headerY = doc.y;
+      
+      doc.roundedRect(L, headerY, PW, alunoHeaderH, 6).fill(AZUL);
+      
+      // Círculo com número sequencial
+      const circleR = 11;
+      const circleX = L + 24;
+      const circleY = headerY + alunoHeaderH / 2;
+      doc.circle(circleX, circleY, circleR).lineWidth(1.2).strokeColor("rgba(255, 255, 255, 0.4)").stroke();
+      
+      // Número dentro do círculo
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("#ffffff")
+        .text(nSeq, circleX - circleR, circleY - 4, { width: circleR * 2, align: "center" });
+        
+      // Nome do estudante
       doc.font("Helvetica-Bold").fontSize(10).fillColor("#ffffff")
-        .text(`Nº ${nChamada}  —  ${aluno.nome.toUpperCase()}`, L + 10, doc.y + 8, { width: PW - 20 });
-      doc.y += alunoHeaderH + 6;
+        .text(aluno.nome.toUpperCase(), circleX + circleR + 12, headerY + 12);
+        
+      doc.y = headerY + alunoHeaderH + 6;
 
       if (regs.length === 0) {
         // Sem registros
