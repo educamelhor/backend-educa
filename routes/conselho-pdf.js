@@ -129,7 +129,7 @@ router.get("/resumo-turma/pdf", async (req, res) => {
 
     const doc = new PDFDocument({
       size: "A4",
-      margins: { top: 30, bottom: 40, left: L, right: R },
+      margins: { top: 30, bottom: 20, left: L, right: R },
       autoFirstPage: true,
       info: {
         Title: `Conselho de Classe — Resumo — ${turmaInfo.nome} — ${ano}`,
