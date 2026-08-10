@@ -24,6 +24,16 @@ function verificarEscola(req, res, next) {
 /**
  * POST /api/secretaria/agente/importar-boletim
  * Ingestão real e análise de múltiplos PDFs de boletins padrão SEEDF.
+ *
+ * Parser v2 — Correções aplicadas:
+ *   1. Normalização de encoding: pdf-parse entrega acentos corrompidos.
+ *      Usamos NFD + strip de diacríticos para matching robusto.
+ *   2. Multi-bimestre por linha: o EDUCADF coloca TODOS os bimestres
+ *      lançados na mesma linha, ex: "ARTES 4,80 0 6,50 2 CURSANDO".
+ *      O parser extrai todos os pares (nota, faltas) e persiste apenas
+ *      o bimestre selecionado pelo usuário.
+ *   3. PDF com 1 ou N alunos: funciona igualmente. Processa páginas
+ *      ímpares em sequência (cada boletim ocupa 2 páginas no EDUCADF).
  */
 router.post("/importar-boletim", verificarEscola, upload.array("files"), async (req, res) => {
   const { escola_id } = req.user;
@@ -42,8 +52,20 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
     return res.status(400).json({ ok: false, logs, message: "Nenhum arquivo enviado." });
   }
 
+  // ── Normaliza texto removendo diacríticos para matching robusto ──────────
+  // O pdf-parse pode entregar 'LÍNGUA PORTUGUESA' como 'L\uFFFDNGUA PORTUGUESA'.
+  // Ao normalizar ambos os lados (PDF e banco) conseguimos fazer o match.
+  const normalizeStr = (s) =>
+    (s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "") // remove diacríticos
+      .toUpperCase()
+      .replace(/\s+/g, " ")
+      .trim();
+
   // 1. Carregar mapeamento de disciplinas da escola em memória
-  let discMap = {};
+  let discMap = {};     // chave: nome exato (upper) → id
+  let discMapNorm = {}; // chave: nome normalizado (sem acento, upper) → id
   try {
     const [disciplinas] = await pool.query(
       "SELECT id, nome, nome_oficial FROM disciplinas WHERE escola_id = ?",
@@ -51,11 +73,16 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
     );
 
     for (const d of disciplinas) {
+      // Registra pelo nome_oficial (ex: "PARTE DIVERSIFICADA II") e pelo nome amigável (ex: "Geometria")
       if (d.nome_oficial) {
-        discMap[d.nome_oficial.trim().toUpperCase()] = d.id;
+        const key = d.nome_oficial.trim().toUpperCase();
+        discMap[key] = d.id;
+        discMapNorm[normalizeStr(d.nome_oficial)] = d.id;
       }
       if (d.nome) {
-        discMap[d.nome.trim().toUpperCase()] = d.id;
+        const key = d.nome.trim().toUpperCase();
+        discMap[key] = d.id;
+        discMapNorm[normalizeStr(d.nome)] = d.id;
       }
     }
     logs.push(`🔗 [Agente] Carregados ${disciplinas.length} mapeamentos de disciplinas da escola.`);
@@ -70,24 +97,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
   let totalFalhas = 0;
   let totalAlunos = 0;
 
-  // Conexão com transação/pool para gravação
+  // Conexão com pool para gravação
   const conn = await pool.getConnection();
 
   try {
     for (const file of req.files) {
       logs.push(`📂 [Agente] Lendo e mapeando arquivo: ${file.originalname} (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
-      // Ler páginas do PDF
+      // ── Leitura do PDF página a página ──────────────────────────────────
       const pageTexts = [];
       const render_page = async (pageData) => {
-        let render_options = {
+        const textContent = await pageData.getTextContent({
           normalizeWhitespace: true,
-          disableCombineTextItems: false
-        };
-
-        const textContent = await pageData.getTextContent(render_options);
+          disableCombineTextItems: false,
+        });
         let lastY, text = "";
-        for (let item of textContent.items) {
+        for (const item of textContent.items) {
           if (lastY === item.transform[5] || !lastY) {
             text += " " + item.str;
           } else {
@@ -95,106 +120,129 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           }
           lastY = item.transform[5];
         }
-        pageTexts.push({
-          page: pageData.pageNumber,
-          text: text
-        });
+        pageTexts.push({ page: pageData.pageNumber, text });
         return text;
       };
 
       try {
         await pdf(file.buffer, { pagerender: render_page });
         pageTexts.sort((a, b) => a.page - b.page);
-        logs.push(`🔍 [Agente] PDF carregado: ${pageTexts.length} páginas detectadas.`);
+        logs.push(`🔍 [Agente] PDF carregado: ${pageTexts.length} página(s) detectada(s).`);
       } catch (pdfErr) {
         logs.push(`❌ [Agente] Erro ao processar estrutura binária de ${file.originalname}: ${pdfErr.message}`);
         totalFalhas++;
         continue;
       }
 
-      // Processar páginas ímpares (onde estão os boletins dos estudantes)
+      // ── Processar páginas ímpares (boletim do estudante) ─────────────────
+      // No padrão EDUCADF cada boletim ocupa 2 páginas (ímpares = dados, pares = rodapé).
+      // Um arquivo com apenas 1 aluno tem 2 páginas, portanto processa só a página 1.
+      // Um arquivo com N alunos processa páginas 1, 3, 5, ... N*2-1.
       for (let i = 0; i < pageTexts.length; i += 2) {
         const pageNum = i + 1;
-        const text = pageTexts[i].text;
+        const rawText = pageTexts[i].text;
 
-        const nameMatch = text.match(/Nome do\(a\) Estudante:\s*([^\r\n]+)/);
-        const reMatch = text.match(/(?:RE\s*RE\s*nº|RERE\s*nº):\s*(\d+)/i);
+        // Identifica nome e RE do estudante na página
+        const nameMatch = rawText.match(/Nome do\(a\) Estudante:\s*([^\r\n]+)/);
+        const reMatch   = rawText.match(/(?:RE\s*RE\s*n[ºo]?|RERE\s*n[ºo]?):\s*(\d+)/i);
 
         if (!nameMatch || !reMatch) {
-          logs.push(`⚠️ [Agente] Falha de leitura/identificação na página ${pageNum}. Pulando página.`);
+          logs.push(`⚠️ [Agente] Página ${pageNum}: não foi possível identificar estudante (Nome/RE). Pulando.`);
           continue;
         }
 
-        const rawName = nameMatch[1].trim();
-        let studentName = rawName;
-        const cleanNameMatch = rawName.match(/^([^\(]+?)(?:\s*(?:RE\s*RE\s*nº|RERE\s*nº|\s*RE\s*nº))/i);
-        if (cleanNameMatch) {
-          studentName = cleanNameMatch[1].trim();
-        } else {
-          studentName = studentName.replace(/\s+RE\s*RE\s*nº.*$/i, "").trim();
-        }
-
+        const studentName = nameMatch[1].replace(/\s+RE\s*RE\s*n[ºo]?.*$/i, "").trim();
         const re = parseInt(reMatch[1].trim(), 10);
         totalAlunos++;
 
-        // Obter estudante correspondente no banco
+        // Busca o aluno no banco pelo código (RE)
         const [dbAlunos] = await conn.query(
           "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
           [re, escola_id]
         );
 
         if (dbAlunos.length === 0) {
-          logs.push(`❌ [Agente] ERRO: Estudante "${studentName}" (RE: ${re}) não foi encontrado ativo no banco!`);
+          logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
           totalFalhas++;
           continue;
         }
 
         const dbA = dbAlunos[0];
-        logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID Banco: ${dbA.id})`);
+        logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
 
-        // Extrair disciplinas e notas
-        const lines = text.split("\n");
+        // ── Parser de notas — multi-bimestre ───────────────────────────────
+        // O EDUCADF coloca todos os bimestres lançados na mesma linha:
+        //   "ARTES 4,80 0 6,50 2 CURSANDO"          → pares: [(4.80,0), (6.50,2)]
+        //   "PARTE DIVERSIFICADA II 3,07 0 CURSANDO" → pares: [(3.07,0)]
+        //
+        // Extraímos todos os pares e salvamos apenas o bimestre escolhido (bimNum).
+        const lines = rawText.split("\n");
         let parsedGrades = 0;
 
         for (const line of lines) {
-          const match = line.match(/^([a-zA-ZáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ/ ]+?)\s+(\d+,\d+)\s+(\d+)\s+CURSANDO/i);
-          if (match) {
-            const discName = match[1].trim();
-            const gradeVal = parseFloat(match[2].trim().replace(",", "."));
-            const absencesVal = parseInt(match[3].trim(), 10);
-            
-            const discId = discMap[discName.toUpperCase()];
+          // Só processa linhas que contenham "CURSANDO"
+          if (!/CURSANDO/i.test(line)) continue;
 
-            if (discId) {
-              const absencesToInsert = faltasActive ? absencesVal : 0;
+          // Extrai o nome da disciplina: texto antes do primeiro "X,XX N"
+          const discMatch = line.match(/^([A-ZÀ-ÿa-z/ ]{3,}?)\s+(\d+,\d+)\s+(\d+)/);
+          if (!discMatch) continue;
 
-              const [resUpsert] = await conn.query(`
-                INSERT INTO notas
-                  (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-                ON DUPLICATE KEY UPDATE
-                  nota = VALUES(nota),
-                  faltas = VALUES(faltas),
-                  data_lancamento = NOW()
-              `, [escola_id, dbA.id, anoNum, bimNum, discId, gradeVal, absencesToInsert]);
+          const discNameRaw = discMatch[1].trim();
 
-              parsedGrades++;
+          // Tenta mapear — primeiro com normalização (resistente a encoding),
+          // depois pela chave direta como fallback.
+          const discNameNorm = normalizeStr(discNameRaw);
+          const discId = discMapNorm[discNameNorm] ?? discMap[discNameRaw.toUpperCase()];
 
-              if (resUpsert.affectedRows === 1) {
-                totalInseridos++;
-                logs.push(`  ✔ ${discName.padEnd(22)} | Nota: ${gradeVal.toFixed(1)} | Faltas: ${absencesToInsert}`);
-              } else if (resUpsert.affectedRows === 2) {
-                totalAtualizados++;
-                logs.push(`  🔄 ${discName.padEnd(22)} | Nota: ${gradeVal.toFixed(1)} | Faltas: ${absencesToInsert} (Atualizado)`);
-              }
-            } else {
-              logs.push(`  ⚠️ Ignorado: "${discName}" (Não possui mapeamento oficial no sistema)`);
-            }
+          if (!discId) {
+            logs.push(`  ⚠️ Ignorado: "${discNameRaw}" → normalizado: "${discNameNorm}" (sem mapeamento na escola)`);
+            continue;
+          }
+
+          // Extrai todos os pares (nota vírgula, faltas) da linha
+          const pairRegex = /(\d+,\d+)\s+(\d+)/g;
+          const pairs = [];
+          let m;
+          while ((m = pairRegex.exec(line)) !== null) {
+            pairs.push({
+              nota:   parseFloat(m[1].replace(",", ".")),
+              faltas: parseInt(m[2], 10),
+            });
+          }
+
+          // Seleciona o par do bimestre desejado (índice 0-based)
+          const bimIdx = bimNum - 1;
+          if (bimIdx >= pairs.length) {
+            logs.push(`  ⏭️ ${discNameRaw.padEnd(26)} | ${bimNum}º bim não lançado neste PDF.`);
+            continue;
+          }
+
+          const { nota: gradeVal, faltas: absencesVal } = pairs[bimIdx];
+          const absencesToInsert = faltasActive ? absencesVal : 0;
+
+          const [resUpsert] = await conn.query(`
+            INSERT INTO notas
+              (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE
+              nota             = VALUES(nota),
+              faltas           = VALUES(faltas),
+              data_lancamento  = NOW()
+          `, [escola_id, dbA.id, anoNum, bimNum, discId, gradeVal, absencesToInsert]);
+
+          parsedGrades++;
+
+          if (resUpsert.affectedRows === 1) {
+            totalInseridos++;
+            logs.push(`  ✔ ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert}`);
+          } else if (resUpsert.affectedRows === 2) {
+            totalAtualizados++;
+            logs.push(`  🔄 ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert} (Atualizado)`);
           }
         }
 
         if (parsedGrades === 0) {
-          logs.push(`  ⚠️ Nenhuma nota correspondente pôde ser estruturada para ${dbA.estudante}.`);
+          logs.push(`  ⚠️ Nenhuma nota estruturada para ${dbA.estudante}. Verifique os logs de "Ignorado" acima.`);
         }
       }
     }
@@ -216,9 +264,9 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         inseridos: totalInseridos,
         atualizados: totalAtualizados,
         falhas: totalFalhas,
-        alunos: totalAlunos
+        alunos: totalAlunos,
       },
-      message: "Importação concluída com sucesso."
+      message: "Importação concluída com sucesso.",
     });
 
   } catch (globalErr) {
