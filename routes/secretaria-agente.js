@@ -175,17 +175,35 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         //   "ARTES 4,80 0 6,50 2 CURSANDO"          → pares: [(4.80,0), (6.50,2)]
         //   "PARTE DIVERSIFICADA II 3,07 0 CURSANDO" → pares: [(3.07,0)]
         //
-        // ATENÇÃO: O PDF possui dois blocos de disciplinas por página:
-        //   1) Grade curricular normal (notas reais)
-        //   2) Seção "ITINERÁRIO FORMATIVO" (aparece depois, com zeros)
-        // O segundo bloco sobrescreve o primeiro caso não seja bloqueado.
-        // Solução: truncamos o texto antes do marcador de Itinerário.
-        // O marcador no EDUCADF aparece com letras dobradas: "IITTIINNEERR..."
-        // Basta detectar o padrão de 2+ letras consecutivas iguais (decorativo).
-        const itinerarioMarker = rawText.search(/IITTII|II TT II|\bITINER[AÁ]RIO\b/i);
-        const textParaCurriculo = itinerarioMarker > 0
-          ? rawText.substring(0, itinerarioMarker)
-          : rawText;
+        // ATENÇÃO: O PDF possui dois blocos de disciplinas na mesma página.
+        // O pdf-parse decodifica os títulos normalmente (sem letras dobradas):
+        //   Linha 11: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 1º header (antes das notas reais)
+        //   Linha 19: "PARTE DIVERSIFICADA II 3,07 0 2,30 1 CURSANDO" ← notas reais
+        //   Linha 29: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 2º header
+        //   Linha 37: "PARTE DIVERSIFICADA II 0,00 0 0,00 0 CURSANDO" ← zeros que corrompem
+        //
+        // Solução: o PDF tem duas seções de disciplinas na mesma página.
+        // A linha "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -" aparece tanto
+        // ANTES quanto DEPOIS das notas reais — a do INÍCIO é o header repetido,
+        // a do FINAL marca o início da seção de zeros que corromperia os dados.
+        //
+        // Estratégia: encontrar o marcador ITINERÁRIO que vem APÓS o primeiro
+        // "CURSANDO" (âncora das notas reais), e cortar ali.
+        const rawNorm = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+        const MARKER_NORM = "ITINERARIO FORMATIVO";
+
+        // Âncora: posição do primeiro CURSANDO (início das notas reais)
+        const firstCursando = rawNorm.indexOf("CURSANDO");
+
+        // Encontra o marcador que aparece DEPOIS do primeiro CURSANDO
+        let markerPos = rawNorm.indexOf(MARKER_NORM);
+        while (markerPos >= 0 && markerPos <= firstCursando) {
+          markerPos = rawNorm.indexOf(MARKER_NORM, markerPos + MARKER_NORM.length);
+        }
+        const cutPoint = (markerPos > firstCursando) ? markerPos : rawText.length;
+
+        const textParaCurriculo = rawText.substring(0, cutPoint);
+        logs.push(`  📐 Currículo isolado: corte em ${cutPoint}/${rawText.length} (1º CURSANDO em ${firstCursando}, ITINERÁRIO pós-notas em ${markerPos}).`);
 
         const lines = textParaCurriculo.split("\n");
         let parsedGrades = 0;
