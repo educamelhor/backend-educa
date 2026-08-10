@@ -16,6 +16,8 @@ router.post("/", async (req, res) => {
     sinais,
     atendimentos,
     descricao_atendimento,
+    materiais,
+    outro_material,
     desfecho,
     comunicacao_resp,
   } = req.body;
@@ -25,8 +27,8 @@ router.post("/", async (req, res) => {
   try {
     const [result] = await pool.query(
       `INSERT INTO aph_atendimentos 
-        (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, desfecho, comunicacao_resp, socorrista_nome) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, materiais, outro_material, desfecho, comunicacao_resp, socorrista_nome) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         aluno_id,
         escola_id || 1, // fallback
@@ -38,6 +40,8 @@ router.post("/", async (req, res) => {
         JSON.stringify(sinais || []),
         JSON.stringify(atendimentos || []),
         descricao_atendimento || "",
+        JSON.stringify(materiais || []),
+        outro_material || "",
         desfecho || "",
         comunicacao_resp || "",
         socorrista_nome

@@ -16,6 +16,8 @@ async function run() {
         sinais JSON,
         atendimentos JSON,
         descricao_atendimento TEXT,
+        materiais JSON,
+        outro_material VARCHAR(255),
         desfecho VARCHAR(255),
         comunicacao_resp VARCHAR(255),
         numero_atendimento VARCHAR(50),
