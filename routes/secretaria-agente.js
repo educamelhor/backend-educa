@@ -175,9 +175,23 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         //   "ARTES 4,80 0 6,50 2 CURSANDO"          → pares: [(4.80,0), (6.50,2)]
         //   "PARTE DIVERSIFICADA II 3,07 0 CURSANDO" → pares: [(3.07,0)]
         //
-        // Extraímos todos os pares e salvamos apenas o bimestre escolhido (bimNum).
-        const lines = rawText.split("\n");
+        // ATENÇÃO: O PDF possui dois blocos de disciplinas por página:
+        //   1) Grade curricular normal (notas reais)
+        //   2) Seção "ITINERÁRIO FORMATIVO" (aparece depois, com zeros)
+        // O segundo bloco sobrescreve o primeiro caso não seja bloqueado.
+        // Solução: truncamos o texto antes do marcador de Itinerário.
+        // O marcador no EDUCADF aparece com letras dobradas: "IITTIINNEERR..."
+        // Basta detectar o padrão de 2+ letras consecutivas iguais (decorativo).
+        const itinerarioMarker = rawText.search(/IITTII|II TT II|\bITINER[AÁ]RIO\b/i);
+        const textParaCurriculo = itinerarioMarker > 0
+          ? rawText.substring(0, itinerarioMarker)
+          : rawText;
+
+        const lines = textParaCurriculo.split("\n");
         let parsedGrades = 0;
+
+        // Set de salvaguarda: nunca processa o mesmo discId duas vezes por aluno.
+        const discIdsProcessados = new Set();
 
         for (const line of lines) {
           // Só processa linhas que contenham "CURSANDO"
@@ -198,6 +212,13 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
             logs.push(`  ⚠️ Ignorado: "${discNameRaw}" → normalizado: "${discNameNorm}" (sem mapeamento na escola)`);
             continue;
           }
+
+          // Salvaguarda: pula se já processou esta disciplina neste aluno
+          if (discIdsProcessados.has(discId)) {
+            logs.push(`  ⏩ ${discNameRaw.padEnd(26)} | Duplicata ignorada (seção ITINERÁRIO).`);
+            continue;
+          }
+          discIdsProcessados.add(discId);
 
           // Extrai todos os pares (nota vírgula, faltas) da linha
           const pairRegex = /(\d+,\d+)\s+(\d+)/g;
