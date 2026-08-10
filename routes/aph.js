@@ -74,19 +74,55 @@ router.post("/", async (req, res) => {
   }
 });
 
-// [GET] /api/aph/historico/:aluno_id - Busca o histórico de um aluno
+// [GET] /api/aph/historico/:aluno_id - Busca o histórico de um aluno (filtrado por escola)
 router.get("/historico/:aluno_id", async (req, res) => {
   const { aluno_id } = req.params;
+  const escola_id = req.user?.escola_id;
 
   try {
     const [rows] = await pool.query(
-      `SELECT * FROM aph_atendimentos WHERE aluno_id = ? ORDER BY data_ocorrencia DESC`,
-      [aluno_id]
+      `SELECT * FROM aph_atendimentos WHERE aluno_id = ? AND escola_id = ? ORDER BY data_ocorrencia DESC`,
+      [aluno_id, escola_id]
     );
     res.status(200).json(rows);
   } catch (error) {
     console.error("[APH] Erro ao buscar histórico:", error);
     res.status(500).json({ error: "Erro interno ao buscar histórico." });
+  }
+});
+
+// [GET] /api/aph/escola - Lista todos os atendimentos da escola com filtros opcionais
+router.get("/escola", async (req, res) => {
+  const escola_id = req.user?.escola_id;
+  const { data_inicio, data_fim, limit = 50, offset = 0 } = req.query;
+
+  try {
+    let sql = `
+      SELECT 
+        a.*,
+        al.estudante AS aluno_nome,
+        al.codigo AS aluno_matricula,
+        al.foto AS aluno_foto,
+        t.nome AS turma_nome
+      FROM aph_atendimentos a
+      LEFT JOIN alunos al ON al.id = a.aluno_id
+      LEFT JOIN matriculas m ON m.aluno_id = a.aluno_id AND m.escola_id = a.escola_id AND m.ano_letivo = YEAR(a.data_ocorrencia)
+      LEFT JOIN turmas t ON t.id = m.turma_id
+      WHERE a.escola_id = ?
+    `;
+    const params = [escola_id];
+
+    if (data_inicio) { sql += ` AND a.data_ocorrencia >= ?`; params.push(data_inicio); }
+    if (data_fim)    { sql += ` AND a.data_ocorrencia <= ?`; params.push(data_fim + ' 23:59:59'); }
+
+    sql += ` ORDER BY a.data_ocorrencia DESC LIMIT ? OFFSET ?`;
+    params.push(Number(limit), Number(offset));
+
+    const [rows] = await pool.query(sql, params);
+    res.status(200).json({ success: true, atendimentos: rows, total: rows.length });
+  } catch (error) {
+    console.error("[APH] Erro ao buscar atendimentos da escola:", error);
+    res.status(500).json({ error: "Erro interno ao buscar atendimentos." });
   }
 });
 
