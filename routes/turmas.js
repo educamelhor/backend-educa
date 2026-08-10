@@ -182,7 +182,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
         a.codigo    AS matricula,
         a.atendimento_diferencial,
         a.foto,
-        a.termo_autorizacao_imagem
+        COALESCE((SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END) FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0) AS consentimento_imagem
       FROM matriculas m
       INNER JOIN alunos a ON a.id = m.aluno_id
       WHERE m.turma_id   = ?
@@ -196,7 +196,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
     );
 
     const aplicarLGPD = (lista) => lista.map(al => {
-      const ok = Number(al.termo_autorizacao_imagem) === 1;
+      const ok = Number(al.consentimento_imagem) === 1;
       return { ...al, foto: ok ? al.foto : null };
     });
 
@@ -214,7 +214,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
           a.codigo    AS matricula,
           a.atendimento_diferencial,
           a.foto,
-          a.termo_autorizacao_imagem
+          COALESCE((SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END) FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0) AS consentimento_imagem
         FROM matriculas m
         INNER JOIN alunos a ON a.id = m.aluno_id
         WHERE m.turma_id   = ?
@@ -239,7 +239,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
     );
     if (turmaNomeRow?.nome) {
       const [rowsByNome] = await pool.query(
-        `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo AS matricula, a.atendimento_diferencial, a.foto, a.termo_autorizacao_imagem
+        `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo AS matricula, a.atendimento_diferencial, a.foto, COALESCE((SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END) FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0) AS consentimento_imagem
          FROM matriculas m
          INNER JOIN alunos a ON a.id = m.aluno_id
          INNER JOIN turmas t ON t.id = m.turma_id
