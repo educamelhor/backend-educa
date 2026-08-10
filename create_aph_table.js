@@ -20,6 +20,8 @@ async function run() {
         outro_material VARCHAR(255),
         desfecho VARCHAR(255),
         comunicacao_resp VARCHAR(255),
+        hora_comunicacao TIME,
+        hora_comparecimento TIME,
         numero_atendimento VARCHAR(50),
         socorrista_nome VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
