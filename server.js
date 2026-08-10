@@ -133,6 +133,7 @@ import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estátic
 import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
 import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agente Secretaria (SEEDF PDF Parser)
 import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
+import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -1486,10 +1487,9 @@ async function bootstrap() {
   app.use("/api/escolas", autenticarToken, verificarEscola, escolasRouter);
 
   // ✅ MÓDULO BIBLIOTECA
-  app.use("/api/biblioteca", bibliotecaRouter);
-
-  // ✅ MÓDULO MERENDA
+  app.use("/api/biblioteca", autenticarToken, bibliotecaRouter);
   app.use("/api/merenda", autenticarToken, merendaRouter);
+  app.use("/api/aph", autenticarToken, aphRoutes);
 
   if (ocrRouter) {
     app.use("/api/ocr", autenticarToken, verificarEscola, ocrRouter);
