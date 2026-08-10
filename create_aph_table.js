@@ -18,6 +18,7 @@ async function run() {
         descricao_atendimento TEXT,
         desfecho VARCHAR(255),
         comunicacao_resp VARCHAR(255),
+        numero_atendimento VARCHAR(50),
         socorrista_nome VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

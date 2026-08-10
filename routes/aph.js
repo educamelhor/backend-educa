@@ -44,7 +44,22 @@ router.post("/", async (req, res) => {
       ]
     );
 
-    res.status(201).json({ success: true, id: result.insertId, message: "Atendimento APH registrado com sucesso." });
+    const insertedId = result.insertId;
+    const ano = new Date().getFullYear();
+    const numeroStr = String(insertedId).padStart(4, '0');
+    const numero_atendimento = `APH-${ano}-${numeroStr}`;
+
+    await pool.query(
+      `UPDATE aph_atendimentos SET numero_atendimento = ? WHERE id = ?`,
+      [numero_atendimento, insertedId]
+    );
+
+    res.status(201).json({ 
+      success: true, 
+      id: insertedId, 
+      numero_atendimento,
+      message: "Atendimento APH registrado com sucesso." 
+    });
   } catch (error) {
     console.error("[APH] Erro ao salvar atendimento:", error);
     res.status(500).json({ error: "Erro interno ao registrar atendimento." });
