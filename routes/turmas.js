@@ -180,7 +180,9 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
         a.id,
         a.estudante AS nome,
         a.codigo    AS matricula,
-        a.atendimento_diferencial
+        a.atendimento_diferencial,
+        a.foto,
+        a.termo_autorizacao_imagem
       FROM matriculas m
       INNER JOIN alunos a ON a.id = m.aluno_id
       WHERE m.turma_id   = ?
@@ -193,16 +195,26 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
       [id, escola_id, anoLetivo]
     );
 
+    const aplicarLGPD = (lista) => lista.map(al => {
+      const ok = Number(al.termo_autorizacao_imagem) === 1;
+      return { ...al, foto: ok ? al.foto : null };
+    });
+
+    if (rows.length > 0) {
+      return res.json({ ok: true, alunos: aplicarLGPD(rows) });
+    }
+
     // Fallback: se a query principal retornou vazio, tenta SEM filtro de status
     // (cobre casos onde o status foi gravado com valor diferente do esperado)
-    if (rows.length === 0) {
       const [rowsFallback] = await pool.query(
         `
         SELECT
           a.id,
           a.estudante AS nome,
           a.codigo    AS matricula,
-          a.atendimento_diferencial
+          a.atendimento_diferencial,
+          a.foto,
+          a.termo_autorizacao_imagem
         FROM matriculas m
         INNER JOIN alunos a ON a.id = m.aluno_id
         WHERE m.turma_id   = ?
@@ -213,8 +225,9 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
         `,
         [id, escola_id, anoLetivo]
       );
-      return res.json({ ok: true, alunos: rowsFallback, fallback: "sem-status" });
-    }
+      if (rowsFallback.length > 0) {
+        return res.json({ ok: true, alunos: aplicarLGPD(rowsFallback), fallback: "sem-status" });
+      }
 
     // === Fallback 3: por NOME da turma ===
     // Cobre o caso onde o aluno foi matriculado com id de uma turma diferente
@@ -226,7 +239,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
     );
     if (turmaNomeRow?.nome) {
       const [rowsByNome] = await pool.query(
-        `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo AS matricula, a.atendimento_diferencial
+        `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo AS matricula, a.atendimento_diferencial, a.foto, a.termo_autorizacao_imagem
          FROM matriculas m
          INNER JOIN alunos a ON a.id = m.aluno_id
          INNER JOIN turmas t ON t.id = m.turma_id
@@ -237,7 +250,7 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
          ORDER BY a.estudante ASC`,
         [turmaNomeRow.nome, escola_id, anoLetivo]
       );
-      return res.json({ ok: true, alunos: rowsByNome, fallback: "nome-turma" });
+      return res.json({ ok: true, alunos: aplicarLGPD(rowsByNome), fallback: "nome-turma" });
     }
 
     return res.json({ ok: true, alunos: [] });
