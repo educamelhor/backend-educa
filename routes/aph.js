@@ -94,7 +94,7 @@ router.get("/historico/:aluno_id", async (req, res) => {
 // [GET] /api/aph/escola - Lista todos os atendimentos da escola com filtros opcionais
 router.get("/escola", async (req, res) => {
   const escola_id = req.user?.escola_id;
-  const { data_inicio, data_fim, limit = 50, offset = 0 } = req.query;
+  const { data_inicio, data_fim, limit = 50, offset = 0, turma_id, motivo, aluno_nome } = req.query;
 
   try {
     let sql = `
@@ -103,7 +103,8 @@ router.get("/escola", async (req, res) => {
         al.estudante AS aluno_nome,
         al.codigo AS aluno_matricula,
         al.foto AS aluno_foto,
-        t.nome AS turma_nome
+        t.nome AS turma_nome,
+        t.id AS turma_id
       FROM aph_atendimentos a
       LEFT JOIN alunos al ON al.id = a.aluno_id
       LEFT JOIN matriculas m ON m.aluno_id = a.aluno_id AND m.escola_id = a.escola_id AND m.ano_letivo = YEAR(a.data_ocorrencia)
@@ -112,8 +113,11 @@ router.get("/escola", async (req, res) => {
     `;
     const params = [escola_id];
 
-    if (data_inicio) { sql += ` AND a.data_ocorrencia >= ?`; params.push(data_inicio); }
-    if (data_fim)    { sql += ` AND a.data_ocorrencia <= ?`; params.push(data_fim + ' 23:59:59'); }
+    if (data_inicio) { sql += ` AND DATE(a.data_ocorrencia) >= ?`; params.push(data_inicio); }
+    if (data_fim)    { sql += ` AND DATE(a.data_ocorrencia) <= ?`; params.push(data_fim); }
+    if (turma_id)    { sql += ` AND m.turma_id = ?`; params.push(Number(turma_id)); }
+    if (motivo)      { sql += ` AND JSON_CONTAINS(a.motivos, JSON_QUOTE(?))`; params.push(motivo); }
+    if (aluno_nome)  { sql += ` AND al.estudante LIKE ?`; params.push(`%${aluno_nome}%`); }
 
     sql += ` ORDER BY a.data_ocorrencia DESC LIMIT ? OFFSET ?`;
     params.push(Number(limit), Number(offset));
