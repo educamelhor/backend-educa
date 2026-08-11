@@ -299,4 +299,75 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
   }
 });
 
+// ============================================================================
+// ROTA 3: POST /api/boletins/gerar-aluno
+// - Gera boletim de um único aluno
+// ============================================================================
+router.post("/gerar-aluno", verificarEscola, async (req, res) => {
+  const { turma_id, aluno_id, ano } = req.body;
+  const { escola_id } = req.user;
+
+  if (!turma_id || !aluno_id) {
+    return res.status(400).json({ error: "turma_id e aluno_id são obrigatórios" });
+  }
+
+  try {
+    // 1) Confere turma x escola
+    const [[turma]] = await pool.query(
+      "SELECT id FROM turmas WHERE id = ? AND escola_id = ?",
+      [turma_id, escola_id]
+    );
+    if (!turma) {
+      return res.status(403).json({
+        error: "Turma não encontrada ou não pertence à sua escola.",
+      });
+    }
+
+    // 2) Token do header
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+
+    // 3) URL de impressão com aluno_id
+    const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
+    const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
+    const anoParam = ano ? `&ano=${encodeURIComponent(ano)}` : "";
+    const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
+      turma_id
+    )}&aluno_id=${encodeURIComponent(aluno_id)}&secret=${encodeURIComponent(PRINT_SECRET)}${anoParam}`;
+
+    let browser;
+    try {
+      browser = await launchBrowser();
+      const page = await browser.newPage();
+
+      await page.addInitScript(({ token, escola_id }) => {
+        try {
+          localStorage.setItem("token", token || "");
+          if (escola_id) localStorage.setItem("escola_id", String(escola_id));
+        } catch (e) {
+        }
+      }, { token, escola_id });
+
+      await enablePrintMedia(page);
+      await robustGoto(page, url);
+      await waitRenderComplete(page);
+      await enablePrintMedia(page);
+
+      const pdfBuffer = await makePDF(page);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+          "Content-Disposition",
+          `attachment; filename=Boletim_${aluno_id}.pdf`
+      );
+      res.send(pdfBuffer);
+    } finally {
+      if (browser) await browser.close();
+    }
+  } catch (error) {
+    console.error("Erro ao gerar PDF de aluno com Playwright:", error);
+    return res.status(500).json({ error: "Erro ao gerar PDF do aluno", message: error.message, stack: error.stack });
+  }
+});
+
 export default router;
