@@ -540,19 +540,19 @@ router.get("/percapita", async (req, res) => {
     );
     const total_alunos = alunosCount[0].total || 0;
 
-    // 2. Busca estoque atual cruzado com a percápita (apenas itens com saldo > 0)
+    // 2. Busca todos os produtos da escola e cruza com estoque e percápita
     const [rows] = await pool.query(
       `SELECT 
-         v.*, 
-         p.produto, p.marca, p.categoria, p.gramatura,
+         p.id as produto_id, p.produto, p.marca, p.categoria, p.gramatura,
+         v.lote, v.validade, v.saldo_kg, v.saldo_unidades,
          mp.id as percapita_id,
          mp.percapita_kg
-       FROM view_merenda_estoque_lotes v
-       JOIN merenda_produtos p ON v.produto_id = p.id
-       LEFT JOIN merenda_percapita mp ON v.produto_id = mp.produto_id AND v.escola_id = mp.escola_id
-       WHERE v.escola_id = ? AND v.saldo_unidades > 0
+       FROM merenda_produtos p
+       LEFT JOIN view_merenda_estoque_lotes v ON p.id = v.produto_id AND v.escola_id = ? AND v.saldo_unidades > 0
+       LEFT JOIN merenda_percapita mp ON p.id = mp.produto_id AND mp.escola_id = ?
+       WHERE p.escola_id = ?
        ORDER BY p.produto ASC, v.validade ASC`,
-      [escola_id]
+      [escola_id, escola_id, escola_id]
     );
 
     // 3. Busca refeições servidas
