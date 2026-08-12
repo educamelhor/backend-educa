@@ -238,13 +238,21 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
+    // Busca o nome oficial da turma mapeado pela Secretaria
+    const [[turmaDb]] = await db.query(
+      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.turmas, escolaId]
+    );
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+
     const dadosPlano = {
-      turmas:      plano.turmas,
-      disciplina:  plano.disciplina,
-      bimestre:    plano.bimestre,
-      ano:         plano.ano,
+      turmas:       plano.turmas,
+      turmaOficial: turmaOficial,
+      disciplina:   plano.disciplina,
+      bimestre:     plano.bimestre,
+      ano:          plano.ano,
       professorNome,
-      itens:       itensComData,      // array completo — todos os itens do professor
+      itens:        itensComData,      // array completo — todos os itens do professor
     };
 
     // ── 5. SET lock + resposta imediata 202 ──────────────────────────────────
@@ -456,8 +464,16 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
+    // Busca o nome oficial da turma mapeado pela Secretaria
+    const [[turmaDb]] = await db.query(
+      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.turmas, escolaId]
+    );
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+
     const dadosPlano = {
       turmas:       plano.turmas,
+      turmaOficial: turmaOficial,
       disciplina:   plano.disciplina,
       bimestre:     plano.bimestre,
       ano:          plano.ano,

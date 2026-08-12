@@ -999,7 +999,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // IMPORTANTE: Componente deve usar o nome do EDUCADF (mapeado da disciplina)
     // ══════════════════════════════════════════════════════════════════════
     const componenteEducaDF = mapearDisciplina(plano.disciplina);
-    const turmaEducaDF      = mapearTurma(plano.turmas);
+    const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
     console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
 
 
@@ -2047,7 +2047,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     // PASSO 3: Filtros — idêntico ao da Etapa 1
     const componenteEducaDF = mapearDisciplina(plano.disciplina);
-    const turmaEducaDF      = mapearTurma(plano.turmas);
+    const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
     console.log(`[educadf.notas] 3/7 Aplicando filtros — Turma: "${plano.turmas}" ("${turmaEducaDF}") | Componente: ${componenteEducaDF}`);
 
     // Aguarda os ng-selects carregarem (Angular pode demorar)
