@@ -683,7 +683,8 @@ router.post("/", async (req, res) => {
             // Atualiza o item existente (preserva ID => preserva integridade das notas)
             await conn.query(
               `UPDATE itens_avaliacao
-               SET tipo_avaliacao = ?,
+               SET atividade      = ?,
+                   tipo_avaliacao = ?,
                    data_inicio    = ?,
                    data_final     = ?,
                    nota_total     = ?,
@@ -693,6 +694,7 @@ router.post("/", async (req, res) => {
                    fixo_direcao   = ?
                WHERE id = ?`,
               [
+                item.atividade,
                 item.tipo_avaliacao || null,
                 toDateOnly(item.data || item.data_inicio),
                 toDateOnly(item.data_final || item.data || item.data_inicio),
