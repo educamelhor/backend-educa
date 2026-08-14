@@ -3205,21 +3205,29 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
 async function upsertResponsavelSemCpf(pool, e, alunoId, escola_id) {
   if (!e.responsavel) return; // Se não tem nome do responsável, não cadastra
   const nomeResp = (e.responsavel || "").trim();
-  const telefoneResp = (e.telefone || "").trim();
+  // O campo principal do sistema é telefone_celular (não o campo legado 'telefone')
+  const telefoneResp = (e.telefone || "").replace(/\D/g, "").substring(0, 20) || null;
   try {
-    // Busca se já existe um responsável com mesmo nome E telefone
-    const [existente] = await pool.query(
-      `SELECT id FROM responsaveis WHERE nome = ? AND telefone = ? LIMIT 1`,
-      [nomeResp, telefoneResp]
+    // Busca responsável existente pelo nome E pelo telefone_celular
+    const [[existente]] = await pool.query(
+      `SELECT id FROM responsaveis
+       WHERE nome = ?
+         AND (telefone_celular = ? OR (telefone_celular IS NULL AND ? IS NULL))
+       LIMIT 1`,
+      [nomeResp, telefoneResp, telefoneResp]
     );
 
     let responsavelId = null;
-    if (existente && existente.length > 0) {
-       responsavelId = existente[0].id;
+    if (existente) {
+       responsavelId = existente.id;
     } else {
        const [respResult] = await pool.query(
-         `INSERT INTO responsaveis (nome, telefone) VALUES (?, ?)`,
-         [nomeResp, telefoneResp || null]
+         `INSERT INTO responsaveis (nome, telefone_celular)
+          VALUES (?, ?)
+          ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
+            telefone_celular = IF(telefone_celular IS NULL OR telefone_celular = '', VALUES(telefone_celular), telefone_celular)`,
+         [nomeResp, telefoneResp]
        );
        responsavelId = respResult.insertId;
     }
