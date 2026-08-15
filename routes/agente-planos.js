@@ -239,13 +239,11 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
     // Busca o nome oficial da turma mapeado pela Secretaria
-    // COLLATE utf8mb4_unicode_ci: força a mesma collation do campo turmas.turmas
-    // para evitar erro "Illegal mix of collations" entre as duas tabelas.
     const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial FROM turmas WHERE nome COLLATE utf8mb4_unicode_ci = ? AND escola_id = ? LIMIT 1',
+      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
       [plano.turmas, escolaId]
     );
-    const turmaOficial = turmaDb?.nome_oficial || null; // null = usa mapearTurma() no pap.js
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
 
     const dadosPlano = {
       turmas:       plano.turmas,
@@ -467,13 +465,11 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
     // Busca o nome oficial da turma mapeado pela Secretaria
-    // COLLATE utf8mb4_unicode_ci: força a mesma collation do campo turmas.turmas
-    // para evitar erro "Illegal mix of collations" entre as duas tabelas.
     const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial FROM turmas WHERE nome COLLATE utf8mb4_unicode_ci = ? AND escola_id = ? LIMIT 1',
+      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
       [plano.turmas, escolaId]
     );
-    const turmaOficial = turmaDb?.nome_oficial || null; // null = usa mapearTurma() no pap.js
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
 
     const dadosPlano = {
       turmas:       plano.turmas,

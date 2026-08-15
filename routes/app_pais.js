@@ -483,6 +483,62 @@ router.get("/me", authAppPais, async (req, res) => {
 });
 
 // ============================================================================
+// POST /perfil/alterar-email/solicitar
+// ============================================================================
+router.post("/perfil/alterar-email/solicitar", authAppPais, async (req, res) => {
+  const { responsavel_id } = req.appPaisAuth;
+  const novoEmail = String(req.body?.email || "").trim().toLowerCase();
+
+  if (!novoEmail || !novoEmail.includes("@") || !novoEmail.includes(".")) {
+    return res.status(400).json({ message: "E-mail inválido." });
+  }
+
+  try {
+    const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+    await pool.query(
+      `INSERT INTO app_pais_codigos (responsavel_id, codigo, canal, destino, expiracao)
+       VALUES (?, ?, 'email', ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+      [responsavel_id, codigo, novoEmail]
+    );
+    await enviarCodigoPorEmail(novoEmail, codigo);
+    return res.json({ ok: true, message: "Código enviado para o novo e-mail." });
+  } catch (err) {
+    console.error("[ALTERAR-EMAIL-SOLICITAR]", err);
+    return res.status(500).json({ message: "Erro ao enviar código." });
+  }
+});
+
+// ============================================================================
+// POST /perfil/alterar-email/verificar
+// ============================================================================
+router.post("/perfil/alterar-email/verificar", authAppPais, async (req, res) => {
+  const { responsavel_id } = req.appPaisAuth;
+  const codigo = normalizarCodigo(req.body?.codigo);
+
+  if (!codigo) return res.status(400).json({ message: "Código obrigatório." });
+
+  try {
+    const [[registro]] = await pool.query(
+      `SELECT * FROM app_pais_codigos 
+       WHERE responsavel_id = ? AND codigo = ? AND canal = 'email'
+       ORDER BY id DESC LIMIT 1`,
+      [responsavel_id, codigo]
+    );
+
+    if (!registro) return res.status(400).json({ message: "Código inválido." });
+    if (new Date(registro.expiracao) < new Date()) return res.status(400).json({ message: "Código expirado." });
+
+    await pool.query("UPDATE app_pais_codigos SET usado_em = NOW() WHERE id = ?", [registro.id]);
+    await pool.query("UPDATE responsaveis SET email = ? WHERE id = ?", [registro.destino, responsavel_id]);
+
+    return res.json({ ok: true, message: "E-mail alterado com sucesso!", email: registro.destino });
+  } catch (err) {
+    console.error("[ALTERAR-EMAIL-VERIFICAR]", err);
+    return res.status(500).json({ message: "Erro ao verificar código." });
+  }
+});
+
+// ============================================================================
 // POST /termos/aceitar â€” Registra aceite dos Termos de Uso + PolÃ­tica de Privacidade
 // ============================================================================
 router.post("/termos/aceitar", authAppPais, async (req, res) => {
@@ -2208,18 +2264,23 @@ router.post("/solicitar-codigo", async (req, res) => {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    const emailInformado = String(req.body?.email || "").trim().toLowerCase();
+    const telefoneInformado = String(req.body?.telefone || "").replace(/\D/g, "").trim();
+
+    const emailDestino = emailInformado || email;
+    const telefoneDestino = telefoneInformado || telefone;
+
     // ── Sem e-mail e canal email: pede o e-mail ao usuário ──────────────────
-    if (canal === "email" && !email) {
+    if (canal === "email" && !emailDestino) {
       return res.status(403).json({
         code: "PRECISA_EMAIL",
         message: "Informe seu e-mail para receber o código de acesso.",
-        tem_sms: !!(telefone && process.env.TWILIO_SID),
-        telefone_mascara: mascaraTelefone(telefone) || null,
+        tem_sms: !!(telefoneDestino && process.env.TWILIO_SID),
+        telefone_mascara: mascaraTelefone(telefoneDestino) || null,
       });
     }
 
-    // ── Canal SMS: sempre pede confirmação/digitação do número antes de enviar ──
-    // Isso garante que números desatualizados possam ser corrigidos pelo pai/mãe.
+    // ── Canal SMS: pede confirmação/digitação do número antes de enviar ──
     if (canal === "sms") {
       if (!process.env.TWILIO_SID) {
         return res.status(503).json({
@@ -2227,22 +2288,23 @@ router.post("/solicitar-codigo", async (req, res) => {
           message: "Envio por SMS temporariamente indisponível. Use e-mail.",
         });
       }
-      // Sempre retorna CONFIRMAR_TELEFONE para o app mostrar o modal de confirmação.
-      // O app exibe o número mascarado (se cadastrado) e permite digitar um novo.
-      return res.status(202).json({
-        code: "CONFIRMAR_TELEFONE",
-        message: telefone
-          ? "Confirme ou atualize o número de celular para receber o código."
-          : "Informe seu número de celular para receber o código por SMS.",
-        telefone_mascara: mascaraTelefone(telefone) || null,
-        tem_telefone: !!telefone,
-      });
+      // Se não enviou o telefone no body, pede confirmação
+      if (!req.body?.telefone) {
+        return res.status(202).json({
+          code: "CONFIRMAR_TELEFONE",
+          message: telefoneDestino
+            ? "Confirme ou atualize o número de celular para receber o código."
+            : "Informe seu número de celular para receber o código por SMS.",
+          telefone_mascara: mascaraTelefone(telefoneDestino) || null,
+          tem_telefone: !!telefoneDestino,
+        });
+      }
     }
 
 
     // ── Gera e persiste o código ─────────────────────────────────────────────
     const codigo = gerarCodigo();
-    const destino = canal === "sms" ? telefone : email;
+    const destino = canal === "sms" ? telefoneDestino : emailDestino;
 
     await db.query(
       `INSERT INTO app_pais_codigos
@@ -2253,15 +2315,15 @@ router.post("/solicitar-codigo", async (req, res) => {
 
     // ── Envia pelo canal escolhido ───────────────────────────────────────────
     if (canal === "sms") {
-      await enviarCodigoPorSms(telefone, codigo);
+      await enviarCodigoPorSms(telefoneDestino, codigo);
     } else {
-      await enviarCodigoPorEmail(email, codigo);
+      await enviarCodigoPorEmail(emailDestino, codigo);
     }
 
     return res.json({
       ok: true,
       canal,
-      destino_mascara: canal === "sms" ? mascaraTelefone(telefone) : mascaraEmail(email),
+      destino_mascara: canal === "sms" ? mascaraTelefone(telefoneDestino) : mascaraEmail(emailDestino),
     });
 
   } catch (error) {
@@ -2437,6 +2499,19 @@ router.post("/verificar-codigo", async (req, res) => {
       "UPDATE app_pais_codigos SET usado_em = NOW() WHERE id = ?",
       [registro.id]
     );
+
+    // ── Salvar e-mail/telefone verificado no banco ───────────────────────────
+    if (registro.canal === "email" && registro.destino && responsavel.email !== registro.destino) {
+      await db.query("UPDATE responsaveis SET email = ? WHERE id = ?", [registro.destino, responsavel.id]);
+      console.log(`[APP_PAIS] E-mail atualizado para ${registro.destino} no CPF ${cpf}`);
+    } else if (registro.canal === "sms" && registro.destino) {
+      const [[telCheck]] = await db.query("SELECT telefone_celular FROM responsaveis WHERE id = ?", [responsavel.id]);
+      if (telCheck && telCheck.telefone_celular !== registro.destino) {
+        await db.query("UPDATE responsaveis SET telefone_celular = ? WHERE id = ?", [registro.destino, responsavel.id]);
+        console.log(`[APP_PAIS] Telefone atualizado para ${registro.destino} no CPF ${cpf}`);
+      }
+    }
+
 
 
     // ============================================================================
