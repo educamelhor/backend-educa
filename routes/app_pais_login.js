@@ -182,7 +182,16 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
-    if (canal === "email" && !email) {
+    // Lê o e-mail enviado no body ANTES de qualquer checagem.
+    // Isso permite que o usuário novo (sem e-mail no banco) passe pelo check
+    // usando o e-mail que acabou de digitar.
+    const reqEmail  = String(req.body?.email || "").trim().toLowerCase();
+    const finalEmail = reqEmail || email;
+    // IMPORTANTE: NÃO salvamos o e-mail aqui. Ele só é persistido no banco
+    // após o usuário confirmar o código OTP (verificar-codigo).
+    // Isso garante que e-mails errados ou sem acesso nunca sejam cadastrados.
+
+    if (canal === "email" && !finalEmail) {
       return res.status(403).json({
         code: "PRECISA_EMAIL",
         message: "Informe seu e-mail para receber o código de acesso.",
@@ -190,12 +199,6 @@ router.post("/solicitar-codigo", async (req, res) => {
         telefone_mascara: mascaraTelefone(telefone) || null,
       });
     }
-
-    const reqEmail = String(req.body?.email || "").trim().toLowerCase();
-    const finalEmail = reqEmail || email;
-    // IMPORTANTE: NÃO salvamos o e-mail aqui. Ele só é persistido no banco
-    // após o usuário confirmar o código OTP (verificar-codigo) e estar logado.
-    // Isso garante que e-mails errados ou sem acesso nunca sejam cadastrados.
 
     if (canal === "sms") {
       if (!process.env.TWILIO_SID) {
