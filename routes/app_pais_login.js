@@ -182,13 +182,24 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
-    if (canal === "email" && !email) {
-      return res.status(403).json({
-        code: "PRECISA_EMAIL",
-        message: "Informe seu e-mail para receber o código de acesso.",
-        tem_sms: !!(telefone && process.env.TWILIO_SID),
-        telefone_mascara: mascaraTelefone(telefone) || null,
-      });
+    const reqEmail = String(req.body?.email || "").trim().toLowerCase();
+    let finalEmail = email;
+
+    if (canal === "email") {
+      if (!email) {
+        if (reqEmail && reqEmail.includes("@")) {
+          // Salva o e-mail recém-informado
+          await db.query("UPDATE responsaveis SET email = ? WHERE id = ?", [reqEmail, responsavel.id]);
+          finalEmail = reqEmail;
+        } else {
+          return res.status(403).json({
+            code: "PRECISA_EMAIL",
+            message: "Informe seu e-mail para receber o código de acesso.",
+            tem_sms: !!(telefone && process.env.TWILIO_SID),
+            telefone_mascara: mascaraTelefone(telefone) || null,
+          });
+        }
+      }
     }
 
     if (canal === "sms") {
@@ -206,7 +217,7 @@ router.post("/solicitar-codigo", async (req, res) => {
     }
 
     const codigo  = gerarCodigo();
-    const destino = canal === "sms" ? telefone : email;
+    const destino = canal === "sms" ? telefone : finalEmail;
 
     await db.query(
       `INSERT INTO app_pais_codigos (responsavel_id, codigo, canal, destino, expiracao) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
@@ -216,13 +227,13 @@ router.post("/solicitar-codigo", async (req, res) => {
     if (canal === "sms") {
       await enviarCodigoPorSms(telefone, codigo);
     } else {
-      await enviarCodigoPorEmail(email, codigo);
+      await enviarCodigoPorEmail(finalEmail, codigo);
     }
 
     return res.json({
       ok: true,
       canal,
-      destino_mascara: canal === "sms" ? mascaraTelefone(telefone) : mascaraEmail(email),
+      destino_mascara: canal === "sms" ? mascaraTelefone(telefone) : mascaraEmail(finalEmail),
     });
 
   } catch (error) {
