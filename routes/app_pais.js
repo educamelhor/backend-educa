@@ -2664,7 +2664,7 @@ router.post("/credencial/pre-cadastro", async (req, res) => {
     await db.query(
       `
       INSERT INTO responsaveis (cpf, nome, email, status_global)
-      VALUES (?, 'PENDENTE', NULL, 'PENDENTE')
+      VALUES (?, 'PENDENTE', NULL, 'ATIVO')
       `,
       [cpfNorm]
     );

@@ -367,23 +367,6 @@ router.get("/credencial/contexto", async (req, res) => {
 // ============================================================================
 // POST /credencial/pre-cadastro — registra CPF para posterior finalização (sem token)
 // ============================================================================
-router.get("/debug-schema", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SHOW CREATE TABLE responsaveis");
-    res.send(rows[0]["Create Table"]);
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-router.get("/debug-schema-alunos", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SHOW CREATE TABLE responsaveis_alunos");
-    res.send(rows[0]["Create Table"]);
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
 router.post("/credencial/pre-cadastro", async (req, res) => {
   const db      = pool;
   const cpfNorm = normalizarCpf(req.body?.cpf);
@@ -394,14 +377,14 @@ router.post("/credencial/pre-cadastro", async (req, res) => {
     if (existente?.id) return res.json({ ok: true, cpf: cpfNorm, responsavel_id: existente.id, ja_existia: true });
 
     await db.query(
-      `INSERT INTO responsaveis (cpf, nome, email, status_global) VALUES (?, 'PENDENTE', NULL, 'PENDENTE')`,
+      `INSERT INTO responsaveis (cpf, nome, email, status_global) VALUES (?, 'PENDENTE', NULL, 'ATIVO')`,
       [cpfNorm]
     );
     const [[novo]] = await db.query("SELECT id FROM responsaveis WHERE cpf = ? LIMIT 1", [cpfNorm]);
     return res.json({ ok: true, cpf: cpfNorm, responsavel_id: novo?.id || null, ja_existia: false });
   } catch (error) {
     console.error("[APP_PAIS_LOGIN] Erro em /credencial/pre-cadastro:", error);
-    return res.status(500).json({ message: "Erro: " + error.message });
+    return res.status(500).json({ message: "Erro ao registrar pré-cadastro." });
   }
 });
 
