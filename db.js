@@ -112,6 +112,8 @@ pool
     const migrations = [
       // Consentimento Separado
       "ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_impresso TINYINT(1) NOT NULL DEFAULT 0 AFTER consentimento_imagem",
+      // Atualização retroativa para pais antigos que assinaram no papel: vira MASTER e marca o impresso
+      "UPDATE responsaveis_alunos SET consentimento_impresso = 1, principal = 1, pode_autorizar_terceiros = 1 WHERE consentimento_imagem = 1 AND consentimento_canal = 'FISICO'",
       // Busca Ativa — rastreabilidade de edição
       "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_por INT NULL AFTER registrado_por",
       "ALTER TABLE frequencia_busca_ativa ADD COLUMN editado_em DATETIME NULL AFTER editado_por",
