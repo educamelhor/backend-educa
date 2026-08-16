@@ -182,25 +182,20 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
-    const reqEmail = String(req.body?.email || "").trim().toLowerCase();
-    let finalEmail = email;
-
-    if (canal === "email") {
-      if (!email) {
-        if (reqEmail && reqEmail.includes("@")) {
-          // Salva o e-mail recém-informado
-          await db.query("UPDATE responsaveis SET email = ? WHERE id = ?", [reqEmail, responsavel.id]);
-          finalEmail = reqEmail;
-        } else {
-          return res.status(403).json({
-            code: "PRECISA_EMAIL",
-            message: "Informe seu e-mail para receber o código de acesso.",
-            tem_sms: !!(telefone && process.env.TWILIO_SID),
-            telefone_mascara: mascaraTelefone(telefone) || null,
-          });
-        }
-      }
+    if (canal === "email" && !email) {
+      return res.status(403).json({
+        code: "PRECISA_EMAIL",
+        message: "Informe seu e-mail para receber o código de acesso.",
+        tem_sms: !!(telefone && process.env.TWILIO_SID),
+        telefone_mascara: mascaraTelefone(telefone) || null,
+      });
     }
+
+    const reqEmail = String(req.body?.email || "").trim().toLowerCase();
+    const finalEmail = reqEmail || email;
+    // IMPORTANTE: NÃO salvamos o e-mail aqui. Ele só é persistido no banco
+    // após o usuário confirmar o código OTP (verificar-codigo) e estar logado.
+    // Isso garante que e-mails errados ou sem acesso nunca sejam cadastrados.
 
     if (canal === "sms") {
       if (!process.env.TWILIO_SID) {
@@ -335,6 +330,21 @@ router.post("/verificar-codigo", async (req, res) => {
     if (new Date(registro.expiracao) < new Date()) return res.status(400).json({ message: "Código expirado." });
 
     await db.query("UPDATE app_pais_codigos SET usado_em = NOW() WHERE id = ?", [registro.id]);
+
+    // ── Salva o e-mail/telefone verificado no banco ──────────────────────────
+    // O destino gravado no código é o que o usuário digitou ao solicitar.
+    // Só salvamos APÓS a confirmação do OTP — garantia de que o e-mail é válido
+    // e que o usuário tem acesso a ele.
+    if (registro.canal === "email" && registro.destino && responsavel.email !== registro.destino) {
+      await db.query("UPDATE responsaveis SET email = ? WHERE id = ?", [registro.destino, responsavel.id]);
+      console.log(`[APP_PAIS_LOGIN] E-mail confirmado e salvo: ${registro.destino} → responsavel ${responsavel.id}`);
+    } else if (registro.canal === "sms" && registro.destino) {
+      const [[telAtual]] = await db.query("SELECT telefone_celular FROM responsaveis WHERE id = ?", [responsavel.id]);
+      if (telAtual && telAtual.telefone_celular !== registro.destino) {
+        await db.query("UPDATE responsaveis SET telefone_celular = ? WHERE id = ?", [registro.destino, responsavel.id]);
+        console.log(`[APP_PAIS_LOGIN] Telefone confirmado e salvo: ${registro.destino} → responsavel ${responsavel.id}`);
+      }
+    }
 
     // Verificação de vínculo ativo
     const [[vinculoAtivo]] = await db.query(
