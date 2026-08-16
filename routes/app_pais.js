@@ -539,6 +539,39 @@ router.post("/perfil/alterar-email/verificar", authAppPais, async (req, res) => 
 });
 
 // ============================================================================
+// POST /perfil/salvar-telefone
+// Salva ou atualiza o celular do responsável logado (sem OTP — dado de contato).
+// body: { telefone }   auth: token JWT (authAppPais)
+// ============================================================================
+router.post("/perfil/salvar-telefone", authAppPais, async (req, res) => {
+  const { responsavel_id } = req.appPaisAuth;
+  const telRaw = String(req.body?.telefone || "").replace(/\D/g, "").trim();
+
+  if (!telRaw || telRaw.length < 10 || telRaw.length > 11) {
+    return res.status(400).json({ message: "Informe um celular válido com DDD (10 ou 11 dígitos)." });
+  }
+
+  try {
+    await pool.query(
+      "UPDATE responsaveis SET telefone_celular = ? WHERE id = ?",
+      [telRaw, responsavel_id]
+    );
+
+    // Formata máscara para retorno
+    const tel = telRaw;
+    const mascara = tel.length === 11
+      ? `(${tel.slice(0,2)}) ${tel.slice(2,7)}-${tel.slice(7)}`
+      : `(${tel.slice(0,2)}) ${tel.slice(2,6)}-${tel.slice(6)}`;
+
+    console.log(`[APP_PAIS][PERFIL] Celular atualizado → responsavel ${responsavel_id}: ${mascara}`);
+    return res.json({ ok: true, telefone_mascara: mascara });
+  } catch (err) {
+    console.error("[PERFIL/SALVAR-TELEFONE]", err);
+    return res.status(500).json({ message: "Erro ao salvar celular. Tente novamente." });
+  }
+});
+
+// ============================================================================
 // POST /termos/aceitar â€” Registra aceite dos Termos de Uso + PolÃ­tica de Privacidade
 // ============================================================================
 router.post("/termos/aceitar", authAppPais, async (req, res) => {
