@@ -152,7 +152,7 @@ router.get("/:id/alunos", async (req, res) => {
         ra.aluno_id,
         a.estudante AS aluno_nome,
         a.codigo AS aluno_codigo,
-        ra.consentimento_imagem,
+        ra.consentimento_impresso AS consentimento_imagem,
         ra.consentimento_imagem_em,
         ra.consentimento_imagem_por
       FROM responsaveis_alunos ra
@@ -218,6 +218,9 @@ router.post("/:id/consentimento-imagem", async (req, res) => {
       await conn.query(
         `UPDATE responsaveis_alunos
          SET consentimento_imagem        = 1,
+             consentimento_impresso      = 1,
+             principal                   = 1,
+             pode_autorizar_terceiros    = 1,
              consentimento_imagem_em     = NOW(),
              consentimento_imagem_por    = ?,
              consentimento_canal         = 'FISICO',
