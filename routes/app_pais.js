@@ -346,23 +346,29 @@ async function runStartupMigrations() {
     `ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_versao_termo
        VARCHAR(20) NULL DEFAULT NULL
        COMMENT 'VersÃ£o do termo aceito (ex: 3.0)'
+       COMMENT 'Versão do termo aceito (ex: 3.0)'
        AFTER consentimento_canal`,
     `ALTER TABLE responsaveis_alunos ADD COLUMN consentimento_log_id
        BIGINT UNSIGNED NULL DEFAULT NULL
-       COMMENT 'ReferÃªncia ao registro mais recente em consentimentos_log'
+       COMMENT 'Referência ao registro mais recente em consentimentos_log'
        AFTER consentimento_versao_termo`,
-    // Audit: timestamp de quando o responsÃ¡vel abriu o documento (LGPD click-through evidence)
+    // Audit: timestamp de quando o responsável abriu o documento (LGPD click-through evidence)
     `ALTER TABLE consentimentos_log ADD COLUMN termo_lido_em
        DATETIME NULL DEFAULT NULL
-       COMMENT 'Timestamp de quando o responsÃ¡vel abriu o termo para leitura (audit LGPD)'
+       COMMENT 'Timestamp de quando o responsável abriu o termo para leitura (audit LGPD)'
        AFTER plataforma`,
-    // Termos de Uso + PolÃ­tica de Privacidade: aceite no 1Âº acesso ao app
+    // Termos de Uso + Política de Privacidade: aceite no 1º acesso ao app
     `ALTER TABLE responsaveis ADD COLUMN termos_aceitos_em
        DATETIME NULL DEFAULT NULL
-       COMMENT 'Timestamp do aceite dos Termos de Uso e PolÃ­tica de Privacidade no EDUCA-Mobile'`,
+       COMMENT 'Timestamp do aceite dos Termos de Uso e Política de Privacidade no EDUCA-Mobile'`,
     `ALTER TABLE responsaveis ADD COLUMN termos_versao
        VARCHAR(10) NULL DEFAULT NULL
-       COMMENT 'VersÃ£o dos Termos de Uso aceita pelo responsÃ¡vel'`,
+       COMMENT 'Versão dos Termos de Uso aceita pelo responsável'`,
+    // Parentesco: grau de parentesco do responsável com o aluno
+    `ALTER TABLE responsaveis_alunos ADD COLUMN parentesco
+       VARCHAR(30) NULL DEFAULT NULL
+       COMMENT 'Grau de parentesco com o aluno (ex: Pai, Mãe, Avó, Tio)'
+       AFTER pode_autorizar_terceiros`,
   ];
 
   for (const sql of alterColumns) {
@@ -462,7 +468,7 @@ router.get("/me", authAppPais, async (req, res) => {
       return res.status(404).json({ message: "ResponsÃ¡vel nÃ£o encontrado." });
     }
 
-    // Verifica se hÃ¡ algum aluno vinculado SEM consentimento
+    // Verifica se há algum aluno vinculado SEM consentimento
     const [[{ pendente }]] = await db.query(
       `SELECT COUNT(*) AS pendente
        FROM responsaveis_alunos
@@ -470,10 +476,24 @@ router.get("/me", authAppPais, async (req, res) => {
       [responsavel_id]
     );
 
+    // Verifica se o responsável é MASTER e busca seu parentesco (para não-masters)
+    const [[vinculoInfo]] = await db.query(
+      `SELECT
+         MAX(principal) AS is_master,
+         MAX(CASE WHEN principal = 0 THEN parentesco ELSE NULL END) AS parentesco
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND ativo = 1`,
+      [responsavel_id]
+    );
+
     return res.json({
       ok: true,
-      responsavel: rows[0],
-      termos_pendentes: !rows[0].termos_aceitos_em, // Termos de Uso + PolÃ­tica de Privacidade
+      responsavel: {
+        ...rows[0],
+        is_master: !!(vinculoInfo?.is_master),
+        parentesco: vinculoInfo?.parentesco || null,
+      },
+      termos_pendentes: !rows[0].termos_aceitos_em,
       consentimento_pendente: pendente > 0,
     });
   } catch (error) {

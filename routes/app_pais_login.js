@@ -980,11 +980,12 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
   const db = pool;
   try {
     const { responsavel_id: masterId } = req.appPaisAuth;
-    const { cpf, escola_id, aluno_id, permissoes = {} } = req.body;
+    const { cpf, escola_id, aluno_id, permissoes = {}, parentesco } = req.body;
 
     const cpfNorm = normalizarCpf(cpf);
     const escolaId = Number(escola_id);
     const alunoId  = Number(aluno_id);
+    const parentescoVal = parentesco ? String(parentesco).trim() : null;
 
     if (!cpfNorm || !escolaId || !alunoId) {
       return res.status(400).json({ message: "cpf, escola_id e aluno_id são obrigatórios." });
@@ -1031,14 +1032,17 @@ router.post("/credenciais/autorizar", authAppPais, async (req, res) => {
     // Por ora, usamos pode_ver_boletim como base e pode_autorizar_terceiros para credenciais.
     await db.query(
       `INSERT INTO responsaveis_alunos
-         (responsavel_id, aluno_id, escola_id, ativo, principal, pode_ver_boletim, pode_autorizar_terceiros)
-       VALUES (?, ?, ?, 1, 0, ?, ?)
+         (responsavel_id, aluno_id, escola_id, ativo, principal, pode_ver_boletim, pode_autorizar_terceiros, parentesco)
+       VALUES (?, ?, ?, 1, 0, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-         ativo                   = 1,
-         pode_ver_boletim        = VALUES(pode_ver_boletim),
-         pode_autorizar_terceiros = VALUES(pode_autorizar_terceiros)`,
-      [novoRespId, alunoId, escolaId, podeVerBoletim, podeAutorizarTerceiros]
+         ativo                    = 1,
+         pode_ver_boletim         = VALUES(pode_ver_boletim),
+         pode_autorizar_terceiros = VALUES(pode_autorizar_terceiros),
+         parentesco               = IF(VALUES(parentesco) IS NOT NULL, VALUES(parentesco), parentesco)`,
+      [novoRespId, alunoId, escolaId, podeVerBoletim, podeAutorizarTerceiros, parentescoVal]
     );
+
+    console.log(`[APP_PAIS_LOGIN] CPF ${cpfNorm} credenciado pelo master ${masterId} | parentesco: ${parentescoVal || 'não informado'}`);
 
     return res.json({
       ok: true,
