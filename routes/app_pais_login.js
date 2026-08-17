@@ -171,11 +171,29 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
-    const [[{ comConsentimento }]] = await db.query(
-      `SELECT COUNT(*) AS comConsentimento FROM responsaveis_alunos WHERE responsavel_id = ? AND ativo = 1 AND consentimento_imagem = 1`,
+    // ── Verifica vínculos ativos ────────────────────────────────────────────
+    // IMPORTANTE: separar em dois passos:
+    // 1) Se não há NENHUM vínculo → usuário sem credenciamento (SEM_VINCULO_ATIVO)
+    // 2) Se há vínculo mas nenhum com consentimento assinado → TERMO_PENDENTE
+    // Juntar as duas checagens em uma só causa loop infinito para usuários
+    // que foram criados via pré-cadastro mas ainda não foram credenciados pelo master.
+    const [[{ totalVinculos, comConsentimento }]] = await db.query(
+      `SELECT
+         COUNT(*) AS totalVinculos,
+         SUM(consentimento_imagem = 1) AS comConsentimento
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND ativo = 1`,
       [responsavel.id]
     );
-    if (comConsentimento === 0) {
+
+    if (totalVinculos === 0) {
+      return res.status(403).json({
+        code: "SEM_VINCULO_ATIVO",
+        message: "Cadastro encontrado, porém sem vínculo ativo com estudante. Procure a secretaria da escola ou solicite ao responsável já credenciado que libere seu acesso.",
+      });
+    }
+
+    if ((comConsentimento ?? 0) === 0) {
       return res.status(403).json({
         code: "TERMO_PENDENTE",
         message: "Para acessar o EDUCA MOBILE, você precisa assinar o Termo de Consentimento Específico. Você pode assinar digitalmente agora, ou comparecer à escola para assinar fisicamente.",
