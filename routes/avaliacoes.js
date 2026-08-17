@@ -868,8 +868,15 @@ router.post("/", async (req, res) => {
     return res.json({ success: true, plano_ids: planoIds });
   } catch (error) {
     await conn.rollback();
-    console.error("Erro ao salvar plano:", error);
-    return res.status(500).json({ error: "Erro ao salvar plano de avaliação." });
+    console.error('[avaliacoes POST] Erro ao salvar plano:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
+      sql: error.sql?.substring(0, 300),
+      stack: error.stack?.split('\n').slice(0,5).join(' | ')
+    });
+    return res.status(500).json({ error: "Erro ao salvar plano de avaliação.", detalhe: error.message });
   } finally {
     conn.release();
   }
