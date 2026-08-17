@@ -228,6 +228,26 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     await session.screenshot('001_tela_login_perfil');
 
     // ====================================================================
+    // COLD START GUARD: Angular SPA pode travar no primeiro acesso do dia.
+    // Sintoma: página carrega infinitamente — um simples F5 resolve.
+    // Estratégia: aguardar 10s pelo formulário; se não aparecer, recarregar
+    // a página uma vez e aguardar mais 15s antes de prosseguir.
+    // ====================================================================
+    console.log('[educadf.login] Verificando se formulário de login carregou (cold start guard)...');
+    const formAppeared = await page.waitForSelector(LOGIN.form.usernameInput, {
+      state: 'visible',
+      timeout: 10000,
+    }).then(() => true).catch(() => false);
+
+    if (!formAppeared) {
+      console.warn('[educadf.login] ⚠️ Formulário não apareceu em 10s — possível cold start Angular. Recarregando página...');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: TIMING.loginTimeout });
+      await session.delay(3000);
+      await session.screenshot('001b_reload_cold_start');
+      console.log('[educadf.login] Página recarregada. Aguardando formulário novamente (até 20s)...');
+    }
+
+    // ====================================================================
     // PASSO 3: Aceitar banner de cookies "Bem-vindo!" (se presente)
     // O banner aparece NA TELA DO FORMULÁRIO de login do professor.
     // O botão "Aceitar" fica no rodapé e pode estar fora do viewport.
@@ -241,7 +261,7 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     // ====================================================================
     console.log('[educadf.login] 4/5 Preenchendo credenciais...');
 
-    // Aguardar o formulário estar visível
+    // Aguardar o formulário estar visível (timeout maior para compensar possível reload)
     await page.waitForSelector(LOGIN.form.usernameInput, {
       state: 'visible',
       timeout: TIMING.loginTimeout,
