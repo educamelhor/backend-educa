@@ -354,7 +354,35 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
 
 
   // ── Estratégia 1: Digita e filtra ─────────────────────────────────────────
-  await ng.click();
+  // Pré-requisito: remover qualquer overlay/backdrop Angular que possa estar
+  // interceptando pointer events (ngb-offcanvas, modais, etc.)
+  // Isso ocorre especialmente no portal do Ensino Médio do EDUCADF.
+  await page.evaluate(() => {
+    document.querySelectorAll('ngb-offcanvas-backdrop, .offcanvas-backdrop, .modal-backdrop').forEach(el => el.remove());
+    document.body.classList.remove('modal-open');
+  }).catch(() => {});
+
+  // Tenta clicar normalmente (Playwright aguarda estabilidade)
+  let clickedNg = false;
+  try {
+    await ng.click({ timeout: 5000 });
+    clickedNg = true;
+  } catch {
+    // Fallback 1: force:true (bypassa verificação de visibilidade/estabilidade)
+    try {
+      await ng.click({ force: true, timeout: 5000 });
+      clickedNg = true;
+      console.warn(`[educadf.pap] ng-select "${placeholder}" clicado com force:true`);
+    } catch {
+      // Fallback 2: JS click direto (bypassa QUALQUER interceptação de pointer events)
+      clickedNg = await page.evaluate((ph) => {
+        const el = document.querySelector(`ng-select[placeholder="${ph}"]`);
+        if (el) { el.click(); return true; }
+        return false;
+      }, placeholder).catch(() => false);
+      if (clickedNg) console.warn(`[educadf.pap] ng-select "${placeholder}" clicado via JS (bypass total)`);
+    }
+  }
   await page.waitForTimeout(500);
 
   const inputField = ng.locator("input[type='text']").first();
@@ -394,7 +422,17 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
   // Fecha e tenta estratégia 2: limpa e lista todas as opções
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
-  await ng.click();
+  // Mesmo padrão robusto de clique da Estratégia 1
+  try {
+    await ng.click({ timeout: 5000 });
+  } catch {
+    try { await ng.click({ force: true, timeout: 3000 }); } catch {
+      await page.evaluate((ph) => {
+        const el = document.querySelector(`ng-select[placeholder="${ph}"]`);
+        if (el) el.click();
+      }, placeholder).catch(() => {});
+    }
+  }
   await page.waitForTimeout(500);
 
   if (hasSearch) {
