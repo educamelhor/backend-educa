@@ -3205,8 +3205,6 @@ router.post("/registros/ler", authAppPais, async (req, res) => {
     return res.status(500).json({ message: "Erro ao marcar registro como lido." });
   }
 });
-  }
-});
 
 // ============================================================================
 // NOTÍCIAS — GET /noticias
@@ -3362,5 +3360,7 @@ export function mountToApp(app, prefix = "") {
 }
 
 export default router;
+
+
 
 
