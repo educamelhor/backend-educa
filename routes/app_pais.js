@@ -3179,6 +3179,36 @@ router.get("/registros", authAppPais, async (req, res) => {
 });
 
 // ============================================================================
+// REGISTROS - POST /registros/ler
+// Marca um registro (disciplinar ou pedagogico) como lido pelo responsavel.
+// ============================================================================
+router.post("/registros/ler", authAppPais, async (req, res) => {
+  const db = pool;
+  try {
+    const { responsavel_id } = req.appPaisAuth;
+    const { id, tipo } = req.body;
+
+    if (!id || !tipo) {
+      return res.status(400).json({ message: "ID e tipo sao obrigatorios." });
+    }
+
+    if (tipo === 'disciplinar') {
+      await db.query(
+        "INSERT IGNORE INTO ocorrencias_visualizacoes (ocorrencia_id, responsavel_id, visualizado_em) VALUES (?, ?, NOW())",
+        [id, responsavel_id]
+      );
+    }
+    
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("[APP_PAIS] Erro em /registros/ler:", error);
+    return res.status(500).json({ message: "Erro ao marcar registro como lido." });
+  }
+});
+  }
+});
+
+// ============================================================================
 // NOTÍCIAS — GET /noticias
 // Retorna a lista de notícias ativas da escola do usuário autenticado.
 // Funciona para RESPONSÁVEL e ALUNO (mesmo token JWT, campo tipo diferente).
@@ -3332,4 +3362,5 @@ export function mountToApp(app, prefix = "") {
 }
 
 export default router;
+
 

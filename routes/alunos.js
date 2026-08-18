@@ -2044,6 +2044,21 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
     // Fallback automÃ¡tico caso a migration ainda nÃ£o tenha sido executada no servidor
     const QUERY_FULL = `
       SELECT o.id,
+              (
+                SELECT JSON_ARRAYAGG(
+                  JSON_OBJECT(
+                    'responsavel_id', resp.id,
+                    'nome', resp.nome,
+                    'parentesco', ra.parentesco,
+                    'master', ra.master,
+                    'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
+                  )
+                )
+                FROM ocorrencias_visualizacoes ov
+                JOIN responsaveis resp ON resp.id = ov.responsavel_id
+                LEFT JOIN responsaveis_alunos ra ON ra.responsavel_id = resp.id AND ra.aluno_id = o.aluno_id
+                WHERE ov.ocorrencia_id = o.id
+              ) AS visualizacoes,
               LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
               o.motivo,
@@ -2076,6 +2091,21 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
 
     const QUERY_COMPAT = `
       SELECT o.id,
+              (
+                SELECT JSON_ARRAYAGG(
+                  JSON_OBJECT(
+                    'responsavel_id', resp.id,
+                    'nome', resp.nome,
+                    'parentesco', ra.parentesco,
+                    'master', ra.master,
+                    'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
+                  )
+                )
+                FROM ocorrencias_visualizacoes ov
+                JOIN responsaveis resp ON resp.id = ov.responsavel_id
+                LEFT JOIN responsaveis_alunos ra ON ra.responsavel_id = resp.id AND ra.aluno_id = o.aluno_id
+                WHERE ov.ocorrencia_id = o.id
+              ) AS visualizacoes,
               LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data_ocorrencia,
               o.motivo,
@@ -3251,5 +3281,6 @@ async function upsertResponsavelSemCpf(pool, e, alunoId, escola_id) {
 
 
 export default router;
+
 
 
