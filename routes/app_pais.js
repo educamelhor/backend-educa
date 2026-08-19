@@ -3364,7 +3364,9 @@ export function mountToApp(app, prefix = "") {
   console.log(`[APP_PAIS] mountToApp: ${count} rotas registradas em app com prefix='${prefix}'.`);
 }
 
+router.get('/debug/vis/:id', async (req, res) => { try { const [rows] = await pool.query('SELECT * FROM ocorrencias_visualizacoes WHERE ocorrencia_id = ?', [req.params.id]); res.json(rows); } catch(e) { res.status(500).json({ error: e.message }); } });
 export default router;
+
 
 
 
