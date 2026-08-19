@@ -2575,7 +2575,22 @@ router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => 
               o.status,
               o.usuario_registro_id,
               ur.nome AS nome_usuario_registro,
-              uf.nome AS nome_usuario_finalizacao
+              uf.nome AS nome_usuario_finalizacao,
+              (
+                  SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                      'responsavel_id', resp.id,
+                      'nome', resp.nome,
+                      'parentesco', ra.parentesco,
+                      'master', ra.master,
+                      'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
+                    )
+                  )
+                FROM ocorrencias_pedagogicas_visualizacoes ov
+                  JOIN responsaveis resp ON resp.id = ov.responsavel_id
+                  LEFT JOIN responsaveis_alunos ra ON ra.responsavel_id = resp.id AND ra.aluno_id = o.aluno_id
+                  WHERE ov.ocorrencia_id = o.id
+              ) AS visualizacoes
        FROM ocorrencias_pedagogicas o
        LEFT JOIN usuarios ur ON ur.id = o.usuario_registro_id
        LEFT JOIN usuarios uf ON uf.id = o.usuario_finalizacao_id
