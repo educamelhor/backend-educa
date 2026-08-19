@@ -3187,6 +3187,7 @@ router.post("/registros/ler", authAppPais, async (req, res) => {
   try {
     const { responsavel_id } = req.appPaisAuth;
     const { id, tipo } = req.body;
+    console.log("[APP_PAIS] POST /registros/ler ATINGIDO! body:", { id, tipo, responsavel_id });
 
     if (!id || !tipo) {
       return res.status(400).json({ message: "ID e tipo sao obrigatorios." });
