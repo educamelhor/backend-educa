@@ -460,7 +460,7 @@ router.get("/me", authAppPais, async (req, res) => {
     const { responsavel_id } = req.appPaisAuth;
 
     const [rows] = await db.query(
-      "SELECT id, nome, cpf, email, telefone_celular, status_global FROM responsaveis WHERE id = ? LIMIT 1",
+      "SELECT id, nome, cpf, email, telefone_celular, status_global, termos_aceitos_em FROM responsaveis WHERE id = ? LIMIT 1",
       [responsavel_id]
     );
 
