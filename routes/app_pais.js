@@ -3131,25 +3131,25 @@ router.get("/registros", authAppPais, async (req, res) => {
         let sql = `
           SELECT
             rp.id,
-            'pedagogico'                                  AS tipo,
-            COALESCE(rp.titulo, 'Registro PedagÃ³gico')   AS titulo,
-            DATE_FORMAT(rp.data_registro, '%d/%m/%Y')    AS data,
-            COALESCE(rp.resumo, rp.descricao, '')        AS resumo,
-            COALESCE(rp.descricao, rp.resumo, '')        AS texto_completo,
-            rp.data_registro
-          FROM registros_pedagogicos rp
-          WHERE rp.escola_id = ? AND rp.aluno_id = ?
+            'pedagogico'                                   AS tipo,
+            COALESCE(rp.categoria, 'Registro Pedagógico')  AS titulo,
+            DATE_FORMAT(rp.data_ocorrencia, '%d/%m/%Y')    AS data,
+            COALESCE(rp.motivo, rp.descricao, '')          AS resumo,
+            COALESCE(rp.descricao, rp.motivo, '')          AS texto_completo,
+            rp.status,
+            rp.data_ocorrencia
+          FROM ocorrencias_pedagogicas rp
+          WHERE rp.escola_id = ? AND rp.aluno_id = ? AND rp.status != 'CANCELADA'
         `;
         if (anoFiltro) {
-          sql += " AND YEAR(rp.data_registro) = ?";
+          sql += " AND YEAR(rp.data_ocorrencia) = ?";
           params.push(anoFiltro);
         }
-        sql += " ORDER BY rp.data_registro DESC LIMIT 100";
+        sql += " ORDER BY rp.data_ocorrencia DESC LIMIT 100";
         const [rows] = await db.query(sql, params);
         pedagogicos = rows;
       } catch (e) {
-        // Tabela nÃ£o existente ainda â€” retorna vazio sem quebrar
-        console.warn("[APP_PAIS] Tabela registros_pedagogicos nÃ£o encontrada:", e.code);
+        console.warn("[APP_PAIS] Falha ocorrencias_pedagogicas:", e.code);
         pedagogicos = [];
       }
     }
@@ -3195,6 +3195,11 @@ router.post("/registros/ler", authAppPais, async (req, res) => {
     if (tipo === 'disciplinar') {
       await db.query(
         "INSERT IGNORE INTO ocorrencias_visualizacoes (ocorrencia_id, responsavel_id, visualizado_em) VALUES (?, ?, NOW())",
+        [id, responsavel_id]
+      );
+    } else if (tipo === 'pedagogico') {
+      await db.query(
+        "INSERT IGNORE INTO ocorrencias_pedagogicas_visualizacoes (ocorrencia_id, responsavel_id, visualizado_em) VALUES (?, ?, NOW())",
         [id, responsavel_id]
       );
     }
