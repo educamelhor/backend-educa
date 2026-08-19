@@ -379,8 +379,39 @@ router.post("/verificar-codigo", async (req, res) => {
       });
     }
 
+    // ── Busca dados enriquecidos para gates do frontend ──────────────────────
+    const [[respEnriquecido]] = await db.query(
+      `SELECT id, nome, cpf, email, telefone_celular, termos_aceitos_em FROM responsaveis WHERE id = ? LIMIT 1`,
+      [responsavel.id]
+    );
+
+    const [[{ totalVinculos, comConsentimento }]] = await db.query(
+      `SELECT
+         COUNT(*) AS totalVinculos,
+         SUM(consentimento_imagem = 1) AS comConsentimento
+       FROM responsaveis_alunos
+       WHERE responsavel_id = ? AND ativo = 1`,
+      [responsavel.id]
+    );
+
+    const termos_pendentes      = !respEnriquecido.termos_aceitos_em;
+    const consentimento_pendente = totalVinculos > 0 && (comConsentimento ?? 0) === 0;
+
     const token = gerarTokenSessaoResponsavel(responsavel);
-    return res.json({ ok: true, token, expires_in: APP_PAIS_JWT_EXPIRES_IN_SECONDS, responsavel });
+    return res.json({
+      ok:                   true,
+      token,
+      expires_in:           APP_PAIS_JWT_EXPIRES_IN_SECONDS,
+      responsavel: {
+        id:               respEnriquecido.id,
+        nome:             respEnriquecido.nome,
+        cpf:              respEnriquecido.cpf,
+        email:            respEnriquecido.email,
+        telefone_celular: respEnriquecido.telefone_celular,
+      },
+      termos_pendentes,
+      consentimento_pendente,
+    });
 
   } catch (error) {
     console.error("[APP_PAIS_LOGIN] Erro em /verificar-codigo:", error);
