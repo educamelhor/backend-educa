@@ -2050,7 +2050,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
                     'responsavel_id', resp.id,
                     'nome', resp.nome,
                     'parentesco', ra.parentesco,
-                    'master', ra.master,
+                    'master', ra.principal,
                     'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
                   )
                 )
@@ -2097,7 +2097,7 @@ router.get("/:id/ocorrencias", verificarEscola, async (req, res) => {
                     'responsavel_id', resp.id,
                     'nome', resp.nome,
                     'parentesco', ra.parentesco,
-                    'master', ra.master,
+                    'master', ra.principal,
                     'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
                   )
                 )
@@ -2582,7 +2582,7 @@ router.get("/:id/ocorrencias-pedagogicas", verificarEscola, async (req, res) => 
                       'responsavel_id', resp.id,
                       'nome', resp.nome,
                       'parentesco', ra.parentesco,
-                      'master', ra.master,
+                      'master', ra.principal,
                       'data', DATE_FORMAT(ov.visualizado_em, '%d/%m/%Y %H:%i')
                     )
                   )
@@ -3296,6 +3296,7 @@ async function upsertResponsavelSemCpf(pool, e, alunoId, escola_id) {
 
 
 export default router;
+
 
 
 
