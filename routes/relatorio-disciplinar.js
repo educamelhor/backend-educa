@@ -1639,7 +1639,28 @@ router.get("/:alunoId", async (req, res) => {
       [alunoId, escola_id]
     );
 
-    // Registros disciplinares — FINALIZADOS + MERITO (exclui cancelados)
+    // ── Saldo Inicial: pontuação com que o aluno abre o ano letivo ───────────
+    // Se tiver registros no ano anterior → pontuação final daquele ano
+    // Senão → 8,00 (padrão de ingresso)
+    const anoAtualRelatorio = new Date().getFullYear();
+    const [regAnoAnterior] = await pool.query(
+      `SELECT COALESCE(SUM(
+         CASE WHEN o.status = 'CANCELADA' THEN 0
+              WHEN COALESCE(r.medida_disciplinar,'') = 'Suspensão'
+                THEN COALESCE(r.pontos,0) * COALESCE(o.dias_suspensao,1)
+              ELSE COALESCE(r.pontos,0) END
+       ), NULL) AS soma_pontos
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND YEAR(o.data_ocorrencia) = ?`,
+      [alunoId, escola_id, anoAtualRelatorio - 1]
+    );
+    const temHistoricoAnterior = regAnoAnterior[0]?.soma_pontos !== null;
+    const saldoInicial = temHistoricoAnterior
+      ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAnoAnterior[0].soma_pontos)).toFixed(2))))
+      : 8.00;
+
+    // Registros disciplinares — REGISTRADA + FINALIZADA + MERITO (exclui CANCELADA)
     const [rows] = await pool.query(
       `SELECT o.id,
               LPAD(o.id, 4, '0') AS registro,
@@ -1653,6 +1674,8 @@ router.get("/:alunoId", async (req, res) => {
               o.descricao,
               CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
                    ELSE COALESCE(r.pontos, 0) END AS pontos,
+              COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+              COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
               o.tipo_ocorrencia AS tipo_raw,
               o.status,
               o.convocar_responsavel,
@@ -1660,7 +1683,7 @@ router.get("/:alunoId", async (req, res) => {
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo
-       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'
        ORDER BY
          CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 1 ELSE 0 END ASC,
          o.data_ocorrencia ASC, o.id ASC`,
@@ -1680,10 +1703,10 @@ router.get("/:alunoId", async (req, res) => {
       return r;
     });
 
-    // Pontuação: REGISTRADA + FINALIZADA contam; CANCELADA reverte (subtrai)
-    // Art. 46 III: Suspensão = −0,50 por dia (pontosEfetivos multiplica pelo nº de dias)
-    // O bônus de mérito já está incluído em rowsPts via o registro MERITO = FINALIZADA
-    const PONTUACAO_INICIAL = 8.00;
+    // Pontuação Final: saldoInicial + REGISTRADA + FINALIZADA (CANCELADA = 0)
+    // Art. 46 III: Suspensão = pontos_base × dias_suspensão
+    // O bônus de mérito já está incluído em rowsPts via o registro MERITO
+    const PONTUACAO_INICIAL = saldoInicial;
     const [rowsPts] = await pool.query(
       `SELECT
          CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
@@ -1950,6 +1973,33 @@ router.get("/:alunoId", async (req, res) => {
 
     drawTableHeader();
 
+    // ── Linha "Saldo Inicial" — primeira linha da tabela (estilo extrato bancário) ──
+    {
+      const bgSaldo = "#eef6ff";
+      const rowY = doc.y;
+      doc.rect(L, rowY, PW, TR).fill(bgSaldo);
+      const saldoLabel = temHistoricoAnterior
+        ? `Saldo do ano letivo anterior (${anoAtualRelatorio - 1})`
+        : `Pontuação de abertura do ano letivo ${anoAtualRelatorio}`;
+      const saldoCols = [
+        { val: "—",                                       w: cols[0].w, align: "center" },
+        { val: `01/01/${anoAtualRelatorio}`,               w: cols[1].w, align: "center" },
+        { val: "Saldo",                                   w: cols[2].w, align: "center" },
+        { val: "Saldo Inicial",                           w: cols[3].w, align: "left"   },
+        { val: saldoLabel,                                w: cols[4].w, align: "left"   },
+        { val: String(saldoInicial.toFixed(2)).replace(".", ","), w: cols[5].w, align: "center" },
+      ];
+      let txS = L;
+      saldoCols.forEach((c, ci) => {
+        const isVal = ci === 5;
+        doc.font(isVal ? "Helvetica-Bold" : "Helvetica-Oblique").fontSize(7)
+          .fillColor(isVal ? COR_AZUL : "#555")
+          .text(c.val, txS + 2, rowY + 3, { width: c.w - 4, align: c.align, lineBreak: false });
+        txS += c.w;
+      });
+      doc.y = rowY + TR;
+    }
+
     // Nome do responsável para usar na info de comparecimento
     const nomeResp = resp?.nome || "Responsavel";
 
@@ -2024,9 +2074,10 @@ router.get("/:alunoId", async (req, res) => {
     doc.font("Helvetica-Bold").fontSize(8).fillColor(COR_AZUL)
       .text("TOTAL DE REGISTROS: " + registros.length, L + 4, resumoTextY, { width: PW * 0.5, lineBreak: false });
     doc.y = resumoTextY;
+    const corPontuacaoFinal = Number(pontuacaoFinal) >= 7 ? COR_VERDE : Number(pontuacaoFinal) >= 5 ? COR_DOURADO : COR_VERMELHO;
     doc.font("Helvetica-Bold").fontSize(9)
-      .fillColor(totalPontos < 0 ? COR_VERMELHO : COR_VERDE)
-      .text(`Pontuação Total: ${totalPontos.toFixed(1).replace(".", ",")}`, L + PW * 0.6, resumoTextY, {
+      .fillColor(corPontuacaoFinal)
+      .text(`Pontuação Final: ${String(pontuacaoFinal).replace(".", ",")}`, L + PW * 0.6, resumoTextY, {
         width: PW * 0.4 - 4, align: "right", lineBreak: false,
       });
     doc.y = resumoY + resumoH + 4;

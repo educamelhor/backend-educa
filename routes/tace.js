@@ -271,7 +271,7 @@ router.get("/:alunoId", async (req, res) => {
       [escola_id]
     );
 
-    // Registros disciplinares — apenas FINALIZADOS (registrados e cancelados não aparecem)
+    // Registros disciplinares — REGISTRADA + FINALIZADA (CANCELADA excluída)
     const [rows] = await pool.query(
       `SELECT LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
@@ -279,22 +279,57 @@ router.get("/:alunoId", async (req, res) => {
               COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
               o.motivo,
               COALESCE(r.pontos, 0) AS pontos,
+              COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+              COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
               o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
-       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status = 'FINALIZADA'
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'
        ORDER BY o.data_ocorrencia ASC, o.id ASC`,
       [alunoId, escola_id]
     );
 
     const registros = rows;
 
-    // Pontuação: soma dos pontos de TODOS os registros exibidos na tabela
+    // Pontuação: soma dos pontos aplicando multiplicador de suspensão (Art. 46 III)
+    // REGISTRADA + FINALIZADA contam; CANCELADA excluída pela query
     const PONTUACAO_INICIAL = 8.00;
-    const totalPontos = rows.reduce((s, r) => s + Number(r.pontos || 0), 0);
 
-    const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos)).toFixed(2);
+    function pontosEfetivos(pts, medida, dias) {
+      if (String(medida).trim() === 'Suspensão') return Number(pts) * (Number(dias) || 1);
+      return Number(pts) || 0;
+    }
+
+    // Bônus de mérito: dias consecutivos sem registro negativo após 60 dias
+    let bonusMerito = 0;
+    try {
+      const anoAtual = new Date().getFullYear();
+      const dataAncora = new Date(`${anoAtual}-02-15T00:00:00`);
+      const hoje2 = new Date(); hoje2.setHours(23, 59, 59, 0);
+      const [negativos] = await pool.query(
+        `SELECT DATE(o.data_ocorrencia) AS data_oc
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id = ? AND o.escola_id = ?
+           AND o.tipo_ocorrencia != 'MERITO'
+           AND o.status NOT IN ('CANCELADA')
+           AND COALESCE(r.pontos, 0) < 0
+           AND YEAR(o.data_ocorrencia) = ?
+         ORDER BY o.data_ocorrencia ASC`,
+        [alunoId, escola_id, anoAtual]
+      );
+      const marcos = [dataAncora, ...negativos.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; }), hoje2];
+      let totalDias = 0;
+      for (let i = 0; i < marcos.length - 1; i++) {
+        const diff = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
+        if (diff > 60) totalDias += diff - 60;
+      }
+      bonusMerito = parseFloat((totalDias * 0.01).toFixed(2));
+    } catch (e) { bonusMerito = 0; }
+
+    const totalPontos = rows.reduce((s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+    const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos + bonusMerito)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 
     // ── Logos ────────────────────────────────────────────────────────
