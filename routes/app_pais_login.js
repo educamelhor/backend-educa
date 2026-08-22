@@ -1165,6 +1165,8 @@ router.get("/registros", authAppPaisOuAluno, async (req, res) => {
         return Number(pontoBase) || 0;
       }
       const PONTUACAO_INICIAL = 8.00;
+
+      // Busca pontos de ocorrências regulares (exceto MERITO — não tem entrada em registros_ocorrencias)
       const [allRows] = await db.query(
         `SELECT COALESCE(r.pontos,0) AS pontos,
                 COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
@@ -1173,10 +1175,48 @@ router.get("/registros", authAppPaisOuAluno, async (req, res) => {
          LEFT JOIN registros_ocorrencias r
            ON r.descricao_ocorrencia = o.motivo
            AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
-         WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+         WHERE o.aluno_id = ? AND o.escola_id = ?
+           AND o.status != 'CANCELADA'
+           AND o.tipo_ocorrencia != 'MERITO'`,
         [aluno_id, escola_id]
       );
-      const totalPontosGeral = allRows.reduce((s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+      const totalPontosBase = allRows.reduce(
+        (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
+      );
+
+      // Bônus de mérito: calculado com a mesma lógica do relatorio-disciplinar.js
+      // (o registro MERITO existe em ocorrencias_disciplinares mas NÃO em registros_ocorrencias)
+      let bonusMerito = 0;
+      try {
+        const anoAtualApp = new Date().getFullYear();
+        const dataAncora = new Date(`${anoAtualApp}-02-15T00:00:00`);
+        const hoje3 = new Date(); hoje3.setHours(23, 59, 59, 0);
+        const [negativosApp] = await db.query(
+          `SELECT DATE(o.data_ocorrencia) AS data_oc
+           FROM ocorrencias_disciplinares o
+           LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+           WHERE o.aluno_id = ? AND o.escola_id = ?
+             AND o.tipo_ocorrencia != 'MERITO'
+             AND o.status NOT IN ('CANCELADA')
+             AND COALESCE(r.pontos, 0) < 0
+             AND YEAR(o.data_ocorrencia) = ?
+           ORDER BY o.data_ocorrencia ASC`,
+          [aluno_id, escola_id, anoAtualApp]
+        );
+        const marcos = [
+          dataAncora,
+          ...negativosApp.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; }),
+          hoje3
+        ];
+        let totalDiasM = 0;
+        for (let i = 0; i < marcos.length - 1; i++) {
+          const diff = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
+          if (diff > 60) totalDiasM += diff - 60;
+        }
+        bonusMerito = parseFloat((totalDiasM * 0.01).toFixed(2));
+      } catch (e) { bonusMerito = 0; }
+
+      const totalPontosGeral = totalPontosBase + bonusMerito;
       pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontosGeral)).toFixed(2);
     }
 
