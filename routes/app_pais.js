@@ -3154,21 +3154,67 @@ router.get("/registros", authAppPais, async (req, res) => {
       }
     }
 
-    // â”€â”€ 4) Anos disponÃ­veis (para o seletor) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const [anosRows] = await db.query(
-      `SELECT DISTINCT YEAR(data_ocorrencia) AS ano
-       FROM ocorrencias_disciplinares
-       WHERE escola_id = ? AND aluno_id = ? AND status != 'CANCELADA'
-       ORDER BY ano DESC`,
-      [escola_id, aluno_id]
-    );
-    const anos = anosRows.map(r => Number(r.ano));
 
+    // ── 5) PONTUACAO (apenas para escolas Civico-Militares) ─────────────────
+    let pontuacao = null;
+    try {
+      const [[escolaRow]] = await db.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
+      const escolaTipo = escolaRow?.tipo || '';
+      const isCivicoMilitar = escolaTipo.includes('CCMDF') || escolaTipo.includes('Militar');
+
+      if (isCivicoMilitar) {
+        function pontosEf(pts, medida, dias) {
+          if (String(medida).trim() === 'Suspens\u00e3o') return Number(pts) * (Number(dias) || 1);
+          return Number(pts) || 0;
+        }
+        const [ptRows] = await db.query(
+          `SELECT COALESCE(r.pontos,0) AS pontos,
+                  COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                  COALESCE(o.dias_suspensao,1) AS dias_suspensao
+           FROM ocorrencias_disciplinares o
+           LEFT JOIN registros_ocorrencias r
+             ON r.descricao_ocorrencia = o.motivo
+             AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
+           WHERE o.aluno_id = ? AND o.escola_id = ?
+             AND o.status != 'CANCELADA'
+             AND o.tipo_ocorrencia != 'MERITO'`,
+          [aluno_id, escola_id]
+        );
+        const totalBase = ptRows.reduce((s, r) => s + pontosEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+        let bonusMerito = 0;
+        try {
+          const anoAtualPt = new Date().getFullYear();
+          const dataAncora = new Date(`${anoAtualPt}-02-15T00:00:00`);
+          const hoje4 = new Date(); hoje4.setHours(23, 59, 59, 0);
+          const [negs] = await db.query(
+            `SELECT DATE(o.data_ocorrencia) AS data_oc
+             FROM ocorrencias_disciplinares o
+             LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+             WHERE o.aluno_id = ? AND o.escola_id = ?
+               AND o.tipo_ocorrencia != 'MERITO'
+               AND o.status NOT IN ('CANCELADA')
+               AND COALESCE(r.pontos, 0) < 0
+               AND YEAR(o.data_ocorrencia) = ?
+             ORDER BY o.data_ocorrencia ASC`,
+            [aluno_id, escola_id, anoAtualPt]
+          );
+          const marcos = [dataAncora, ...negs.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; }), hoje4];
+          let totalDias = 0;
+          for (let i = 0; i < marcos.length - 1; i++) {
+            const diff = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
+            if (diff > 60) totalDias += diff - 60;
+          }
+          bonusMerito = parseFloat((totalDias * 0.01).toFixed(2));
+        } catch (_) {}
+        pontuacao = Math.max(0, Math.min(10, 8.00 + totalBase + bonusMerito)).toFixed(2);
+      }
+    } catch (_) {}
     return res.json({
       ok: true,
       aluno_id,
       escola_id,
       anos,
+      pontuacao,
       disciplinares,
       pedagogicos,
     });
