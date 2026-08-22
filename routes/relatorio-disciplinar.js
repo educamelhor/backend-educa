@@ -914,10 +914,12 @@ router.post("/lote-registros", async (req, res) => {
       doc.rect(L, doc.y, PW, TR).fill("#f8f9fa");
       let tx2 = L;
       const rowY = doc.y + 3;
-      const vals2 = [reg.registro, reg.data, reg.tipo, reg.medida, reg.motivo, String(reg.pontos).replace(".", ",")];
+      const ptEfLote = pontosEfetivos(reg.pontos, reg.medida_disciplinar, reg.dias_suspensao);
+      const ptDisplayLote = ptEfLote === 0 ? "0" : (ptEfLote > 0 ? "+" : "") + String(ptEfLote.toFixed(2)).replace(".", ",");
+      const vals2 = [reg.registro, reg.data, reg.tipo, reg.medida, reg.motivo, ptDisplayLote];
       cols.forEach((c, ci) => {
-        const isNeg = ci === 5 && Number(reg.pontos) < 0;
-        const isPos = ci === 5 && Number(reg.pontos) > 0;
+        const isNeg = ci === 5 && ptEfLote < 0;
+        const isPos = ci === 5 && ptEfLote > 0;
         doc.font(ci === 5 ? "Helvetica-Bold" : "Helvetica").fontSize(7)
           .fillColor(isNeg ? COR_VERMELHO : isPos ? COR_VERDE : "#333")
           .text(vals2[ci] || "—", tx2 + 2, rowY, { width: c.w - 4, align: c.align });
@@ -1450,18 +1452,20 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
 
       let tx = L;
       const rowY = doc.y + 3;
+      const ptEfInd = pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao);
+      const ptDisplayInd = ptEfInd === 0 ? "0" : (ptEfInd > 0 ? "+" : "") + String(ptEfInd.toFixed(2)).replace(".", ",");
       const vals = [
         r.registro,
         r.data,
         r.tipo,
         r.medida,
         r.motivo,
-        String(r.pontos).replace(".", ","),
+        ptDisplayInd,
       ];
 
       cols.forEach((c, ci) => {
-        const isNeg = ci === 5 && Number(r.pontos) < 0;
-        const isPos = ci === 5 && Number(r.pontos) > 0;
+        const isNeg = ci === 5 && ptEfInd < 0;
+        const isPos = ci === 5 && ptEfInd > 0;
         doc.font(ci === 5 ? "Helvetica-Bold" : "Helvetica").fontSize(7)
           .fillColor(isNeg ? COR_VERMELHO : isPos ? COR_VERDE : "#333")
           .text(vals[ci] || "—", tx + 2, rowY, { width: c.w - 4, align: c.align });
@@ -2036,18 +2040,21 @@ router.get("/:alunoId", async (req, res) => {
 
       let tx = L;
       const rowY = doc.y + 3;
+      // PTS exibido = pontos efetivos (suspensão × dias), para que o extrato feche
+      const ptEfetivo = pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao);
+      const ptDisplay = ptEfetivo === 0 ? "0" : (ptEfetivo > 0 ? "+" : "") + String(ptEfetivo.toFixed(2)).replace(".", ",");
       const vals = [
         r.registro,
         r.data,
         r.tipo,
         r.medida,
         r.motivo,
-        String(r.pontos).replace(".", ","),
+        ptDisplay,
       ];
 
       cols.forEach((c, ci) => {
-        const isNeg = ci === 5 && Number(r.pontos) < 0;
-        const isPos = ci === 5 && Number(r.pontos) > 0;
+        const isNeg = ci === 5 && ptEfetivo < 0;
+        const isPos = ci === 5 && ptEfetivo > 0;
         doc.font(ci === 5 ? "Helvetica-Bold" : "Helvetica").fontSize(7)
           .fillColor(isNeg ? COR_VERMELHO : isPos ? COR_VERDE : "#333")
           .text(vals[ci] || "—", tx + 2, rowY, { width: c.w - 4, align: c.align });

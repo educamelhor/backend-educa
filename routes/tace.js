@@ -606,18 +606,21 @@ router.get("/:alunoId", async (req, res) => {
 
       let tx = L;
       const rowY = doc.y + 3;
+      // PTS exibido = pontos efetivos (suspensão × dias), para que o extrato feche
+      const ptEfetivo = pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao);
+      const ptDisplay = ptEfetivo === 0 ? "0" : (ptEfetivo > 0 ? "+" : "") + String(ptEfetivo.toFixed(2)).replace(".", ",");
       const vals = [
         r.registro,
         r.data,
         r.tipo,
         r.medida,
         r.motivo,
-        String(r.pontos).replace(".", ","),
+        ptDisplay,
       ];
 
       cols.forEach((c, ci) => {
-        const isNeg = ci === 5 && Number(r.pontos) < 0;
-        const isPos = ci === 5 && Number(r.pontos) > 0;
+        const isNeg = ci === 5 && ptEfetivo < 0;
+        const isPos = ci === 5 && ptEfetivo > 0;
         doc.font(ci === 5 ? "Helvetica-Bold" : "Helvetica").fontSize(7)
           .fillColor(isNeg ? COR_VERMELHO : isPos ? COR_VERDE : "#333")
           .text(vals[ci] || "—", tx + 2, rowY, { width: c.w - 4, align: c.align });
@@ -635,9 +638,10 @@ router.get("/:alunoId", async (req, res) => {
       .text("TOTAL DE REGISTROS: " + registros.length, L + 4, resumoTextY, { width: PW * 0.5, lineBreak: false });
     // IMPORTANTE: resetar doc.y para que o segundo .text() não use posição deslocada
     doc.y = resumoTextY;
+    const corPtFinal = Number(pontuacaoFinal) >= 7 ? COR_VERDE : Number(pontuacaoFinal) >= 5 ? COR_DOURADO : COR_VERMELHO;
     doc.font("Helvetica-Bold").fontSize(9)
-      .fillColor(totalPontos < 0 ? COR_VERMELHO : COR_VERDE)
-      .text(`Pontuação Total: ${totalPontos.toFixed(1).replace(".", ",")}`, L + PW * 0.6, resumoTextY, {
+      .fillColor(corPtFinal)
+      .text(`Pontuação Final: ${String(pontuacaoFinal).replace(".", ",")}`, L + PW * 0.6, resumoTextY, {
         width: PW * 0.4 - 4, align: "right", lineBreak: false,
       });
     doc.y = resumoY + resumoH + 4;
