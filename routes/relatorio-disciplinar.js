@@ -618,6 +618,49 @@ router.get("/merito/:alunoId", async (req, res) => {
   }
 });
 
+// ── Rota GET /pontuacao/:alunoId — pontuação disciplinar canônica ─────────────
+// Endpoint centralizado: mesma lógica exata do PDF Relatório Disciplinar.
+// Todos os frontends (modal, TACE, app) e backends (tace.js, app_pais.js)
+// devem usar ESTE endpoint como fonte da verdade para a pontuação do aluno.
+// Resposta: { pontuacao: "4.90", conceito: "V - Insuficiente", bonusMerito: 0.40 }
+router.get("/pontuacao/:alunoId", async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { alunoId } = req.params;
+
+    // 1. Calcular e persistir bônus de mérito e bônus de média (garante dados atualizados)
+    const merito = await calcularEUpsertMerito(alunoId, escola_id);
+    await calcularEUpsertBonusMedia(alunoId, escola_id);
+
+    // 2. Somar pontos de TODOS os registros não-CANCELADOS (exceto MERITO — não tem em registros_ocorrencias)
+    const [rowsPts] = await pool.query(
+      `SELECT
+         CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+              ELSE COALESCE(r.pontos, 0) END AS pontos,
+         COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
+         COALESCE(o.dias_suspensao, 1) AS dias_suspensao
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r
+         ON r.descricao_ocorrencia = o.motivo
+         AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+      [alunoId, escola_id]
+    );
+
+    const totalPontosBase = rowsPts.reduce(
+      (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
+    );
+    const totalPontos = totalPontosBase + merito.bonusTotal;
+    const pontuacaoFinal = Math.max(0, Math.min(10, 8.00 + totalPontos)).toFixed(2);
+    const conceito = getConceito(pontuacaoFinal);
+
+    res.json({ pontuacao: pontuacaoFinal, conceito, bonusMerito: merito.bonusTotal });
+  } catch (err) {
+    console.error("[PONTUACAO] Erro:", err);
+    res.status(500).json({ error: "Erro ao calcular pontuação.", pontuacao: "8.00", conceito: "N/D", bonusMerito: 0 });
+  }
+});
+
 // ── Rota POST /lote-registros — PDF único com todos os F.O. selecionados ─────
 // Body: { registros: [{aluno_id, ocorrencia_id}, ...] }
 // Gera um único PDF com um aluno por página (page-break entre cada F.O.)
@@ -2167,5 +2210,5 @@ router.get("/:alunoId", async (req, res) => {
   }
 });
 
-export { calcularEUpsertBonusMedia };
+export { calcularEUpsertBonusMedia, calcularEUpsertMerito };
 export default router;

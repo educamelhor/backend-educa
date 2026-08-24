@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
 import { getEscolaLogos } from "../utils/logoHelper.js";
+import { calcularEUpsertBonusMedia, calcularEUpsertMerito } from "./relatorio-disciplinar.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -292,8 +293,8 @@ router.get("/:alunoId", async (req, res) => {
 
     const registros = rows;
 
-    // Pontuação: soma dos pontos aplicando multiplicador de suspensão (Art. 46 III)
-    // REGISTRADA + FINALIZADA contam; CANCELADA excluída pela query
+    // Pontuação: usa exatamente a mesma cadeia de cálculo do PDF Relatório Disciplinar
+    // para garantir que o PDF TACE mostre sempre a mesma pontuação do PDF Relatório.
     const PONTUACAO_INICIAL = 8.00;
 
     function pontosEfetivos(pts, medida, dias) {
@@ -301,35 +302,12 @@ router.get("/:alunoId", async (req, res) => {
       return Number(pts) || 0;
     }
 
-    // Bônus de mérito: dias consecutivos sem registro negativo após 60 dias
-    let bonusMerito = 0;
-    try {
-      const anoAtual = new Date().getFullYear();
-      const dataAncora = new Date(`${anoAtual}-02-15T00:00:00`);
-      const hoje2 = new Date(); hoje2.setHours(23, 59, 59, 0);
-      const [negativos] = await pool.query(
-        `SELECT DATE(o.data_ocorrencia) AS data_oc
-         FROM ocorrencias_disciplinares o
-         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
-         WHERE o.aluno_id = ? AND o.escola_id = ?
-           AND o.tipo_ocorrencia != 'MERITO'
-           AND o.status NOT IN ('CANCELADA')
-           AND COALESCE(r.pontos, 0) < 0
-           AND YEAR(o.data_ocorrencia) = ?
-         ORDER BY o.data_ocorrencia ASC`,
-        [alunoId, escola_id, anoAtual]
-      );
-      const marcos = [dataAncora, ...negativos.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; }), hoje2];
-      let totalDias = 0;
-      for (let i = 0; i < marcos.length - 1; i++) {
-        const diff = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
-        if (diff > 60) totalDias += diff - 60;
-      }
-      bonusMerito = parseFloat((totalDias * 0.01).toFixed(2));
-    } catch (e) { bonusMerito = 0; }
+    // Calcular e persistir bônus de mérito (via função canônica importada)
+    const merito = await calcularEUpsertMerito(alunoId, escola_id);
+    await calcularEUpsertBonusMedia(alunoId, escola_id);
 
     const totalPontos = rows.reduce((s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
-    const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos + bonusMerito)).toFixed(2);
+    const pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontos + merito.bonusTotal)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 
     // ── Logos ────────────────────────────────────────────────────────
