@@ -45,9 +45,12 @@ const PERFIS_MILITARES = new Set([
 async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   let perfilNorm = String(perfil || '').toLowerCase().trim();
 
-  // ── Normalização de Legados (CEO unificou em 'secretaria' e 'vigilancia') ──
+  // ── Normalização de Legados (CEO unificou a nomenclatura) ──
   if (perfilNorm === 'secretario') perfilNorm = 'secretaria';
   if (perfilNorm === 'vigilante') perfilNorm = 'vigilancia';
+  if (perfilNorm === 'coordenador') perfilNorm = 'coordenacao';
+  if (perfilNorm === 'supervisor') perfilNorm = 'supervisor_pedagogico';
+  if (perfilNorm === 'sala_de_recurso') perfilNorm = 'sala_recurso';
 
   // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
   if (PERFIS_SUPER.has(perfilNorm)) return null;

@@ -264,12 +264,12 @@ router.use(async (req, _res, next) => {
 // No backend resolveModulosAtivos, o Diretor recebe a UNIÃO de todos os perfis,
 // mas também pode ter configuração direta via este endpoint.
 const PERFIS_GERENCIAVEIS = new Set([
-  'diretor',                                              // ← adicionado (essencial CCMDF)
-  'professor', 'coordenador', 'supervisor', 'pedagogo',
-  'secretario', 'secretaria', 'orientador',
-  'aluno', 'biblioteca', 'educador_social', 'merenda',
-  'psicologo', 'responsavel', 'vice_diretor', 'vigilancia', 'visitante',
-  'subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar',
+  'diretor', 'vice_diretor', 'coordenacao', 'coordenador', 'secretaria', 'secretario',
+  'orientador', 'supervisor_pedagogico', 'supervisor', 'supervisor_administrativo',
+  'disciplinar', 'administrativo', 'psicopedagogia', 'sala_recurso', 'sala_de_recurso',
+  'apoio', 'educador_social', 'vigilancia', 'merenda', 'biblioteca', 'professor',
+  'pedagogo', 'aluno', 'responsavel', 'psicologo', 'monitor', 'visitante',
+  'subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'
 ]);
 
 /**
