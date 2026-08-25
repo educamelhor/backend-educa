@@ -3168,16 +3168,15 @@ router.get("/registros", authAppPais, async (req, res) => {
           return Number(pts) || 0;
         }
         const [ptRows] = await db.query(
-          `SELECT COALESCE(r.pontos,0) AS pontos,
+          `SELECT CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                   ELSE COALESCE(r.pontos,0) END AS pontos,
                   COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
                   COALESCE(o.dias_suspensao,1) AS dias_suspensao
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r
              ON r.descricao_ocorrencia = o.motivo
-             AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
            WHERE o.aluno_id = ? AND o.escola_id = ?
-             AND o.status != 'CANCELADA'
-             AND o.tipo_ocorrencia != 'MERITO'`,
+             AND o.status != 'CANCELADA'`,
           [aluno_id, escola_id]
         );
         const totalBase = ptRows.reduce((s, r) => s + pontosEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);

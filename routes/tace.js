@@ -273,19 +273,21 @@ router.get("/:alunoId", async (req, res) => {
     );
 
     // Registros disciplinares — REGISTRADA + FINALIZADA (CANCELADA excluída)
+    // JOIN idêntico ao PDF Relatório: apenas por motivo, garante BONUS_MEDIA sempre encontrado
     const [rows] = await pool.query(
       `SELECT LPAD(o.id, 4, '0') AS registro,
               DATE_FORMAT(o.data_ocorrencia, '%d/%m/%Y') AS data,
               COALESCE(r.tipo_ocorrencia, 'N/D') AS tipo,
               COALESCE(r.medida_disciplinar, o.tipo_ocorrencia, 'N/D') AS medida,
               o.motivo,
-              COALESCE(r.pontos, 0) AS pontos,
+              CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                   ELSE COALESCE(r.pontos, 0) END AS pontos,
               COALESCE(r.medida_disciplinar, '') AS medida_disciplinar,
               COALESCE(o.dias_suspensao, 1) AS dias_suspensao,
               o.status
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo AND r.tipo_ocorrencia = o.tipo_ocorrencia
+         ON r.descricao_ocorrencia = o.motivo
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'
        ORDER BY o.data_ocorrencia ASC, o.id ASC`,
       [alunoId, escola_id]

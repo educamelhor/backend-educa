@@ -619,20 +619,40 @@ router.get("/merito/:alunoId", async (req, res) => {
 });
 
 // ── Rota GET /pontuacao/:alunoId — pontuação disciplinar canônica ─────────────
-// Endpoint centralizado: mesma lógica exata do PDF Relatório Disciplinar.
-// Todos os frontends (modal, TACE, app) e backends (tace.js, app_pais.js)
-// devem usar ESTE endpoint como fonte da verdade para a pontuação do aluno.
+// Endpoint centralizado: MESMA lógica exata do PDF Relatório Disciplinar (linhas 1692-1774).
+// JOIN usa APENAS r.descricao_ocorrencia = o.motivo (igual ao PDF) para garantir
+// que BONUS_MEDIA e todos os registros especiais sejam sempre encontrados.
 // Resposta: { pontuacao: "4.90", conceito: "V - Insuficiente", bonusMerito: 0.40 }
 router.get("/pontuacao/:alunoId", async (req, res) => {
   try {
     const { escola_id } = req.user;
     const { alunoId } = req.params;
 
-    // 1. Calcular e persistir bônus de mérito e bônus de média (garante dados atualizados)
+    // 1. Saldo Inicial: pontuação de abertura do ano letivo (mesmo cálculo do PDF)
+    const anoAtualPontuacao = new Date().getFullYear();
+    const [regAnoAnterior] = await pool.query(
+      `SELECT COALESCE(SUM(
+         CASE WHEN o.status = 'CANCELADA' THEN 0
+              WHEN COALESCE(r.medida_disciplinar,'') = 'Suspensão'
+                THEN COALESCE(r.pontos,0) * COALESCE(o.dias_suspensao,1)
+              ELSE COALESCE(r.pontos,0) END
+       ), NULL) AS soma_pontos
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND YEAR(o.data_ocorrencia) = ?`,
+      [alunoId, escola_id, anoAtualPontuacao - 1]
+    );
+    const temHistoricoAnterior = regAnoAnterior[0]?.soma_pontos !== null;
+    const saldoInicial = temHistoricoAnterior
+      ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAnoAnterior[0].soma_pontos)).toFixed(2))))
+      : 8.00;
+
+    // 2. Calcular e persistir bônus de mérito e bônus de média (garante dados atualizados)
     const merito = await calcularEUpsertMerito(alunoId, escola_id);
     await calcularEUpsertBonusMedia(alunoId, escola_id);
 
-    // 2. Somar pontos de TODOS os registros não-CANCELADOS (exceto MERITO — não tem em registros_ocorrencias)
+    // 3. Somar pontos — JOIN idêntico ao do PDF Relatório (apenas por motivo, sem filtro tipo_ocorrencia)
+    //    Isso garante que BONUS_MEDIA e demais registros especiais sejam sempre encontrados.
     const [rowsPts] = await pool.query(
       `SELECT
          CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
@@ -642,7 +662,6 @@ router.get("/pontuacao/:alunoId", async (req, res) => {
        FROM ocorrencias_disciplinares o
        LEFT JOIN registros_ocorrencias r
          ON r.descricao_ocorrencia = o.motivo
-         AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
        WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
       [alunoId, escola_id]
     );
@@ -651,7 +670,7 @@ router.get("/pontuacao/:alunoId", async (req, res) => {
       (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
     );
     const totalPontos = totalPontosBase + merito.bonusTotal;
-    const pontuacaoFinal = Math.max(0, Math.min(10, 8.00 + totalPontos)).toFixed(2);
+    const pontuacaoFinal = Math.max(0, Math.min(10, saldoInicial + totalPontos)).toFixed(2);
     const conceito = getConceito(pontuacaoFinal);
 
     res.json({ pontuacao: pontuacaoFinal, conceito, bonusMerito: merito.bonusTotal });
