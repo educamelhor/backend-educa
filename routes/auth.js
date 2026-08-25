@@ -43,7 +43,11 @@ const PERFIS_MILITARES = new Set([
 // Diretor agora segue a mesma regra de todos os perfis — apenas o CEO determina o acesso.
 
 async function resolveModulosAtivos(dbPool, escola_id, perfil) {
-  const perfilNorm = String(perfil || '').toLowerCase().trim();
+  let perfilNorm = String(perfil || '').toLowerCase().trim();
+
+  // ── Normalização de Legados (CEO unificou em 'secretaria' e 'vigilancia') ──
+  if (perfilNorm === 'secretario') perfilNorm = 'secretaria';
+  if (perfilNorm === 'vigilante') perfilNorm = 'vigilancia';
 
   // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
   if (PERFIS_SUPER.has(perfilNorm)) return null;
