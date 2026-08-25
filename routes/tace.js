@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
 import { getEscolaLogos } from "../utils/logoHelper.js";
-import { calcularEUpsertBonusMedia, calcularEUpsertMerito } from "./relatorio-disciplinar.js";
+import { calcularEUpsertBonusMedia, calcularEUpsertMerito } from "../utils/disciplinarCalculos.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));

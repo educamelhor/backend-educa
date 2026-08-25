@@ -1,4 +1,4 @@
-// routes/relatorio-disciplinar.js
+﻿// routes/relatorio-disciplinar.js
 // ============================================================================
 // Gera PDF do Relatório de Registros Disciplinares
 // Baseado no layout do TACE mas com diferenças:
@@ -15,6 +15,12 @@ import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import pool from "../db.js";
 import { getEscolaLogos } from "../utils/logoHelper.js";
+import {
+  pontosEfetivos,
+  getConceito,
+  calcularEUpsertMerito,
+  calcularEUpsertBonusMedia,
+} from "../utils/disciplinarCalculos.js";
 
 const router = Router();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,240 +55,11 @@ function hoje() {
   return `${utc.getUTCDate()} de ${m[utc.getUTCMonth()]} de ${utc.getUTCFullYear()}`;
 }
 
-function getConceito(pontos) {
-  const p = Number(pontos);
-  if (p >= 10) return "I - Excepcional";
-  if (p >= 9) return "II - Ótimo";
-  if (p >= 7) return "III - Bom";
-  if (p >= 5) return "IV - Regular";
-  if (p >= 2) return "V - Insuficiente";
-  return "VI - Incompatível";
-}
-
-// ── Art. 46 III: Suspensão = −0,50 por dia letivo (máx 3 dias) ───────────────────────────────────────────────────────
-// Para suspensão o ponto unitário (−0,50) deve ser multiplicado pelos dias.
-// Para todas as outras medidas os pontos são fixos.
-function pontosEfetivos(pontoBase, medidaDisciplinar, diasSuspensao) {
-  if (String(medidaDisciplinar).trim() === 'Suspensão') {
-    const dias = Number(diasSuspensao) || 1;
-    return Number(pontoBase) * dias;
-  }
-  return Number(pontoBase) || 0;
-}
-
-// ── Calcula e persiste o Bônus de Mérito (registro único por aluno) ─────────
-// Regra: a partir do 61º dia consecutivo sem registro NEGATIVO no ano letivo,
-// o aluno acumula +0,01 ponto por dia. A acumulação daí em diante pode ser
-// interrompida por novos negativos, mas os pontos já conquistados são mantidos.
-async function calcularEUpsertMerito(alunoId, escolaId) {
-  // ── 1. CÁLCULO (try-catch isolado — resultado sempre retorna) ─────────────
-  let totalBonusDias = 0;
-  let bonusTotal = 0;
-
-  try {
-    const anoAtual = new Date().getFullYear();
-    // Data âncora padrão: 15/02 do ano corrente (dia juliano 46)
-    const dataAncoraPadrao = new Date(`${anoAtual}-02-15T00:00:00`);
-    const hoje = new Date();
-    hoje.setHours(23, 59, 59, 0);
-
-    // Buscar todos os registros negativos (pontos < 0) do ano, exceto MERITO e CANCELADA
-    const [negativos] = await pool.query(
-      `SELECT DATE(o.data_ocorrencia) AS data_oc
-       FROM ocorrencias_disciplinares o
-       LEFT JOIN registros_ocorrencias r
-         ON r.descricao_ocorrencia = o.motivo
-       WHERE o.aluno_id = ? AND o.escola_id = ?
-         AND o.tipo_ocorrencia != 'MERITO'
-         AND o.status NOT IN ('CANCELADA')
-         AND COALESCE(r.pontos, 0) < 0
-         AND YEAR(o.data_ocorrencia) = ?
-       ORDER BY o.data_ocorrencia ASC`,
-      [alunoId, escolaId, anoAtual]
-    );
-
-    const datasNegativas = negativos.map(n => {
-      const d = new Date(n.data_oc);
-      d.setHours(0, 0, 0, 0);
-      return d;
-    });
-
-    // Montar sequência de marcos: [início, neg1, neg2, ..., hoje]
-    // "início" = 15/02 ou a data do 1º negativo se anterior a 15/02
-    const inicioGlobal = (datasNegativas.length > 0 && datasNegativas[0] < dataAncoraPadrao)
-      ? datasNegativas[0]
-      : dataAncoraPadrao;
-
-    const marcos = [inicioGlobal, ...datasNegativas, hoje];
-
-    // Somar dias bônus de cada período (cada gap entre marcos)
-    for (let i = 0; i < marcos.length - 1; i++) {
-      const diffMs  = marcos[i + 1] - marcos[i];
-      const diffDias = Math.floor(diffMs / 86_400_000);
-      totalBonusDias += Math.max(0, diffDias - 60);
-    }
-
-    bonusTotal = parseFloat((totalBonusDias * 0.01).toFixed(2));
-
-  } catch (calcErr) {
-    console.warn("[MERITO] Erro no cálculo (não crítico):", calcErr.message);
-    return { bonusTotal: 0, totalBonusDias: 0, temMerito: false };
-  }
-
-  // ── 2. PERSISTÊNCIA (try-catch isolado — não afeta o retorno) ─────────────
-  if (bonusTotal > 0) {
-    try {
-      const [[meritoExistente]] = await pool.query(
-        `SELECT id FROM ocorrencias_disciplinares
-         WHERE aluno_id = ? AND escola_id = ? AND tipo_ocorrencia = 'MERITO'
-         LIMIT 1`,
-        [alunoId, escolaId]
-      );
-
-      const descricaoMerito = "Pontuação positiva por mérito de ausência de reincidência de registro.";
-      const descDetalhada   = `Bônus acumulado: ${totalBonusDias} dias de mérito = +${bonusTotal.toFixed(2)} pontos`;
-      const hoje2 = new Date();
-      const dataRefStr = `${hoje2.getFullYear()}-${String(hoje2.getMonth()+1).padStart(2,'0')}-${String(hoje2.getDate()).padStart(2,'0')}`;
-
-      if (meritoExistente) {
-        await pool.query(
-          `UPDATE ocorrencias_disciplinares
-           SET motivo = ?, descricao = ?, status = 'FINALIZADA', data_ocorrencia = ?
-           WHERE id = ?`,
-          [descricaoMerito, descDetalhada, dataRefStr, meritoExistente.id]
-        );
-      } else {
-        await pool.query(
-          `INSERT INTO ocorrencias_disciplinares
-             (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia)
-           VALUES (?, ?, 'MERITO', ?, ?, 'FINALIZADA', ?)`,
-          [alunoId, escolaId, descricaoMerito, descDetalhada, dataRefStr]
-        );
-      }
-    } catch (dbErr) {
-      // Erro de persistência não impede retornar o cálculo correto
-      console.warn("[MERITO] Erro ao persistir registro (não crítico):", dbErr.message);
-    }
-  }
-
-  return { bonusTotal, totalBonusDias, temMerito: bonusTotal > 0 };
-}
 
 
-// ── Calcula e persiste o Bônus de Média Bimestral (até 4 registros/ano) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-// Regra: média bimestral (AVG de todas as disciplinas) >= 8,00 no ano letivo atual
-// concede +0,50 ponto disciplinar por bimestre (máximo 4 registros = +2,00).
-// Registros BONUS_MEDIA são REMOVIDOS automaticamente se a média cair abaixo de 8,00.
-async function calcularEUpsertBonusMedia(alunoId, escolaId) {
-  const NOMES_BIMESTRES = ['', '1º Bimestre', '2º Bimestre', '3º Bimestre', '4º Bimestre'];
-  // Motivos fixos por bimestre (usados como chave do JOIN com registros_ocorrencias)
-  const MOTIVOS = {
-    1: 'Bônus de média bimestral >= 8,00 — 1B',
-    2: 'Bônus de média bimestral >= 8,00 — 2B',
-    3: 'Bônus de média bimestral >= 8,00 — 3B',
-    4: 'Bônus de média bimestral >= 8,00 — 4B',
-  };
-  const PONTOS_BONUS = 0.50;
 
-  try {
-    const anoAtual = new Date().getFullYear();
 
-    // 1. Garantir que existem os 4 registros-referência em registros_ocorrencias
-    for (const bim of [1, 2, 3, 4]) {
-      const [[refExiste]] = await pool.query(
-        `SELECT id FROM registros_ocorrencias
-         WHERE tipo_ocorrencia = 'BONUS_MEDIA' AND descricao_ocorrencia = ?
-         LIMIT 1`,
-        [MOTIVOS[bim]]
-      );
-      if (!refExiste) {
-        await pool.query(
-          `INSERT INTO registros_ocorrencias
-             (medida_disciplinar, tipo_ocorrencia, descricao_ocorrencia, pontos, ativo)
-           VALUES ('Bônus de Média Bimestral', 'BONUS_MEDIA', ?, ?, 1)`,
-          [MOTIVOS[bim], PONTOS_BONUS]
-        );
-      }
-    }
 
-    // 2. Calcular média por bimestre do ano letivo atual
-    const [medias] = await pool.query(
-      `SELECT bimestre, ROUND(AVG(nota), 2) AS media
-       FROM notas
-       WHERE aluno_id = ? AND ano = ?
-       GROUP BY bimestre
-       ORDER BY bimestre`,
-      [alunoId, anoAtual]
-    );
-
-    const hoje2 = new Date();
-    const dataRefStr = `${hoje2.getFullYear()}-${String(hoje2.getMonth()+1).padStart(2,'0')}-${String(hoje2.getDate()).padStart(2,'0')}`;
-
-    const bimestresComBonus = new Set();
-
-    // 3. Para cada bimestre com média >= 8,00: upsert do registro BONUS_MEDIA
-    for (const row of medias) {
-      const bim = Number(row.bimestre);
-      const media = Number(row.media);
-      if (bim < 1 || bim > 4) continue;
-
-      if (media >= 8.00) {
-        bimestresComBonus.add(bim);
-        const nomeBim = NOMES_BIMESTRES[bim];
-        const descDetalhada = `${nomeBim} — Média: ${media.toFixed(2).replace('.', ',')} ≥ 8,00 → +0,50 pontos disciplinares`;
-        const motivo = MOTIVOS[bim];
-
-        // Verificar se já existe registro BONUS_MEDIA para este bimestre/ano
-        const [[existente]] = await pool.query(
-          `SELECT id FROM ocorrencias_disciplinares
-           WHERE aluno_id = ? AND escola_id = ?
-             AND tipo_ocorrencia = 'BONUS_MEDIA'
-             AND motivo = ?
-             AND YEAR(data_ocorrencia) = ?
-           LIMIT 1`,
-          [alunoId, escolaId, motivo, anoAtual]
-        );
-
-        if (existente) {
-          await pool.query(
-            `UPDATE ocorrencias_disciplinares
-             SET descricao = ?, data_ocorrencia = ?, status = 'FINALIZADA'
-             WHERE id = ?`,
-            [descDetalhada, dataRefStr, existente.id]
-          );
-        } else {
-          await pool.query(
-            `INSERT INTO ocorrencias_disciplinares
-               (aluno_id, escola_id, tipo_ocorrencia, motivo, descricao, status, data_ocorrencia)
-             VALUES (?, ?, 'BONUS_MEDIA', ?, ?, 'FINALIZADA', ?)`,
-            [alunoId, escolaId, motivo, descDetalhada, dataRefStr]
-          );
-        }
-      }
-    }
-
-    // 4. Remover registros BONUS_MEDIA de bimestres que não atingiram 8,00
-    //    (garante consistência caso notas sejam corrigidas para baixo)
-    for (const bim of [1, 2, 3, 4]) {
-      if (!bimestresComBonus.has(bim)) {
-        await pool.query(
-          `DELETE FROM ocorrencias_disciplinares
-           WHERE aluno_id = ? AND escola_id = ?
-             AND tipo_ocorrencia = 'BONUS_MEDIA'
-             AND motivo = ?
-             AND YEAR(data_ocorrencia) = ?`,
-          [alunoId, escolaId, MOTIVOS[bim], anoAtual]
-        );
-      }
-    }
-
-    return { bimestresBonus: [...bimestresComBonus], bonusTotal: bimestresComBonus.size * PONTOS_BONUS };
-
-  } catch (err) {
-    console.warn('[BONUS_MEDIA] Erro no cálculo/persistência (não crítico):', err.message);
-    return { bimestresBonus: [], bonusTotal: 0 };
-  }
-}
 
 
 // ═══════════════════════════════════════════════════════════════════════════
