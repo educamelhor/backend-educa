@@ -1,4 +1,4 @@
-﻿// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
+// routes/app_pais.js â€” v4 (2026-04-24: Resend HTTP API, sem SMTP)
 import express from "express";
 import PDFDocument from "pdfkit";
 import jwt from "jsonwebtoken";
@@ -3183,7 +3183,6 @@ router.get("/registros", authAppPais, async (req, res) => {
       ok: true,
       aluno_id,
       escola_id,
-      anos,
       pontuacao,
       disciplinares,
       pedagogicos,
