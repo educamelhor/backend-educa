@@ -3166,10 +3166,12 @@ router.get("/registros", authAppPais, async (req, res) => {
         const merito = await calcularEUpsertMerito(aluno_id, escola_id);
         await calcularEUpsertBonusMedia(aluno_id, escola_id);
         const [ptRows] = await db.query(
-          `SELECT CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+          `SELECT o.id, o.tipo_ocorrencia, o.motivo,
+                  CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
                    ELSE COALESCE(r.pontos,0) END AS pontos,
                   COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
-                  COALESCE(o.dias_suspensao,1) AS dias_suspensao
+                  COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                  r.id AS reg_id
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
            WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
@@ -3177,6 +3179,9 @@ router.get("/registros", authAppPais, async (req, res) => {
         );
         const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
         pontuacao = Math.max(0, Math.min(10, 8.00 + totalBase + merito.bonusTotal)).toFixed(2);
+        const bonusMediaRows = ptRows.filter(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+        console.log(`[APP_PAIS][PONTUACAO] aluno=${aluno_id} escola=${escola_id} rows=${ptRows.length} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} pontuacao=${pontuacao}`);
+        console.log(`[APP_PAIS][PONTUACAO] BONUS_MEDIA rows: ${JSON.stringify(bonusMediaRows.map(r => ({id:r.id,motivo:r.motivo?.substring(0,30),pontos:r.pontos,reg_id:r.reg_id})))}`);
       }
     } catch (errPontuacao) {
       console.error('[APP_PAIS][PONTUACAO] Erro calculando pontuação:', errPontuacao?.message || errPontuacao);
