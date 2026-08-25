@@ -3178,7 +3178,9 @@ router.get("/registros", authAppPais, async (req, res) => {
         const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
         pontuacao = Math.max(0, Math.min(10, 8.00 + totalBase + merito.bonusTotal)).toFixed(2);
       }
-    } catch (_) {}
+    } catch (errPontuacao) {
+      console.error('[APP_PAIS][PONTUACAO] Erro calculando pontuação:', errPontuacao?.message || errPontuacao);
+    }
     return res.json({
       ok: true,
       aluno_id,
