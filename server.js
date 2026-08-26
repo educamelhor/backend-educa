@@ -438,7 +438,7 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
     const ANO = new Date().getFullYear();
 
     // Verificar nome do aluno (confirma que estamos testando o correto)
-    const [[alunoInfo]] = await pool.query('SELECT id, nome, escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
+    const [[alunoInfo]] = await pool.query('SELECT id, estudante, escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
     const ESCOLA_ID = Number(alunoInfo?.escola_id);
 
     // Vinculos na tabela responsaveis_alunos (como /registros usa)
@@ -483,7 +483,7 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
 
     return res.json({
       ok: true,
-      aluno: { id: alunoInfo?.id, nome: alunoInfo?.nome, escola_id: alunoInfo?.escola_id },
+      aluno: { id: alunoInfo?.id, estudante: alunoInfo?.estudante, escola_id: alunoInfo?.escola_id },
       vinculos_responsaveis: vinculos.map(v => ({ resp_id: v.responsavel_id, escola_id: v.escola_id, ativo: v.ativo })),
       saldoInicial,
       totalBase: +totalBase.toFixed(3),
