@@ -36,6 +36,7 @@ if (!process.env.JWT_SECRET) {
 
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
+import { calcularEUpsertMerito, calcularEUpsertBonusMedia, pontosEfetivos as pontosEfDisc } from "./utils/disciplinarCalculos.js";
 import appAlunoAuthRouter from "./routes/app_aluno_auth.js";
 import carteirinhaRouter from "./routes/carteirinha.js";
 
@@ -458,6 +459,10 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
       ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAno[0].soma_pontos)).toFixed(2))))
       : 8.00;
 
+    // SIMULA EXATAMENTE /registros: chama calcularEUpsertMerito e calcularEUpsertBonusMedia
+    const merito = await calcularEUpsertMerito(ALUNO_ID, ESCOLA_ID);
+    await calcularEUpsertBonusMedia(ALUNO_ID, ESCOLA_ID);
+
     const [ptRows] = await pool.query(
       `SELECT o.tipo_ocorrencia,
               CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END AS pontos,
@@ -470,14 +475,11 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
       [ALUNO_ID, ESCOLA_ID]
     );
 
-    const totalBase = ptRows.reduce((s, r) => {
-      const pts = String(r.medida_disciplinar).trim() === 'Suspensão'
-        ? Number(r.pontos) * Number(r.dias_suspensao)
-        : Number(r.pontos) || 0;
-      return s + pts;
-    }, 0);
+    const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
 
     const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+    const meritoRow = ptRows.find(r => r.tipo_ocorrencia === 'MERITO');
+    const pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
 
     return res.json({
       ok: true,
@@ -485,10 +487,12 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
       vinculos_responsaveis: vinculos.map(v => ({ resp_id: v.responsavel_id, escola_id: v.escola_id, ativo: v.ativo })),
       saldoInicial,
       totalBase: +totalBase.toFixed(3),
-      pontuacao_sem_merito: Math.max(0, Math.min(10, saldoInicial + totalBase)).toFixed(2),
+      meritoBonusTotal: merito.bonusTotal,
+      pontuacao_EXATA: pontuacao,
       ptRowsLength: ptRows.length,
       bonusMediaRegId: bonusRow?.reg_id ?? null,
       bonusMediaPontos: bonusRow?.pontos ?? null,
+      meritoRegId: meritoRow?.reg_id ?? null,
       rows: ptRows.map(r => ({ tipo: r.tipo_ocorrencia, pontos: r.pontos, reg_id: r.reg_id, medida: r.medida_disciplinar.substring(0,20), dias: r.dias_suspensao }))
     });
   } catch(e) {
