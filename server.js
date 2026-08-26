@@ -1351,6 +1351,10 @@ async function bootstrap() {
       const ALUNO_ID = 3861, ESCOLA_ID = 1;
       const anoAtualPt = new Date().getFullYear();
 
+      // 0) notas bimestre 1 e estado ANTES do calcularEUpsertBonusMedia
+      const [notasRows] = await pool.query('SELECT bimestre, ROUND(AVG(nota),2) AS media, COUNT(*) AS qtd FROM notas WHERE aluno_id=? AND ano=? GROUP BY bimestre ORDER BY bimestre', [ALUNO_ID, anoAtualPt]);
+      const [[bmAntes]] = await pool.query("SELECT id, status, data_ocorrencia FROM ocorrencias_disciplinares WHERE aluno_id=? AND escola_id=? AND tipo_ocorrencia='BONUS_MEDIA' AND YEAR(data_ocorrencia)=? LIMIT 1", [ALUNO_ID, ESCOLA_ID, anoAtualPt]);
+
       // 1) saldoInicial (igual ao /registros)
       const [[sarRow]] = await pool.query(
         `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
@@ -1368,7 +1372,7 @@ async function bootstrap() {
       const merito = await calcularEUpsertMerito(ALUNO_ID, ESCOLA_ID);
 
       // 3) calcularEUpsertBonusMedia (side effects — pode deletar BONUS_MEDIA!)
-      await calcularEUpsertBonusMedia(ALUNO_ID, ESCOLA_ID);
+      const bmResult = await calcularEUpsertBonusMedia(ALUNO_ID, ESCOLA_ID);
 
       // 4) ptRows APÓS side effects
       const [ptRows] = await pool.query(
@@ -1388,7 +1392,11 @@ async function bootstrap() {
       const pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
 
       res.json({
-        anoAtualPt, soma_pontos_2025: sarRow?.soma_pontos, temHistorico, saldoInicial,
+        anoAtualPt,
+        notas: notasRows,
+        bonusMedia_antes: bmAntes ? { id: bmAntes.id, status: bmAntes.status, data: bmAntes.data_ocorrencia } : null,
+        calcularEUpsertBonusMedia_result: bmResult,
+        soma_pontos_2025: sarRow?.soma_pontos, temHistorico, saldoInicial,
         merito_bonusTotal: merito.bonusTotal,
         ptRowsLen: ptRows.length, totalBase: +totalBase.toFixed(4),
         bonusMediaEncontrado: !!bonusRow, bonusMediaPontos: bonusRow?.pontos ?? null,
@@ -1397,6 +1405,7 @@ async function bootstrap() {
     } catch(e) { res.status(500).json({ error: e.message, stack: e.stack?.split('\n').slice(0,5) }); }
   });
   // ─────────────────────────────────────────────────────────────────────────────
+
 
   // ─── APP_PAIS PUBLIC LOGIN (router dedicado — sem auth) ─────────────────────
   // Workaround definitivo para bug Express 5 + Docker/DO:
