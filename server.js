@@ -431,21 +431,20 @@ app.get("/__build-info", (_req, res) =>
 );
 
 // TEMP DEBUG — remover apos diagnostico pontuacao Joaozinho
-app.get("/__diag/pontuacao-3861-dbg9f2a", async (_req, res) => {
+app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
   try {
-    const ALUNO_ID = 3861;
+    const ALUNO_ID = Number(req.query?.aluno_id) || 3861;
     const ANO = new Date().getFullYear();
 
-    // Escola do aluno (tabela alunos)
-    const [[escolaAluno]] = await pool.query('SELECT escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
-    const ESCOLA_ID_ALUNOS = Number(escolaAluno?.escola_id);
+    // Verificar nome do aluno (confirma que estamos testando o correto)
+    const [[alunoInfo]] = await pool.query('SELECT id, nome, escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
+    const ESCOLA_ID = Number(alunoInfo?.escola_id);
 
     // Vinculos na tabela responsaveis_alunos (como /registros usa)
     const [vinculos] = await pool.query(
       'SELECT responsavel_id, escola_id, ativo FROM responsaveis_alunos WHERE aluno_id = ?',
       [ALUNO_ID]
     );
-    const ESCOLA_ID = ESCOLA_ID_ALUNOS; // usa a do aluno para a query (mais confiavel)
 
     const [regAno] = await pool.query(
       `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
@@ -482,7 +481,7 @@ app.get("/__diag/pontuacao-3861-dbg9f2a", async (_req, res) => {
 
     return res.json({
       ok: true,
-      ESCOLA_ID_ALUNOS,
+      aluno: { id: alunoInfo?.id, nome: alunoInfo?.nome, escola_id: alunoInfo?.escola_id },
       vinculos_responsaveis: vinculos.map(v => ({ resp_id: v.responsavel_id, escola_id: v.escola_id, ativo: v.ativo })),
       saldoInicial,
       totalBase: +totalBase.toFixed(3),
