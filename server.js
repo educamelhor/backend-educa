@@ -36,7 +36,6 @@ if (!process.env.JWT_SECRET) {
 
 // ⬇️ AJUSTE: caminho correto do pool conforme sua estrutura validada
 import pool from "./db.js";
-import { calcularEUpsertMerito, calcularEUpsertBonusMedia, pontosEfetivos as pontosEfDisc } from "./utils/disciplinarCalculos.js";
 import appAlunoAuthRouter from "./routes/app_aluno_auth.js";
 import carteirinhaRouter from "./routes/carteirinha.js";
 
@@ -425,81 +424,11 @@ app.get("/__build-info", (_req, res) =>
   res.json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
-    commit: "72e240f9",
-    pontuacao_fix: "v2-saldoInicial-merito-bonus",
+    commit: "cache-fix-v1",
+    pontuacao_fix: "v2-saldoInicial-merito-bonus-cache-no-store",
     ts: new Date().toISOString(),
   })
 );
-
-// TEMP DEBUG — remover apos diagnostico pontuacao Joaozinho
-app.get("/__diag/pontuacao-3861-dbg9f2a", async (req, res) => {
-  try {
-    const ALUNO_ID = Number(req.query?.aluno_id) || 3861;
-    const ANO = new Date().getFullYear();
-
-    // Verificar nome do aluno (confirma que estamos testando o correto)
-    const [[alunoInfo]] = await pool.query('SELECT id, estudante, escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
-    const ESCOLA_ID = Number(alunoInfo?.escola_id);
-
-    // Vinculos na tabela responsaveis_alunos (como /registros usa)
-    const [vinculos] = await pool.query(
-      'SELECT responsavel_id, escola_id, ativo FROM responsaveis_alunos WHERE aluno_id = ?',
-      [ALUNO_ID]
-    );
-
-    const [regAno] = await pool.query(
-      `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
-       FROM ocorrencias_disciplinares o
-       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
-       WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
-      [ALUNO_ID, ESCOLA_ID, ANO - 1]
-    );
-    const temHistorico = regAno[0]?.soma_pontos !== null;
-    const saldoInicial = temHistorico
-      ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAno[0].soma_pontos)).toFixed(2))))
-      : 8.00;
-
-    // SIMULA EXATAMENTE /registros: chama calcularEUpsertMerito e calcularEUpsertBonusMedia
-    const merito = await calcularEUpsertMerito(ALUNO_ID, ESCOLA_ID);
-    await calcularEUpsertBonusMedia(ALUNO_ID, ESCOLA_ID);
-
-    const [ptRows] = await pool.query(
-      `SELECT o.tipo_ocorrencia,
-              CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END AS pontos,
-              COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
-              COALESCE(o.dias_suspensao,1) AS dias_suspensao,
-              r.id AS reg_id
-       FROM ocorrencias_disciplinares o
-       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
-       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
-      [ALUNO_ID, ESCOLA_ID]
-    );
-
-    const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
-
-    const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
-    const meritoRow = ptRows.find(r => r.tipo_ocorrencia === 'MERITO');
-    const pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
-
-    return res.json({
-      ok: true,
-      aluno: { id: alunoInfo?.id, estudante: alunoInfo?.estudante, escola_id: alunoInfo?.escola_id },
-      vinculos_responsaveis: vinculos.map(v => ({ resp_id: v.responsavel_id, escola_id: v.escola_id, ativo: v.ativo })),
-      saldoInicial,
-      totalBase: +totalBase.toFixed(3),
-      meritoBonusTotal: merito.bonusTotal,
-      pontuacao_EXATA: pontuacao,
-      ptRowsLength: ptRows.length,
-      bonusMediaRegId: bonusRow?.reg_id ?? null,
-      bonusMediaPontos: bonusRow?.pontos ?? null,
-      meritoRegId: meritoRow?.reg_id ?? null,
-      rows: ptRows.map(r => ({ tipo: r.tipo_ocorrencia, pontos: r.pontos, reg_id: r.reg_id, medida: r.medida_disciplinar.substring(0,20), dias: r.dias_suspensao }))
-    });
-  } catch(e) {
-    return res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 
 // ✅ Diagnóstico público: estado do conteudosAdminRouter
 app.get("/__diag/conteudos", (_req, res) =>

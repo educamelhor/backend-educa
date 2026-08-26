@@ -3157,7 +3157,6 @@ router.get("/registros", authAppPais, async (req, res) => {
 
     // 5) PONTUACAO (apenas para escolas Civico-Militares)
     let pontuacao = null;
-    let _dbgPontuacao = null;
     try {
       const [[escolaRow]] = await db.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
       const escolaTipo = escolaRow?.tipo || '';
@@ -3198,18 +3197,16 @@ router.get("/registros", authAppPais, async (req, res) => {
         const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
         console.log(`[APP_PAIS][PONTUACAO] saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} rows=${ptRows.length} pontuacao=${pontuacao}`);
         console.log(`[APP_PAIS][PONTUACAO] BONUS_MEDIA: pontos=${bonusRow?.pontos ?? 'NULL(JOIN falhou)'} reg_id=${bonusRow?.reg_id ?? 'NULL'}`);
-        // TEMPORARIO: debug pontuacao — remover apos confirmar 4,90
-        _dbgPontuacao = { saldoInicial, totalBase: +totalBase.toFixed(2), meritoBonusTotal: merito.bonusTotal, ptRowsLength: ptRows.length, bonusMediaPontos: bonusRow?.pontos ?? null, bonusMediaRegId: bonusRow?.reg_id ?? null };
       }
     } catch (errPontuacao) {
       console.error('[APP_PAIS][PONTUACAO] ERRO:', errPontuacao?.message || errPontuacao);
     }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     return res.json({
       ok: true,
       aluno_id,
       escola_id,
       pontuacao,
-      _dbg_pontuacao: _dbgPontuacao,
       disciplinares,
       pedagogicos,
     });
