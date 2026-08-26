@@ -1344,6 +1344,32 @@ async function bootstrap() {
   app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
   app.use("/api/sistema", manutencaoRouter); // Público: GET /api/sistema/status (sem auth)
 
+  // ─── DIAG TEMP: ptRows para aluno 3861 — REMOVER APÓS FIX ────────────────
+  app.get('/__diag/ptrows-3861', async (req, res) => {
+    try {
+      const { pontosEfetivos: ptEf } = await import('./utils/disciplinarCalculos.js');
+      const [ptRows] = await pool.query(
+        `SELECT o.id AS ocId, o.tipo_ocorrencia, o.motivo, o.status, o.data_ocorrencia,
+                CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                 ELSE COALESCE(r.pontos,0) END AS pontos,
+                COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                r.id AS reg_id, r.descricao_ocorrencia AS reg_desc
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id = 3861 AND o.escola_id = 1 AND o.status != 'CANCELADA'
+         ORDER BY o.data_ocorrencia DESC, o.id, r.id`,
+        []
+      );
+      const totalBase = ptRows.reduce((s, r) => s + ptEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+      // Duplicatas: ocorrencias que aparecem mais de uma vez (JOIN duplo)
+      const countByOcId = {};
+      ptRows.forEach(r => { countByOcId[r.ocId] = (countByOcId[r.ocId] || 0) + 1; });
+      const duplicatas = Object.entries(countByOcId).filter(([,c]) => c > 1).map(([id, c]) => ({ ocId: +id, count: c }));
+      res.json({ ptRowsLen: ptRows.length, totalBase: +totalBase.toFixed(4), duplicatas, ptRows });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // ─── APP_PAIS PUBLIC LOGIN (router dedicado — sem auth) ─────────────────────
   // Workaround definitivo para bug Express 5 + Docker/DO:
