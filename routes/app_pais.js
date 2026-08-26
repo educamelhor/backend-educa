@@ -3157,6 +3157,7 @@ router.get("/registros", authAppPais, async (req, res) => {
 
     // 5) PONTUACAO (apenas para escolas Civico-Militares)
     let pontuacao = null;
+    let _dbg_calc = null; // TEMP debug
     try {
       const [[escolaRow]] = await db.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
       const escolaTipo = escolaRow?.tipo || '';
@@ -3197,6 +3198,8 @@ router.get("/registros", authAppPais, async (req, res) => {
         const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
         console.log(`[APP_PAIS][PONTUACAO] saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} rows=${ptRows.length} pontuacao=${pontuacao}`);
         console.log(`[APP_PAIS][PONTUACAO] BONUS_MEDIA: pontos=${bonusRow?.pontos ?? 'NULL(JOIN falhou)'} reg_id=${bonusRow?.reg_id ?? 'NULL'}`);
+        // TEMP debug — remove after fix
+        _dbg_calc = { aid: aluno_id, eid: escola_id, s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, bm: bonusRow?.pontos ?? null };
       }
     } catch (errPontuacao) {
       console.error('[APP_PAIS][PONTUACAO] ERRO:', errPontuacao?.message || errPontuacao);
@@ -3207,6 +3210,7 @@ router.get("/registros", authAppPais, async (req, res) => {
       aluno_id,
       escola_id,
       pontuacao,
+      _dbg: _dbg_calc,
       disciplinares,
       pedagogicos,
     });
