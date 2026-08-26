@@ -424,11 +424,67 @@ app.get("/__build-info", (_req, res) =>
   res.json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
-    commit: "93bb2342",
+    commit: "1cd38f0f",
     pontuacao_fix: "v2-saldoInicial-merito-bonus",
     ts: new Date().toISOString(),
   })
 );
+
+// TEMP DEBUG — remover apos diagnostico pontuacao Joaozinho
+app.get("/__diag/pontuacao-3861-dbg9f2a", async (_req, res) => {
+  try {
+    const ALUNO_ID = 3861;
+    const [[escolaRow]] = await pool.query('SELECT escola_id FROM alunos WHERE id = ?', [ALUNO_ID]);
+    const ESCOLA_ID = Number(escolaRow?.escola_id);
+    const ANO = new Date().getFullYear();
+
+    const [regAno] = await pool.query(
+      `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+       WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
+      [ALUNO_ID, ESCOLA_ID, ANO - 1]
+    );
+    const temHistorico = regAno[0]?.soma_pontos !== null;
+    const saldoInicial = temHistorico
+      ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAno[0].soma_pontos)).toFixed(2))))
+      : 8.00;
+
+    const [ptRows] = await pool.query(
+      `SELECT o.tipo_ocorrencia,
+              CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END AS pontos,
+              COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+              COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+              r.id AS reg_id
+       FROM ocorrencias_disciplinares o
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+       WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+      [ALUNO_ID, ESCOLA_ID]
+    );
+
+    const totalBase = ptRows.reduce((s, r) => {
+      const pts = String(r.medida_disciplinar).trim() === 'Suspensão'
+        ? Number(r.pontos) * Number(r.dias_suspensao)
+        : Number(r.pontos) || 0;
+      return s + pts;
+    }, 0);
+
+    const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+
+    return res.json({
+      ok: true, ESCOLA_ID, saldoInicial,
+      totalBase: +totalBase.toFixed(3),
+      pontuacao_sem_merito: Math.max(0, Math.min(10, saldoInicial + totalBase)).toFixed(2),
+      ptRowsLength: ptRows.length,
+      bonusMediaRegId: bonusRow?.reg_id ?? null,
+      bonusMediaPontos: bonusRow?.pontos ?? null,
+      rows: ptRows.map(r => ({ tipo: r.tipo_ocorrencia, pontos: r.pontos, reg_id: r.reg_id, medida: r.medida_disciplinar.substring(0,20), dias: r.dias_suspensao }))
+    });
+  } catch(e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 
 // ✅ Diagnóstico público: estado do conteudosAdminRouter
 app.get("/__diag/conteudos", (_req, res) =>
