@@ -1344,30 +1344,57 @@ async function bootstrap() {
   app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
   app.use("/api/sistema", manutencaoRouter); // Público: GET /api/sistema/status (sem auth)
 
-  // ─── DIAG TEMP: ptRows para aluno 3861 — REMOVER APÓS FIX ────────────────
+  // ─── DIAG TEMP: simulação completa /registros para aluno 3861 ─────────────
   app.get('/__diag/ptrows-3861', async (req, res) => {
     try {
-      const { pontosEfetivos: ptEf } = await import('./utils/disciplinarCalculos.js');
+      const { pontosEfetivos: ptEf, calcularEUpsertMerito, calcularEUpsertBonusMedia } = await import('./utils/disciplinarCalculos.js');
+      const ALUNO_ID = 3861, ESCOLA_ID = 1;
+      const anoAtualPt = new Date().getFullYear();
+
+      // 1) saldoInicial (igual ao /registros)
+      const [[sarRow]] = await pool.query(
+        `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
+        [ALUNO_ID, ESCOLA_ID, anoAtualPt - 1]
+      );
+      const temHistorico = sarRow?.soma_pontos !== null;
+      const saldoInicial = temHistorico
+        ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(sarRow.soma_pontos)).toFixed(2))))
+        : 8.00;
+
+      // 2) calcularEUpsertMerito (side effects)
+      const merito = await calcularEUpsertMerito(ALUNO_ID, ESCOLA_ID);
+
+      // 3) calcularEUpsertBonusMedia (side effects — pode deletar BONUS_MEDIA!)
+      await calcularEUpsertBonusMedia(ALUNO_ID, ESCOLA_ID);
+
+      // 4) ptRows APÓS side effects
       const [ptRows] = await pool.query(
-        `SELECT o.id AS ocId, o.tipo_ocorrencia, o.motivo, o.status, o.data_ocorrencia,
+        `SELECT o.id AS ocId, o.tipo_ocorrencia, o.motivo,
                 CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
                  ELSE COALESCE(r.pontos,0) END AS pontos,
                 COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
                 COALESCE(o.dias_suspensao,1) AS dias_suspensao,
-                r.id AS reg_id, r.descricao_ocorrencia AS reg_desc
+                r.id AS reg_id
          FROM ocorrencias_disciplinares o
          LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
-         WHERE o.aluno_id = 3861 AND o.escola_id = 1 AND o.status != 'CANCELADA'
-         ORDER BY o.data_ocorrencia DESC, o.id, r.id`,
-        []
+         WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+        [ALUNO_ID, ESCOLA_ID]
       );
       const totalBase = ptRows.reduce((s, r) => s + ptEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
-      // Duplicatas: ocorrencias que aparecem mais de uma vez (JOIN duplo)
-      const countByOcId = {};
-      ptRows.forEach(r => { countByOcId[r.ocId] = (countByOcId[r.ocId] || 0) + 1; });
-      const duplicatas = Object.entries(countByOcId).filter(([,c]) => c > 1).map(([id, c]) => ({ ocId: +id, count: c }));
-      res.json({ ptRowsLen: ptRows.length, totalBase: +totalBase.toFixed(4), duplicatas, ptRows });
-    } catch(e) { res.status(500).json({ error: e.message }); }
+      const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+      const pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+
+      res.json({
+        anoAtualPt, soma_pontos_2025: sarRow?.soma_pontos, temHistorico, saldoInicial,
+        merito_bonusTotal: merito.bonusTotal,
+        ptRowsLen: ptRows.length, totalBase: +totalBase.toFixed(4),
+        bonusMediaEncontrado: !!bonusRow, bonusMediaPontos: bonusRow?.pontos ?? null,
+        pontuacao
+      });
+    } catch(e) { res.status(500).json({ error: e.message, stack: e.stack?.split('\n').slice(0,5) }); }
   });
   // ─────────────────────────────────────────────────────────────────────────────
 
