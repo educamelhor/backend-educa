@@ -424,6 +424,8 @@ app.get("/__build-info", (_req, res) =>
   res.json({
     ok: true,
     msg: "EDUCA BACKEND — BUILD ATIVO",
+    commit: "93bb2342",
+    pontuacao_fix: "v2-saldoInicial-merito-bonus",
     ts: new Date().toISOString(),
   })
 );
