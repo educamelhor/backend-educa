@@ -1406,6 +1406,76 @@ async function bootstrap() {
   });
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // ─── DIAG3 TEMP: clone EXATO do handler /registros para aluno 3861 ─────────
+  app.get('/__diag/registros-clone-3861', async (req, res) => {
+    try {
+      const { pontosEfetivos: ptEf, calcularEUpsertMerito, calcularEUpsertBonusMedia } = await import('./utils/disciplinarCalculos.js');
+      const aluno_id = 3861, escola_id = 1;
+
+      // CÓPIA EXATA do handler /registros, seção PONTUACAO (linhas 3163-3211 de app_pais.js)
+      const [[escolaRow]] = await pool.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
+      const escolaTipo = escolaRow?.tipo || '';
+      const isCivicoMilitar = escolaTipo.includes('CCMDF') || escolaTipo.includes('Militar');
+
+      const anoAtualPt = new Date().getFullYear();
+      const [regAnoAnterior] = await pool.query(
+        `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
+        [aluno_id, escola_id, anoAtualPt - 1]
+      );
+      const temHistorico = regAnoAnterior[0]?.soma_pontos !== null;
+      const saldoInicial = temHistorico
+        ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAnoAnterior[0].soma_pontos)).toFixed(2))))
+        : 8.00;
+
+      const merito = await calcularEUpsertMerito(aluno_id, escola_id);
+      await calcularEUpsertBonusMedia(aluno_id, escola_id);
+
+      // EXATA MESMA QUERY do handler /registros
+      const [ptRows] = await pool.query(
+        `SELECT o.tipo_ocorrencia, o.motivo,
+                CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                 ELSE COALESCE(r.pontos,0) END AS pontos,
+                COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                r.id AS reg_id
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+        [aluno_id, escola_id]
+      );
+
+      // EXATO MESMO reduce do handler
+      const totalBase = ptRows.reduce((s, r) => s + ptEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+      const pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+
+      // Dump CADA row com contribuição individual
+      const rowDetails = ptRows.map((r, i) => ({
+        i,
+        tipo: r.tipo_ocorrencia,
+        motivo: r.motivo?.substring(0, 60),
+        pontos_raw: r.pontos,
+        medida: r.medida_disciplinar,
+        dias: r.dias_suspensao,
+        contribuicao: ptEf(r.pontos, r.medida_disciplinar, r.dias_suspensao),
+        reg_id: r.reg_id
+      }));
+
+      res.json({
+        escolaTipo, isCivicoMilitar,
+        saldoInicial, temHistorico,
+        merito_bonusTotal: merito.bonusTotal,
+        ptRowsLen: ptRows.length,
+        totalBase: +totalBase.toFixed(4),
+        pontuacao,
+        rowDetails
+      });
+    } catch(e) { res.status(500).json({ error: e.message, stack: e.stack?.split('\n').slice(0,5) }); }
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // ─── DIAG2 TEMP: todas as ocorrencias aluno 3861 — todos anos e status ───────
   app.get('/__diag/all-ocorrencias-3861', async (req, res) => {
     try {
