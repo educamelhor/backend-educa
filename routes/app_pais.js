@@ -3220,6 +3220,8 @@ router.get("/registros", authAppPais, async (req, res) => {
       escola_id,
       pontuacao,
       _dbg: _dbg_calc,
+      _serverTs: new Date().toISOString(),
+      _commit: '9894b1bc',
       disciplinares,
       pedagogicos,
     });
