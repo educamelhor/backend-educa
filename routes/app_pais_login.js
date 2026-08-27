@@ -1281,9 +1281,6 @@ router.get("/registros", authAppPaisOuAluno, async (req, res) => {
       escola_id,
       anos,
       pontuacao: pontuacaoFinal,
-      _dbg: _dbg_calc,
-      _serverTs: new Date().toISOString(),
-      _commit: 'login-fix-v1',
       disciplinares,
       pedagogicos,
     });
