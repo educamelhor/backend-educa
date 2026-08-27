@@ -1506,6 +1506,134 @@ async function bootstrap() {
   app.use("/api/app-pais", appPaisLoginRouter);
   console.log("[APP_PAIS_LOGIN] router público montado em /api/app-pais ✅");
 
+  // ─── FIX TEMP: Override handler /registros — corrige pontuacao usando cálculo canônico ──
+  // O app_pais.js em produção tem cálculo de pontuacao BUGADO (versão antiga com JOIN diferente).
+  // Este handler intercepta ANTES do mountToApp/app.use e recalcula pontuacao corretamente.
+  // REMOVE quando o deploy de app_pais.js corrigido for confirmado em produção.
+  app.get('/api/app-pais/registros', async (req, res) => {
+    // 1) AUTH — mesmo que authAppPais
+    const APP_PAIS_JWT_SECRET_LOCAL = process.env.APP_PAIS_JWT_SECRET || "DEV_ONLY__CHANGE_ME_APP_PAIS_JWT_SECRET";
+    let decoded;
+    try {
+      const auth = req.headers.authorization || '';
+      const parts = auth.split(' ');
+      if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ message: 'Token ausente ou inválido.' });
+      const jwt = (await import('jsonwebtoken')).default;
+      decoded = jwt.verify(parts[1], APP_PAIS_JWT_SECRET_LOCAL);
+    } catch (_) { return res.status(401).json({ message: 'Token inválido ou expirado.' }); }
+
+    const { responsavel_id, cpf: cpfAuth } = decoded;
+    const aluno_id = Number(req.query?.aluno_id);
+    const ano = req.query?.ano ? Number(req.query.ano) : null;
+    const tipo = req.query?.tipo || 'all';
+
+    if (!Number.isFinite(aluno_id)) return res.status(400).json({ message: 'aluno_id é obrigatório.' });
+    if (cpfAuth === '00000000019') return res.json({ ok: true, pedagogicos: [], disciplinares: [], registros: [] });
+
+    try {
+      const { pontosEfetivos: ptEf, calcularEUpsertMerito, calcularEUpsertBonusMedia } = await import('./utils/disciplinarCalculos.js');
+
+      // Vínculo
+      const [[vinculo]] = await pool.query(
+        'SELECT escola_id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND ativo = 1 LIMIT 1',
+        [responsavel_id, aluno_id]
+      );
+      if (!vinculo) return res.status(403).json({ message: 'Acesso negado a este estudante.' });
+      const escola_id = Number(vinculo.escola_id);
+      const anoFiltro = Number.isFinite(ano) ? ano : null;
+
+      // DISCIPLINARES
+      let disciplinares = [];
+      if (tipo === 'disciplinar' || tipo === 'all') {
+        const params = [escola_id, aluno_id];
+        let sql = `SELECT o.id, 'disciplinar' AS tipo, COALESCE(o.tipo_ocorrencia,'Disciplinar') AS titulo,
+          DATE_FORMAT(o.data_ocorrencia,'%d/%m/%Y') AS data, COALESCE(o.motivo,o.descricao,'') AS resumo,
+          COALESCE(o.descricao,o.motivo,'') AS texto_completo, o.status, o.data_ocorrencia
+          FROM ocorrencias_disciplinares o WHERE o.escola_id=? AND o.aluno_id=? AND o.status!='CANCELADA'`;
+        if (anoFiltro) { sql += ' AND YEAR(o.data_ocorrencia)=?'; params.push(anoFiltro); }
+        sql += ' ORDER BY o.data_ocorrencia DESC LIMIT 100';
+        const [rows] = await pool.query(sql, params);
+        disciplinares = rows;
+      }
+
+      // PEDAGOGICOS
+      let pedagogicos = [];
+      if (tipo === 'pedagogico' || tipo === 'all') {
+        try {
+          const params = [escola_id, aluno_id];
+          let sql = `SELECT rp.id, 'pedagogico' AS tipo, COALESCE(rp.categoria,'Registro Pedagógico') AS titulo,
+            DATE_FORMAT(rp.data_ocorrencia,'%d/%m/%Y') AS data, COALESCE(rp.motivo,rp.descricao,'') AS resumo,
+            COALESCE(rp.descricao,rp.motivo,'') AS texto_completo, rp.status, rp.data_ocorrencia
+            FROM ocorrencias_pedagogicas rp WHERE rp.escola_id=? AND rp.aluno_id=? AND rp.status!='CANCELADA'`;
+          if (anoFiltro) { sql += ' AND YEAR(rp.data_ocorrencia)=?'; params.push(anoFiltro); }
+          sql += ' ORDER BY rp.data_ocorrencia DESC LIMIT 100';
+          const [rows] = await pool.query(sql, params);
+          pedagogicos = rows;
+        } catch(_) { pedagogicos = []; }
+      }
+
+      // PONTUACAO — cálculo canônico (idêntico ao portal /pontuacao/:alunoId)
+      let pontuacao = null;
+      let _dbg_calc = null;
+      try {
+        const [[escolaRow]] = await pool.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
+        const escolaTipo = escolaRow?.tipo || '';
+        const isCivicoMilitar = escolaTipo.includes('CCMDF') || escolaTipo.includes('Militar');
+
+        if (isCivicoMilitar) {
+          const anoAtualPt = new Date().getFullYear();
+          const [regAnoAnterior] = await pool.query(
+            `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
+             FROM ocorrencias_disciplinares o LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+             WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
+            [aluno_id, escola_id, anoAtualPt - 1]
+          );
+          const temHistorico = regAnoAnterior[0]?.soma_pontos !== null;
+          const saldoInicial = temHistorico
+            ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAnoAnterior[0].soma_pontos)).toFixed(2))))
+            : 8.00;
+
+          const merito = await calcularEUpsertMerito(aluno_id, escola_id);
+          await calcularEUpsertBonusMedia(aluno_id, escola_id);
+
+          const [ptRows] = await pool.query(
+            `SELECT o.tipo_ocorrencia, o.motivo,
+                    CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                     ELSE COALESCE(r.pontos,0) END AS pontos,
+                    COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                    COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                    r.id AS reg_id
+             FROM ocorrencias_disciplinares o
+             LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+             WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+            [aluno_id, escola_id]
+          );
+          const totalBase = ptRows.reduce((s, r) => s + ptEf(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+          _dbg_calc = { aid: aluno_id, eid: escola_id, s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, step: 'done' };
+          pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+          const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+          _dbg_calc.bm = bonusRow?.pontos ?? null;
+          _dbg_calc.pt = pontuacao;
+          console.log(`[OVERRIDE][PONTUACAO] aluno=${aluno_id} escola=${escola_id} saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} pontuacao=${pontuacao}`);
+        }
+      } catch(e) { console.error('[OVERRIDE][PONTUACAO] ERRO:', e.message); }
+
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      console.log(`[OVERRIDE][REGISTROS-RESP] aluno=${aluno_id} pontuacao=${pontuacao}`);
+      return res.json({
+        ok: true, aluno_id, escola_id, pontuacao,
+        _dbg: _dbg_calc,
+        _serverTs: new Date().toISOString(),
+        _commit: 'override-v1',
+        disciplinares, pedagogicos,
+      });
+    } catch(e) {
+      console.error('[OVERRIDE][REGISTROS] Erro:', e.message);
+      return res.status(500).json({ message: 'Erro ao carregar registros.' });
+    }
+  });
+  console.log('[OVERRIDE] Handler /api/app-pais/registros registrado ANTES do mountToApp ✅');
+
   // ─── APP_PAIS (rotas autenticadas) ──────────────────────────────────────────
   // ORDEM CRÍTICA:
   // 1) mountToApp ANTES de app.use(appPaisRouterModule).
