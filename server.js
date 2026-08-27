@@ -1506,6 +1506,9 @@ async function bootstrap() {
   app.use("/api/app-pais", appPaisLoginRouter);
   console.log("[APP_PAIS_LOGIN] router público montado em /api/app-pais ✅");
 
+  // Endpoint simples para confirmar que o deploy com override está ativo
+  app.get('/__diag/override-check', (_req, res) => res.json({ ok: true, override: 'v1', ts: new Date().toISOString() }));
+
   // ─── FIX TEMP: Override handler /registros — corrige pontuacao usando cálculo canônico ──
   // O app_pais.js em produção tem cálculo de pontuacao BUGADO (versão antiga com JOIN diferente).
   // Este handler intercepta ANTES do mountToApp/app.use e recalcula pontuacao corretamente.
