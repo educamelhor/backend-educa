@@ -767,11 +767,10 @@ router.post("/lote-registros", async (req, res) => {
       doc.y += TR;
 
       if (descricaoText) {
-        const descY = doc.y;
-        doc.rect(L, descY, PW, descH).fill("#eef2f7");
+        doc.y += 4;
         doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
-          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
-        doc.y = descY + descH;
+          .text(descricaoText, L + 10, doc.y, { width: PW - 20, lineGap: 2 });
+        doc.y += 4;
       }
 
       // Linha resumo pontos
@@ -1314,11 +1313,10 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
 
       // Sublinha com a Descricao da ocorrencia
       if (descricaoText) {
-        const descY = doc.y;
-        doc.rect(L, descY, PW, descH).fill("#eef2f7");
+        doc.y += 4;
         doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
-          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
-        doc.y = descY + descH;
+          .text(descricaoText, L + 10, doc.y, { width: PW - 20, lineGap: 2 });
+        doc.y += 4;
       }
     });
 
@@ -1903,12 +1901,10 @@ router.get("/:alunoId", async (req, res) => {
 
       // Sublinha com a Descricao da ocorrencia
       if (descricaoText) {
-        const descY = doc.y;
-        const descBg = i % 2 === 0 ? "#eef2f7" : "#f5f7fa";
-        doc.rect(L, descY, PW, descH).fill(descBg);
+        doc.y += 4;
         doc.font("Helvetica-Oblique").fontSize(8.5).fillColor("#444")
-          .text(descricaoText, L + 10, descY + 4, { width: PW - 16, lineGap: 2 });
-        doc.y = descY + descH;
+          .text(descricaoText, L + 10, doc.y, { width: PW - 20, lineGap: 2 });
+        doc.y += 4;
       }
     });
 
