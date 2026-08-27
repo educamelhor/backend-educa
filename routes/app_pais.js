@@ -3062,6 +3062,7 @@ router.get("/conteudos", authAppPaisOuAluno, async (req, res) => {
 // Querystring: aluno_id, ano (opcional), tipo (pedagogico|disciplinar|all)
 // ============================================================================
 router.get("/registros", authAppPais, async (req, res) => {
+  console.log(`[REGISTROS-ENTRY] ${Date.now()} aluno_id=${req.query?.aluno_id} resp_id=${req.appPaisAuth?.responsavel_id ?? 'N/A'}`);
   const db = pool;
   try {
     const { responsavel_id, cpf: cpfAuth } = req.appPaisAuth;
@@ -3212,6 +3213,7 @@ router.get("/registros", authAppPais, async (req, res) => {
       console.error(`[APP_PAIS][PONTUACAO] ERRO step=${_errStep}: ${errPontuacao?.message || errPontuacao} | stack: ${errPontuacao?.stack?.split('\n')?.[1]?.trim()}`);
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    console.log(`[REGISTROS-RESP] aluno=${aluno_id} pontuacao=${pontuacao} dbg=${_dbg_calc !== null ? JSON.stringify({s:_dbg_calc.s,t:_dbg_calc.t,step:_dbg_calc.step}) : 'NULL'}`);
     return res.json({
       ok: true,
       aluno_id,
