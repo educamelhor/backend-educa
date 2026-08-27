@@ -27,6 +27,8 @@ export function getConceito(pontos) {
 export async function calcularEUpsertMerito(alunoId, escolaId) {
   let totalBonusDias = 0;
   let bonusTotal = 0;
+  let ultimaDataBonificada = new Date();
+  
   try {
     const anoAtual = new Date().getFullYear();
     const dataAncoraPadrao = new Date(anoAtual + '-02-15T00:00:00');
@@ -38,18 +40,26 @@ export async function calcularEUpsertMerito(alunoId, escolaId) {
     const datasNegativas = negativos.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; });
     const inicioGlobal = (datasNegativas.length > 0 && datasNegativas[0] < dataAncoraPadrao) ? datasNegativas[0] : dataAncoraPadrao;
     const marcos = [inicioGlobal, ...datasNegativas, hoje];
+    
     for (let i = 0; i < marcos.length - 1; i++) {
       const diffDias = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
-      totalBonusDias += Math.max(0, diffDias - 60);
+      const bonusPeriodo = Math.max(0, diffDias - 60);
+      totalBonusDias += bonusPeriodo;
+      if (bonusPeriodo > 0) {
+        ultimaDataBonificada = marcos[i+1];
+      }
     }
     bonusTotal = parseFloat((totalBonusDias * 0.01).toFixed(2));
   } catch (e) { console.warn('[MERITO] Erro calculo:', e.message); return { bonusTotal: 0, totalBonusDias: 0, temMerito: false }; }
+  
   if (bonusTotal > 0) {
     try {
       const [[ex]] = await pool.query("SELECT id FROM ocorrencias_disciplinares WHERE aluno_id = ? AND escola_id = ? AND tipo_ocorrencia = 'MERITO' LIMIT 1", [alunoId, escolaId]);
-      const desc = 'Pontua\u00e7\u00e3o positiva por m\u00e9rito de aus\u00eancia de reincid\u00eancia de registro.';
-      const det  = 'B\u00f4nus acumulado: ' + totalBonusDias + ' dias de m\u00e9rito = +' + bonusTotal.toFixed(2) + ' pontos';
-      const h = new Date(); const dr = h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0')+'-'+String(h.getDate()).padStart(2,'0');
+      const desc = 'Pontuação positiva por mérito de ausência de reincidência de registro.';
+      const det  = 'Bônus acumulado: ' + totalBonusDias + ' dias de mérito = +' + bonusTotal.toFixed(2) + ' pontos';
+      
+      const dr = ultimaDataBonificada.getFullYear() + '-' + String(ultimaDataBonificada.getMonth()+1).padStart(2,'0') + '-' + String(ultimaDataBonificada.getDate()).padStart(2,'0');
+      
       if (ex) { await pool.query('UPDATE ocorrencias_disciplinares SET motivo=?,descricao=?,status=' + "'FINALIZADA'" + ',data_ocorrencia=? WHERE id=?', [desc, det, dr, ex.id]); }
       else     { await pool.query("INSERT INTO ocorrencias_disciplinares (aluno_id,escola_id,tipo_ocorrencia,motivo,descricao,status,data_ocorrencia) VALUES (?,?,'MERITO',?,?,'FINALIZADA',?)", [alunoId, escolaId, desc, det, dr]); }
     } catch (e) { console.warn('[MERITO] Erro persistir:', e.message); }
