@@ -3158,6 +3158,7 @@ router.get("/registros", authAppPais, async (req, res) => {
     // 5) PONTUACAO (apenas para escolas Civico-Militares)
     let pontuacao = null;
     let _dbg_calc = null; // TEMP debug
+    let _errStep = 'init'; // TEMP debug step tracking
     try {
       const [[escolaRow]] = await db.query('SELECT tipo FROM escolas WHERE id = ?', [escola_id]);
       const escolaTipo = escolaRow?.tipo || '';
@@ -3194,7 +3195,7 @@ router.get("/registros", authAppPais, async (req, res) => {
           [aluno_id, escola_id]
         );
         const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
-        let _errStep = 'pre-pontuacao';
+        _errStep = 'pontuacao';
         pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
         _errStep = 'find-bonus';
         const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
@@ -3208,7 +3209,7 @@ router.get("/registros", authAppPais, async (req, res) => {
         _errStep = 'done';
       }
     } catch (errPontuacao) {
-      console.error(`[APP_PAIS][PONTUACAO] ERRO step=${_errStep ?? 'unknown'} saldo=${saldoInicial ?? '?'} total=${totalBase ?? '?'}: ${errPontuacao?.message || errPontuacao} | stack: ${errPontuacao?.stack?.split('\n')?.[1]?.trim()}`);
+      console.error(`[APP_PAIS][PONTUACAO] ERRO step=${_errStep}: ${errPontuacao?.message || errPontuacao} | stack: ${errPontuacao?.stack?.split('\n')?.[1]?.trim()}`);
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     return res.json({
