@@ -1938,18 +1938,19 @@ bootstrap()
       }
 
       // ✅ BOOT-SYNC-PAPs em background (não bloqueia o listen)
-      setImmediate(async () => {
+      setTimeout(async () => {
         try {
           const [escolas] = await pool.query(`SELECT id FROM escolas`);
           console.log(`[BOOT-SYNC-PAPs] Iniciando sincronizacao em lote para ${escolas.length} escolas...`);
           for (const esc of escolas) {
             await syncPlanosAvaliacao(pool, esc.id);
+            await new Promise(resolve => setTimeout(resolve, 2000));
           }
           console.log('[BOOT-SYNC-PAPs] Sincronizacao em lote concluida com sucesso!');
         } catch (syncErr) {
           console.warn('[BOOT-SYNC-PAPs] Falha na sincronizacao em lote no boot:', syncErr.message);
         }
-      });
+      }, 60000);
     });
   })
   .catch((err) => {
