@@ -3194,15 +3194,21 @@ router.get("/registros", authAppPais, async (req, res) => {
           [aluno_id, escola_id]
         );
         const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+        let _errStep = 'pre-pontuacao';
         pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+        _errStep = 'find-bonus';
         const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+        _errStep = 'log1';
         console.log(`[APP_PAIS][PONTUACAO] saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} rows=${ptRows.length} pontuacao=${pontuacao}`);
+        _errStep = 'log2';
         console.log(`[APP_PAIS][PONTUACAO] BONUS_MEDIA: pontos=${bonusRow?.pontos ?? 'NULL(JOIN falhou)'} reg_id=${bonusRow?.reg_id ?? 'NULL'}`);
         // TEMP debug — remove after fix
+        _errStep = 'dbg-assign';
         _dbg_calc = { aid: aluno_id, eid: escola_id, s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, bm: bonusRow?.pontos ?? null };
+        _errStep = 'done';
       }
     } catch (errPontuacao) {
-      console.error('[APP_PAIS][PONTUACAO] ERRO:', errPontuacao?.message || errPontuacao);
+      console.error(`[APP_PAIS][PONTUACAO] ERRO step=${_errStep ?? 'unknown'} saldo=${saldoInicial ?? '?'} total=${totalBase ?? '?'}: ${errPontuacao?.message || errPontuacao} | stack: ${errPontuacao?.stack?.split('\n')?.[1]?.trim()}`);
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     return res.json({
