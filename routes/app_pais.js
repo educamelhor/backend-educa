@@ -3195,17 +3195,17 @@ router.get("/registros", authAppPais, async (req, res) => {
           [aluno_id, escola_id]
         );
         const totalBase = ptRows.reduce((s, r) => s + pontosEfDisc(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+        // TEMP debug: set early — response sempre terá valores mesmo com exception posterior
+        _dbg_calc = { aid: aluno_id, eid: escola_id, s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, bm: null, pt: null, step: 'pre-pt' };
         _errStep = 'pontuacao';
         pontuacao = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+        _dbg_calc.pt = pontuacao; _dbg_calc.step = 'pt-done';
         _errStep = 'find-bonus';
         const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+        _dbg_calc.bm = bonusRow?.pontos ?? null; _dbg_calc.step = 'bm-done';
         _errStep = 'log1';
-        console.log(`[APP_PAIS][PONTUACAO] saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} rows=${ptRows.length} pontuacao=${pontuacao}`);
-        _errStep = 'log2';
-        console.log(`[APP_PAIS][PONTUACAO] BONUS_MEDIA: pontos=${bonusRow?.pontos ?? 'NULL(JOIN falhou)'} reg_id=${bonusRow?.reg_id ?? 'NULL'}`);
-        // TEMP debug — remove after fix
-        _errStep = 'dbg-assign';
-        _dbg_calc = { aid: aluno_id, eid: escola_id, s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, bm: bonusRow?.pontos ?? null };
+        console.log(`[APP_PAIS][PONTUACAO] saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} rows=${ptRows.length} pontuacao=${pontuacao} bonusMedia=${bonusRow?.pontos ?? 'none'}`);
+        _dbg_calc.step = 'done';
         _errStep = 'done';
       }
     } catch (errPontuacao) {
