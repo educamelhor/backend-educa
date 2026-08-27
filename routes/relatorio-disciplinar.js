@@ -1,4 +1,4 @@
-﻿// routes/relatorio-disciplinar.js
+// routes/relatorio-disciplinar.js
 // ============================================================================
 // Gera PDF do Relatório de Registros Disciplinares
 // Baseado no layout do TACE mas com diferenças:
@@ -800,13 +800,13 @@ router.post("/lote-registros", async (req, res) => {
 
       // Convocação e ciência
       const temConvocacao = Number(reg.convocar_responsavel) === 1;
-      const numItemCiencia = temConvocacao ? 4 : 3;
+      const numItemCiencia = temConvocacao ? 5 : 4;
 
       drawLine(); doc.y += 6;
 
       if (temConvocacao) {
         ensureSpace(80);
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); doc.y += 4;
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL).text("4. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW }); doc.y += 4;
         const dataComp     = reg.data_comparecimento;
         const dataAgendada = reg.data_convocacao;
         let textoConvocacao;
@@ -1355,8 +1355,8 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
 
     // Verifica se há convocação do responsável neste registro
     const temConvocacao = Number(registros[0]?.convocar_responsavel) === 1;
-    const numItemConvocacao = temConvocacao ? 3 : null;
-    const numItemCiencia = temConvocacao ? 4 : 3;
+    const numItemConvocacao = temConvocacao ? 4 : null;
+    const numItemCiencia = temConvocacao ? 5 : 4;
 
     drawLine(); doc.y += 6;
 
@@ -1364,7 +1364,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
     if (temConvocacao) {
       ensureSpace(80);
       doc.font("Helvetica-Bold").fontSize(10).fillColor(COR_AZUL)
-        .text("3. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
+        .text("4. CONVOCAÇÃO DO RESPONSÁVEL LEGAL", L, doc.y, { width: PW });
       doc.y += 4;
       const dataComp      = registros[0].data_comparecimento;
       const dataAgendada  = registros[0].data_convocacao;
@@ -1407,7 +1407,7 @@ router.get("/:alunoId/registro/:ocorrenciaId", async (req, res) => {
       .text(
         `Declaro que tomei ciência do registro disciplinar nº ${registros[0].registro} ` +
         `vinculado ao(à) estudante ${aluno.estudante}, ` +
-        `conforme detalhado na seção ${numItemConvocacao || numItemCiencia - 0} deste documento.`,
+        `conforme detalhado na seção 3 deste documento.`,
         L, doc.y, { width: PW, lineGap: 2, align: "justify" }
       );
     doc.y += 8;
