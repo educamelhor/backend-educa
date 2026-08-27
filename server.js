@@ -1406,6 +1406,25 @@ async function bootstrap() {
   });
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // ─── DIAG2 TEMP: todas as ocorrencias aluno 3861 — todos anos e status ───────
+  app.get('/__diag/all-ocorrencias-3861', async (req, res) => {
+    try {
+      const [ocs] = await pool.query(
+        `SELECT o.id, o.tipo_ocorrencia, o.status, DATE(o.data_ocorrencia) AS data,
+                YEAR(o.data_ocorrencia) AS ano, o.escola_id,
+                o.motivo, COALESCE(r.pontos,0) AS r_pontos, r.id AS reg_id
+         FROM ocorrencias_disciplinares o
+         LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+         WHERE o.aluno_id = 3861
+         ORDER BY o.data_ocorrencia DESC, o.id, r.id`, []
+      );
+      const byYear = {};
+      ocs.forEach(o => { byYear[o.ano] = (byYear[o.ano]||0)+1; });
+      res.json({ total: ocs.length, byYear, rows: ocs });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
+
 
   // ─── APP_PAIS PUBLIC LOGIN (router dedicado — sem auth) ─────────────────────
   // Workaround definitivo para bug Express 5 + Docker/DO:
