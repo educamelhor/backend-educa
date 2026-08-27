@@ -16,6 +16,7 @@
 import express from "express";
 import jwt     from "jsonwebtoken";
 import pool    from "../db.js";
+import { pontosEfetivos, calcularEUpsertMerito, calcularEUpsertBonusMedia } from "../utils/disciplinarCalculos.js";
 
 const router = express.Router();
 
@@ -1155,69 +1156,51 @@ router.get("/registros", authAppPaisOuAluno, async (req, res) => {
     const escolaTipo = escolaRow?.tipo || "";
     const isCivicoMilitar = escolaTipo.includes("CCMDF") || escolaTipo.includes("Militar");
 
-    // ── 2) PONTUAÇÃO (APENAS PARA CÍVICO-MILITAR) ─────────────────────────────
+    // ── 2) PONTUAÇÃO (APENAS PARA CÍVICO-MILITAR) — cálculo canônico ────────────
+    // Idêntico ao portal /pontuacao/:alunoId (relatorio-disciplinar.js)
     let pontuacaoFinal = null;
+    let _dbg_calc = null;
     if (isCivicoMilitar) {
-      function pontosEfetivos(pontoBase, medidaDisciplinar, diasSuspensao) {
-        if (String(medidaDisciplinar).trim() === 'Suspensão') {
-          return Number(pontoBase) * (Number(diasSuspensao) || 1);
-        }
-        return Number(pontoBase) || 0;
-      }
-      const PONTUACAO_INICIAL = 8.00;
-
-      // Busca pontos de ocorrências regulares (exceto MERITO — não tem entrada em registros_ocorrencias)
-      const [allRows] = await db.query(
-        `SELECT COALESCE(r.pontos,0) AS pontos,
-                COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
-                COALESCE(o.dias_suspensao,1) AS dias_suspensao
-         FROM ocorrencias_disciplinares o
-         LEFT JOIN registros_ocorrencias r
-           ON r.descricao_ocorrencia = o.motivo
-           AND (o.tipo_ocorrencia IS NULL OR o.tipo_ocorrencia = '' OR r.tipo_ocorrencia = o.tipo_ocorrencia)
-         WHERE o.aluno_id = ? AND o.escola_id = ?
-           AND o.status != 'CANCELADA'
-           AND o.tipo_ocorrencia != 'MERITO'`,
-        [aluno_id, escola_id]
-      );
-      const totalPontosBase = allRows.reduce(
-        (s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0
-      );
-
-      // Bônus de mérito: calculado com a mesma lógica do relatorio-disciplinar.js
-      // (o registro MERITO existe em ocorrencias_disciplinares mas NÃO em registros_ocorrencias)
-      let bonusMerito = 0;
       try {
-        const anoAtualApp = new Date().getFullYear();
-        const dataAncora = new Date(`${anoAtualApp}-02-15T00:00:00`);
-        const hoje3 = new Date(); hoje3.setHours(23, 59, 59, 0);
-        const [negativosApp] = await db.query(
-          `SELECT DATE(o.data_ocorrencia) AS data_oc
+        // saldoInicial: pontuação de abertura do ano letivo
+        const anoAtualPt = new Date().getFullYear();
+        const [regAnoAnterior] = await db.query(
+          `SELECT SUM(CASE WHEN o.tipo_ocorrencia='MERITO' THEN 0 ELSE COALESCE(r.pontos,0) END) AS soma_pontos
            FROM ocorrencias_disciplinares o
            LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
-           WHERE o.aluno_id = ? AND o.escola_id = ?
-             AND o.tipo_ocorrencia != 'MERITO'
-             AND o.status NOT IN ('CANCELADA')
-             AND COALESCE(r.pontos, 0) < 0
-             AND YEAR(o.data_ocorrencia) = ?
-           ORDER BY o.data_ocorrencia ASC`,
-          [aluno_id, escola_id, anoAtualApp]
+           WHERE o.aluno_id=? AND o.escola_id=? AND o.status!='CANCELADA' AND YEAR(o.data_ocorrencia)=?`,
+          [aluno_id, escola_id, anoAtualPt - 1]
         );
-        const marcos = [
-          dataAncora,
-          ...negativosApp.map(n => { const d = new Date(n.data_oc); d.setHours(0,0,0,0); return d; }),
-          hoje3
-        ];
-        let totalDiasM = 0;
-        for (let i = 0; i < marcos.length - 1; i++) {
-          const diff = Math.floor((marcos[i+1] - marcos[i]) / 86400000);
-          if (diff > 60) totalDiasM += diff - 60;
-        }
-        bonusMerito = parseFloat((totalDiasM * 0.01).toFixed(2));
-      } catch (e) { bonusMerito = 0; }
+        const temHistorico = regAnoAnterior[0]?.soma_pontos !== null;
+        const saldoInicial = temHistorico
+          ? Math.max(0, Math.min(10, parseFloat((8.0 + Number(regAnoAnterior[0].soma_pontos)).toFixed(2))))
+          : 8.00;
 
-      const totalPontosGeral = totalPontosBase + bonusMerito;
-      pontuacaoFinal = Math.max(0, Math.min(10, PONTUACAO_INICIAL + totalPontosGeral)).toFixed(2);
+        // Mérito e Bônus de Média (side effects — garante registros atualizados)
+        const merito = await calcularEUpsertMerito(aluno_id, escola_id);
+        await calcularEUpsertBonusMedia(aluno_id, escola_id);
+
+        // ptRows — JOIN canônico (apenas por motivo, sem filtro tipo_ocorrencia)
+        const [ptRows] = await db.query(
+          `SELECT o.tipo_ocorrencia, o.motivo,
+                  CASE WHEN o.tipo_ocorrencia = 'MERITO' THEN 0
+                   ELSE COALESCE(r.pontos,0) END AS pontos,
+                  COALESCE(r.medida_disciplinar,'') AS medida_disciplinar,
+                  COALESCE(o.dias_suspensao,1) AS dias_suspensao,
+                  r.id AS reg_id
+           FROM ocorrencias_disciplinares o
+           LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
+           WHERE o.aluno_id = ? AND o.escola_id = ? AND o.status != 'CANCELADA'`,
+          [aluno_id, escola_id]
+        );
+        const totalBase = ptRows.reduce((s, r) => s + pontosEfetivos(r.pontos, r.medida_disciplinar, r.dias_suspensao), 0);
+        pontuacaoFinal = Math.max(0, Math.min(10, saldoInicial + totalBase + merito.bonusTotal)).toFixed(2);
+        const bonusRow = ptRows.find(r => r.tipo_ocorrencia === 'BONUS_MEDIA');
+        _dbg_calc = { s: saldoInicial, t: +totalBase.toFixed(3), m: merito.bonusTotal, r: ptRows.length, bm: bonusRow?.pontos ?? null, pt: pontuacaoFinal, step: 'done' };
+        console.log(`[APP_PAIS_LOGIN][PONTUACAO] aluno=${aluno_id} escola=${escola_id} saldo=${saldoInicial} totalBase=${totalBase.toFixed(2)} merito=${merito.bonusTotal} pontuacao=${pontuacaoFinal}`);
+      } catch(e) {
+        console.error('[APP_PAIS_LOGIN][PONTUACAO] ERRO:', e.message);
+      }
     }
 
     // ── 3) DISCIPLINARES ──────────────────────────────────────────────────────
@@ -1298,6 +1281,9 @@ router.get("/registros", authAppPaisOuAluno, async (req, res) => {
       escola_id,
       anos,
       pontuacao: pontuacaoFinal,
+      _dbg: _dbg_calc,
+      _serverTs: new Date().toISOString(),
+      _commit: 'login-fix-v1',
       disciplinares,
       pedagogicos,
     });
