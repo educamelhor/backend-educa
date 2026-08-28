@@ -611,6 +611,17 @@ if (!IS_PROD) {
 }
 
 async function bootstrap() {
+    // [2026-08-28] Novo campo Detalhes do Desfecho APH
+    try {
+      const [colsAPH2] = await pool.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aph_atendimentos' AND COLUMN_NAME = 'desfecho_detalhes'");
+      if (colsAPH2.length === 0) {
+        await pool.query("ALTER TABLE aph_atendimentos ADD COLUMN desfecho_detalhes VARCHAR(255) DEFAULT NULL");
+        console.log("[MIGRATION] Coluna desfecho_detalhes adicionada em aph_atendimentos");
+      }
+    } catch (migErr) {
+      console.warn("[MIGRATION] Erro ao aplicar migration APH Desfecho (nao critico):", migErr.message);
+    }
+
     // [2026-08-28] Novos campos Sinais Vitais APH
     try {
       const [colsAPH] = await pool.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aph_atendimentos' AND COLUMN_NAME = 'sinais_pa'");

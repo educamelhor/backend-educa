@@ -25,6 +25,7 @@ router.post("/", async (req, res) => {
     sinais_pa,
     sinais_fc,
     sinais_temperatura,
+    desfecho_detalhes,
   } = req.body;
 
   const socorrista_nome = req.user?.nome || "Sistema"; // Pega do token
@@ -32,8 +33,8 @@ router.post("/", async (req, res) => {
   try {
     const [result] = await pool.query(
       `INSERT INTO aph_atendimentos 
-        (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, materiais, outro_material, desfecho, comunicacao_resp, hora_comunicacao, hora_comparecimento, socorrista_nome, sinais_pa, sinais_fc, sinais_temperatura) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, materiais, outro_material, desfecho, comunicacao_resp, hora_comunicacao, hora_comparecimento, socorrista_nome, sinais_pa, sinais_fc, sinais_temperatura, desfecho_detalhes) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         aluno_id,
         escola_id || 1, // fallback
@@ -54,7 +55,8 @@ router.post("/", async (req, res) => {
         socorrista_nome,
         sinais_pa || null,
         sinais_fc || null,
-        sinais_temperatura || null
+        sinais_temperatura || null,
+        desfecho_detalhes || null
       ]
     );
 
