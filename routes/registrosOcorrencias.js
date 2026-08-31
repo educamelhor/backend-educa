@@ -11,7 +11,8 @@ const router = express.Router();
 router.get("/", async (req, res) => {
   try {
     const [rows] = await req.db.query(
-      `SELECT id, medida_disciplinar, tipo_ocorrencia, descricao_ocorrencia, pontos, ativo 
+      `SELECT id, medida_disciplinar, tipo_ocorrencia,
+        medida_disciplinar, descricao_ocorrencia, pontos, ativo 
        FROM registros_ocorrencias 
        ORDER BY ativo DESC, medida_disciplinar ASC, tipo_ocorrencia ASC, descricao_ocorrencia ASC`
     );
@@ -40,6 +41,7 @@ router.get("/historico", async (req, res) => {
       data_inicio,
       data_fim,
       tipo_ocorrencia,
+        medida_disciplinar,
       convocar_responsavel,
       page = 1,
       limit = 50,
@@ -76,6 +78,10 @@ router.get("/historico", async (req, res) => {
       where += " AND o.tipo_ocorrencia = ?";
       params.push(tipo_ocorrencia);
     }
+    if (medida_disciplinar) {
+      where += " AND r.medida_disciplinar = ?";
+      params.push(medida_disciplinar);
+    }
     if (convocar_responsavel === "1") {
       where += " AND o.convocar_responsavel = 1";
     }
@@ -100,6 +106,7 @@ router.get("/historico", async (req, res) => {
          o.data_ocorrencia,
          o.motivo,
          o.tipo_ocorrencia,
+        medida_disciplinar,
          o.descricao,
          o.convocar_responsavel,
          o.data_comparecimento_responsavel,
@@ -125,6 +132,7 @@ router.get("/historico", async (req, res) => {
        LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
        ${where}
        GROUP BY o.id, o.aluno_id, o.data_ocorrencia, o.motivo, o.tipo_ocorrencia,
+        medida_disciplinar,
                 o.descricao, o.convocar_responsavel, o.data_comparecimento_responsavel,
                 o.status, o.criado_em, o.dias_suspensao
        ORDER BY o.criado_em DESC
@@ -171,7 +179,8 @@ router.get("/historico", async (req, res) => {
 // router.post("/", async (req, res) => {
 //   const { 
 //     medida_disciplinar, 
-//     tipo_ocorrencia, 
+//     tipo_ocorrencia,
+        medida_disciplinar, 
 //     descricao_ocorrencia, 
 //     pontos = 0, 
 //     ativo = true 
@@ -183,14 +192,16 @@ router.get("/historico", async (req, res) => {
 // 
 //   try {
 //     const [result] = await req.db.query(
-//       `INSERT INTO registros_ocorrencias (medida_disciplinar, tipo_ocorrencia, descricao_ocorrencia, pontos, ativo) 
+//       `INSERT INTO registros_ocorrencias (medida_disciplinar, tipo_ocorrencia,
+        medida_disciplinar, descricao_ocorrencia, pontos, ativo) 
 //        VALUES (?, ?, ?, ?, ?)`,
 //       [medida_disciplinar.trim(), tipo_ocorrencia.trim(), descricao_ocorrencia.trim(), pontos, ativo]
 //     );
 //     res.status(201).json({ 
 //       id: result.insertId, 
 //       medida_disciplinar, 
-//       tipo_ocorrencia, 
+//       tipo_ocorrencia,
+        medida_disciplinar, 
 //       descricao_ocorrencia, 
 //       pontos, 
 //       ativo 
@@ -211,7 +222,8 @@ router.get("/historico", async (req, res) => {
 // ============================================================================
 // router.put("/:id", async (req, res) => {
 //   const { id } = req.params;
-//   const { medida_disciplinar, tipo_ocorrencia, descricao_ocorrencia, pontos, ativo } = req.body;
+//   const { medida_disciplinar, tipo_ocorrencia,
+        medida_disciplinar, descricao_ocorrencia, pontos, ativo } = req.body;
 // 
 //   try {
 //     const fields = [];
