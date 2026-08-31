@@ -40,6 +40,7 @@ router.get("/historico", async (req, res) => {
       data_inicio,
       data_fim,
       tipo_ocorrencia,
+      medida_disciplinar,
       convocar_responsavel,
       page = 1,
       limit = 50,
@@ -75,6 +76,10 @@ router.get("/historico", async (req, res) => {
     if (tipo_ocorrencia) {
       where += " AND o.tipo_ocorrencia = ?";
       params.push(tipo_ocorrencia);
+    }
+    if (medida_disciplinar) {
+      where += " AND r.medida_disciplinar = ?";
+      params.push(medida_disciplinar);
     }
     if (convocar_responsavel === "1") {
       where += " AND o.convocar_responsavel = 1";
