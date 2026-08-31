@@ -590,13 +590,15 @@ router.post("/", async (req, res) => {
     for (const turmaUnica of turmasArray) {
       let planoId;
 
-      // Busca se já existe o plano especificamente para essa turma+turno
+      // Busca se já existe o plano para essa escola+ano+bimestre+disciplina+turma (chave de unicidade da tabela)
+      // NOTA: A chave única da tabela no banco (uni_plano) é (escola_id, ano, bimestre, disciplina, turmas(200)).
+      // Não devemos restringir por turno ou semestre estrito com <=>, pois se o plano já existia com turno/semestre NULL
+      // ou atualizado, a restrição faria o SELECT não encontrar o plano e tentar um INSERT que falha por Duplicate Entry.
       const [[existente]] = await conn.query(
         `SELECT id FROM planos_avaliacao 
          WHERE escola_id = ? AND ano = ? AND bimestre = ? AND disciplina = ? AND turmas = ?
-           AND (semestre <=> ?)
-           AND (turno <=> ?)`,
-        [escola_id, ano, bimestre, disciplina, turmaUnica, semestreNorm, turno || null]
+         LIMIT 1`,
+        [escola_id, ano, bimestre, disciplina, turmaUnica]
       );
 
       // Cada turma recebe um nome de código individual
@@ -605,17 +607,39 @@ router.post("/", async (req, res) => {
       if (existente) {
         planoId = existente.id;
         await conn.query(
-          `UPDATE planos_avaliacao SET status = ?, nome_codigo = ?, usuario_id = ?, updated_at = NOW() WHERE id = ?`,
-          [status, nomeCodigoIndividual, usuario_id, planoId]
+          `UPDATE planos_avaliacao 
+           SET status = ?, 
+               nome_codigo = ?, 
+               usuario_id = ?, 
+               turno = COALESCE(?, turno), 
+               semestre = COALESCE(?, semestre), 
+               updated_at = NOW() 
+           WHERE id = ?`,
+          [status, nomeCodigoIndividual, usuario_id, turno || null, semestreNorm, planoId]
         );
       } else {
         const [result] = await conn.query(
           `INSERT INTO planos_avaliacao 
             (escola_id, disciplina, bimestre, semestre, turmas, turno, ano, status, nome_codigo, usuario_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE 
+             status = VALUES(status),
+             nome_codigo = VALUES(nome_codigo),
+             usuario_id = VALUES(usuario_id),
+             turno = COALESCE(VALUES(turno), turno),
+             semestre = COALESCE(VALUES(semestre), semestre),
+             updated_at = NOW()`,
           [escola_id, disciplina, bimestre, semestreNorm, turmaUnica, turno || null, ano, status, nomeCodigoIndividual, usuario_id]
         );
         planoId = result.insertId;
+        if (!planoId) {
+          const [[recuperado]] = await conn.query(
+            `SELECT id FROM planos_avaliacao 
+             WHERE escola_id = ? AND ano = ? AND bimestre = ? AND disciplina = ? AND turmas = ? LIMIT 1`,
+            [escola_id, ano, bimestre, disciplina, turmaUnica]
+          );
+          planoId = recuperado?.id;
+        }
       }
 
       planoIds.push(planoId);
