@@ -90,6 +90,65 @@ router.post("/", async (req, res) => {
   }
 });
 
+
+// [PUT] /api/aph/:id - Edita um atendimento existente
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  const escola_id = req.user?.escola_id;
+
+  const {
+    aluno_id,
+    local,
+    solicitante,
+    motivos,
+    relato,
+    condicao_geral,
+    sinais,
+    atendimentos,
+    descricao_atendimento,
+    materiais,
+    outro_material,
+    desfecho,
+    comunicacao_resp,
+    hora_comunicacao,
+    hora_comparecimento,
+    sinais_pa,
+    sinais_fc,
+    sinais_temperatura,
+    desfecho_detalhes,
+  } = req.body;
+
+  try {
+    const [result] = await pool.query(
+      "UPDATE aph_atendimentos " +
+      "SET " +
+      "  aluno_id = ?, local = ?, solicitante = ?, motivos = ?, relato = ?, " +
+      "  condicao_geral = ?, sinais = ?, atendimentos = ?, descricao_atendimento = ?, " +
+      "  materiais = ?, outro_material = ?, desfecho = ?, comunicacao_resp = ?, " +
+      "  hora_comunicacao = ?, hora_comparecimento = ?, sinais_pa = ?, sinais_fc = ?, " +
+      "  sinais_temperatura = ?, desfecho_detalhes = ? " +
+      "WHERE id = ? AND escola_id = ?",
+      [
+        aluno_id, local || "", solicitante || "", JSON.stringify(motivos || []), relato || "",
+        condicao_geral || "", JSON.stringify(sinais || []), JSON.stringify(atendimentos || []), descricao_atendimento || "",
+        JSON.stringify(materiais || []), outro_material || "", desfecho || "", comunicacao_resp || "",
+        hora_comunicacao || null, hora_comparecimento || null, sinais_pa || null, sinais_fc || null,
+        sinais_temperatura || null, desfecho_detalhes || null,
+        id, escola_id
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Atendimento no encontrado ou sem permisso." });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("[APH] Erro ao editar atendimento:", error);
+    res.status(500).json({ error: "Erro interno ao editar atendimento." });
+  }
+});
+
 // [GET] /api/aph/historico/:aluno_id - Busca o histórico de um aluno (filtrado por escola)
 router.get("/historico/:aluno_id", async (req, res) => {
   const { aluno_id } = req.params;
