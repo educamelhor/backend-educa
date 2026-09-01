@@ -33,7 +33,7 @@ router.post("/", async (req, res) => {
 
   try {
     if (usuario_id) {
-      const [uRows] = await pool.query(SELECT nome FROM usuarios WHERE id = ?, [usuario_id]);
+      const [uRows] = await pool.query("SELECT nome FROM usuarios WHERE id = ?", [usuario_id]);
       if (uRows && uRows.length > 0) {
         socorrista_nome = uRows[0].nome;
       }
