@@ -28,9 +28,17 @@ router.post("/", async (req, res) => {
     desfecho_detalhes,
   } = req.body;
 
-  const socorrista_nome = req.user?.nome || "Sistema"; // Pega do token
+  const usuario_id = req.user?.usuario_id || req.user?.id || req.user?.usuarioId;
+  let socorrista_nome = "Sistema";
 
   try {
+    if (usuario_id) {
+      const [uRows] = await pool.query(SELECT nome FROM usuarios WHERE id = ?, [usuario_id]);
+      if (uRows && uRows.length > 0) {
+        socorrista_nome = uRows[0].nome;
+      }
+    }
+
     const [result] = await pool.query(
       `INSERT INTO aph_atendimentos 
         (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, materiais, outro_material, desfecho, comunicacao_resp, hora_comunicacao, hora_comparecimento, socorrista_nome, sinais_pa, sinais_fc, sinais_temperatura, desfecho_detalhes) 
