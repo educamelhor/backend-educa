@@ -33,7 +33,7 @@ router.get("/militares", async (req, res) => {
     const escola_id = req.escola_id ?? req.user?.escola_id;
     if (!escola_id) return res.status(400).json({ error: "Escola no identificada." });
 
-    const [rows] = await pool.query(
+    const [rows] = await req.db.query(
       `SELECT DISTINCT u.id, u.nome
        FROM ocorrencias_disciplinares o
        JOIN usuarios u ON u.id = o.usuario_registro_id
@@ -67,6 +67,7 @@ router.get("/historico", async (req, res) => {
       tipo_ocorrencia,
       medida_disciplinar,
       convocar_responsavel,
+      militar_id,
       page = 1,
       limit = 50,
     } = req.query;
@@ -112,7 +113,7 @@ router.get("/historico", async (req, res) => {
     }
 
     // Contagem total para paginação
-    const [countRows] = await pool.query(
+    const [countRows] = await req.db.query(
       `SELECT COUNT(*) AS total
        FROM ocorrencias_disciplinares o
        JOIN alunos a ON a.id = o.aluno_id AND a.escola_id = o.escola_id
@@ -125,7 +126,7 @@ router.get("/historico", async (req, res) => {
 
     // Dados paginados
     const offset = (Number(page) - 1) * Number(limit);
-    const [rows] = await pool.query(
+    const [rows] = await req.db.query(
       `SELECT
          o.id,
          o.aluno_id,
@@ -165,7 +166,7 @@ router.get("/historico", async (req, res) => {
     );
 
     // KPIs (totais por status)
-    const [kpis] = await pool.query(
+    const [kpis] = await req.db.query(
       `SELECT
          COUNT(*) AS total,
          SUM(CASE WHEN o.status = 'REGISTRADA' THEN 1 ELSE 0 END) AS registradas,
