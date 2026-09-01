@@ -23,6 +23,31 @@ router.get("/", async (req, res) => {
   }
 });
 
+
+// ============================================================================
+// GET /api/registros-ocorrencias/militares
+// Lista de militares que registraram pelo menos uma ocorrência na escola
+// ============================================================================
+router.get("/militares", async (req, res) => {
+  try {
+    const escola_id = req.escola_id ?? req.user?.escola_id;
+    if (!escola_id) return res.status(400).json({ error: "Escola no identificada." });
+
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.nome
+       FROM ocorrencias_disciplinares o
+       JOIN usuarios u ON u.id = o.usuario_registro_id
+       WHERE o.escola_id = ?
+       ORDER BY u.nome ASC`,
+      [escola_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Erro ao listar militares:", err);
+    res.status(500).json({ error: "Erro interno." });
+  }
+});
+
 // ============================================================================
 // GET /api/registros-ocorrencias/historico
 // Histórico completo de ocorrências disciplinares da escola
@@ -81,8 +106,9 @@ router.get("/historico", async (req, res) => {
       where += " AND r.medida_disciplinar = ?";
       params.push(medida_disciplinar);
     }
-    if (convocar_responsavel === "1") {
-      where += " AND o.convocar_responsavel = 1";
+    if (militar_id) {
+      where += " AND o.usuario_registro_id = ?";
+      params.push(militar_id);
     }
 
     // Contagem total para paginação
@@ -128,7 +154,7 @@ router.get("/historico", async (req, res) => {
          ON r.descricao_ocorrencia = o.motivo
        LEFT JOIN responsaveis_alunos ra ON ra.aluno_id = o.aluno_id AND ra.escola_id = o.escola_id AND ra.ativo = 1
        LEFT JOIN responsaveis resp ON resp.id = ra.responsavel_id
-       LEFT JOIN usuarios u ON u.id = o.usuario_finalizacao_id
+       LEFT JOIN usuarios u ON u.id = o.usuario_registro_id
        ${where}
        GROUP BY o.id, o.aluno_id, o.data_ocorrencia, o.motivo, o.tipo_ocorrencia,
                 o.descricao, o.convocar_responsavel, o.data_comparecimento_responsavel,
