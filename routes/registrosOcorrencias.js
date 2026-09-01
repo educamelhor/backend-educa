@@ -91,6 +91,7 @@ router.get("/historico", async (req, res) => {
        FROM ocorrencias_disciplinares o
        JOIN alunos a ON a.id = o.aluno_id AND a.escola_id = o.escola_id
        LEFT JOIN turmas t ON t.id = a.turma_id
+       LEFT JOIN registros_ocorrencias r ON r.descricao_ocorrencia = o.motivo
        ${where}`,
       params
     );
