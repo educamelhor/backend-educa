@@ -26,7 +26,7 @@ router.get("/", async (req, res) => {
 
 // ============================================================================
 // GET /api/registros-ocorrencias/militares
-// Lista de todos os militares/equipe da escola e quem já registrou ocorrências
+// Lista apenas os usuários com perfil militar/disciplinar da escola
 // ============================================================================
 router.get("/militares", async (req, res) => {
   try {
@@ -38,13 +38,22 @@ router.get("/militares", async (req, res) => {
        FROM usuarios u
        WHERE u.escola_id = ?
          AND (
-           u.perfil NOT IN ('aluno', 'responsavel')
-           OR u.id IN (SELECT DISTINCT usuario_registro_id FROM ocorrencias_disciplinares WHERE escola_id = ? AND usuario_registro_id IS NOT NULL)
-           OR u.id IN (SELECT DISTINCT usuario_finalizacao_id FROM ocorrencias_disciplinares WHERE escola_id = ? AND usuario_finalizacao_id IS NOT NULL)
+           LOWER(u.perfil) IN (
+             'disciplinar',
+             'diretor_disciplinar',
+             'militar',
+             'comandante',
+             'subcomandante',
+             'supervisor_disciplinar',
+             'monitor_disciplinar',
+             'monitor'
+           )
+           OR u.perfil LIKE '%militar%'
+           OR u.perfil LIKE '%disciplinar%'
          )
          AND u.nome IS NOT NULL AND TRIM(u.nome) != ''
        ORDER BY u.nome ASC`,
-      [escola_id, escola_id, escola_id]
+      [escola_id]
     );
     res.json(rows);
   } catch (err) {
