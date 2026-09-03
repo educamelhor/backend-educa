@@ -93,12 +93,18 @@ async function buscarNomeProfessor(db, planoId, fallbackUsuarioId) {
 }
 
 // ── Helper: extrai termo de busca limpo para a escola no EDUCADF ─────────────
-function extrairTermoBuscaEscola(nomeEscola) {
-  if (!nomeEscola) return '';
+function extrairTermoBuscaEscola(nomeEscola, apelidoEscola) {
+  const apelidoNorm = String(apelidoEscola || '').trim().toUpperCase();
+  if (apelidoNorm === 'POMPS' || apelidoNorm.includes('POMP')) return 'POMPÍLIO';
+  if (apelidoNorm.includes('04') || apelidoNorm.includes('CEF04') || apelidoNorm.includes('CEF 04')) return '04 DE PLANALTINA';
+
+  if (!nomeEscola) return apelidoNorm || '';
   const limpo = String(nomeEscola).trim().toUpperCase();
+  
   // Se contiver número e localidade (ex: '04 DE PLANALTINA', 'CEF 04 DE PLANALTINA')
   const matchNum = limpo.match(/\b0?\d+\s+DE\s+[A-Z]+/i);
   if (matchNum) return matchNum[0].trim();
+
   // Remove termos genéricos de início
   const semGenericos = limpo
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -106,8 +112,9 @@ function extrairTermoBuscaEscola(nomeEscola) {
     .replace(/^ESCOLA\s+(CLASSE|FUNDAMENTAL)?\s*/i, '')
     .replace(/^COL[EÉ]GIO\s*/i, '')
     .trim();
+  
   const palavras = semGenericos.split(/\s+/).filter(w => w.length > 2);
-  return palavras.slice(0, 3).join(' ') || limpo.substring(0, 20);
+  return palavras[0] || limpo.substring(0, 15);
 }
 
 const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
@@ -258,15 +265,17 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
 
     // Busca dados da escola para Unidade Escolar no EDUCADF
     let escolaNome = '';
+    let escolaApelido = '';
     let escolaBusca = '';
     try {
       const [[escolaDb]] = await db.query(
-        'SELECT nome FROM escolas WHERE id = ? LIMIT 1',
+        'SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1',
         [escolaId]
       );
-      if (escolaDb?.nome) {
-        escolaNome = escolaDb.nome;
-        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome);
+      if (escolaDb) {
+        escolaNome = escolaDb.nome || '';
+        escolaApelido = escolaDb.apelido || '';
+        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome, escolaDb.apelido);
       }
     } catch (e) {
       console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
@@ -293,15 +302,16 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     }
 
     const dadosPlano = {
-      turmas:       plano.turmas,
-      turmaOficial: turmaOficial,
-      disciplina:   plano.disciplina,
-      bimestre:     plano.bimestre,
-      ano:          plano.ano,
+      turmas:        plano.turmas,
+      turmaOficial:  turmaOficial,
+      disciplina:    plano.disciplina,
+      bimestre:      plano.bimestre,
+      ano:           plano.ano,
       professorNome,
       escolaNome,
+      escolaApelido,
       escolaBusca,
-      itens:        itensComData,      // array completo — todos os itens do professor
+      itens:         itensComData,      // array completo — todos os itens do professor
     };
 
     // ── 5. SET lock + resposta imediata 202 ──────────────────────────────────
@@ -515,15 +525,17 @@ router.post('/:id/exportar-notas', async (req, res) => {
 
     // Busca dados da escola para Unidade Escolar no EDUCADF
     let escolaNome = '';
+    let escolaApelido = '';
     let escolaBusca = '';
     try {
       const [[escolaDb]] = await db.query(
-        'SELECT nome FROM escolas WHERE id = ? LIMIT 1',
+        'SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1',
         [escolaId]
       );
-      if (escolaDb?.nome) {
-        escolaNome = escolaDb.nome;
-        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome);
+      if (escolaDb) {
+        escolaNome = escolaDb.nome || '';
+        escolaApelido = escolaDb.apelido || '';
+        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome, escolaDb.apelido);
       }
     } catch (e) {
       console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
@@ -550,15 +562,16 @@ router.post('/:id/exportar-notas', async (req, res) => {
     }
 
     const dadosPlano = {
-      turmas:       plano.turmas,
-      turmaOficial: turmaOficial,
-      disciplina:   plano.disciplina,
-      bimestre:     plano.bimestre,
-      ano:          plano.ano,
+      turmas:        plano.turmas,
+      turmaOficial:  turmaOficial,
+      disciplina:    plano.disciplina,
+      bimestre:      plano.bimestre,
+      ano:           plano.ano,
       professorNome,
       escolaNome,
+      escolaApelido,
       escolaBusca,
-      colunas:      colunas,
+      colunas:       colunas,
     };
 
     // ── 6. SET lock + resposta imediata 202 ──────────────────────────────────
