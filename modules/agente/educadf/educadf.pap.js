@@ -1048,39 +1048,59 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await page.waitForTimeout(1000);
 
     // ── Unidade Escolar (OBRIGATÓRIO se campo existir): seleciona a escola ──
-    // Campo adicionado pelo EDUCADF em 2026 — sem ele, turmas não carregam.
-    // Busca por '04 DE PLANALTINA' (termo único) em vez do nome completo,
-    // pois a listbox tem vários 'CENTRO DE ENSINO FUNDAMENTAL...'.
+    // Campo dinâmico pelo EDUCADF — identifica a escola do plano/usuário sem hardcode
     const placeholdersUnidade = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
     for (const ph of placeholdersUnidade) {
       const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
       if ((await ngUnidade.count()) === 0) continue;
       console.log(`[educadf.pap] Filtro Unidade Escolar encontrado: "${ph}"`);
 
-      // Termo de busca ÚNICO — identifica a escola sem ambiguidade
-      const termoBusca = plano.escolaBusca || '04 DE PLANALTINA';
-      // Nome completo para validação do match
-      const nomeEsperado = plano.escolaNome || 'CENTRO DE ENSINO FUNDAMENTAL 04 DE PLANALTINA';
+      // Termo de busca e nome esperado dinâmicos
+      const nomeEsperado = plano.escolaNome || '';
+      const termoBusca = plano.escolaBusca || plano.escolaNome || '';
 
-      const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const normUE = (s) => String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
       const targetUE = normUE(nomeEsperado);
+      const targetBusca = normUE(termoBusca);
 
       // ── Verifica se já está selecionado (ganho de tempo) ──
       const alreadySelectedUE = await ngUnidade.locator('.ng-value-label').textContent().catch(() => '');
-      if (alreadySelectedUE && (normUE(alreadySelectedUE).includes(targetUE) || targetUE.includes(normUE(alreadySelectedUE).trim()))) {
+      const normAlready = normUE(alreadySelectedUE);
+      
+      const jaSelecionadoMatch = normAlready && (
+        !targetUE || 
+        (targetBusca && normAlready.includes(targetBusca)) || 
+        (targetUE && (normAlready.includes(targetUE.substring(0, 15)) || targetUE.includes(normAlready.substring(0, 15))))
+      );
+
+      if (jaSelecionadoMatch) {
         console.log(`[educadf.pap] ⚡ Unidade Escolar já estava pré-selecionada: "${alreadySelectedUE.trim()}"`);
         break; // já está pronto
       }
 
-      await ngUnidade.click();
-      await page.waitForTimeout(500);
-      const inputUE = ngUnidade.locator("input[type='text']").first();
-      if ((await inputUE.count()) > 0) {
-        await inputUE.fill(termoBusca);
-      } else {
-        await page.keyboard.type(termoBusca, { delay: 30 });
+      // Remove overlays antes de interagir
+      await page.evaluate(() => {
+        document.querySelectorAll('ngb-offcanvas-backdrop, .offcanvas-backdrop, .modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+      }).catch(() => {});
+
+      try {
+        await ngUnidade.click({ timeout: 5000 });
+      } catch {
+        try { await ngUnidade.click({ force: true, timeout: 3000 }); } catch {}
       }
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(500);
+
+      const inputUE = ngUnidade.locator("input[type='text']").first();
+      const textoParaDigitar = termoBusca || nomeEsperado;
+      if (textoParaDigitar) {
+        if ((await inputUE.count()) > 0) {
+          await inputUE.fill(textoParaDigitar);
+        } else {
+          await page.keyboard.type(textoParaDigitar, { delay: 30 });
+        }
+        await page.waitForTimeout(1500);
+      }
 
       // Seleciona a primeira opção que contém o termo
       const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
@@ -1089,7 +1109,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
       for (let i = 0; i < countUE; i++) {
         const txt = (await opcoesUE.nth(i).textContent()) || '';
-        if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+        const normTxt = normUE(txt);
+        if (
+          (targetUE && (normTxt.includes(targetUE) || targetUE.includes(normTxt))) ||
+          (targetBusca && normTxt.includes(targetBusca))
+        ) {
           await opcoesUE.nth(i).click();
           unidadeOk = true;
           console.log(`[educadf.pap] ✅ Unidade Escolar selecionada: "${txt.trim().substring(0, 60)}"`);
@@ -2100,45 +2124,84 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
       if ((await ngUnidade.count()) === 0) continue;
       console.log(`[educadf.notas] Filtro Unidade Escolar encontrado: "${ph}"`);
-      const termoBusca = plano.escolaBusca || '04 DE PLANALTINA';
-      const nomeEsperado = plano.escolaNome || 'CENTRO DE ENSINO FUNDAMENTAL 04 DE PLANALTINA';
-      
-      const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+      // Termo de busca e nome esperado dinâmicos
+      const nomeEsperado = plano.escolaNome || '';
+      const termoBusca = plano.escolaBusca || plano.escolaNome || '';
+
+      const normUE = (s) => String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
       const targetUE = normUE(nomeEsperado);
+      const targetBusca = normUE(termoBusca);
 
       // ── Verifica se já está selecionado (ganho de tempo) ──
       const alreadySelectedUE = await ngUnidade.locator('.ng-value-label').textContent().catch(() => '');
-      if (alreadySelectedUE && (normUE(alreadySelectedUE).includes(targetUE) || targetUE.includes(normUE(alreadySelectedUE).trim()))) {
+      const normAlready = normUE(alreadySelectedUE);
+      
+      const jaSelecionadoMatch = normAlready && (
+        !targetUE || 
+        (targetBusca && normAlready.includes(targetBusca)) || 
+        (targetUE && (normAlready.includes(targetUE.substring(0, 15)) || targetUE.includes(normAlready.substring(0, 15))))
+      );
+
+      if (jaSelecionadoMatch) {
         console.log(`[educadf.notas] ⚡ Unidade Escolar já estava pré-selecionada: "${alreadySelectedUE.trim()}"`);
         break; // já está pronto
       }
 
-      await ngUnidade.click();
-      await page.waitForTimeout(500);
-      const inputUE = ngUnidade.locator("input[type='text']").first();
-      if ((await inputUE.count()) > 0) {
-        await inputUE.fill(termoBusca);
-      } else {
-        await page.keyboard.type(termoBusca, { delay: 30 });
+      // Remove overlays antes de interagir
+      await page.evaluate(() => {
+        document.querySelectorAll('ngb-offcanvas-backdrop, .offcanvas-backdrop, .modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+      }).catch(() => {});
+
+      try {
+        await ngUnidade.click({ timeout: 5000 });
+      } catch {
+        try { await ngUnidade.click({ force: true, timeout: 3000 }); } catch {}
       }
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(500);
+
+      const inputUE = ngUnidade.locator("input[type='text']").first();
+      const textoParaDigitar = termoBusca || nomeEsperado;
+      if (textoParaDigitar) {
+        if ((await inputUE.count()) > 0) {
+          await inputUE.fill(textoParaDigitar);
+        } else {
+          await page.keyboard.type(textoParaDigitar, { delay: 30 });
+        }
+        await page.waitForTimeout(1500);
+      }
+
       const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
       const countUE = await opcoesUE.count();
       let unidadeOk = false;
+
       for (let i = 0; i < countUE; i++) {
         const txt = (await opcoesUE.nth(i).textContent()) || '';
-        if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+        const normTxt = normUE(txt);
+        if (
+          (targetUE && (normTxt.includes(targetUE) || targetUE.includes(normTxt))) ||
+          (targetBusca && normTxt.includes(targetBusca))
+        ) {
           await opcoesUE.nth(i).click();
           unidadeOk = true;
-          console.log(`[educadf.notas] ✅ Unidade Escolar selecionada`);
+          console.log(`[educadf.notas] ✅ Unidade Escolar selecionada: "${txt.trim().substring(0, 60)}"`);
           break;
         }
       }
+
       if (!unidadeOk && countUE > 0) {
         await opcoesUE.first().click();
+        const txtFb = (await opcoesUE.first().textContent().catch(() => '')) || '';
+        console.warn(`[educadf.notas] ⚠️ Match exato não encontrado. Selecionou: "${txtFb.trim().substring(0, 60)}"`);
         unidadeOk = true;
       }
-      if (!unidadeOk) await page.keyboard.press('Escape');
+
+      if (!unidadeOk) {
+        await page.keyboard.press('Escape');
+        console.warn('[educadf.notas] ⚠️ Nenhuma opção de Unidade Escolar — tentando continuar...');
+      }
+
       await page.waitForTimeout(1500);
       break;
     }

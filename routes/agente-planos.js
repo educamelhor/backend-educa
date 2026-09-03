@@ -92,6 +92,24 @@ async function buscarNomeProfessor(db, planoId, fallbackUsuarioId) {
   return '';
 }
 
+// ── Helper: extrai termo de busca limpo para a escola no EDUCADF ─────────────
+function extrairTermoBuscaEscola(nomeEscola) {
+  if (!nomeEscola) return '';
+  const limpo = String(nomeEscola).trim().toUpperCase();
+  // Se contiver número e localidade (ex: '04 DE PLANALTINA', 'CEF 04 DE PLANALTINA')
+  const matchNum = limpo.match(/\b0?\d+\s+DE\s+[A-Z]+/i);
+  if (matchNum) return matchNum[0].trim();
+  // Remove termos genéricos de início
+  const semGenericos = limpo
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/^CENTRO\s+(DE\s+)?(ENSINO\s+)?(FUNDAMENTAL|MEDIO|EDUCACIONAL)?\s*/i, '')
+    .replace(/^ESCOLA\s+(CLASSE|FUNDAMENTAL)?\s*/i, '')
+    .replace(/^COL[EÉ]GIO\s*/i, '')
+    .trim();
+  const palavras = semGenericos.split(/\s+/).filter(w => w.length > 2);
+  return palavras.slice(0, 3).join(' ') || limpo.substring(0, 20);
+}
+
 const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
 
 // ============================================================================
@@ -238,12 +256,41 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria
-    const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
-      [plano.turmas, escolaId]
-    );
-    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    // Busca dados da escola para Unidade Escolar no EDUCADF
+    let escolaNome = '';
+    let escolaBusca = '';
+    try {
+      const [[escolaDb]] = await db.query(
+        'SELECT nome FROM escolas WHERE id = ? LIMIT 1',
+        [escolaId]
+      );
+      if (escolaDb?.nome) {
+        escolaNome = escolaDb.nome;
+        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome);
+      }
+    } catch (e) {
+      console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
+    }
+
+    // Busca o nome oficial da turma mapeado pela Secretaria (respeita turno se informado)
+    let turmaOficial = plano.turmas;
+    try {
+      const [turmasDb] = await db.query(
+        `SELECT nome_oficial, turno FROM turmas 
+         WHERE escola_id = ? 
+           AND (
+             nome = ? 
+             OR REPLACE(REPLACE(nome, 'º', ''), '°', '') = REPLACE(REPLACE(?, 'º', ''), '°', '')
+           )
+         ORDER BY (turno <=> ?) DESC, id ASC`,
+        [escolaId, plano.turmas, plano.turmas, plano.turno || null]
+      );
+      if (turmasDb?.[0]?.nome_oficial) {
+        turmaOficial = turmasDb[0].nome_oficial;
+      }
+    } catch (e) {
+      console.warn('[agente-planos] Falha ao buscar nome_oficial da turma:', e.message);
+    }
 
     const dadosPlano = {
       turmas:       plano.turmas,
@@ -252,6 +299,8 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       bimestre:     plano.bimestre,
       ano:          plano.ano,
       professorNome,
+      escolaNome,
+      escolaBusca,
       itens:        itensComData,      // array completo — todos os itens do professor
     };
 
@@ -464,12 +513,41 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria
-    const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
-      [plano.turmas, escolaId]
-    );
-    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    // Busca dados da escola para Unidade Escolar no EDUCADF
+    let escolaNome = '';
+    let escolaBusca = '';
+    try {
+      const [[escolaDb]] = await db.query(
+        'SELECT nome FROM escolas WHERE id = ? LIMIT 1',
+        [escolaId]
+      );
+      if (escolaDb?.nome) {
+        escolaNome = escolaDb.nome;
+        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome);
+      }
+    } catch (e) {
+      console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
+    }
+
+    // Busca o nome oficial da turma mapeado pela Secretaria (respeita turno se informado)
+    let turmaOficial = plano.turmas;
+    try {
+      const [turmasDb] = await db.query(
+        `SELECT nome_oficial, turno FROM turmas 
+         WHERE escola_id = ? 
+           AND (
+             nome = ? 
+             OR REPLACE(REPLACE(nome, 'º', ''), '°', '') = REPLACE(REPLACE(?, 'º', ''), '°', '')
+           )
+         ORDER BY (turno <=> ?) DESC, id ASC`,
+        [escolaId, plano.turmas, plano.turmas, plano.turno || null]
+      );
+      if (turmasDb?.[0]?.nome_oficial) {
+        turmaOficial = turmasDb[0].nome_oficial;
+      }
+    } catch (e) {
+      console.warn('[agente-planos] Falha ao buscar nome_oficial da turma:', e.message);
+    }
 
     const dadosPlano = {
       turmas:       plano.turmas,
@@ -478,6 +556,8 @@ router.post('/:id/exportar-notas', async (req, res) => {
       bimestre:     plano.bimestre,
       ano:          plano.ano,
       professorNome,
+      escolaNome,
+      escolaBusca,
       colunas:      colunas,
     };
 
