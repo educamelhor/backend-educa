@@ -26,20 +26,25 @@ router.get("/", async (req, res) => {
 
 // ============================================================================
 // GET /api/registros-ocorrencias/militares
-// Lista de militares que registraram pelo menos uma ocorrência na escola
+// Lista de todos os militares/equipe da escola e quem já registrou ocorrências
 // ============================================================================
 router.get("/militares", async (req, res) => {
   try {
     const escola_id = req.escola_id ?? req.user?.escola_id;
-    if (!escola_id) return res.status(400).json({ error: "Escola no identificada." });
+    if (!escola_id) return res.status(400).json({ error: "Escola não identificada." });
 
     const [rows] = await req.db.query(
       `SELECT DISTINCT u.id, u.nome
-       FROM ocorrencias_disciplinares o
-       JOIN usuarios u ON u.id = o.usuario_registro_id
-       WHERE o.escola_id = ?
+       FROM usuarios u
+       WHERE u.escola_id = ?
+         AND (
+           u.perfil NOT IN ('aluno', 'responsavel')
+           OR u.id IN (SELECT DISTINCT usuario_registro_id FROM ocorrencias_disciplinares WHERE escola_id = ? AND usuario_registro_id IS NOT NULL)
+           OR u.id IN (SELECT DISTINCT usuario_finalizacao_id FROM ocorrencias_disciplinares WHERE escola_id = ? AND usuario_finalizacao_id IS NOT NULL)
+         )
+         AND u.nome IS NOT NULL AND TRIM(u.nome) != ''
        ORDER BY u.nome ASC`,
-      [escola_id]
+      [escola_id, escola_id, escola_id]
     );
     res.json(rows);
   } catch (err) {
@@ -108,8 +113,8 @@ router.get("/historico", async (req, res) => {
       params.push(medida_disciplinar);
     }
     if (militar_id) {
-      where += " AND o.usuario_registro_id = ?";
-      params.push(militar_id);
+      where += " AND (o.usuario_registro_id = ? OR o.usuario_finalizacao_id = ?)";
+      params.push(militar_id, militar_id);
     }
 
     // Contagem total para paginação
