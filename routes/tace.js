@@ -267,8 +267,23 @@ router.get("/:alunoId", async (req, res) => {
 
     const [[comandante]] = await pool.query(
       `SELECT u.nome FROM usuarios u
-       WHERE u.escola_id = ? AND u.perfil IN ('militar', 'diretor') AND u.ativo = 1
-       ORDER BY FIELD(u.perfil, 'militar', 'diretor') ASC LIMIT 1`,
+       WHERE u.escola_id = ?
+         AND (
+           u.perfil IN ('diretor_disciplinar', 'comandante', 'disciplinar', 'militar', 'subcomandante')
+           OR u.perfil LIKE '%disciplinar%'
+           OR u.perfil LIKE '%militar%'
+         )
+       ORDER BY
+         CASE
+           WHEN u.perfil IN ('diretor_disciplinar', 'comandante') THEN 1
+           WHEN u.perfil = 'disciplinar' THEN 2
+           WHEN u.perfil = 'militar' THEN 3
+           WHEN u.perfil = 'subcomandante' THEN 4
+           ELSE 5
+         END ASC,
+         (u.ativo = 1) DESC,
+         u.id DESC
+       LIMIT 1`,
       [escola_id]
     );
 

@@ -92,10 +92,12 @@ router.get("/escolas", async (req, res) => {
         e.telefone,
         e.created_at,
         (SELECT dir.nome FROM usuarios dir
-         WHERE dir.escola_id = e.id AND dir.perfil = 'diretor' AND dir.ativo = 1
+         WHERE dir.escola_id = e.id AND dir.perfil = 'diretor'
+         ORDER BY (dir.ativo = 1) DESC, dir.id DESC
          LIMIT 1) AS diretor,
         (SELECT cmd.nome FROM usuarios cmd
-         WHERE cmd.escola_id = e.id AND cmd.perfil = 'militar' AND cmd.ativo = 1
+         WHERE cmd.escola_id = e.id AND cmd.perfil IN ('diretor_disciplinar', 'comandante', 'militar', 'disciplinar')
+         ORDER BY (cmd.ativo = 1) DESC, cmd.id DESC
          LIMIT 1) AS comandante
       FROM escolas e
       ORDER BY e.id DESC
@@ -780,7 +782,7 @@ router.post("/convites/:token/validar", async (req, res) => {
              u.nome, u.email, u.perfil, u.escola_id,
              e.nome AS escola_nome,
              CASE
-               WHEN u.perfil = 'militar' THEN 'Comandante (Disciplinar)'
+               WHEN u.perfil IN ('militar', 'diretor_disciplinar', 'comandante') THEN 'Comandante (Disciplinar)'
                WHEN u.perfil = 'diretor' AND e.tipo LIKE '%CCMDF%' THEN 'Diretor Pedagógico'
                ELSE 'Diretor'
              END AS papel_label

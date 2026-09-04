@@ -63,7 +63,7 @@ router.post("/:token/validar", async (req, res) => {
              u.nome, u.email, u.perfil, u.escola_id,
              e.nome AS escola_nome,
              CASE
-               WHEN u.perfil = 'militar' THEN 'Comandante (Disciplinar)'
+               WHEN u.perfil IN ('militar', 'diretor_disciplinar', 'comandante') THEN 'Comandante (Disciplinar)'
                WHEN u.perfil = 'diretor' AND e.tipo LIKE '%CCMDF%' THEN 'Diretor Pedagógico'
                ELSE 'Diretor'
              END AS papel_label
