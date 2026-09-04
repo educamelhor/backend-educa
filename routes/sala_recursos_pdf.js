@@ -170,7 +170,11 @@ export async function gerarPdfAdequacaoSEEDF({
 
       // A4 Landscape: 841.89 x 595.28 pt
       const L = 24;
-           // 1. Bloco de Identificação do Estudante (sem cabeçalho da escola, espelho fiel SEEDF)
+      const R = 24;
+      const PW = 841.89 - L - R; // ~793.89 pt
+      const PAGE_H = 595.28;
+
+      // 1. Bloco de Identificação do Estudante (sem cabeçalho da escola, espelho fiel SEEDF)
       const PRETO = "#000000";
       const CINZA_PAUTA = "#d1d5db";
       const FUNDO_CABECALHO = "#f8fafc";
