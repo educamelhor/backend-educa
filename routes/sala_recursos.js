@@ -74,6 +74,7 @@ router.get("/alunos", verificarEscola, async (req, res) => {
     const { escola_id } = req.user;
     const {
       turma_id,
+      turno,
       filtro = "",
       status_aee = "", // ativo, desligado, todos
       apenas_aee = "1",
@@ -90,6 +91,11 @@ router.get("/alunos", verificarEscola, async (req, res) => {
     if (turma_id) {
       where.push("m.turma_id = ?");
       params.push(Number(turma_id));
+    }
+
+    if (turno && turno.trim().length > 0 && turno !== "todos") {
+      where.push("t.turno = ?");
+      params.push(turno.trim());
     }
 
     if (filtro && filtro.trim().length > 0) {
