@@ -98,6 +98,7 @@ import cargasHorariasRouter from "./routes/cargasHorarias.js";
 import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
 import conselhoRouter from "./routes/conselho.js";
 import conselhoPdfRouter from "./routes/conselho-pdf.js";
+import salaRecursosRouter from "./routes/sala_recursos.js";
 import responsaveisRouter from "./routes/responsaveis.js";
 import termoConsentimentoRouter from "./routes/termo-consentimento.js";
 import taceRouter from "./routes/tace.js";
@@ -1460,6 +1461,7 @@ async function bootstrap() {
     ferramentasIndexRouter
   );
   app.use("/api/alunos", autenticarToken, verificarEscola, alunosRouter);
+  app.use("/api/sala-recursos", autenticarToken, verificarEscola, salaRecursosRouter);
   app.use("/api/matriculas", autenticarToken, verificarEscola, matriculasRouter);
   app.use(
     "/api/professores",

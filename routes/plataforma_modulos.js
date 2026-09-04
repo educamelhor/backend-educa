@@ -88,6 +88,8 @@ const MODULOS_VALIDOS = new Set([
   'merenda', 'merenda.cadastro', 'merenda.cardapio', 'merenda.relatorios',
   // Comunicação
   'comunicacao', 'comunicacao.avisos', 'comunicacao.comunicados', 'comunicacao.mural',
+  // Sala de Recursos (AEE)
+  'sala_recurso', 'sala_recurso.alunos', 'sala_recurso.adequacoes', 'sala_recurso.pdi', 'sala_recurso.atendimentos',
 ]);
 
 /**
