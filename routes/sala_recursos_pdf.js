@@ -86,7 +86,6 @@ export async function gerarPdfAdequacaoSEEDF({
     "SELECT id, nome, apelido, cidade, endereco FROM escolas WHERE id = ? LIMIT 1",
     [escolaId]
   );
-  const logos = await getEscolaLogos(escolaId);
 
   // 2. Busca dados do aluno se alunoId for informado
   let aluno = null;
@@ -157,7 +156,8 @@ export async function gerarPdfAdequacaoSEEDF({
     try {
       const doc = new PDFDocument({
         size: "A4",
-        margins: { top: 26, bottom: 36, left: 34, right: 34 },
+        layout: "landscape",
+        margins: { top: 20, bottom: 20, left: 24, right: 24 },
         bufferPages: true,
       });
 
@@ -168,118 +168,113 @@ export async function gerarPdfAdequacaoSEEDF({
       pass.on("error", reject);
       doc.pipe(pass);
 
-      const L = 34;
-      const R = 34;
-      const PW = 595.28 - L - R; // ~527.28 pt
-      const PAGE_H = 841.89;
+      // A4 Landscape: 841.89 x 595.28 pt
+      const L = 24;
+      const R = 24;
+      const PW = 841.89 - L - R; // ~793.89 pt
+      const PAGE_H = 595.28;
 
       const checkPageBreak = (neededHeight) => {
-        if (doc.y + neededHeight > PAGE_H - 50) {
+        if (doc.y + neededHeight > PAGE_H - 30) {
           doc.addPage();
         }
       };
 
-      // 1. Cabeçalho Institucional Oficial
-      await drawInstitutionalHeader(doc, escola, logos, L, PW);
-
-      // 2. Bloco de Identificação do Estudante
+      // 1. Bloco de Identificação do Estudante (sem cabeçalho da escola, espelho fiel SEEDF)
       const cidsText = laudos.length > 0
         ? laudos.map((l) => (l.cid ? `CID ${l.cid} (${l.diagnostico || ""})` : l.diagnostico)).filter(Boolean).join("; ")
         : (emBranco ? "____________________________________________________________" : "Em avaliação / Não informado");
 
-      const studentBoxY = doc.y;
-      const studentBoxH = 56;
+      const studentBoxY = 20;
+      const studentBoxH = 44;
       doc.rect(L, studentBoxY, PW, studentBoxH).fillAndStroke("#ffffff", BORDA_ESCURA);
 
       // Linha 1: Nome do Estudante e Matrícula
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("ESTUDANTE:", L + 6, studentBoxY + 6, { width: 62 });
+        .text("ESTUDANTE:", L + 6, studentBoxY + 5, { width: 68 });
       doc.font("Helvetica-Bold").fontSize(8.5).fillColor(CINZA_TEXTO)
-        .text(aluno?.estudante || (emBranco ? "____________________________________________________________________" : "—"), L + 68, studentBoxY + 6, { width: PW * 0.58, lineBreak: false });
+        .text(aluno?.estudante || (emBranco ? "____________________________________________________________________" : "—"), L + 74, studentBoxY + 5, { width: PW * 0.58, lineBreak: false });
 
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("CÓDIGO / MATRÍCULA:", L + PW * 0.68, studentBoxY + 6, { width: 100 });
-      doc.font("Helvetica").fontSize(8.5).fillColor(CINZA_TEXTO)
-        .text(String(aluno?.codigo || (emBranco ? "____________" : "—")), L + PW * 0.68 + 102, studentBoxY + 6, { width: PW * 0.3 - 102 });
+        .text("CÓDIGO / MATRÍCULA:", L + PW * 0.68, studentBoxY + 5, { width: 115 });
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor(CINZA_TEXTO)
+        .text(String(aluno?.codigo || (emBranco ? "____________" : "—")), L + PW * 0.68 + 118, studentBoxY + 5, { width: PW * 0.3 - 118 });
 
       // Linha 2: Turma, Turno, Data Nasc
       const turmaStr = aluno?.turma_nome ? `${aluno.turma_nome} (${aluno.turma_turno || ""})` : (emBranco ? "____________________" : "—");
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("TURMA / TURNO:", L + 6, studentBoxY + 22, { width: 85 });
+        .text("TURMA / TURNO:", L + 6, studentBoxY + 18, { width: 90 });
       doc.font("Helvetica").fontSize(8.5).fillColor(CINZA_TEXTO)
-        .text(turmaStr, L + 92, studentBoxY + 22, { width: PW * 0.45 });
+        .text(turmaStr, L + 96, studentBoxY + 18, { width: PW * 0.45 });
 
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("DATA DE NASC.:", L + PW * 0.68, studentBoxY + 22, { width: 80 });
+        .text("DATA DE NASC.:", L + PW * 0.68, studentBoxY + 18, { width: 85 });
       doc.font("Helvetica").fontSize(8.5).fillColor(CINZA_TEXTO)
-        .text(formatDate(aluno?.data_nascimento), L + PW * 0.68 + 82, studentBoxY + 22, { width: 80 });
+        .text(formatDate(aluno?.data_nascimento), L + PW * 0.68 + 88, studentBoxY + 18, { width: 80 });
 
       // Linha 3: Diagnóstico / CID
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("DIAGNÓSTICO / CID:", L + 6, studentBoxY + 38, { width: 95 });
+        .text("DIAGNÓSTICO / CID:", L + 6, studentBoxY + 31, { width: 100 });
       doc.font("Helvetica").fontSize(8.5).fillColor(CINZA_TEXTO)
-        .text(cidsText, L + 102, studentBoxY + 38, { width: PW - 110, lineBreak: false });
+        .text(cidsText, L + 106, studentBoxY + 31, { width: PW - 112, lineBreak: false });
 
-      doc.y = studentBoxY + studentBoxH + 8;
+      // 2. SEÇÃO 8 — TABELA OFICIAL SEEDF (ADEQUAÇÕES CURRICULARES)
+      const sec8Top = studentBoxY + studentBoxH + 4;
+      const sec8H = 40;
+      doc.rect(L, sec8Top, PW, sec8H).fillAndStroke("#f8fafc", BORDA_ESCURA);
 
-      // 3. SEÇÃO 8 — TABELA OFICIAL SEEDF (ADEQUAÇÕES CURRICULARES)
       // Detecta etapa da turma
       const serie = String(aluno?.turma_serie || aluno?.turma_nome || "").toLowerCase();
       const isInfantil = serie.includes("infantil") || serie.includes("creche");
       const isIniciais = /1[ºª\s]|2[ºª\s]|3[ºª\s]|4[ºª\s]|5[ºª\s]/.test(serie) && !serie.includes("ensino médio");
       const isFinais = /6[ºª\s]|7[ºª\s]|8[ºª\s]|9[ºª\s]/.test(serie);
-      const isMedio = serie.includes("médio") || /1ª|2ª|3ª/.test(serie) && serie.includes("méd");
+      const isMedio = serie.includes("médio") || (/1ª|2ª|3ª/.test(serie) && serie.includes("méd"));
 
-      const checkInfantil = isInfantil ? "[ X ]" : "[   ]";
-      const checkIniciais = isIniciais ? "[ X ]" : "[   ]";
-      const checkFinais   = isFinais || (!isInfantil && !isIniciais && !isMedio) ? "[ X ]" : "[   ]";
-      const checkMedio    = isMedio ? "[ X ]" : "[   ]";
+      const checkInfantil = isInfantil ? "( X )" : "(   )";
+      const checkIniciais = isIniciais ? "( X )" : "(   )";
+      const checkFinais   = isFinais || (!isInfantil && !isIniciais && !isMedio) ? "( X )" : "(   )";
+      const checkMedio    = isMedio ? "( X )" : "(   )";
 
       const vigenciaTexto = bimestre || adeq?.bimestre || "1°, 2°, 3° E 4° BIMESTRES";
 
-      // Cabeçalho da Seção 8
-      const sec8Top = doc.y;
-      doc.rect(L, sec8Top, PW, 36).fillAndStroke("#f1f5f9", BORDA_ESCURA);
-      
-      doc.font("Helvetica-Bold").fontSize(9).fillColor(AZUL_ESCURO)
-        .text("8. ADEQUAÇÕES CURRICULARES (Este campo deverá ser preenchido a cada semestre/bimestre)", L + 6, sec8Top + 5, { width: PW - 12 });
-      
-      doc.font("Helvetica").fontSize(7.5).fillColor(CINZA_TEXTO)
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor(AZUL_ESCURO)
+        .text("8. ADEQUAÇÕES CURRICULARES (Este campo deverá ser preenchido a cada semestre)", L + 6, sec8Top + 4, { width: PW - 12 });
+
+      doc.font("Helvetica").fontSize(8).fillColor(CINZA_TEXTO)
         .text(
           `ETAPA:   ${checkInfantil} Educação Infantil     ${checkIniciais} Ensino Fundamental - Anos Iniciais     ${checkFinais} Ensino Fundamental - Anos Finais     ${checkMedio} Ensino Médio`,
-          L + 6, sec8Top + 18, { width: PW - 12 }
+          L + 6, sec8Top + 16, { width: PW - 12 }
         );
 
-      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL_ESCURO)
-        .text(`Período de vigência da Adequação Curricular (Bimestral): `, L + 6, sec8Top + 27, { continued: true });
-      doc.font("Helvetica").fontSize(7.5).fillColor(CINZA_TEXTO)
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
+        .text("Período de vigência da Adequação Curricular (Bimestral): ", L + 6, sec8Top + 27, { continued: true });
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(CINZA_TEXTO)
         .text(vigenciaTexto.toUpperCase());
 
-      doc.y = sec8Top + 36;
+      // 3. Seção 9 — Áreas do Conhecimento e Professor Responsável (duas linhas bem espaçadas)
+      const sec9Top = sec8Top + sec8H;
+      const sec9H = 30;
+      doc.rect(L, sec9Top, PW, sec9H).fillAndStroke("#ffffff", BORDA_ESCURA);
 
-      // Seção 9: Áreas do Conhecimento / Componentes Curriculares + Professor Responsável
-      const sec9Top = doc.y;
-      doc.rect(L, sec9Top, PW, 24).fillAndStroke("#ffffff", BORDA_ESCURA);
+      const discNome = disciplina || adeq?.disciplina || (emBranco ? "____________________________________________________________________" : "Todas as Áreas / Geral");
+      const profNome = professorRegente || adeq?.professor_regente || (emBranco ? "____________________________________________________________________" : "—");
 
-      const discNome = disciplina || adeq?.disciplina || (emBranco ? "____________________________________________" : "Todas as Áreas / Geral");
-      const profNome = professorRegente || adeq?.professor_regente || (emBranco ? "____________________________________________" : "—");
-
+      // Linha 1: Componente Curricular
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("9. Áreas do conhecimento/Componentes Curriculares: ", L + 6, sec9Top + 5, { width: 230, continued: true });
+        .text("9. Áreas do conhecimento/Componentes Curriculares: ", L + 6, sec9Top + 4, { continued: true });
       doc.font("Helvetica-Bold").fontSize(8.5).fillColor(CINZA_TEXTO)
         .text(discNome);
 
+      // Linha 2: Professor Responsável
       doc.font("Helvetica-Bold").fontSize(8).fillColor(AZUL_ESCURO)
-        .text("PROFESSOR RESPONSÁVEL: ", L + 6, sec9Top + 14, { width: 135, continued: true });
+        .text("PROFESSOR RESPONSÁVEL: ", L + 6, sec9Top + 16, { continued: true });
       doc.font("Helvetica").fontSize(8.5).fillColor(CINZA_TEXTO)
         .text(profNome);
 
-      doc.y = sec9Top + 24;
-
-      // Grade de 4 Colunas (Grid SEEDF)
-      const colW = PW / 4; // ~131.82 pt cada coluna
-      const gridHeaderTop = doc.y;
-      const gridHeaderH = 48;
+      // 4. Grade de 4 Colunas (Grid SEEDF)
+      const colW = PW / 4; // ~198.47 pt cada coluna
+      const gridHeaderTop = sec9Top + sec9H;
+      const gridHeaderH = 32;
 
       const colHeaders = [
         {
@@ -292,7 +287,7 @@ export async function gerarPdfAdequacaoSEEDF({
         },
         {
           title: "Estratégias Pedagógicas/ Recursos Didáticos",
-          sub: "(Metodologias e tecnologia assistiva)",
+          sub: "(Metodologias, tecnologia assistiva e adequações)",
         },
         {
           title: "Estratégias de Avaliação para a aprendizagem",
@@ -300,38 +295,34 @@ export async function gerarPdfAdequacaoSEEDF({
         },
       ];
 
-      // Desenha cabeçalhos das 4 colunas
       colHeaders.forEach((col, i) => {
         const colX = L + i * colW;
-        doc.rect(colX, gridHeaderTop, colW, gridHeaderH).fillAndStroke("#f8fafc", BORDA_ESCURA);
+        doc.rect(colX, gridHeaderTop, colW, gridHeaderH).fillAndStroke("#f1f5f9", BORDA_ESCURA);
         doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL_ESCURO)
-          .text(col.title, colX + 4, gridHeaderTop + 4, { width: colW - 8, align: "center" });
+          .text(col.title, colX + 4, gridHeaderTop + 3, { width: colW - 8, align: "center" });
         doc.font("Helvetica-Oblique").fontSize(6.5).fillColor(CINZA_LABEL)
-          .text(col.sub, colX + 4, doc.y + 2, { width: colW - 8, align: "center" });
+          .text(col.sub, colX + 4, gridHeaderTop + 14, { width: colW - 8, align: "center" });
       });
 
-      doc.y = gridHeaderTop + gridHeaderH;
+      // 5. Conteúdo da Grade e Assinaturas
+      const contentTop = gridHeaderTop + gridHeaderH;
+      const sigH = 44;
+      const sigTop = PAGE_H - 20 - sigH; // ~531.28 pt
+      const availableContentH = sigTop - contentTop - 6; // ~339 pt
 
-      // Linha de Conteúdo da Tabela
       if (emBranco) {
-        // Modelo em Branco para preenchimento manual / impresso: desenha caixa com linhas pautadas
-        const rowH = 290; // Altura generosa para escrita
-        const rowTop = doc.y;
-
         colHeaders.forEach((_, i) => {
           const colX = L + i * colW;
-          doc.rect(colX, rowTop, colW, rowH).fillAndStroke("#ffffff", BORDA_ESCURA);
-          
-          // Linhas horizontais pontilhadas para apoio de escrita
+          doc.rect(colX, contentTop, colW, availableContentH).fillAndStroke("#ffffff", BORDA_ESCURA);
+
+          // Linhas pautadas para escrita manual
           const lineGap = 16;
-          for (let ly = rowTop + lineGap; ly < rowTop + rowH - 4; ly += lineGap) {
+          for (let ly = contentTop + lineGap; ly < contentTop + availableContentH - 4; ly += lineGap) {
             doc.moveTo(colX + 3, ly).lineTo(colX + colW - 3, ly).strokeColor("#e2e8f0").lineWidth(0.5).stroke();
           }
         });
-
-        doc.y = rowTop + rowH;
+        doc.y = contentTop + availableContentH;
       } else {
-        // Modelo Preenchido com dados cadastrados
         const objetivosText = adeq?.habilidades_prioritarias || "—";
         const conteudosText = adeq?.metodologias_estrategias 
           ? (adeq?.conteudos_adaptados || adeq?.metodologias_estrategias) 
@@ -340,66 +331,61 @@ export async function gerarPdfAdequacaoSEEDF({
         const avaliacaoText = adeq?.avaliacao_adaptada || "—";
 
         const texts = [objetivosText, conteudosText, estrategiasText, avaliacaoText];
-        
-        // Calcula a maior altura de texto
+
+        // Calcula altura necessária
         doc.font("Helvetica").fontSize(7.5);
-        let maxH = 180;
+        let maxTextH = availableContentH;
         texts.forEach((txt) => {
-          const h = doc.heightOfString(txt, { width: colW - 8, align: "justify" });
-          if (h + 16 > maxH) maxH = h + 16;
+          const h = doc.heightOfString(txt, { width: colW - 12, align: "justify", lineGap: 1.4 });
+          if (h + 16 > maxTextH) maxTextH = h + 16;
         });
 
-        // Limita ao espaço da página ou divide
-        checkPageBreak(maxH + 60);
-
-        const rowTop = doc.y;
-        texts.forEach((txt, i) => {
-          const colX = L + i * colW;
-          doc.rect(colX, rowTop, colW, maxH).fillAndStroke("#ffffff", BORDA_ESCURA);
-          doc.font("Helvetica").fontSize(7.5).fillColor(CINZA_TEXTO)
-            .text(txt, colX + 4, rowTop + 6, { width: colW - 8, align: "justify", lineGap: 1.2 });
-        });
-
-        doc.y = rowTop + maxH;
+        // Se passar do espaço da página, divide se necessário
+        if (maxTextH > availableContentH) {
+          colHeaders.forEach((_, i) => {
+            const colX = L + i * colW;
+            doc.rect(colX, contentTop, colW, maxTextH).fillAndStroke("#ffffff", BORDA_ESCURA);
+            doc.font("Helvetica").fontSize(7.5).fillColor(CINZA_TEXTO)
+              .text(texts[i] || "—", colX + 6, contentTop + 6, { width: colW - 12, align: "justify", lineGap: 1.4 });
+          });
+          doc.y = contentTop + maxTextH;
+        } else {
+          colHeaders.forEach((_, i) => {
+            const colX = L + i * colW;
+            doc.rect(colX, contentTop, colW, availableContentH).fillAndStroke("#ffffff", BORDA_ESCURA);
+            doc.font("Helvetica").fontSize(7.5).fillColor(CINZA_TEXTO)
+              .text(texts[i] || "—", colX + 6, contentTop + 6, { width: colW - 12, align: "justify", lineGap: 1.4 });
+          });
+          doc.y = contentTop + availableContentH;
+        }
       }
 
-      // 4. Bloco de Assinaturas Oficiais
-      doc.y += 14;
-      checkPageBreak(75);
-
-      const sigTop = doc.y;
-      const sigColW = (PW - 20) / 3;
+      // 6. Bloco de Assinaturas Oficiais (fixado na base)
+      const sigColW = (PW - 40) / 3;
 
       const sigs = [
         {
-          cargo: "Professor(a) Responsável / Regente",
-          nome: professorRegente || adeq?.professor_regente || "___________________________________",
+          cargo: "Professor(a) Regente Responsável",
+          nome: profNome !== "—" && !profNome.includes("___") ? profNome : "___________________________________",
         },
         {
           cargo: "Professor(a) Sala de Recursos (AEE)",
-          nome: aeeCfg?.professor_aee || adeq?.professor_aee || "___________________________________",
+          nome: aeeCfg?.professor_aee || adeq?.professor_aee || "Prof(a). Sala de Recursos",
         },
         {
-          cargo: "Coordenação Pedagógica / Direção",
-          nome: "Equipe Gestora / Unidade Escolar",
+          cargo: "Equipe Especializada de Apoio / Coordenação",
+          nome: "Coordenação Pedagógica",
         },
       ];
 
       sigs.forEach((s, idx) => {
-        const sx = L + idx * (sigColW + 10);
-        doc.moveTo(sx + 8, sigTop + 24).lineTo(sx + sigColW - 8, sigTop + 24).strokeColor(BORDA_ESCURA).lineWidth(0.8).stroke();
+        const sx = L + idx * (sigColW + 20);
+        doc.moveTo(sx, sigTop + 14).lineTo(sx + sigColW, sigTop + 14).strokeColor(BORDA_ESCURA).lineWidth(0.7).stroke();
         doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL_ESCURO)
+          .text(s.nome, sx, sigTop + 18, { width: sigColW, align: "center" });
+        doc.font("Helvetica").fontSize(7).fillColor(CINZA_LABEL)
           .text(s.cargo, sx, sigTop + 28, { width: sigColW, align: "center" });
-        doc.font("Helvetica").fontSize(7).fillColor(CINZA_TEXTO)
-          .text(s.nome, sx, sigTop + 38, { width: sigColW, align: "center" });
       });
-
-      // Rodapés em todas as páginas
-      const range = doc.bufferedPageRange();
-      for (let i = range.start; i < range.start + range.count; i++) {
-        doc.switchToPage(i);
-        drawInstitutionalFooter(doc, i + 1, L, PW, PAGE_H);
-      }
 
       doc.end();
     } catch (err) {
@@ -407,6 +393,7 @@ export async function gerarPdfAdequacaoSEEDF({
     }
   });
 }
+
 
 // ─── 2. GERAÇÃO DO PDF DE ADEQUAÇÃO CURRICULAR (INDIVIDUAL / PADRÃO DETALHADO) ──
 export async function gerarPdfAdequacaoCurricular(adequacaoId, escolaId) {
