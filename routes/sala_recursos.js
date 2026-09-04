@@ -1,8 +1,10 @@
-// routes/sala_recursos.js
-// API do Módulo SALA DE RECURSOS (AEE - Atendimento Educacional Especializado)
 import express from "express";
 import pool from "../db.js";
-import { gerarPdfAdequacaoCurricular } from "./sala_recursos_pdf.js";
+import { 
+  gerarPdfAdequacaoCurricular,
+  gerarPdfAdequacaoSEEDF,
+  gerarPdfProntuarioAEE
+} from "./sala_recursos_pdf.js";
 
 const router = express.Router();
 
@@ -664,6 +666,65 @@ router.get("/adequacoes/:id/pdf", verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("[sala_recursos.adequacoes.pdf] Erro:", err);
     return res.status(500).json({ message: "Erro ao gerar PDF da adequação curricular: " + err.message });
+  }
+});
+
+// ─── 7.1 GERAÇÃO DE PDF PADRÃO SEEDF (FICHA OFICIAL / EM BRANCO OU PREENCHIDA) ──
+router.get("/pdf/adequacao-seedf", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const {
+      aluno_id,
+      adequacao_id,
+      ano_letivo,
+      bimestre,
+      disciplina,
+      professor_regente,
+      em_branco
+    } = req.query;
+
+    const isEmBranco = em_branco === "1" || em_branco === "true";
+
+    const pdfBuffer = await gerarPdfAdequacaoSEEDF({
+      escolaId: escola_id,
+      alunoId: aluno_id ? Number(aluno_id) : null,
+      adequacaoId: adequacao_id ? Number(adequacao_id) : null,
+      anoLetivo: Number(ano_letivo) || anoLetivoPadrao(),
+      bimestre: bimestre || "",
+      disciplina: disciplina || "",
+      professorRegente: professor_regente || "",
+      emBranco: isEmBranco,
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="Adequacao_SEEDF_${isEmBranco ? "Modelo_Em_Branco" : (aluno_id || "Geral")}.pdf"`
+    );
+    res.setHeader("Content-Length", pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (err) {
+    console.error("[sala_recursos.pdf.adequacao-seedf] Erro:", err);
+    return res.status(500).json({ message: "Erro ao gerar PDF da ficha SEEDF: " + err.message });
+  }
+});
+
+// ─── 7.2 GERAÇÃO DE PDF DE PRONTUÁRIO INTEGRADO AEE ──────────────────────────
+router.get("/pdf/prontuario/:aluno_id", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const alunoId = Number(req.params.aluno_id);
+    const ano = Number(req.query.ano_letivo) || anoLetivoPadrao();
+
+    const pdfBuffer = await gerarPdfProntuarioAEE(alunoId, escola_id, ano);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Prontuario_AEE_Aluno_${alunoId}.pdf"`);
+    res.setHeader("Content-Length", pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (err) {
+    console.error("[sala_recursos.pdf.prontuario] Erro:", err);
+    return res.status(500).json({ message: "Erro ao gerar Prontuário AEE: " + err.message });
   }
 });
 
