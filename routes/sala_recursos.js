@@ -111,8 +111,16 @@ router.get("/alunos", verificarEscola, async (req, res) => {
     }
 
     if (status_aee && status_aee !== "todos") {
-      where.push("cfg.status = ?");
-      params.push(status_aee);
+      if (status_aee === "ativo") {
+        where.push("(cfg.status = 'ativo' OR (cfg.status IS NULL AND (a.atendimento_diferencial = 1 OR l.id IS NOT NULL)))");
+      } else if (status_aee === "desligado") {
+        where.push("cfg.status = 'desligado'");
+      } else if (status_aee === "pendente_config") {
+        where.push("(cfg.id IS NULL AND (a.atendimento_diferencial = 1 OR l.id IS NOT NULL))");
+      } else {
+        where.push("cfg.status = ?");
+        params.push(status_aee);
+      }
     }
 
     const sql = `
