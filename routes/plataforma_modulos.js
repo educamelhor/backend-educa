@@ -65,7 +65,7 @@ const MODULOS_VALIDOS = new Set([
   // Professores
   'professores', 'professores.planos', 'professores.avaliacoes',
   'professores.conteudos', 'professores.provas', 'professores.boletim',
-  'professores.conselho',
+  'professores.conselho', 'professores.sala_recurso',
   // Monitoramento
   'monitoramento', 'monitoramento.painel', 'monitoramento.alertas',
   'monitoramento.visitantes_registrar', 'monitoramento.visitantes_historico',
@@ -89,7 +89,7 @@ const MODULOS_VALIDOS = new Set([
   // Comunicação
   'comunicacao', 'comunicacao.avisos', 'comunicacao.comunicados', 'comunicacao.mural',
   // Sala de Recursos (AEE)
-  'sala_recurso', 'sala_recurso.alunos', 'sala_recurso.adequacoes', 'sala_recurso.pdi', 'sala_recurso.atendimentos',
+  'sala_recurso', 'sala_recurso.alunos', 'sala_recurso.adequacoes', 'sala_recurso.impressao', 'sala_recurso.pdi', 'sala_recurso.atendimentos',
 ]);
 
 /**
