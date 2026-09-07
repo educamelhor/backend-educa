@@ -362,8 +362,12 @@ export async function gerarPdfAdequacaoSEEDF({
 
         const cleanTxt = (t) => {
           if (!t) return "—";
-          const s = String(t).replace(/^\.\s*\n?/, "").trim();
-          return s || "—";
+          let s = String(t).replace(/^\.\s*\n?/, "").trim();
+          if (!s) return "—";
+          if (s.includes("• ") && !s.startsWith("• ") && !s.startsWith("- ")) {
+            s = "• " + s;
+          }
+          return s;
         };
 
         // Calcula a altura necessária de cada linha de bimestre
