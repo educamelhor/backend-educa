@@ -463,7 +463,7 @@ router.delete("/laudos/:id", verificarEscola, async (req, res) => {
 router.get("/adequacoes", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { aluno_id, ano_letivo, bimestre, disciplina } = req.query;
+    const { aluno_id, ano_letivo, bimestre, disciplina, turma_id } = req.query;
 
     const where = ["ac.escola_id = ?"];
     const params = [escola_id];
@@ -488,11 +488,17 @@ router.get("/adequacoes", verificarEscola, async (req, res) => {
       params.push(disciplina);
     }
 
+    if (turma_id) {
+      where.push("m.turma_id = ?");
+      params.push(Number(turma_id));
+    }
+
     const [rows] = await pool.query(`
       SELECT 
         ac.*,
         a.estudante AS aluno_nome,
         a.codigo AS aluno_codigo,
+        a.foto AS aluno_foto,
         t.nome AS turma_nome,
         t.turno AS turma_turno
       FROM aee_adequacoes_curriculares ac
@@ -547,6 +553,7 @@ router.post("/adequacoes", verificarEscola, async (req, res) => {
     const { escola_id } = req.user;
     const usuarioId = req.user.id || null;
     const {
+      id,
       aluno_id,
       ano_letivo,
       bimestre,
@@ -567,6 +574,48 @@ router.post("/adequacoes", verificarEscola, async (req, res) => {
     }
 
     const ano = Number(ano_letivo) || anoLetivoPadrao();
+
+    // Verifica se já existe por ID ou pela chave única (aluno_id, escola_id, ano_letivo, bimestre, disciplina)
+    let targetId = id ? Number(id) : null;
+    if (!targetId) {
+      const [[existing]] = await pool.query(`
+        SELECT id FROM aee_adequacoes_curriculares
+        WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ? AND bimestre = ? AND disciplina = ?
+        LIMIT 1
+      `, [Number(aluno_id), escola_id, ano, bimestre, disciplina]);
+      if (existing) targetId = existing.id;
+    }
+
+    if (targetId) {
+      await pool.query(`
+        UPDATE aee_adequacoes_curriculares
+        SET 
+          disciplina_id = ?,
+          professor_regente = ?,
+          professor_aee = ?,
+          habilidades_prioritarias = ?,
+          metodologias_estrategias = ?,
+          recursos_didaticos = ?,
+          avaliacao_adaptada = ?,
+          parecer_conclusivo = ?,
+          status = ?
+        WHERE id = ? AND escola_id = ?
+      `, [
+        disciplina_id ? Number(disciplina_id) : null,
+        professor_regente || null,
+        professor_aee || null,
+        habilidades_prioritarias || null,
+        metodologias_estrategias || null,
+        recursos_didaticos || null,
+        avaliacao_adaptada || null,
+        parecer_conclusivo || null,
+        status || "concluido",
+        targetId,
+        escola_id
+      ]);
+
+      return res.json({ ok: true, id: targetId, message: "Adequação curricular atualizada com sucesso!" });
+    }
 
     const [result] = await pool.query(`
       INSERT INTO aee_adequacoes_curriculares (
