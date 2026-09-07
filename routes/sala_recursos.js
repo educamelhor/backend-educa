@@ -1,10 +1,38 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
+import multer from "multer";
+import bcrypt from "bcryptjs";
+import { fileURLToPath } from "url";
 import pool from "../db.js";
 import { 
   gerarPdfAdequacaoCurricular,
   gerarPdfAdequacaoSEEDF,
   gerarPdfProntuarioAEE
 } from "./sala_recursos_pdf.js";
+import {
+  encryptDocumentBuffer,
+  decryptDocumentBuffer,
+  convertImageToPdfBuffer,
+  protectPdfBufferWithPassword
+} from "../utils/cryptoPdfHelper.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const UPLOAD_LAUDOS_DIR = path.join(__dirname, "../uploads/aee_laudos_seguros");
+
+if (!fs.existsSync(UPLOAD_LAUDOS_DIR)) {
+  try {
+    fs.mkdirSync(UPLOAD_LAUDOS_DIR, { recursive: true });
+  } catch (err) {
+    console.warn("Aviso ao criar diretório de laudos seguros:", err.message);
+  }
+}
+
+const uploadLaudo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25MB max
+});
 
 const router = express.Router();
 
@@ -260,10 +288,14 @@ router.get("/alunos/:aluno_id", verificarEscola, async (req, res) => {
     // Laudos
     const [laudos] = await pool.query(`
       SELECT 
-        id, cid, diagnostico, medico_nome, medico_crm, medico_especialidade,
+        id, aluno_id, escola_id, tipo_documento, titulo, cid, diagnostico,
+        medico_nome, medico_crm, medico_especialidade,
         DATE_FORMAT(data_laudo, '%Y-%m-%d') AS data_laudo,
         DATE_FORMAT(data_validade, '%Y-%m-%d') AS data_validade,
-        medicamentos, acompanhamento_externo, arquivo_url, observacoes, criado_em
+        medicamentos, acompanhamento_externo, arquivo_url, arquivo_path,
+        arquivo_nome_original, arquivo_mime, arquivo_tamanho, criptografado,
+        observacoes, criado_em,
+        CASE WHEN (arquivo_path IS NOT NULL AND arquivo_path != '') THEN 1 ELSE 0 END AS possui_arquivo
       FROM aee_laudos
       WHERE aluno_id = ? AND escola_id = ?
       ORDER BY id DESC
@@ -367,100 +399,423 @@ router.put("/alunos/:aluno_id/config", verificarEscola, async (req, res) => {
   }
 });
 
-// ─── 5. CRUD DE LAUDOS MÉDICOS ───────────────────────────────────────────────
-router.post("/alunos/:aluno_id/laudos", verificarEscola, async (req, res) => {
+// ─── 5. CRUD DE LAUDOS E DOCUMENTOS MÉDICOS COM CRIPTOGRAFIA (LGPD) ───────────
+router.post("/alunos/:aluno_id/laudos", verificarEscola, uploadLaudo.single("arquivo"), async (req, res) => {
   try {
     const { escola_id } = req.user;
+    const usuarioId = req.user.usuario_id || req.user.id || 0;
     const alunoId = Number(req.params.aluno_id);
     const {
-      cid,
-      diagnostico,
-      medico_nome,
-      medico_crm,
-      medico_especialidade,
-      data_laudo,
-      data_validade,
-      medicamentos,
-      acompanhamento_externo,
-      arquivo_url,
-      observacoes
+      tipo_documento = "Laudo Médico",
+      titulo = "",
+      cid = "",
+      diagnostico = "",
+      medico_nome = "",
+      medico_crm = "",
+      medico_especialidade = "Neuropediatria",
+      data_laudo = null,
+      data_validade = null,
+      medicamentos = "",
+      acompanhamento_externo = "",
+      observacoes = ""
     } = req.body;
+
+    // Busca nome do aluno para compor cabeçalho do documento se necessário
+    const [[alunoRow]] = await pool.query(
+      `SELECT estudante FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [alunoId, escola_id]
+    );
+    const alunoNome = alunoRow?.estudante || "Estudante";
+
+    let arquivo_path = null;
+    let arquivo_nome_original = null;
+    let arquivo_mime = null;
+    let arquivo_tamanho = 0;
+    let criptografado = 1;
+
+    // Processa upload se arquivo foi enviado
+    if (req.file && req.file.buffer) {
+      let finalBufferToEncrypt = req.file.buffer;
+      arquivo_nome_original = req.file.originalname;
+      arquivo_mime = req.file.mimetype;
+      arquivo_tamanho = req.file.size;
+
+      // Se for imagem (JPG, PNG, WebP), converte para PDF oficial institucional A4
+      if (arquivo_mime.startsWith("image/")) {
+        finalBufferToEncrypt = await convertImageToPdfBuffer(req.file.buffer, {
+          aluno_nome: alunoNome,
+          tipo_documento,
+          titulo,
+          cid,
+          diagnostico,
+          medico_nome,
+          medico_crm,
+          medico_especialidade,
+          data_laudo,
+          data_validade
+        });
+        arquivo_mime = "application/pdf";
+        arquivo_nome_original = req.file.originalname.replace(/\.[^/.]+$/, "") + ".pdf";
+        arquivo_tamanho = finalBufferToEncrypt.length;
+      }
+
+      // Criptografa o PDF com AES-256-GCM antes de gravar no disco
+      const encryptedBuffer = encryptDocumentBuffer(finalBufferToEncrypt);
+      const safeFileName = `laudo_enc_${alunoId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.bin`;
+      const fullDiskPath = path.join(UPLOAD_LAUDOS_DIR, safeFileName);
+
+      fs.writeFileSync(fullDiskPath, encryptedBuffer);
+      arquivo_path = safeFileName;
+    }
 
     const [result] = await pool.query(`
       INSERT INTO aee_laudos (
-        aluno_id, escola_id, cid, diagnostico, medico_nome, medico_crm,
+        aluno_id, escola_id, tipo_documento, titulo, cid, diagnostico, medico_nome, medico_crm,
         medico_especialidade, data_laudo, data_validade, medicamentos,
-        acompanhamento_externo, arquivo_url, observacoes
+        acompanhamento_externo, arquivo_path, arquivo_nome_original, arquivo_mime,
+        arquivo_tamanho, criptografado, observacoes
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      alunoId, escola_id, cid || null, diagnostico || null, medico_nome || null,
-      medico_crm || null, medico_especialidade || null, data_laudo || null,
-      data_validade || null, medicamentos || null, acompanhamento_externo || null,
-      arquivo_url || null, observacoes || null
+      alunoId, escola_id, tipo_documento || "Laudo Médico", titulo || null, cid || null,
+      diagnostico || null, medico_nome || null, medico_crm || null, medico_especialidade || null,
+      data_laudo || null, data_validade || null, medicamentos || null, acompanhamento_externo || null,
+      arquivo_path, arquivo_nome_original, arquivo_mime, arquivo_tamanho, criptografado, observacoes || null
     ]);
+
+    const laudoId = result.insertId;
+
+    // Registra log de auditoria LGPD
+    await pool.query(`
+      INSERT INTO aee_laudos_logs (laudo_id, aluno_id, usuario_id, escola_id, acao, detalhes, ip)
+      VALUES (?, ?, ?, ?, 'upload_documento', ?, ?)
+    `, [
+      laudoId, alunoId, usuarioId, escola_id,
+      `Upload de documento seguro (${tipo_documento}) criptografado com AES-256`,
+      req.ip || "127.0.0.1"
+    ]).catch((e) => console.warn("Log de auditoria falhou:", e.message));
 
     // Garante que o aluno tenha atendimento_diferencial = 1
     await pool.query(`
       UPDATE alunos SET atendimento_diferencial = 1 WHERE id = ? AND escola_id = ?
     `, [alunoId, escola_id]);
 
-    return res.status(201).json({ ok: true, id: result.insertId, message: "Laudo cadastrado com sucesso!" });
+    return res.status(201).json({
+      ok: true,
+      id: laudoId,
+      message: "Documento/Laudo cadastrado e criptografado com sucesso!"
+    });
   } catch (err) {
     console.error("[sala_recursos.laudos.post] Erro:", err);
-    return res.status(500).json({ message: "Erro ao cadastrar laudo médico." });
+    return res.status(500).json({ message: "Erro ao cadastrar documento/laudo médico: " + err.message });
   }
 });
 
-router.put("/laudos/:id", verificarEscola, async (req, res) => {
+// Atualização de Metadados / Substituição de Arquivo
+router.put("/laudos/:id", verificarEscola, uploadLaudo.single("arquivo"), async (req, res) => {
   try {
     const { escola_id } = req.user;
+    const usuarioId = req.user.usuario_id || req.user.id || 0;
     const laudoId = Number(req.params.id);
     const {
-      cid,
-      diagnostico,
-      medico_nome,
-      medico_crm,
-      medico_especialidade,
-      data_laudo,
-      data_validade,
-      medicamentos,
-      acompanhamento_externo,
-      arquivo_url,
-      observacoes
+      tipo_documento = "Laudo Médico",
+      titulo = "",
+      cid = "",
+      diagnostico = "",
+      medico_nome = "",
+      medico_crm = "",
+      medico_especialidade = "Neuropediatria",
+      data_laudo = null,
+      data_validade = null,
+      medicamentos = "",
+      acompanhamento_externo = "",
+      observacoes = ""
     } = req.body;
+
+    const [[existing]] = await pool.query(
+      `SELECT * FROM aee_laudos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [laudoId, escola_id]
+    );
+
+    if (!existing) {
+      return res.status(404).json({ message: "Laudo não encontrado." });
+    }
+
+    let arquivo_path = existing.arquivo_path;
+    let arquivo_nome_original = existing.arquivo_nome_original;
+    let arquivo_mime = existing.arquivo_mime;
+    let arquivo_tamanho = existing.arquivo_tamanho;
+
+    // Se enviou novo arquivo para substituir
+    if (req.file && req.file.buffer) {
+      let finalBufferToEncrypt = req.file.buffer;
+      arquivo_nome_original = req.file.originalname;
+      arquivo_mime = req.file.mimetype;
+      arquivo_tamanho = req.file.size;
+
+      const [[alunoRow]] = await pool.query(
+        `SELECT estudante FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1`,
+        [existing.aluno_id, escola_id]
+      );
+
+      if (arquivo_mime.startsWith("image/")) {
+        finalBufferToEncrypt = await convertImageToPdfBuffer(req.file.buffer, {
+          aluno_nome: alunoRow?.estudante || "Estudante",
+          tipo_documento,
+          titulo,
+          cid,
+          diagnostico,
+          medico_nome,
+          medico_crm,
+          medico_especialidade,
+          data_laudo,
+          data_validade
+        });
+        arquivo_mime = "application/pdf";
+        arquivo_nome_original = req.file.originalname.replace(/\.[^/.]+$/, "") + ".pdf";
+        arquivo_tamanho = finalBufferToEncrypt.length;
+      }
+
+      // Remove arquivo anterior se existir
+      if (existing.arquivo_path) {
+        const oldPath = path.join(UPLOAD_LAUDOS_DIR, existing.arquivo_path);
+        if (fs.existsSync(oldPath)) {
+          try { fs.unlinkSync(oldPath); } catch (_) {}
+        }
+      }
+
+      const encryptedBuffer = encryptDocumentBuffer(finalBufferToEncrypt);
+      const safeFileName = `laudo_enc_${existing.aluno_id}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.bin`;
+      const fullDiskPath = path.join(UPLOAD_LAUDOS_DIR, safeFileName);
+      fs.writeFileSync(fullDiskPath, encryptedBuffer);
+      arquivo_path = safeFileName;
+    }
 
     await pool.query(`
       UPDATE aee_laudos
       SET 
-        cid = ?, diagnostico = ?, medico_nome = ?, medico_crm = ?,
+        tipo_documento = ?, titulo = ?, cid = ?, diagnostico = ?, medico_nome = ?, medico_crm = ?,
         medico_especialidade = ?, data_laudo = ?, data_validade = ?,
-        medicamentos = ?, acompanhamento_externo = ?, arquivo_url = ?, observacoes = ?
+        medicamentos = ?, acompanhamento_externo = ?, arquivo_path = ?,
+        arquivo_nome_original = ?, arquivo_mime = ?, arquivo_tamanho = ?, observacoes = ?
       WHERE id = ? AND escola_id = ?
     `, [
-      cid || null, diagnostico || null, medico_nome || null, medico_crm || null,
-      medico_especialidade || null, data_laudo || null, data_validade || null,
-      medicamentos || null, acompanhamento_externo || null, arquivo_url || null,
-      observacoes || null, laudoId, escola_id
+      tipo_documento || "Laudo Médico", titulo || null, cid || null, diagnostico || null,
+      medico_nome || null, medico_crm || null, medico_especialidade || null,
+      data_laudo || null, data_validade || null, medicamentos || null, acompanhamento_externo || null,
+      arquivo_path, arquivo_nome_original, arquivo_mime, arquivo_tamanho, observacoes || null,
+      laudoId, escola_id
     ]);
 
-    return res.json({ ok: true, message: "Laudo atualizado com sucesso!" });
+    // Registra auditoria
+    await pool.query(`
+      INSERT INTO aee_laudos_logs (laudo_id, aluno_id, usuario_id, escola_id, acao, detalhes, ip)
+      VALUES (?, ?, ?, ?, 'edicao_documento', 'Edição de metadados do documento', ?)
+    `, [laudoId, existing.aluno_id, usuarioId, escola_id, req.ip || "127.0.0.1"]).catch(() => {});
+
+    return res.json({ ok: true, message: "Documento/Laudo atualizado com sucesso!" });
   } catch (err) {
     console.error("[sala_recursos.laudos.put] Erro:", err);
     return res.status(500).json({ message: "Erro ao atualizar laudo médico." });
   }
 });
 
-router.delete("/laudos/:id", verificarEscola, async (req, res) => {
+// Download de PDF Protegido com a Senha do Usuário Logado (Opção 3 - Rastreabilidade LGPD)
+router.post("/laudos/:id/download-protegido", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const usuarioId = req.user.usuario_id || req.user.id || 0;
+    const laudoId = Number(req.params.id);
+    const { senha } = req.body;
+
+    if (!senha || typeof senha !== "string" || !senha.trim()) {
+      return res.status(400).json({ ok: false, message: "A confirmação da sua senha de login é obrigatória para exportar este documento sigiloso." });
+    }
+
+    // 1. Valida senha do usuário logado contra o banco
+    const [[usuario]] = await pool.query(
+      `SELECT id, nome, email, senha_hash, cpf FROM usuarios WHERE id = ? LIMIT 1`,
+      [Number(usuarioId)]
+    );
+
+    if (!usuario || !usuario.senha_hash) {
+      return res.status(401).json({ ok: false, message: "Usuário não autenticado para download de dados sensíveis." });
+    }
+
+    const senhaCorreta = await bcrypt.compare(senha, usuario.senha_hash);
+    if (!senhaCorreta) {
+      return res.status(401).json({ ok: false, message: "Senha incorreta. Acesso negado por segurança (LGPD)." });
+    }
+
+    // 2. Busca laudo e arquivo
+    const [[laudo]] = await pool.query(
+      `SELECT * FROM aee_laudos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [laudoId, escola_id]
+    );
+
+    if (!laudo || !laudo.arquivo_path) {
+      return res.status(404).json({ ok: false, message: "Arquivo do documento não encontrado no sistema." });
+    }
+
+    const fullDiskPath = path.join(UPLOAD_LAUDOS_DIR, laudo.arquivo_path);
+    if (!fs.existsSync(fullDiskPath)) {
+      return res.status(404).json({ ok: false, message: "Arquivo físico não localizado no servidor." });
+    }
+
+    // 3. Lê o arquivo criptografado do disco e descriptografa com AES-256-GCM
+    const packedEncryptedBuffer = fs.readFileSync(fullDiskPath);
+    const decryptedPdfBuffer = decryptDocumentBuffer(packedEncryptedBuffer);
+
+    // 4. Aplica criptografia padrão PDF com a senha pessoal do usuário logado
+    const protectedPdfBuffer = protectPdfBufferWithPassword(decryptedPdfBuffer, senha);
+
+    // 5. Registra log de auditoria oficial LGPD
+    await pool.query(`
+      INSERT INTO aee_laudos_logs (laudo_id, aluno_id, usuario_id, escola_id, acao, detalhes, ip)
+      VALUES (?, ?, ?, ?, 'download_pdf_protegido', ?, ?)
+    `, [
+      laudoId, laudo.aluno_id, usuarioId, escola_id,
+      `Download de PDF protegido com a senha pessoal de ${usuario.nome}`,
+      req.ip || "127.0.0.1"
+    ]).catch(() => {});
+
+    const safeTitle = (laudo.titulo || laudo.tipo_documento || "Documento_AEE")
+      .replace(/[^a-zA-Z0-9_-]/g, "_");
+    const downloadFileName = `Dossie_AEE_${safeTitle}_${laudo.aluno_id}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${downloadFileName}"`);
+    res.setHeader("Content-Length", protectedPdfBuffer.length);
+
+    return res.send(protectedPdfBuffer);
+  } catch (err) {
+    console.error("[sala_recursos.laudos.download_protegido] Erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao gerar PDF protegido: " + err.message });
+  }
+});
+
+// Visualização Segura Inline (Descriptografa em memória para o Modal após validar senha)
+router.post("/laudos/:id/visualizar-seguro", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const usuarioId = req.user.usuario_id || req.user.id || 0;
+    const laudoId = Number(req.params.id);
+    const { senha } = req.body;
+
+    if (!senha || typeof senha !== "string" || !senha.trim()) {
+      return res.status(400).json({ ok: false, message: "A confirmação da sua senha de login é obrigatória para visualizar este documento sigiloso." });
+    }
+
+    const [[usuario]] = await pool.query(
+      `SELECT id, nome, senha_hash FROM usuarios WHERE id = ? LIMIT 1`,
+      [Number(usuarioId)]
+    );
+
+    if (!usuario || !usuario.senha_hash) {
+      return res.status(401).json({ ok: false, message: "Usuário não autenticado." });
+    }
+
+    const senhaCorreta = await bcrypt.compare(senha, usuario.senha_hash);
+    if (!senhaCorreta) {
+      return res.status(401).json({ ok: false, message: "Senha incorreta. Acesso negado." });
+    }
+
+    const [[laudo]] = await pool.query(
+      `SELECT * FROM aee_laudos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [laudoId, escola_id]
+    );
+
+    if (!laudo || !laudo.arquivo_path) {
+      return res.status(404).json({ ok: false, message: "Documento sem anexo digital." });
+    }
+
+    const fullDiskPath = path.join(UPLOAD_LAUDOS_DIR, laudo.arquivo_path);
+    if (!fs.existsSync(fullDiskPath)) {
+      return res.status(404).json({ ok: false, message: "Arquivo físico não localizado." });
+    }
+
+    const packedEncryptedBuffer = fs.readFileSync(fullDiskPath);
+    const decryptedPdfBuffer = decryptDocumentBuffer(packedEncryptedBuffer);
+
+    // Registra log de auditoria
+    await pool.query(`
+      INSERT INTO aee_laudos_logs (laudo_id, aluno_id, usuario_id, escola_id, acao, detalhes, ip)
+      VALUES (?, ?, ?, ?, 'visualizacao_segura', ?, ?)
+    `, [
+      laudoId, laudo.aluno_id, usuarioId, escola_id,
+      `Visualização em tela por ${usuario.nome}`,
+      req.ip || "127.0.0.1"
+    ]).catch(() => {});
+
+    const base64Data = decryptedPdfBuffer.toString("base64");
+    return res.json({
+      ok: true,
+      mime: "application/pdf",
+      dataUrl: `data:application/pdf;base64,${base64Data}`,
+      filename: laudo.arquivo_nome_original || "documento.pdf"
+    });
+  } catch (err) {
+    console.error("[sala_recursos.laudos.visualizar_seguro] Erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao descriptografar documento: " + err.message });
+  }
+});
+
+// Logs de Auditoria LGPD de um Laudo / Documento
+router.get("/laudos/:id/logs", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
     const laudoId = Number(req.params.id);
+
+    const [logs] = await pool.query(`
+      SELECT 
+        l.id, l.acao, l.detalhes, l.ip,
+        DATE_FORMAT(l.criado_em, '%d/%m/%Y %H:%i:%s') AS criado_em,
+        u.nome AS usuario_nome, u.perfil AS usuario_perfil
+      FROM aee_laudos_logs l
+      LEFT JOIN usuarios u ON u.id = l.usuario_id
+      WHERE l.laudo_id = ? AND l.escola_id = ?
+      ORDER BY l.id DESC
+      LIMIT 50
+    `, [laudoId, escola_id]);
+
+    return res.json({ ok: true, logs });
+  } catch (err) {
+    console.error("[sala_recursos.laudos.logs] Erro:", err);
+    return res.status(500).json({ message: "Erro ao buscar logs de auditoria." });
+  }
+});
+
+// Exclusão de Laudo / Documento
+router.delete("/laudos/:id", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const usuarioId = req.user.usuario_id || req.user.id || 0;
+    const laudoId = Number(req.params.id);
+
+    const [[laudo]] = await pool.query(
+      `SELECT * FROM aee_laudos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [laudoId, escola_id]
+    );
+
+    if (laudo && laudo.arquivo_path) {
+      const fullDiskPath = path.join(UPLOAD_LAUDOS_DIR, laudo.arquivo_path);
+      if (fs.existsSync(fullDiskPath)) {
+        try { fs.unlinkSync(fullDiskPath); } catch (_) {}
+      }
+    }
 
     await pool.query(`
       DELETE FROM aee_laudos WHERE id = ? AND escola_id = ?
     `, [laudoId, escola_id]);
 
-    return res.json({ ok: true, message: "Laudo removido com sucesso." });
+    if (laudo) {
+      await pool.query(`
+        INSERT INTO aee_laudos_logs (laudo_id, aluno_id, usuario_id, escola_id, acao, detalhes, ip)
+        VALUES (?, ?, ?, ?, 'exclusao_documento', 'Documento removido da base', ?)
+      `, [laudoId, laudo.aluno_id, usuarioId, escola_id, req.ip || "127.0.0.1"]).catch(() => {});
+    }
+
+    return res.json({ ok: true, message: "Documento/Laudo removido com sucesso." });
   } catch (err) {
     console.error("[sala_recursos.laudos.delete] Erro:", err);
     return res.status(500).json({ message: "Erro ao remover laudo." });
