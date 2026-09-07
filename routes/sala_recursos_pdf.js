@@ -142,14 +142,36 @@ export async function gerarPdfAdequacaoSEEDF({
     }
   }
 
-  // Se não veio adeq preenchido mas temos alunoId, busca adequação correspondente se existir
-  if (!adeq && !emBranco && alunoId && disciplina && bimestre) {
-    const [[adeqFound]] = await pool.query(`
+  // ── Helper para extrair o número do bimestre (1 a 4) ──
+  function getBimestreNum(bimStr) {
+    if (!bimStr) return 4;
+    const m = String(bimStr).match(/([1-4])/);
+    return m ? parseInt(m[1], 10) : 4;
+  }
+
+  const targetBimestreNum = getBimestreNum(bimestre || adeq?.bimestre || "4");
+
+  // 3. Busca TODAS as adequações do aluno nesta disciplina e ano letivo até o bimestre selecionado (efeito cumulativo)
+  let listaAdequacoes = [];
+  if (!emBranco && alunoId && disciplina) {
+    const [allAdeqs] = await pool.query(`
       SELECT * FROM aee_adequacoes_curriculares
-      WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ? AND bimestre = ? AND disciplina = ?
-      LIMIT 1
-    `, [alunoId, escolaId, anoLetivo, bimestre, disciplina]);
-    if (adeqFound) adeq = adeqFound;
+      WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ? AND disciplina = ?
+      ORDER BY CASE 
+        WHEN bimestre LIKE '%1%' THEN 1
+        WHEN bimestre LIKE '%2%' THEN 2
+        WHEN bimestre LIKE '%3%' THEN 3
+        WHEN bimestre LIKE '%4%' THEN 4
+        ELSE 5
+      END ASC
+    `, [alunoId, escolaId, anoLetivo, disciplina]);
+
+    listaAdequacoes = (allAdeqs || []).filter(a => getBimestreNum(a.bimestre) <= targetBimestreNum);
+  }
+
+  // Se a lista estiver vazia mas temos adeq do adequacaoId, usa adeq
+  if (listaAdequacoes.length === 0 && adeq) {
+    listaAdequacoes = [adeq];
   }
 
   return new Promise(async (resolve, reject) => {
@@ -233,7 +255,21 @@ export async function gerarPdfAdequacaoSEEDF({
       const checkFinais   = isFinais || (!isInfantil && !isIniciais && !isMedio) ? "( X )" : "(   )";
       const checkMedio    = isMedio ? "( X )" : "(   )";
 
-      const vigenciaTexto = bimestre || adeq?.bimestre || "1°, 2°, 3° E 4° BIMESTRES";
+      // Texto dinâmico e cumulativo de vigência
+      let vigenciaTexto = "";
+      if (emBranco) {
+        vigenciaTexto = "1°, 2°, 3° E 4° BIMESTRES";
+      } else if (targetBimestreNum === 1) {
+        vigenciaTexto = "1º BIMESTRE";
+      } else if (targetBimestreNum === 2) {
+        vigenciaTexto = "1º E 2º BIMESTRES";
+      } else if (targetBimestreNum === 3) {
+        vigenciaTexto = "1º AO 3º BIMESTRE";
+      } else if (targetBimestreNum === 4) {
+        vigenciaTexto = "1º AO 4º BIMESTRE (ANUAL)";
+      } else {
+        vigenciaTexto = (bimestre || "1º AO 4º BIMESTRE").toUpperCase();
+      }
 
       doc.font("Helvetica-Bold").fontSize(9).fillColor(PRETO)
         .text("8. ADEQUAÇÕES CURRICULARES", L + 6, sec8Top + 4, { width: PW - 12 });
@@ -249,7 +285,7 @@ export async function gerarPdfAdequacaoSEEDF({
       doc.font("Helvetica-Bold").fontSize(8.5).fillColor(PRETO)
         .text(vigenciaTexto.toUpperCase());
 
-      // 3. Seção 9 — Áreas do Conhecimento e Professor Responsável (duas linhas bem espaçadas)
+      // 3. Seção 9 — Áreas do Conhecimento e Professor Responsável
       const sec9Top = sec8Top + sec8H;
       const sec9H = 30;
       doc.rect(L, sec9Top, PW, sec9H).fillAndStroke("#ffffff", PRETO);
@@ -302,7 +338,7 @@ export async function gerarPdfAdequacaoSEEDF({
           .text(col.sub, colX + 4, gridHeaderTop + 14, { width: colW - 8, align: "center" });
       });
 
-      // 5. Conteúdo da Grade (sem assinaturas no rodapé, aproveitando todo o espaço disponível da página)
+      // 5. Conteúdo da Grade (Otimizado, Harmônico e Cumulativo por Bimestre)
       const contentTop = gridHeaderTop + gridHeaderH;
       const bottomLimit = PAGE_H - 20; // 595.28 - 20 = 575.28 pt
       const availableContentH = bottomLimit - contentTop; // ~401 pt
@@ -320,41 +356,109 @@ export async function gerarPdfAdequacaoSEEDF({
         });
         doc.y = contentTop + availableContentH;
       } else {
-        const objetivosText = adeq?.habilidades_prioritarias || "—";
-        const conteudosText = adeq?.metodologias_estrategias 
-          ? (adeq?.conteudos_adaptados || adeq?.metodologias_estrategias) 
-          : "—";
-        const estrategiasText = [adeq?.recursos_didaticos, adeq?.metodologias_estrategias].filter(Boolean).join("\n\n") || "—";
-        const avaliacaoText = adeq?.avaliacao_adaptada || "—";
+        const totalRows = listaAdequacoes.length;
+        const fontSize = totalRows > 2 ? 7 : 7.5;
+        const lineGap = totalRows > 2 ? 1.2 : 1.35;
 
-        const texts = [objetivosText, conteudosText, estrategiasText, avaliacaoText];
+        const cleanTxt = (t) => {
+          if (!t) return "—";
+          const s = String(t).replace(/^\.\s*\n?/, "").trim();
+          return s || "—";
+        };
 
-        // Calcula altura necessária
-        doc.font("Helvetica").fontSize(8);
-        let maxTextH = availableContentH;
-        texts.forEach((txt) => {
-          const h = doc.heightOfString(txt, { width: colW - 12, align: "justify", lineGap: 1.4 });
-          if (h + 16 > maxTextH) maxTextH = h + 16;
+        // Calcula a altura necessária de cada linha de bimestre
+        doc.font("Helvetica").fontSize(fontSize);
+        const rowHeights = [];
+
+        listaAdequacoes.forEach((itemAdeq, idx) => {
+          const bimNome = (itemAdeq.bimestre || `${idx + 1}º Bimestre`).toUpperCase();
+          const c1 = cleanTxt(itemAdeq.habilidades_prioritarias);
+          const c2 = cleanTxt(itemAdeq.conteudos_adaptados || itemAdeq.metodologias_estrategias);
+          const c3 = cleanTxt(itemAdeq.recursos_didaticos || itemAdeq.metodologias_estrategias);
+          const c4 = cleanTxt(itemAdeq.avaliacao_adaptada);
+
+          // Para a 2ª coluna, adicionamos o cabeçalho do bimestre
+          const h1 = doc.heightOfString(c1, { width: colW - 12, lineGap }) + (totalRows > 1 ? 14 : 0);
+          const h2 = doc.heightOfString(c2, { width: colW - 12, lineGap }) + 16; // sempre tem o título do bimestre
+          const h3 = doc.heightOfString(c3, { width: colW - 12, lineGap }) + (totalRows > 1 ? 14 : 0);
+          const h4 = doc.heightOfString(c4, { width: colW - 12, lineGap }) + (totalRows > 1 ? 14 : 0);
+
+          const maxH = Math.max(h1, h2, h3, h4, 45) + 14;
+          rowHeights.push(maxH);
         });
 
-        // Se passar do espaço da página, divide se necessário
-        if (maxTextH > availableContentH) {
-          colHeaders.forEach((_, i) => {
-            const colX = L + i * colW;
-            doc.rect(colX, contentTop, colW, maxTextH).fillAndStroke("#ffffff", PRETO);
-            doc.font("Helvetica").fontSize(8).fillColor(PRETO)
-              .text(texts[i] || "—", colX + 6, contentTop + 6, { width: colW - 12, align: "justify", lineGap: 1.4 });
-          });
-          doc.y = contentTop + maxTextH;
-        } else {
-          colHeaders.forEach((_, i) => {
-            const colX = L + i * colW;
-            doc.rect(colX, contentTop, colW, availableContentH).fillAndStroke("#ffffff", PRETO);
-            doc.font("Helvetica").fontSize(8).fillColor(PRETO)
-              .text(texts[i] || "—", colX + 6, contentTop + 6, { width: colW - 12, align: "justify", lineGap: 1.4 });
-          });
-          doc.y = contentTop + availableContentH;
+        const totalRequiredH = rowHeights.reduce((a, b) => a + b, 0);
+
+        // Se o total couber na página atual, expande proporcionalmente para fechar na borda inferior
+        let adjustedRowHeights = [...rowHeights];
+        if (totalRequiredH < availableContentH) {
+          const extraSpace = availableContentH - totalRequiredH;
+          const extraPerRow = extraSpace / totalRows;
+          adjustedRowHeights = rowHeights.map(h => h + extraPerRow);
         }
+
+        // Renderiza cada linha de bimestre na tabela
+        let currentY = contentTop;
+
+        listaAdequacoes.forEach((itemAdeq, idx) => {
+          const rowH = adjustedRowHeights[idx];
+          const bimNome = (itemAdeq.bimestre || `${idx + 1}º Bimestre`).toUpperCase();
+
+          const c1 = cleanTxt(itemAdeq.habilidades_prioritarias);
+          const c2 = cleanTxt(itemAdeq.conteudos_adaptados || itemAdeq.metodologias_estrategias);
+          const c3 = cleanTxt(itemAdeq.recursos_didaticos || itemAdeq.metodologias_estrategias);
+          const c4 = cleanTxt(itemAdeq.avaliacao_adaptada);
+
+          // Desenha os 4 retângulos da linha
+          for (let i = 0; i < 4; i++) {
+            const colX = L + i * colW;
+            doc.rect(colX, currentY, colW, rowH).fillAndStroke("#ffffff", PRETO);
+          }
+
+          // ── Coluna 1: Objetivos para as aprendizagens ──
+          const col1X = L;
+          let yCursor1 = currentY + 6;
+          if (totalRows > 1) {
+            doc.font("Helvetica-Bold").fontSize(fontSize).fillColor(PRETO)
+              .text(`${bimNome}:`, col1X + 6, yCursor1, { width: colW - 12 });
+            yCursor1 = doc.y + 2;
+          }
+          doc.font("Helvetica").fontSize(fontSize).fillColor(PRETO)
+            .text(c1, col1X + 6, yCursor1, { width: colW - 12, align: "justify", lineGap });
+
+          // ── Coluna 2: Conteúdos/Unidades Didáticas (SEMPRE inicia identificando o bimestre) ──
+          const col2X = L + colW;
+          doc.font("Helvetica-Bold").fontSize(fontSize).fillColor(PRETO)
+            .text(`${bimNome}:`, col2X + 6, currentY + 6, { width: colW - 12 });
+          doc.font("Helvetica").fontSize(fontSize).fillColor(PRETO)
+            .text(c2, col2X + 6, doc.y + 2, { width: colW - 12, align: "justify", lineGap });
+
+          // ── Coluna 3: Estratégias Pedagógicas / Recursos Didáticos ──
+          const col3X = L + 2 * colW;
+          let yCursor3 = currentY + 6;
+          if (totalRows > 1) {
+            doc.font("Helvetica-Bold").fontSize(fontSize).fillColor(PRETO)
+              .text(`${bimNome}:`, col3X + 6, yCursor3, { width: colW - 12 });
+            yCursor3 = doc.y + 2;
+          }
+          doc.font("Helvetica").fontSize(fontSize).fillColor(PRETO)
+            .text(c3, col3X + 6, yCursor3, { width: colW - 12, align: "justify", lineGap });
+
+          // ── Coluna 4: Estratégias de Avaliação para a aprendizagem ──
+          const col4X = L + 3 * colW;
+          let yCursor4 = currentY + 6;
+          if (totalRows > 1) {
+            doc.font("Helvetica-Bold").fontSize(fontSize).fillColor(PRETO)
+              .text(`${bimNome}:`, col4X + 6, yCursor4, { width: colW - 12 });
+            yCursor4 = doc.y + 2;
+          }
+          doc.font("Helvetica").fontSize(fontSize).fillColor(PRETO)
+            .text(c4, col4X + 6, yCursor4, { width: colW - 12, align: "justify", lineGap });
+
+          currentY += rowH;
+        });
+
+        doc.y = currentY;
       }
 
       doc.end();
