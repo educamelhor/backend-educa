@@ -111,6 +111,7 @@ router.get("/", verificarEscola, async (req, res) => {
       turma_id,
       filtro = "",
       status = "",
+      aee = "",
       ano_letivo,
       limit = 100,
       offset = 0,
@@ -146,6 +147,11 @@ router.get("/", verificarEscola, async (req, res) => {
     if (statusNorm === "ativo" || statusNorm === "inativo") {
       where.push("m.status = ?");
       params.push(statusNorm);
+    }
+
+    // Filtro AEE: digitar "aee" no campo de busca retorna apenas alunos com atendimento diferenciado
+    if (aee === "1") {
+      where.push("a.atendimento_diferencial = 1");
     }
 
     const whereSql = `WHERE ${where.join(" AND ")}`;
