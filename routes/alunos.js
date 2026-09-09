@@ -339,6 +339,19 @@ router.put("/:id", verificarEscola, async (req, res) => {
       `UPDATE alunos SET ${campos.join(", ")} WHERE id = ? AND escola_id = ?`,
       valores
     );
+
+    // Quando o status muda para 'ativo' ou 'inativo', propaga também para a matrícula
+    // do ano letivo atual — pois o SELECT agora retorna m.status, não a.status.
+    if (typeof status !== "undefined" && (status === "ativo" || status === "inativo")) {
+      const anoLetivoAtual = anoLetivoPadrao();
+      await pool.query(
+        `UPDATE matriculas
+            SET status = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ?`,
+        [status, id, escola_id, anoLetivoAtual]
+      );
+    }
+
     res.json({ message: "Aluno atualizado com sucesso." });
   } catch (err) {
     console.error("Erro ao atualizar aluno:", err);
@@ -354,10 +367,21 @@ router.put("/inativar/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const { escola_id } = req.user;
+    const anoLetivoAtual = anoLetivoPadrao();
+
+    // Inativa o cadastro do aluno
     await pool.query(
       `UPDATE alunos SET status='inativo' WHERE id = ? AND escola_id = ?`,
       [id, escola_id]
     );
+
+    // Propaga para a matrícula do ano letivo atual
+    await pool.query(
+      `UPDATE matriculas SET status = 'inativo', updated_at = CURRENT_TIMESTAMP
+        WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ?`,
+      [id, escola_id, anoLetivoAtual]
+    );
+
     res.json({ message: "Aluno inativado." });
   } catch (err) {
     console.error("Erro ao inativar aluno:", err);
