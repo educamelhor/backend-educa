@@ -180,7 +180,7 @@ router.get("/", verificarEscola, async (req, res) => {
              a.sexo,
              a.cpf,
              a.atendimento_diferencial,
-             a.status,
+             m.status,
              a.foto,
 
              -- URL canÃ´nica do Spaces (novo padrÃ£o do EDUCA-CAPTURE):
