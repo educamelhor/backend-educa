@@ -207,6 +207,45 @@ function drawBottomImage(doc, temaBuf, x, w, imgY, maxY) {
   doc.restore();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// drawImageNatural — exibe a imagem como banner de altura fixa (padrão 155px)
+// A largura preenche a zona (w), a imagem é escalada proporcionalmente e o
+// centro da imagem fica visível (clip). O restante da zona fica branco → economiza tinta.
+// bannerH: altura do banner em pontos PDF (default 155 ≈ ~5,5 cm)
+// ─────────────────────────────────────────────────────────────────────────────
+function drawImageNatural(doc, temaBuf, x, w, imgY, maxY, bannerH = 155) {
+  if (!temaBuf) return;
+  const bottom = (maxY != null) ? maxY : A4H;
+  if (imgY >= bottom - 10) return;
+
+  // Ler dimensões reais da imagem (fallback: quadrada 1:1)
+  let natW = 1024, natH = 1024;
+  try {
+    const imgObj = doc.openImage(temaBuf);
+    if (imgObj && imgObj.width && imgObj.height) {
+      natW = imgObj.width;
+      natH = imgObj.height;
+    }
+  } catch (_) { /* usa fallback */ }
+
+  // Altura proporcional se a imagem fosse exibida em largura total
+  const drawW  = w;
+  const fullH  = Math.round(drawW * natH / natW);   // ex: 533 * 1024/1024 = 533px
+
+  // Limitar ao espaço disponível e ao cap do banner
+  const available = bottom - imgY;
+  const drawH     = Math.min(bannerH, available, fullH);
+  if (drawH < 20) return;
+
+  // Posicionar a imagem para que o CENTRO fique visível no clip (não o topo)
+  const imgStartY = imgY - Math.round((fullH - drawH) / 2);
+
+  doc.save();
+  doc.rect(x, imgY, w, drawH).clip();                          // janela visível = banner
+  doc.image(temaBuf, x, imgStartY, { width: drawW, height: fullH }); // imagem completa atrás
+  doc.restore();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 1 — CLÁSSICO
 // Fundo suave com bordas duplas na cor da área
@@ -387,12 +426,14 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
   doc.fillColor('#222222').font('Helvetica').fontSize(8.8)
      .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
-  // ── Step 12: Themed image fills ALL remaining space ────────────────────────
+  // ── Step 12: Themed image — proporção natural (sem fundo colorido total) ────
   const imageStartY = instrStartY + instrTextH + 10;
-  // Moderno: no border, but leave 18px at bottom for footer text
+  // Moderno: imagem em proporção real, centralizada. Restante da zona = branco limpo.
+  // Economiza tinta e permite que a imagem customizada pelo usuário apareça sem distorção.
   const imgZoneX = STRIPE;
   const imgZoneW = A4W - STRIPE;
-  if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 18);
+  if (!opts.noImage) drawImageNatural(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 18);
+
 
   // Footer
   doc.fillColor('#999999').font('Helvetica').fontSize(7)
