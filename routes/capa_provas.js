@@ -193,8 +193,8 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED: Measure instruction text height using PDFKit's heightOfString
 // ─────────────────────────────────────────────────────────────────────────────
-function measureInstrHeight(doc, instrText, textWidth) {
-  return doc.font('Helvetica').fontSize(8.8)
+function measureInstrHeight(doc, instrText, textWidth, fontSize = 8.5) {
+  return doc.font('Helvetica').fontSize(fontSize)
     .heightOfString(instrText, { width: textWidth, lineGap: 0.5, paragraphGap: 2 });
 }
 
@@ -216,17 +216,16 @@ function drawBottomImage(doc, temaBuf, x, w, imgY, maxY) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// drawImageNatural — exibe a imagem como banner de altura fixa (padrão 155px)
-// A largura preenche a zona (w), a imagem é escalada proporcionalmente e o
-// centro da imagem fica visível (clip). O restante da zona fica branco → economiza tinta.
-// bannerH: altura do banner em pontos PDF (default 155 ≈ ~5,5 cm)
+// drawImageNatural — exibe a imagem em enquadramento proporcional centralizado
+// Garante que 100% da imagem (quadrada, retangular ou vertical) seja visível
+// sem cortes e sem distorção, eliminando vácuos brancos excessivos.
 // ─────────────────────────────────────────────────────────────────────────────
-function drawImageNatural(doc, temaBuf, x, w, imgY, maxY, bannerH = 155) {
+function drawImageNatural(doc, temaBuf, x, w, imgY, maxY) {
   if (!temaBuf) return;
   const bottom = (maxY != null) ? maxY : A4H;
   if (imgY >= bottom - 10) return;
 
-  // Ler dimensões reais da imagem (fallback: quadrada 1:1)
+  // Ler dimensões reais da imagem (fallback: quadrada 1024x1024)
   let natW = 1024, natH = 1024;
   try {
     const imgObj = doc.openImage(temaBuf);
@@ -236,21 +235,19 @@ function drawImageNatural(doc, temaBuf, x, w, imgY, maxY, bannerH = 155) {
     }
   } catch (_) { /* usa fallback */ }
 
-  // Altura proporcional se a imagem fosse exibida em largura total
-  const drawW  = w;
-  const fullH  = Math.round(drawW * natH / natW);   // ex: 533 * 1024/1024 = 533px
+  const availableH = bottom - imgY;
+  const targetW = w - 24;
+  // Escala proporcional garantindo que 100% da imagem caiba sem cortes
+  const scale = Math.min(targetW / natW, availableH / natH);
+  const fitW  = Math.round(natW * scale);
+  const fitH  = Math.round(natH * scale);
+  if (fitW < 20 || fitH < 20) return;
 
-  // Limitar ao espaço disponível e ao cap do banner
-  const available = bottom - imgY;
-  const drawH     = Math.min(bannerH, available, fullH);
-  if (drawH < 20) return;
-
-  // Posicionar a imagem para que o CENTRO fique visível no clip (não o topo)
-  const imgStartY = imgY - Math.round((fullH - drawH) / 2);
+  const drawX = x + Math.round((w - fitW) / 2);
+  const drawY = imgY + Math.round((availableH - fitH) / 2);
 
   doc.save();
-  doc.rect(x, imgY, w, drawH).clip();                          // janela visível = banner
-  doc.image(temaBuf, x, imgStartY, { width: drawW, height: fullH }); // imagem completa atrás
+  doc.image(temaBuf, drawX, drawY, { width: fitW, height: fitH });
   doc.restore();
 }
 
@@ -433,35 +430,46 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
   doc.fillColor('#1a1a1a')
      .text(serieText, STRIPE + 10, titleY + 94, { lineBreak: false });
 
-  // ── Step 10: Instructions separator ───────────────────────────────────────
-  const instrSepY = titleY + 128;
-  doc.moveTo(STRIPE, instrSepY).lineTo(A4W - MARGIN, instrSepY)
-     .strokeColor(area.cor).lineWidth(2).stroke();
-  doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(10)
-     .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', STRIPE + 10, instrSepY + 8);
+  // ── Step 10 & 11: CAMPO 3 — Card Delimitado de Orientações ─────────────────
+  const cardX = STRIPE + 10;
+  const cardW = A4W - STRIPE - MARGIN - 16;
+  const cardY = titleY + 124;
+  const padH  = 12;
+  const padV  = 8;
 
-  // ── Step 11: Instructions ──────────────────────────────────────────────────
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
-  const instrW = A4W - STRIPE - MARGIN - 20;
-  const instrTextH = measureInstrHeight(doc, instrText, instrW);
-  const instrStartY = instrSepY + 26;
-  doc.fillColor('#222222').font('Helvetica').fontSize(8.8)
-     .text(instrText, STRIPE + 10, instrStartY, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
+  const textW = cardW - padH * 2;
+  const instrTextH = measureInstrHeight(doc, instrText, textW, 8.2);
+  const cardH = padV * 2 + 14 + instrTextH;
 
-  // ── Step 12: Themed image — proporção natural (sem fundo colorido total) ────
-  const imageStartY = instrStartY + instrTextH + 10;
-  // Moderno: imagem em proporção real, centralizada. Restante da zona = branco limpo.
-  // Economiza tinta e permite que a imagem customizada pelo usuário apareça sem distorção.
+  // Fundo sutil + contorno fino elegante
+  doc.save();
+  doc.roundedRect(cardX, cardY, cardW, cardH, 6)
+     .fillColor(area.corClaro || '#f8fafc').fillOpacity(0.35).fill();
+  doc.roundedRect(cardX, cardY, cardW, cardH, 6)
+     .strokeColor(area.cor).lineWidth(1).strokeOpacity(0.4).stroke();
+  doc.restore();
+
+  // Cabeçalho do card
+  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8.5)
+     .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', cardX + padH, cardY + padV);
+
+  // Texto das instruções
+  doc.fillColor('#222222').font('Helvetica').fontSize(8.2)
+     .text(instrText, cardX + padH, cardY + padV + 13, { width: textW, lineGap: 0.5, paragraphGap: 2 });
+
+  // ── Step 12: CAMPO 4 — Área Destinada à Imagem ─────────────────────────────
+  const imageStartY = cardY + cardH + 12;
   const imgZoneX = STRIPE;
   const imgZoneW = A4W - STRIPE;
-  if (!opts.noImage) drawImageNatural(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 18);
-
+  const availableH = (A4H - 22) - imageStartY;
+  if (!opts.noImage) drawImageNatural(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 22);
 
   // Footer
   doc.fillColor('#999999').font('Helvetica').fontSize(7)
      .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12,
        { width: A4W - STRIPE - MARGIN - 10 });
-  return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: A4H - 18 - imageStartY };
+  return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: availableH };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
