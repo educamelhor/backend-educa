@@ -97,11 +97,114 @@ const QR_SIZE   = 82;   // QR code size
 const HEADER_H  = 145;  // header height — 145px gives room for 2-line school names
 
 // ── Format series, bimestre, and turma ───────────────────────────────────────
+function getCapaSerieInfo(capa, defaultSep = ' — ') {
+  const baseSerie = [capa.serie, capa.bimestre ? `${capa.bimestre}º BIMESTRE` : ''].filter(Boolean).join(defaultSep);
+  const turma = (capa.turma_nome || capa.turma || '').trim();
+  return { baseSerie, turma };
+}
+
 function formatSerieText(capa, defaultSep = ' — ') {
-  const base = [capa.serie, capa.bimestre ? `${capa.bimestre}º BIMESTRE` : ''].filter(Boolean).join(defaultSep);
-  const turma = capa.turma_nome || capa.turma || '';
-  if (!turma) return base;
-  return base ? `${base} - ${turma}` : turma;
+  const { baseSerie, turma } = getCapaSerieInfo(capa, defaultSep);
+  if (!turma) return baseSerie;
+  return baseSerie ? `${baseSerie} - ${turma}` : turma;
+}
+
+// ── Draw Serie + Bimestre with stylish Turma Badge ────────────────────────────
+function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
+  const {
+    x = MARGIN,
+    y = 0,
+    maxW = A4W - MARGIN * 2,
+    align = 'center', // 'left' | 'center'
+    baseFontSize = 20,
+    baseColor = '#1a1a1a',
+    badgeBg = area.cor,
+    badgeTextColor = '#ffffff',
+    defaultSep = ' — ',
+  } = opts;
+
+  const { baseSerie, turma } = getCapaSerieInfo(capa, defaultSep);
+
+  // Se não há turma, desenha apenas a série e bimestre
+  if (!turma) {
+    if (!baseSerie) return { y };
+    let fSize = baseFontSize;
+    doc.font('Helvetica-Bold').fontSize(fSize);
+    while (doc.widthOfString(baseSerie) > maxW && fSize > 12) {
+      fSize -= 1;
+      doc.fontSize(fSize);
+    }
+    doc.fillColor(baseColor).text(baseSerie, x, y, { width: maxW, align, lineBreak: false });
+    return { y: y + fSize };
+  }
+
+  // Com Turma: renderiza a identificação da turma em formato de badge elegante
+  const badgeText = `TURMA: ${turma.toUpperCase()}`;
+  const badgeFSize = Math.max(10, Math.min(11.5, Math.round(baseFontSize * 0.55)));
+
+  doc.font('Helvetica-Bold').fontSize(badgeFSize);
+  const textW = doc.widthOfString(badgeText);
+  const badgePadX = 10;
+  const badgeW = Math.round(textW + badgePadX * 2);
+  const badgeH = Math.round(badgeFSize * 1.8);
+
+  let fSize = baseFontSize;
+  doc.font('Helvetica-Bold').fontSize(fSize);
+  const gap = 12;
+
+  // Ajusta tamanho da fonte se necessário
+  while ((doc.widthOfString(baseSerie) + gap + badgeW) > maxW && fSize > 14) {
+    fSize -= 1;
+    doc.fontSize(fSize);
+  }
+  const baseW = doc.widthOfString(baseSerie);
+  const fitsSameLine = (baseW + gap + badgeW) <= maxW;
+
+  if (fitsSameLine) {
+    let startX = x;
+    if (align === 'center') {
+      const totalW = baseW + gap + badgeW;
+      startX = x + Math.round((maxW - totalW) / 2);
+    }
+    // Texto base da série e bimestre
+    doc.fillColor(baseColor).font('Helvetica-Bold').fontSize(fSize)
+       .text(baseSerie, startX, y, { lineBreak: false });
+
+    // Badge da Turma com cantos arredondados e cor da área
+    const badgeX = startX + baseW + gap;
+    const badgeY = y + Math.round((fSize - badgeH) / 2);
+
+    doc.save();
+    doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 4).fillColor(badgeBg).fill();
+    doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
+       .text(badgeText, badgeX, badgeY + Math.round((badgeH - badgeFSize) / 2) - 1, {
+         width: badgeW,
+         align: 'center',
+         lineBreak: false,
+       });
+    doc.restore();
+    return { y: y + Math.max(fSize, badgeH) };
+  } else {
+    // Quebra em duas linhas para não truncar
+    doc.fillColor(baseColor).font('Helvetica-Bold').fontSize(fSize)
+       .text(baseSerie, x, y, { width: maxW, align, lineBreak: false });
+
+    const line2Y = y + fSize + 6;
+    let badgeX = x;
+    if (align === 'center') {
+      badgeX = x + Math.round((maxW - badgeW) / 2);
+    }
+    doc.save();
+    doc.roundedRect(badgeX, line2Y, badgeW, badgeH, 4).fillColor(badgeBg).fill();
+    doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
+       .text(badgeText, badgeX, line2Y + Math.round((badgeH - badgeFSize) / 2) - 1, {
+         width: badgeW,
+         align: 'center',
+         lineBreak: false,
+       });
+    doc.restore();
+    return { y: line2Y + badgeH };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,16 +386,16 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
      .text('PROVÃO DE', MARGIN + 8, titleY, { width: A4W - MARGIN * 2 - 16, align: 'center' });
   doc.fillColor('#111111').font('Helvetica-Bold').fontSize(64)
      .text(area.label, MARGIN + 8, titleY + 24, { width: A4W - MARGIN * 2 - 16, align: 'center' });
-  const serieText = formatSerieText(capa, ' - ');
-  const maxW_C = A4W - MARGIN * 2 - 16;
-  let fSize_C = 24;
-  doc.font('Helvetica-Bold').fontSize(fSize_C);
-  while (doc.widthOfString(serieText) > maxW_C && fSize_C > 12) {
-    fSize_C -= 1;
-    doc.fontSize(fSize_C);
-  }
-  doc.fillColor(area.cor)
-     .text(serieText, MARGIN + 8, titleY + 98, { width: maxW_C, align: 'center', lineBreak: false });
+  drawSerieTurmaBadge(doc, capa, area, {
+    x: MARGIN + 8,
+    y: titleY + 98,
+    maxW: A4W - MARGIN * 2 - 16,
+    align: 'center',
+    baseFontSize: 22,
+    baseColor: area.cor,
+    badgeBg: area.cor,
+    badgeTextColor: '#ffffff',
+  });
 
   // Instructions block — measure text height first for dynamic sizing
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
@@ -419,16 +522,16 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
      .text('PROVÃO DE', STRIPE + 10, titleY);
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(68)
      .text(area.label, STRIPE + 10, titleY + 18);
-  const serieText = formatSerieText(capa, ' — ');
-  const maxW_M = A4W - STRIPE - MARGIN - 20;
-  let fSize_M = 22;
-  doc.font('Helvetica-Bold').fontSize(fSize_M);
-  while (doc.widthOfString(serieText) > maxW_M && fSize_M > 12) {
-    fSize_M -= 1;
-    doc.fontSize(fSize_M);
-  }
-  doc.fillColor('#1a1a1a')
-     .text(serieText, STRIPE + 10, titleY + 94, { lineBreak: false });
+  drawSerieTurmaBadge(doc, capa, area, {
+    x: STRIPE + 10,
+    y: titleY + 94,
+    maxW: A4W - STRIPE - MARGIN - 20,
+    align: 'left',
+    baseFontSize: 20,
+    baseColor: '#1a1a1a',
+    badgeBg: area.cor,
+    badgeTextColor: '#ffffff',
+  });
 
   // ── Step 10 & 11: CAMPO 3 — Card Delimitado de Orientações ─────────────────
   const cardX = STRIPE + 10;
@@ -527,16 +630,16 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, op
      .text('PROVÃO DE', 30, bandBottom, { width: A4W - 60, align: 'center' });
   doc.fillColor('#111111').font('Helvetica-Bold').fontSize(60)
      .text(area.label, 30, bandBottom + 22, { width: A4W - 60, align: 'center' });
-  const serieText_F = formatSerieText(capa, ' - ');
-  const maxW_F = A4W - 60;
-  let fSize_F = 22;
-  doc.font('Helvetica-Bold').fontSize(fSize_F);
-  while (doc.widthOfString(serieText_F) > maxW_F && fSize_F > 12) {
-    fSize_F -= 1;
-    doc.fontSize(fSize_F);
-  }
-  doc.fillColor(area.cor)
-     .text(serieText_F, 30, bandBottom + 94, { width: maxW_F, align: 'center', lineBreak: false });
+  drawSerieTurmaBadge(doc, capa, area, {
+    x: 30,
+    y: bandBottom + 94,
+    maxW: A4W - 60,
+    align: 'center',
+    baseFontSize: 20,
+    baseColor: area.cor,
+    badgeBg: area.cor,
+    badgeTextColor: '#ffffff',
+  });
 
   // Instructions
   const instrBaseY = bandBottom + 128;
@@ -592,16 +695,16 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
   const whiteZoneY = titleY + 20 + 75 + 10;
   doc.fillColor('#ffffff').rect(0, whiteZoneY, A4W, A4H - whiteZoneY).fill();
 
-  const serieText_Col = formatSerieText(capa, ' - ');
-  const maxW_Col = A4W - MARGIN * 2;
-  let fSize_Col = 24;
-  doc.font('Helvetica-Bold').fontSize(fSize_Col);
-  while (doc.widthOfString(serieText_Col) > maxW_Col && fSize_Col > 12) {
-    fSize_Col -= 1;
-    doc.fontSize(fSize_Col);
-  }
-  doc.fillColor(area.cor)
-     .text(serieText_Col, MARGIN, whiteZoneY + 10, { width: maxW_Col, align: 'center', lineBreak: false });
+  drawSerieTurmaBadge(doc, capa, area, {
+    x: MARGIN,
+    y: whiteZoneY + 10,
+    maxW: A4W - MARGIN * 2,
+    align: 'center',
+    baseFontSize: 22,
+    baseColor: area.cor,
+    badgeBg: area.cor,
+    badgeTextColor: '#ffffff',
+  });
 
   // ── Instructions box ──────────────────────────────────────────────────────
   const instrTop = whiteZoneY + 52;  // 10 (gap) + 26px fontSize + 16px line height
@@ -650,16 +753,16 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts
      .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W - MARGIN * 2, align: 'center' });
   doc.fillColor('#f1f5f9').font('Helvetica-Bold').fontSize(62)
      .text(area.label, MARGIN, afterHeader + 26, { width: A4W - MARGIN * 2, align: 'center' });
-  const serieText_D = formatSerieText(capa, ' — ');
-  const maxW_D = A4W - MARGIN * 2;
-  let fSize_D = 22;
-  doc.font('Helvetica-Bold').fontSize(fSize_D);
-  while (doc.widthOfString(serieText_D) > maxW_D && fSize_D > 12) {
-    fSize_D -= 1;
-    doc.fontSize(fSize_D);
-  }
-  doc.fillColor(area.cor)
-     .text(serieText_D, MARGIN, afterHeader + 100, { width: maxW_D, align: 'center', lineBreak: false });
+  drawSerieTurmaBadge(doc, capa, area, {
+    x: MARGIN,
+    y: afterHeader + 100,
+    maxW: A4W - MARGIN * 2,
+    align: 'center',
+    baseFontSize: 20,
+    baseColor: area.cor,
+    badgeBg: area.cor,
+    badgeTextColor: '#ffffff',
+  });
 
   // Instructions dark card
   const instrTop = afterHeader + 140;
@@ -758,7 +861,11 @@ router.get('/:id/preview', async (req, res) => {
     );
     if (!capa) return res.status(404).json({ ok: false, message: 'Capa não encontrada.' });
     const area = AREAS[capa.area] || AREAS.GERAL;
-    const qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
+    const qrPayload = (capa.avaliacao_id && capa.turma_id)
+      ? { tipo: 'prova', avaliacao_id: capa.avaliacao_id, turma_id: capa.turma_id, capa_id: capa.id }
+      : (capa.turma_id
+          ? { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area, turma_id: capa.turma_id }
+          : { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area });
     return res.json({
       ok: true,
       capa: { ...capa, instrucoes: capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '' },
@@ -826,6 +933,8 @@ router.get('/:id/pdf', async (req, res) => {
     let qrPayload;
     if (capa.avaliacao_id && capa.turma_id) {
       qrPayload = { tipo: 'prova', avaliacao_id: capa.avaliacao_id, turma_id: capa.turma_id, capa_id: capa.id };
+    } else if (capa.turma_id) {
+      qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area, turma_id: capa.turma_id };
     } else {
       qrPayload = { tipo: 'capa', p: capa.id, e: escolaId, b: capa.bimestre, an: capa.ano, area: capa.area };
     }
