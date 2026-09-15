@@ -96,6 +96,14 @@ const LOGO_ZONE = 138;  // horizontal space allocated per logo in header
 const QR_SIZE   = 82;   // QR code size
 const HEADER_H  = 145;  // header height — 145px gives room for 2-line school names
 
+// ── Format series, bimestre, and turma ───────────────────────────────────────
+function formatSerieText(capa, defaultSep = ' — ') {
+  const base = [capa.serie, capa.bimestre ? `${capa.bimestre}º BIMESTRE` : ''].filter(Boolean).join(defaultSep);
+  const turma = capa.turma_nome || capa.turma || '';
+  if (!turma) return base;
+  return base ? `${base} - ${turma}` : turma;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED: Draw institutional header identical to Relatório Disciplinar
 // All colors must be HEX strings or PDFKit won't render them
@@ -278,9 +286,16 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
      .text('PROVÃO DE', MARGIN + 8, titleY, { width: A4W - MARGIN * 2 - 16, align: 'center' });
   doc.fillColor('#111111').font('Helvetica-Bold').fontSize(64)
      .text(area.label, MARGIN + 8, titleY + 24, { width: A4W - MARGIN * 2 - 16, align: 'center' });
-  const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - ');
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(24)
-     .text(serieText, MARGIN + 8, titleY + 98, { width: A4W - MARGIN * 2 - 16, align: 'center' });
+  const serieText = formatSerieText(capa, ' - ');
+  const maxW_C = A4W - MARGIN * 2 - 16;
+  let fSize_C = 24;
+  doc.font('Helvetica-Bold').fontSize(fSize_C);
+  while (doc.widthOfString(serieText) > maxW_C && fSize_C > 12) {
+    fSize_C -= 1;
+    doc.fontSize(fSize_C);
+  }
+  doc.fillColor(area.cor)
+     .text(serieText, MARGIN + 8, titleY + 98, { width: maxW_C, align: 'center', lineBreak: false });
 
   // Instructions block — measure text height first for dynamic sizing
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
@@ -407,9 +422,16 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
      .text('PROVÃO DE', STRIPE + 10, titleY);
   doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(68)
      .text(area.label, STRIPE + 10, titleY + 18);
-  const serieText = [capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — ');
-  doc.fillColor('#1a1a1a').font('Helvetica-Bold').fontSize(22)
-     .text(serieText, STRIPE + 10, titleY + 94);
+  const serieText = formatSerieText(capa, ' — ');
+  const maxW_M = A4W - STRIPE - MARGIN - 20;
+  let fSize_M = 22;
+  doc.font('Helvetica-Bold').fontSize(fSize_M);
+  while (doc.widthOfString(serieText) > maxW_M && fSize_M > 12) {
+    fSize_M -= 1;
+    doc.fontSize(fSize_M);
+  }
+  doc.fillColor('#1a1a1a')
+     .text(serieText, STRIPE + 10, titleY + 94, { lineBreak: false });
 
   // ── Step 10: Instructions separator ───────────────────────────────────────
   const instrSepY = titleY + 128;
@@ -497,9 +519,16 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, op
      .text('PROVÃO DE', 30, bandBottom, { width: A4W - 60, align: 'center' });
   doc.fillColor('#111111').font('Helvetica-Bold').fontSize(60)
      .text(area.label, 30, bandBottom + 22, { width: A4W - 60, align: 'center' });
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(22)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '), 30, bandBottom + 94,
-       { width: A4W - 60, align: 'center' });
+  const serieText_F = formatSerieText(capa, ' - ');
+  const maxW_F = A4W - 60;
+  let fSize_F = 22;
+  doc.font('Helvetica-Bold').fontSize(fSize_F);
+  while (doc.widthOfString(serieText_F) > maxW_F && fSize_F > 12) {
+    fSize_F -= 1;
+    doc.fontSize(fSize_F);
+  }
+  doc.fillColor(area.cor)
+     .text(serieText_F, 30, bandBottom + 94, { width: maxW_F, align: 'center', lineBreak: false });
 
   // Instructions
   const instrBaseY = bandBottom + 128;
@@ -555,10 +584,16 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
   const whiteZoneY = titleY + 20 + 75 + 10;
   doc.fillColor('#ffffff').rect(0, whiteZoneY, A4W, A4H - whiteZoneY).fill();
 
-  // ── Series/grade on white zone ────────────────────────────────────────────
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(26)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' - '),
-       MARGIN, whiteZoneY + 10, { width: A4W - MARGIN * 2, align: 'center' });
+  const serieText_Col = formatSerieText(capa, ' - ');
+  const maxW_Col = A4W - MARGIN * 2;
+  let fSize_Col = 24;
+  doc.font('Helvetica-Bold').fontSize(fSize_Col);
+  while (doc.widthOfString(serieText_Col) > maxW_Col && fSize_Col > 12) {
+    fSize_Col -= 1;
+    doc.fontSize(fSize_Col);
+  }
+  doc.fillColor(area.cor)
+     .text(serieText_Col, MARGIN, whiteZoneY + 10, { width: maxW_Col, align: 'center', lineBreak: false });
 
   // ── Instructions box ──────────────────────────────────────────────────────
   const instrTop = whiteZoneY + 52;  // 10 (gap) + 26px fontSize + 16px line height
@@ -607,9 +642,16 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts
      .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W - MARGIN * 2, align: 'center' });
   doc.fillColor('#f1f5f9').font('Helvetica-Bold').fontSize(62)
      .text(area.label, MARGIN, afterHeader + 26, { width: A4W - MARGIN * 2, align: 'center' });
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(22)
-     .text([capa.serie, `${capa.bimestre}º BIMESTRE`].filter(Boolean).join(' — '), MARGIN, afterHeader + 100,
-       { width: A4W - MARGIN * 2, align: 'center' });
+  const serieText_D = formatSerieText(capa, ' — ');
+  const maxW_D = A4W - MARGIN * 2;
+  let fSize_D = 22;
+  doc.font('Helvetica-Bold').fontSize(fSize_D);
+  while (doc.widthOfString(serieText_D) > maxW_D && fSize_D > 12) {
+    fSize_D -= 1;
+    doc.fontSize(fSize_D);
+  }
+  doc.fillColor(area.cor)
+     .text(serieText_D, MARGIN, afterHeader + 100, { width: maxW_D, align: 'center', lineBreak: false });
 
   // Instructions dark card
   const instrTop = afterHeader + 140;
@@ -646,7 +688,11 @@ router.get('/', async (req, res) => {
   if (!escolaId) return res.status(400).json({ ok: false, message: 'escola_id inválido.' });
   try {
     const [rows] = await db.query(
-      'SELECT id, titulo, area, serie, turno, bimestre, ano, template_id, instrucoes, qr_token, criado_em FROM capa_provas WHERE escola_id=? AND ativo=1 ORDER BY criado_em DESC',
+      `SELECT cp.id, cp.titulo, cp.area, cp.serie, cp.turno, cp.bimestre, cp.ano, cp.template_id, cp.instrucoes, cp.qr_token, cp.criado_em, cp.avaliacao_id, cp.turma_id, t.nome AS turma_nome
+       FROM capa_provas cp
+       LEFT JOIN turmas t ON t.id = cp.turma_id
+       WHERE cp.escola_id=? AND cp.ativo=1
+       ORDER BY cp.criado_em DESC`,
       [escolaId]
     );
     return res.json({ ok: true, capas: rows });
@@ -696,7 +742,11 @@ router.get('/:id/preview', async (req, res) => {
   const id = Number(req.params.id);
   try {
     const [[capa]] = await db.query(
-      'SELECT * FROM capa_provas WHERE id=? AND escola_id=? AND ativo=1 LIMIT 1', [id, escolaId]
+      `SELECT cp.*, t.nome AS turma_nome
+       FROM capa_provas cp
+       LEFT JOIN turmas t ON t.id = cp.turma_id
+       WHERE cp.id=? AND cp.escola_id=? AND cp.ativo=1 LIMIT 1`,
+      [id, escolaId]
     );
     if (!capa) return res.status(404).json({ ok: false, message: 'Capa não encontrada.' });
     const area = AREAS[capa.area] || AREAS.GERAL;
@@ -728,7 +778,11 @@ router.get('/:id/pdf', async (req, res) => {
 
   try {
     const [[capa]] = await db.query(
-      'SELECT * FROM capa_provas WHERE id=? AND escola_id=? AND ativo=1 LIMIT 1', [id, escolaId]
+      `SELECT cp.*, t.nome AS turma_nome
+       FROM capa_provas cp
+       LEFT JOIN turmas t ON t.id = cp.turma_id
+       WHERE cp.id=? AND cp.escola_id=? AND cp.ativo=1 LIMIT 1`,
+      [id, escolaId]
     );
     if (!capa) return res.status(404).json({ ok: false, message: 'Capa não encontrada.' });
 
