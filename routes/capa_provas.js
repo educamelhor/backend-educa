@@ -174,10 +174,16 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
     const badgeX = startX + baseW + gap;
     const badgeY = y + Math.round((fSize - badgeH) / 2);
 
+    // Alinhamento óptico vertical perfeito do texto dentro do badge:
+    // A altura visual das letras maiúsculas em Helvetica é ~0.72 do fontSize.
+    // Centralizando geometricamente a caixa das letras dentro da altura do badge:
+    const capHeight = badgeFSize * 0.72;
+    const textOffsetY = Math.round((badgeH - capHeight) / 2);
+
     doc.save();
     doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 4).fillColor(badgeBg).fill();
     doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
-       .text(badgeText, badgeX, badgeY + Math.round((badgeH - badgeFSize) / 2) - 1, {
+       .text(badgeText, badgeX, badgeY + textOffsetY, {
          width: badgeW,
          align: 'center',
          lineBreak: false,
@@ -194,10 +200,13 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
     if (align === 'center') {
       badgeX = x + Math.round((maxW - badgeW) / 2);
     }
+    const capHeight = badgeFSize * 0.72;
+    const textOffsetY = Math.round((badgeH - capHeight) / 2);
+
     doc.save();
     doc.roundedRect(badgeX, line2Y, badgeW, badgeH, 4).fillColor(badgeBg).fill();
     doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
-       .text(badgeText, badgeX, line2Y + Math.round((badgeH - badgeFSize) / 2) - 1, {
+       .text(badgeText, badgeX, line2Y + textOffsetY, {
          width: badgeW,
          align: 'center',
          lineBreak: false,
