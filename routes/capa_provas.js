@@ -13,6 +13,22 @@ const router = express.Router();
 
 // ── Load themed images at startup ──────────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Font setup ─────────────────────────────────────────────────────────────
+// LiberationSans is a 100% metrics-compatible TrueType replacement for Helvetica.
+// Registering and embedding real TTF fonts guarantees universal, uncorrupted glyph
+// rendering on all computers and PDF viewers (Adobe Acrobat, Foxit, browsers, print).
+const FONT_REGULAR_PATH = join(__dirname, '../assets/fonts/LiberationSans-Regular.ttf');
+const FONT_BOLD_PATH    = join(__dirname, '../assets/fonts/LiberationSans-Bold.ttf');
+const FONT_REGULAR      = 'LiberationSans';
+const FONT_BOLD         = 'LiberationSans-Bold';
+
+function setupDocFonts(doc) {
+  doc.registerFont(FONT_REGULAR, FONT_REGULAR_PATH);
+  doc.registerFont(FONT_BOLD, FONT_BOLD_PATH);
+  doc.font(FONT_REGULAR);
+}
+
 const TEMA_IMAGES = {};
 for (const area of ['EXATAS', 'HUMANAS', 'LINGUAGENS', 'NATUREZA', 'GERAL']) {
   try {
@@ -129,7 +145,7 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
   if (!turma) {
     if (!baseSerie) return { y };
     let fSize = baseFontSize;
-    doc.font('Helvetica-Bold').fontSize(fSize);
+    doc.font(FONT_BOLD).fontSize(fSize);
     while (doc.widthOfString(baseSerie) > maxW && fSize > 12) {
       fSize -= 1;
       doc.fontSize(fSize);
@@ -142,14 +158,14 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
   const badgeText = `TURMA: ${turma.toUpperCase()}`;
   const badgeFSize = Math.max(10, Math.min(11.5, Math.round(baseFontSize * 0.55)));
 
-  doc.font('Helvetica-Bold').fontSize(badgeFSize);
+  doc.font(FONT_BOLD).fontSize(badgeFSize);
   const textW = doc.widthOfString(badgeText);
   const badgePadX = 10;
   const badgeW = Math.round(textW + badgePadX * 2);
   const badgeH = Math.round(badgeFSize * 1.8);
 
   let fSize = baseFontSize;
-  doc.font('Helvetica-Bold').fontSize(fSize);
+  doc.font(FONT_BOLD).fontSize(fSize);
   const gap = 12;
 
   // Ajusta tamanho da fonte se necessário
@@ -167,7 +183,7 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
       startX = x + Math.round((maxW - totalW) / 2);
     }
     // Texto base da série e bimestre
-    doc.fillColor(baseColor).font('Helvetica-Bold').fontSize(fSize)
+    doc.fillColor(baseColor).font(FONT_BOLD).fontSize(fSize)
        .text(baseSerie, startX, y, { lineBreak: false });
 
     // Badge da Turma com cantos arredondados e cor da área
@@ -175,14 +191,14 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
     const badgeY = y + Math.round((fSize - badgeH) / 2);
 
     // Alinhamento óptico vertical perfeito do texto dentro do badge:
-    // A altura visual das letras maiúsculas em Helvetica é ~0.72 do fontSize.
+    // A altura visual das letras maiúsculas em LiberationSans é ~0.72 do fontSize.
     // Centralizando geometricamente a caixa das letras dentro da altura do badge:
     const capHeight = badgeFSize * 0.72;
     const textOffsetY = Math.round((badgeH - capHeight) / 2);
 
     doc.save();
     doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 4).fillColor(badgeBg).fill();
-    doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
+    doc.fillColor(badgeTextColor).font(FONT_BOLD).fontSize(badgeFSize)
        .text(badgeText, badgeX, badgeY + textOffsetY, {
          width: badgeW,
          align: 'center',
@@ -192,7 +208,7 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
     return { y: y + Math.max(fSize, badgeH) };
   } else {
     // Quebra em duas linhas para não truncar
-    doc.fillColor(baseColor).font('Helvetica-Bold').fontSize(fSize)
+    doc.fillColor(baseColor).font(FONT_BOLD).fontSize(fSize)
        .text(baseSerie, x, y, { width: maxW, align, lineBreak: false });
 
     const line2Y = y + fSize + 6;
@@ -205,7 +221,7 @@ function drawSerieTurmaBadge(doc, capa, area, opts = {}) {
 
     doc.save();
     doc.roundedRect(badgeX, line2Y, badgeW, badgeH, 4).fillColor(badgeBg).fill();
-    doc.fillColor(badgeTextColor).font('Helvetica-Bold').fontSize(badgeFSize)
+    doc.fillColor(badgeTextColor).font(FONT_BOLD).fontSize(badgeFSize)
        .text(badgeText, badgeX, line2Y + textOffsetY, {
          width: badgeW,
          align: 'center',
@@ -265,28 +281,28 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
   let ty = startY + Math.max(8, (contentH - 52) / 2);
 
   // Line 1 — Secretaria (clips if too long — lineBreak:false)
-  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
+  doc.fillColor(textColor).font(FONT_BOLD).fontSize(8)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL',
        leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty = doc.y + 1;
 
   // Line 2 — Coordenação Regional
   const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
-  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(7.5)
+  doc.fillColor(textColor).font(FONT_BOLD).fontSize(7.5)
      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`,
        leftEdge, ty, { width: tw, align: 'center', lineBreak: false });
   ty = doc.y + 1;
 
   // Line 3 — Nome + Apelido — WRAPPING ALLOWED so address never overlaps
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.fillColor(textColor).font('Helvetica-Bold').fontSize(8)
+  doc.fillColor(textColor).font(FONT_BOLD).fontSize(8)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`,
        leftEdge, ty, { width: tw, align: 'center' });
   ty = doc.y + 1;  // advances past ALL wrapped lines of school name
 
   // Line 4 — Endereço — always below line 3, never overlaps
   if (escola.endereco) {
-    doc.fillColor('#555555').font('Helvetica').fontSize(7)
+    doc.fillColor('#555555').font(FONT_REGULAR).fontSize(7)
        .text(escola.endereco, leftEdge, ty,
          { width: tw, align: 'center', lineBreak: false });
   }
@@ -306,7 +322,7 @@ function drawInstitucionalHeader(doc, escola, logoEsqBuf, logoDirBuf, qrBuf, opt
 // SHARED: Measure instruction text height using PDFKit's heightOfString
 // ─────────────────────────────────────────────────────────────────────────────
 function measureInstrHeight(doc, instrText, textWidth, fontSize = 8.5) {
-  return doc.font('Helvetica').fontSize(fontSize)
+  return doc.font(FONT_REGULAR).fontSize(fontSize)
     .heightOfString(instrText, { width: textWidth, lineGap: 0.5, paragraphGap: 2 });
 }
 
@@ -391,9 +407,9 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
 
   // Title block
   const titleY = afterHeader + 6;
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(20)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(20)
      .text('PROVÃO DE', MARGIN + 8, titleY, { width: A4W - MARGIN * 2 - 16, align: 'center' });
-  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(64)
+  doc.fillColor('#111111').font(FONT_BOLD).fontSize(64)
      .text(area.label, MARGIN + 8, titleY + 24, { width: A4W - MARGIN * 2 - 16, align: 'center' });
   drawSerieTurmaBadge(doc, capa, area, {
     x: MARGIN + 8,
@@ -416,10 +432,10 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
   doc.fillColor(area.corClaro).rect(MARGIN + 8, instrY, A4W - MARGIN * 2 - 16, instrBoxH).fill();
   doc.strokeColor(area.cor).lineWidth(1)
      .rect(MARGIN + 8, instrY, A4W - MARGIN * 2 - 16, instrBoxH).stroke();
-  doc.fillColor('#000000').font('Helvetica-Bold').fontSize(10)
+  doc.fillColor('#000000').font(FONT_BOLD).fontSize(10)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 16, instrY + 8,
        { width: instrInnerW, align: 'center' });
-  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+  doc.fillColor('#111111').font(FONT_REGULAR).fontSize(8.8)
      .text(instrText, MARGIN + 16, instrY + 28, { width: instrInnerW, lineGap: 0.5, paragraphGap: 2 });
 
   // Themed image fills ALL remaining space below instructions
@@ -431,7 +447,7 @@ async function renderClassico(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
   if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, imgMaxY);
 
   // Footer
-  doc.fillColor('#666666').font('Helvetica').fontSize(7)
+  doc.fillColor('#666666').font(FONT_REGULAR).fontSize(7)
      .text(`EDUCA.MELHOR — ${capa.titulo} — ${capa.ano}`, MARGIN + 8, A4H - 14,
        { width: A4W - MARGIN * 2 - 16, align: 'center' });
   return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: imgMaxY - imageStartY };
@@ -494,26 +510,26 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
   const apelidoM = escola.apelido ? ` — ${escola.apelido}` : '';
 
   // Line 1 — MUST fit in 1 line (lineBreak:false clips gracefully)
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(7.5)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty = doc.y + 1;
 
   // Line 2 — Coordenação
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(7)
      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidadeM}`, hx, hty,
        { width: hw, align: 'center', lineBreak: false });
   hty = doc.y + 1;
 
   // Line 3 — School name (allow wrap — doc.y tracks actual position)
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(7.5)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(7.5)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelidoM}`, hx, hty,
        { width: hw, align: 'center' });
   hty = doc.y + 1;
 
   // Line 4 — Address
   if (escola.endereco) {
-    doc.fillColor('#444444').font('Helvetica').fontSize(6.5)
+    doc.fillColor('#444444').font(FONT_REGULAR).fontSize(6.5)
        .text(escola.endereco, hx, hty, { width: hw, align: 'center', lineBreak: false });
   }
 
@@ -527,9 +543,9 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
 
   // ── Step 9: Title block ────────────────────────────────────────────────────
   const titleY = sepY2 + 10;
-  doc.fillColor('#888888').font('Helvetica-Bold').fontSize(14)
+  doc.fillColor('#888888').font(FONT_BOLD).fontSize(14)
      .text('PROVÃO DE', STRIPE + 10, titleY);
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(68)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(68)
      .text(area.label, STRIPE + 10, titleY + 18);
   drawSerieTurmaBadge(doc, capa, area, {
     x: STRIPE + 10,
@@ -563,11 +579,11 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
   doc.restore();
 
   // Cabeçalho do card
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(8.5)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(8.5)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES:', cardX + padH, cardY + padV);
 
   // Texto das instruções
-  doc.fillColor('#222222').font('Helvetica').fontSize(8.2)
+  doc.fillColor('#222222').font(FONT_REGULAR).fontSize(8.2)
      .text(instrText, cardX + padH, cardY + padV + 13, { width: textW, lineGap: 0.5, paragraphGap: 2 });
 
   // ── Step 12: CAMPO 4 — Área Destinada à Imagem ─────────────────────────────
@@ -578,7 +594,7 @@ async function renderModerno(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, o
   if (!opts.noImage) drawImageNatural(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 22);
 
   // Footer
-  doc.fillColor('#999999').font('Helvetica').fontSize(7)
+  doc.fillColor('#999999').font(FONT_REGULAR).fontSize(7)
      .text(`EDUCA.MELHOR · ${capa.ano}`, STRIPE + 10, A4H - 12,
        { width: A4W - STRIPE - MARGIN - 10 });
   return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: availableH };
@@ -614,30 +630,30 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, op
   const hw = A4W - hx - QR_SIZE - LOGO_ZONE - 36;
   let hy = logoTopY + 4;  // start text near top of logo zone
 
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7.5)
+  doc.fillColor('#ffffff').font(FONT_BOLD).fontSize(7.5)
      .text('SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL', hx, hy,
        { width: hw, align: 'center', lineBreak: false });
   hy = doc.y + 2;
   const cidade = (escola.cidade || 'PLANALTINA').toUpperCase();
-  doc.fillColor('#ffffffcc').font('Helvetica-Bold').fontSize(7)
+  doc.fillColor('#ffffffcc').font(FONT_BOLD).fontSize(7)
      .text(`COORDENAÇÃO REGIONAL DE ENSINO DE ${cidade}`, hx, hy,
        { width: hw, align: 'center', lineBreak: false });
   hy = doc.y + 2;
   const apelido = escola.apelido ? ` — ${escola.apelido}` : '';
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8)
+  doc.fillColor('#ffffff').font(FONT_BOLD).fontSize(8)
      .text(`${(escola.nome || 'ESCOLA').toUpperCase()}${apelido}`, hx, hy,
        { width: hw, align: 'center' });
   hy = doc.y + 2;
   if (escola.endereco) {
-    doc.fillColor('#ffffff99').font('Helvetica').fontSize(7)
+    doc.fillColor('#ffffff99').font(FONT_REGULAR).fontSize(7)
        .text(escola.endereco, hx, hy, { width: hw, align: 'center', lineBreak: false });
   }
 
   // Title block — positioned dynamically after band
   const bandBottom = 22 + BAND_H + 8;  // band bottom + gap
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(18)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(18)
      .text('PROVÃO DE', 30, bandBottom, { width: A4W - 60, align: 'center' });
-  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(60)
+  doc.fillColor('#111111').font(FONT_BOLD).fontSize(60)
      .text(area.label, 30, bandBottom + 22, { width: A4W - 60, align: 'center' });
   drawSerieTurmaBadge(doc, capa, area, {
     x: 30,
@@ -653,12 +669,12 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, op
   // Instructions
   const instrBaseY = bandBottom + 128;
   doc.fillColor(area.cor).rect(30, instrBaseY, A4W - 60, 2).fill();
-  doc.fillColor('#000000').font('Helvetica-Bold').fontSize(10)
+  doc.fillColor('#000000').font(FONT_BOLD).fontSize(10)
      .text('INSTRUÇÕES AO ESTUDANTE:', 35, instrBaseY + 10, { width: A4W - 70, align: 'center' });
   const instrText = capa.instrucoes || INSTRUCOES_PADRAO[capa.area] || '';
   const instrW = A4W - 70;
   const instrTextH = measureInstrHeight(doc, instrText, instrW);
-  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+  doc.fillColor('#111111').font(FONT_REGULAR).fontSize(8.8)
      .text(instrText, 35, instrBaseY + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // Image fills rest
@@ -668,7 +684,7 @@ async function renderFormal(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, op
   const imgZoneW = A4W - 48;
   if (!opts.noImage) drawBottomImage(doc, temaBuf, imgZoneX, imgZoneW, imageStartY, A4H - 24);
 
-  doc.fillColor('#aaaaaa').font('Helvetica').fontSize(7)
+  doc.fillColor('#aaaaaa').font(FONT_REGULAR).fontSize(7)
      .text('EDUCA.MELHOR', 30, A4H - 20, { width: A4W - 60, align: 'center' });
   return { imgX: imgZoneX, imgY: imageStartY, imgW: imgZoneW, imgH: A4H - 24 - imageStartY };
 }
@@ -694,9 +710,9 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
 
   // ── Title on colored zone ─────────────────────────────────────────────────
   const titleY = afterHeader + 6;
-  doc.fillColor(area.corClaro).font('Helvetica-Bold').fontSize(15)
+  doc.fillColor(area.corClaro).font(FONT_BOLD).fontSize(15)
      .text('PROVÃO DE', MARGIN, titleY, { width: A4W - MARGIN * 2, align: 'center' });
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(62)
+  doc.fillColor('#ffffff').font(FONT_BOLD).fontSize(62)
      .text(area.label, MARGIN, titleY + 20, { width: A4W - MARGIN * 2, align: 'center' });
 
   // ── White zone starts AFTER the big area label ────────────────────────────
@@ -724,10 +740,10 @@ async function renderColorido(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, 
 
   doc.fillColor(area.corClaro).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).fill();
   doc.strokeColor(area.cor).lineWidth(1.5).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).stroke();
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(10)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(10)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 10, instrTop + 8,
        { width: instrW + 4, align: 'center' });
-  doc.fillColor('#111111').font('Helvetica').fontSize(8.8)
+  doc.fillColor('#111111').font(FONT_REGULAR).fontSize(8.8)
      .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // ── Image fills rest ──────────────────────────────────────────────────────
@@ -758,9 +774,9 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts
   });
 
   // Title
-  doc.fillColor(area.cor).font('Helvetica-Bold').fontSize(13)
+  doc.fillColor(area.cor).font(FONT_BOLD).fontSize(13)
      .text('PROVÃO DE', MARGIN, afterHeader + 8, { width: A4W - MARGIN * 2, align: 'center' });
-  doc.fillColor('#f1f5f9').font('Helvetica-Bold').fontSize(62)
+  doc.fillColor('#f1f5f9').font(FONT_BOLD).fontSize(62)
      .text(area.label, MARGIN, afterHeader + 26, { width: A4W - MARGIN * 2, align: 'center' });
   drawSerieTurmaBadge(doc, capa, area, {
     x: MARGIN,
@@ -782,10 +798,10 @@ async function renderDark(doc, capa, escola, logoEsqBuf, logoDirBuf, qrBuf, opts
 
   doc.fillColor('#1e293b').rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).fill();
   doc.strokeColor(area.cor).lineWidth(1).rect(MARGIN, instrTop, A4W - MARGIN * 2, instrBoxH).stroke();
-  doc.fillColor('#e2e8f0').font('Helvetica-Bold').fontSize(10)
+  doc.fillColor('#e2e8f0').font(FONT_BOLD).fontSize(10)
      .text('LEIA ATENTAMENTE AS INSTRUÇÕES SEGUINTES:', MARGIN + 12, instrTop + 8,
        { width: instrW + 12, align: 'center' });
-  doc.fillColor('#cbd5e1').font('Helvetica').fontSize(8.8)
+  doc.fillColor('#cbd5e1').font(FONT_REGULAR).fontSize(8.8)
      .text(instrText, MARGIN + 12, instrTop + 28, { width: instrW, lineGap: 0.5, paragraphGap: 2 });
 
   // Image fills rest
@@ -990,6 +1006,7 @@ router.get('/:id/pdf', async (req, res) => {
 
     // Render PDF
     const doc = new PDFDocument({ size: 'A4', margin: 0, info: { Title: capa.titulo, Author: 'EDUCA.MELHOR' } });
+    setupDocFonts(doc);
     const renderer = RENDERERS[capa.template_id] || RENDERERS[1];
     // Pass areaFinal (with possible color override) as part of a patched capa object
     const capaPatch = { ...capa, _areaOverride: areaFinal };
@@ -1036,4 +1053,5 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+export { RENDERERS, setupDocFonts, FONT_REGULAR, FONT_BOLD, AREAS, INSTRUCOES_PADRAO };
 export default router;
