@@ -137,9 +137,9 @@ router.get('/acervo', async (req, res) => {
     const params = [eid];
 
     if (q) {
-      where += ' AND (ba.titulo LIKE ? OR ba.autor LIKE ? OR ba.isbn LIKE ?)';
+      where += ' AND (ba.titulo LIKE ? OR ba.autor LIKE ? OR ba.isbn LIKE ? OR ba.editora LIKE ? OR ba.genero LIKE ? OR bae.local_estante LIKE ?)';
       const like = `%${q}%`;
-      params.push(like, like, like);
+      params.push(like, like, like, like, like, like);
     }
     if (genero)    { where += ' AND ba.genero = ?';    params.push(genero); }
     if (categoria) { where += ' AND ba.categoria = ?'; params.push(categoria); }
