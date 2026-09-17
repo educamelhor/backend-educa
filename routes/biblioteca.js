@@ -187,59 +187,47 @@ router.post('/acervo', async (req, res) => {
     sinopse, num_paginas, exemplares, local_estante, capa_url,
   } = req.body;
 
-  if (!titulo) return res.status(400).json({ ok: false, error: 'Título obrigatório' });
-
   const anoLimpo    = sanitizarAno(ano_publicacao);
   const isbnLimpo   = isbn ? isbn.trim().replace(/[-\s]/g, '') || null : null;
   const exemplaresN = parseInt(exemplares) || 1;
 
+  if (!titulo || !titulo.trim()) return res.status(400).json({ ok: false, error: 'Título é obrigatório' });
+  if (!isbnLimpo || isbnLimpo.length < 10)
+    return res.status(400).json({ ok: false, error: 'O código ISBN é obrigatório (mínimo 10 dígitos)' });
+
   try {
     let acervoId;
 
-    // ── Passo 1: catálogo universal ─────────────────────────────────────────
-    if (isbnLimpo) {
-      const [[existente]] = await db.query(
-        'SELECT id FROM biblioteca_acervo WHERE isbn = ?', [isbnLimpo]
+    // ── Passo 1: catálogo universal (ISBN estritamente obrigatório) ─────────
+    const [[existente]] = await db.query(
+      'SELECT id FROM biblioteca_acervo WHERE isbn = ?', [isbnLimpo]
+    );
+    if (existente) {
+      // Livro já catalogado — atualiza apenas se campos estiverem vazios
+      acervoId = existente.id;
+      await db.query(
+        `UPDATE biblioteca_acervo SET
+           titulo    = COALESCE(NULLIF(titulo,''), ?),
+           autor     = COALESCE(autor, ?),
+           editora   = COALESCE(editora, ?),
+           genero    = COALESCE(genero, ?),
+           categoria = COALESCE(categoria, ?),
+           sinopse   = COALESCE(sinopse, ?),
+           num_paginas = COALESCE(num_paginas, ?),
+           capa_url  = COALESCE(capa_url, ?)
+         WHERE id = ?`,
+        [titulo, autor||null, editora||null, genero||null,
+         categoria||'juvenil', sinopse||null, num_paginas?parseInt(num_paginas):null,
+         capa_url||null, acervoId]
       );
-      if (existente) {
-        // Livro já catalogado — atualiza apenas se campos estiverem vazios
-        acervoId = existente.id;
-        await db.query(
-          `UPDATE biblioteca_acervo SET
-             titulo    = COALESCE(NULLIF(titulo,''), ?),
-             autor     = COALESCE(autor, ?),
-             editora   = COALESCE(editora, ?),
-             genero    = COALESCE(genero, ?),
-             categoria = COALESCE(categoria, ?),
-             sinopse   = COALESCE(sinopse, ?),
-             num_paginas = COALESCE(num_paginas, ?),
-             capa_url  = COALESCE(capa_url, ?)
-           WHERE id = ?`,
-          [titulo, autor||null, editora||null, genero||null,
-           categoria||'juvenil', sinopse||null, num_paginas?parseInt(num_paginas):null,
-           capa_url||null, acervoId]
-        );
-      } else {
-        // Novo livro → INSERT universal
-        const [r] = await db.query(
-          `INSERT INTO biblioteca_acervo
-             (isbn, titulo, autor, editora, ano_publicacao, genero, categoria,
-              sinopse, num_paginas, capa_url)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
-          [isbnLimpo, titulo, autor||null, editora||null, anoLimpo, genero||null,
-           categoria||'juvenil', sinopse||null, num_paginas?parseInt(num_paginas):null,
-           capa_url||null]
-        );
-        acervoId = r.insertId;
-      }
     } else {
-      // Sem ISBN — sempre insere no catálogo universal
+      // Novo livro → INSERT universal com ISBN obrigatório
       const [r] = await db.query(
         `INSERT INTO biblioteca_acervo
            (isbn, titulo, autor, editora, ano_publicacao, genero, categoria,
             sinopse, num_paginas, capa_url)
          VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [null, titulo, autor||null, editora||null, anoLimpo, genero||null,
+        [isbnLimpo, titulo, autor||null, editora||null, anoLimpo, genero||null,
          categoria||'juvenil', sinopse||null, num_paginas?parseInt(num_paginas):null,
          capa_url||null]
       );
@@ -304,18 +292,21 @@ router.put('/acervo/:id', async (req, res) => {
     if (!bae) return res.status(404).json({ ok: false, error: 'Livro não encontrado no acervo desta escola' });
 
     // Atualiza metadados universais
+    // Atualiza metadados universais (permite regularizar ISBN se obra não tinha)
+    const isbnLimpo = isbn ? isbn.trim().replace(/[-\s]/g, '') || null : null;
     await db.query(
       `UPDATE biblioteca_acervo SET
          titulo = COALESCE(?,titulo), autor = COALESCE(?,autor), editora = COALESCE(?,editora),
          ano_publicacao = ?, genero = COALESCE(?,genero), categoria = COALESCE(?,categoria),
          sinopse = COALESCE(?,sinopse), num_paginas = COALESCE(?,num_paginas),
-         capa_url = COALESCE(?,capa_url)
+         capa_url = COALESCE(?,capa_url),
+         isbn = COALESCE(NULLIF(isbn, ''), ?)
        WHERE id = ?`,
       [titulo||null, autor||null, editora||null,
        sanitizarAno(ano_publicacao) ?? null,
        genero||null, categoria||null, sinopse||null,
        num_paginas?parseInt(num_paginas):null,
-       capa_url||null, id]
+       capa_url||null, isbnLimpo, id]
     );
 
     // Atualiza estoque escolar
