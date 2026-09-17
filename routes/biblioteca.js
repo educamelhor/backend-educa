@@ -191,9 +191,16 @@ router.post('/acervo', async (req, res) => {
   const isbnLimpo   = isbn ? isbn.trim().replace(/[-\s]/g, '') || null : null;
   const exemplaresN = parseInt(exemplares) || 1;
 
-  if (!titulo || !titulo.trim()) return res.status(400).json({ ok: false, error: 'Título é obrigatório' });
   if (!isbnLimpo || isbnLimpo.length < 10)
     return res.status(400).json({ ok: false, error: 'O código ISBN é obrigatório (mínimo 10 dígitos)' });
+  if (!titulo || !titulo.trim()) return res.status(400).json({ ok: false, error: 'Título é obrigatório' });
+  if (!autor || !autor.trim()) return res.status(400).json({ ok: false, error: 'Autor(es) é obrigatório' });
+  if (!editora || !editora.trim()) return res.status(400).json({ ok: false, error: 'Editora é obrigatória' });
+  if (!anoLimpo) return res.status(400).json({ ok: false, error: 'Ano de publicação válido é obrigatório' });
+  if (!num_paginas || parseInt(num_paginas) <= 0) return res.status(400).json({ ok: false, error: 'Nº de páginas é obrigatório' });
+  if (!genero || !genero.trim()) return res.status(400).json({ ok: false, error: 'Gênero / Assunto é obrigatório' });
+  if (!categoria || !categoria.trim()) return res.status(400).json({ ok: false, error: 'Categoria é obrigatória' });
+  if (!exemplares || parseInt(exemplares) <= 0) return res.status(400).json({ ok: false, error: 'Quantidade de exemplares deve ser de pelo menos 1' });
 
   try {
     let acervoId;
