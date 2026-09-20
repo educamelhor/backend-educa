@@ -13,6 +13,10 @@ import { verificarEscola } from '../middleware/verificarEscola.js';
 import crypto from 'crypto';
 import sharp from 'sharp';
 import { uploadFileBufferToSpaces } from '../storage/spacesUpload.js';
+import PDFDocument from 'pdfkit';
+import { PassThrough } from 'stream';
+import { getEscolaLogos } from '../utils/logoHelper.js';
+import pool from '../db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -170,6 +174,346 @@ router.get('/acervo', async (req, res) => {
   } catch (err) {
     console.error('[BIBLIOTECA] acervo list:', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** GET /api/biblioteca/acervo/relatorio-pdf — Gera PDF institucional com a lista de livros do acervo */
+router.get('/acervo/relatorio-pdf', async (req, res) => {
+  const db = req.db || pool;
+  const eid = escolaId(req);
+  const { q, categoria, disponivel } = req.query;
+
+  try {
+    // 1. Dados da escola
+    const [[escola]] = await db.query(
+      "SELECT id, nome, apelido, endereco, cidade, estado FROM escolas WHERE id = ?",
+      [eid]
+    );
+
+    // 2. Logos institucionais
+    const { logoLeft, logoRight, hasLogoLeft, hasLogoRight } = await getEscolaLogos(eid);
+
+    // 3. Buscar livros cadastrados no acervo da escola
+    let where = 'WHERE bae.escola_id = ? AND bae.ativo = 1';
+    const params = [eid];
+
+    if (q) {
+      where += ' AND (ba.titulo LIKE ? OR ba.autor LIKE ? OR ba.isbn LIKE ? OR ba.editora LIKE ? OR ba.genero LIKE ? OR bae.local_estante LIKE ?)';
+      const like = `%${q}%`;
+      params.push(like, like, like, like, like, like);
+    }
+    if (categoria) {
+      where += ' AND ba.categoria = ?';
+      params.push(categoria);
+    }
+    if (disponivel === '1') {
+      where += ' AND bae.exemplares_disponiveis > 0';
+    }
+
+    const [livros] = await db.query(
+      `SELECT ba.isbn, ba.titulo, ba.autor, ba.editora, bae.exemplares, bae.exemplares_disponiveis, bae.local_estante
+       FROM biblioteca_acervo_escola bae
+       JOIN biblioteca_acervo ba ON ba.id = bae.acervo_id
+       ${where}
+       ORDER BY ba.titulo ASC`,
+      params
+    );
+
+    // 4. Parâmetros de página A4
+    const L = 40;
+    const R = 40;
+    const PW = 595.28 - L - R; // 515.28 pt
+    const PAGE_H = 841.89;
+    const FOOTER_Y = PAGE_H - 25;
+    const MAX_Y = FOOTER_Y - 15;
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 30, bottom: 0, left: L, right: R },
+      autoFirstPage: true,
+      bufferPages: true,
+      info: {
+        Title: "Catálogo do Acervo da Biblioteca",
+        Author: "EDUCA.MELHOR — Sistema Educacional",
+        Subject: "Lista de Livros do Acervo Escolar",
+      },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    const nomeArquivo = `lista_acervo_livros_${new Date().toISOString().slice(0, 10)}.pdf`;
+    res.setHeader("Content-Disposition", `inline; filename="${nomeArquivo}"`);
+
+    const pdfChunks = [];
+    const passThrough = new PassThrough();
+    passThrough.on("data", (chunk) => pdfChunks.push(chunk));
+    doc.pipe(passThrough);
+
+    // Cores oficiais da plataforma (padrão Módulo Impressão)
+    const COR_AZUL = "#1e3a5f";
+    const COR_DOURADO = "#b8860b";
+    const COR_CINZA = "#555";
+
+    // Dimensões da tabela:
+    // Colunas: Nº, ISBN, TÍTULO, AUTOR, EDITORA
+    const COL_N_W = 24;
+    const COL_ISBN_W = 86;
+    const COL_TITULO_W = 190;
+    const COL_AUTOR_W = 120;
+    const COL_EDITORA_W = PW - COL_N_W - COL_ISBN_W - COL_TITULO_W - COL_AUTOR_W; // 95.28 pt
+    const TH = 16;
+    const TR = 20;
+
+    const thCols = [
+      { text: "Nº", w: COL_N_W, align: "center" },
+      { text: "ISBN", w: COL_ISBN_W, align: "center" },
+      { text: "TÍTULO", w: COL_TITULO_W, align: "left" },
+      { text: "AUTOR", w: COL_AUTOR_W, align: "left" },
+      { text: "EDITORA", w: COL_EDITORA_W, align: "left" },
+    ];
+
+    function drawTableHeader(y) {
+      doc.rect(L, y, PW, TH).fill(COR_AZUL);
+      let tx = L;
+      thCols.forEach((col) => {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(7.5)
+          .fillColor("#fff")
+          .text(col.text, tx + 4, y + 4.5, {
+            width: col.w - 8,
+            align: col.align,
+            lineBreak: false,
+          });
+        tx += col.w;
+      });
+      return y + TH;
+    }
+
+    function ensureSpace(needed) {
+      if (doc.y + needed > MAX_Y) {
+        doc.addPage();
+        doc.y = 30;
+        doc.y = drawTableHeader(doc.y);
+      }
+    }
+
+    // ── Cabeçalho Institucional ─────────────────────────────────────
+    const headerTop = doc.y;
+    const logoSize = 58;
+
+    if (hasLogoLeft) {
+      doc.image(logoLeft, L, headerTop, { width: logoSize, height: logoSize });
+    }
+    if (hasLogoRight) {
+      doc.image(logoRight, L + PW - logoSize, headerTop, { width: logoSize, height: logoSize });
+    }
+
+    const hx = L + logoSize + 8;
+    const hw = PW - (logoSize + 8) * 2;
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(9)
+      .fillColor(COR_AZUL)
+      .text("SECRETARIA DE ESTADO DE EDUCAÇÃO DO DISTRITO FEDERAL", hx, headerTop + 4, {
+        width: hw,
+        align: "center",
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(8.5)
+      .fillColor(COR_AZUL)
+      .text(
+        `COORDENAÇÃO REGIONAL DE ENSINO DE ${(escola?.cidade || "PLANALTINA").toUpperCase()}`,
+        hx,
+        doc.y + 1,
+        { width: hw, align: "center" }
+      );
+
+    const escolaNome = escola?.nome || "CENTRO DE ENSINO FUNDAMENTAL 04";
+    const escolaApelido = escola?.apelido || "";
+    const nomeCompleto = escolaApelido ? `${escolaNome} — ${escolaApelido}` : escolaNome;
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(9)
+      .fillColor(COR_AZUL)
+      .text(nomeCompleto.toUpperCase(), hx, doc.y + 1, { width: hw, align: "center" });
+
+    const enderecoEscola = escola?.endereco || "Endereço não cadastrado";
+    doc
+      .font("Helvetica")
+      .fontSize(7.5)
+      .fillColor(COR_CINZA)
+      .text(enderecoEscola, hx, doc.y + 1, { width: hw, align: "center" });
+
+    doc.y = headerTop + logoSize + 4;
+
+    // Linhas decorativas (Dourado + Azul)
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_DOURADO).lineWidth(2).stroke();
+    doc.y += 3;
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(COR_AZUL).lineWidth(0.8).stroke();
+    doc.y += 8;
+
+    // Título do Relatório
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(13)
+      .fillColor(COR_AZUL)
+      .text("CATÁLOGO DO ACERVO DA BIBLIOTECA", L, doc.y, { width: PW, align: "center" });
+    doc.y += 5;
+
+    doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor("#ccc").lineWidth(0.5).stroke();
+    doc.y += 6;
+
+    // Barra de Resumo
+    const infoY = doc.y;
+    const infoH = 18;
+    doc.roundedRect(L, infoY, PW, infoH, 3).fill("#f0f4ff");
+    doc.roundedRect(L, infoY, PW, infoH, 3).strokeColor("#c7d2fe").lineWidth(0.5).stroke();
+
+    const infoTextY = infoY + 5;
+    const colW = PW / 4;
+    const dataFormatada = new Date().toLocaleDateString("pt-BR");
+    const infoCols = [
+      { label: "Módulo:", value: "Biblioteca Escolar" },
+      { label: "Ano Letivo:", value: String(anoLetivoAtual()) },
+      { label: "Data de Emissão:", value: dataFormatada },
+      { label: "Total Cadastrado:", value: `${livros.length} título(s)` },
+    ];
+
+    infoCols.forEach((col, i) => {
+      const cx = L + colW * i + 6;
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(7)
+        .fillColor(COR_AZUL)
+        .text(col.label, cx, infoTextY, { width: colW - 12, lineBreak: false, continued: true });
+      doc
+        .font("Helvetica")
+        .fontSize(7)
+        .fillColor("#334155")
+        .text(` ${col.value}`, { lineBreak: false });
+    });
+
+    doc.y = infoY + infoH + 8;
+
+    // Cabeçalho da tabela da 1ª página
+    doc.y = drawTableHeader(doc.y);
+
+    // Linhas da tabela
+    if (livros.length === 0) {
+      doc.y += 15;
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor("#64748b")
+        .text("Nenhum livro cadastrado no acervo escolar.", L, doc.y, { width: PW, align: "center" });
+    } else {
+      livros.forEach((livro, i) => {
+        ensureSpace(TR + 2);
+        const rowY = doc.y;
+        const isEven = i % 2 === 0;
+
+        if (isEven) doc.rect(L, rowY, PW, TR).fill("#f8fafc");
+
+        // Borda inferior
+        doc.moveTo(L, rowY + TR).lineTo(L + PW, rowY + TR).strokeColor("#cbd5e1").lineWidth(0.3).stroke();
+
+        // Linhas verticais separadoras
+        let lx = L;
+        doc.moveTo(lx + COL_N_W, rowY).lineTo(lx + COL_N_W, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+        lx += COL_N_W;
+        doc.moveTo(lx + COL_ISBN_W, rowY).lineTo(lx + COL_ISBN_W, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+        lx += COL_ISBN_W;
+        doc.moveTo(lx + COL_TITULO_W, rowY).lineTo(lx + COL_TITULO_W, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+        lx += COL_TITULO_W;
+        doc.moveTo(lx + COL_AUTOR_W, rowY).lineTo(lx + COL_AUTOR_W, rowY + TR).strokeColor("#e2e8f0").lineWidth(0.3).stroke();
+
+        // Nº
+        doc
+          .font("Helvetica")
+          .fontSize(7)
+          .fillColor("#64748b")
+          .text(String(i + 1), L + 2, rowY + 6, {
+            width: COL_N_W - 4,
+            align: "center",
+            lineBreak: false,
+          });
+
+        // ISBN
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(7)
+          .fillColor(COR_AZUL)
+          .text(livro.isbn || "—", L + COL_N_W + 4, rowY + 6, {
+            width: COL_ISBN_W - 8,
+            align: "center",
+            lineBreak: false,
+          });
+
+        // TÍTULO
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(7.5)
+          .fillColor("#0f172a")
+          .text(livro.titulo || "—", L + COL_N_W + COL_ISBN_W + 6, rowY + 6, {
+            width: COL_TITULO_W - 12,
+            lineBreak: false,
+            ellipsis: true,
+          });
+
+        // AUTOR
+        doc
+          .font("Helvetica")
+          .fontSize(7.2)
+          .fillColor("#334155")
+          .text(livro.autor || "—", L + COL_N_W + COL_ISBN_W + COL_TITULO_W + 6, rowY + 6, {
+            width: COL_AUTOR_W - 12,
+            lineBreak: false,
+            ellipsis: true,
+          });
+
+        // EDITORA
+        doc
+          .font("Helvetica")
+          .fontSize(7.2)
+          .fillColor("#475569")
+          .text(livro.editora || "—", L + COL_N_W + COL_ISBN_W + COL_TITULO_W + COL_AUTOR_W + 6, rowY + 6, {
+            width: COL_EDITORA_W - 12,
+            lineBreak: false,
+            ellipsis: true,
+          });
+
+        doc.y = rowY + TR;
+      });
+    }
+
+    // Borda externa inferior e rodapé em todas as páginas com numeração de página
+    const range = doc.bufferedPageRange();
+    for (let p = 0; p < range.count; p++) {
+      doc.switchToPage(p);
+      doc
+        .font("Helvetica")
+        .fontSize(6.5)
+        .fillColor("#94a3b8")
+        .text(
+          `CATÁLOGO DO ACERVO DA BIBLIOTECA • Documento gerado pelo EDUCA.MELHOR • Página ${p + 1} de ${range.count}`,
+          L,
+          FOOTER_Y,
+          { width: PW, align: "center", lineBreak: false }
+        );
+    }
+
+    passThrough.on("end", () => {
+      const pdfBuffer = Buffer.concat(pdfChunks);
+      res.setHeader("Content-Length", pdfBuffer.length);
+      res.end(pdfBuffer);
+    });
+    doc.end();
+  } catch (err) {
+    console.error("[BIBLIOTECA] Erro ao gerar PDF do acervo:", err);
+    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
   }
 });
 
