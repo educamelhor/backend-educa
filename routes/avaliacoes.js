@@ -1292,7 +1292,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
     let atualizadas = 0;
 
     for (const row of totais) {
-      const nota = Number(row.total).toFixed(2);
+      const nota = Math.min(10, Math.max(0, Number(row.total))).toFixed(2);
       const [result] = await conn.query(
         `INSERT INTO notas (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, data_lancamento)
          VALUES (?, ?, ?, ?, ?, ?, NOW())
