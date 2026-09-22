@@ -3,6 +3,44 @@ import pool from "../db.js";
 
 const router = express.Router();
 
+function formatJsonField(val) {
+  if (!val) return "[]";
+  if (Array.isArray(val)) return JSON.stringify(val);
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (!trimmed) return "[]";
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        JSON.parse(trimmed);
+        return trimmed;
+      } catch {
+        return JSON.stringify([trimmed]);
+      }
+    }
+    return JSON.stringify([trimmed]);
+  }
+  return JSON.stringify(val);
+}
+
+function formatTimeField(val) {
+  if (!val || typeof val !== "string") return null;
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const h = match[1].padStart(2, "0");
+  const m = match[2];
+  const s = match[3] || "00";
+  return `${h}:${m}:${s}`;
+}
+
+function limitString(val, maxLen) {
+  if (val === null || val === undefined) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  return s.length > maxLen ? s.substring(0, maxLen) : s;
+}
+
 // [POST] /api/aph - Registra um novo atendimento pré-hospitalar
 router.post("/", async (req, res) => {
   const {
@@ -28,43 +66,50 @@ router.post("/", async (req, res) => {
     desfecho_detalhes,
   } = req.body;
 
+  if (!aluno_id) {
+    return res.status(400).json({ error: "Estudante não identificado." });
+  }
+
+  const escolaIdFinal = req.user?.escola_id || req.escola_id || escola_id || 1;
   const usuario_id = req.user?.usuario_id || req.user?.id || req.user?.usuarioId;
-  let socorrista_nome = "Sistema";
+  let socorrista_nome = req.user?.nome || "Sistema";
+
+  const db = req.db || pool;
 
   try {
-    if (usuario_id) {
-      const [uRows] = await pool.query("SELECT nome FROM usuarios WHERE id = ?", [usuario_id]);
-      if (uRows && uRows.length > 0) {
+    if (usuario_id && socorrista_nome === "Sistema") {
+      const [uRows] = await db.query("SELECT nome FROM usuarios WHERE id = ?", [usuario_id]);
+      if (uRows && uRows.length > 0 && uRows[0].nome) {
         socorrista_nome = uRows[0].nome;
       }
     }
 
-    const [result] = await pool.query(
+    const [result] = await db.query(
       `INSERT INTO aph_atendimentos 
         (aluno_id, escola_id, local, solicitante, motivos, relato, condicao_geral, sinais, atendimentos, descricao_atendimento, materiais, outro_material, desfecho, comunicacao_resp, hora_comunicacao, hora_comparecimento, socorrista_nome, sinais_pa, sinais_fc, sinais_temperatura, desfecho_detalhes) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        aluno_id,
-        escola_id || 1, // fallback
-        local || "",
-        solicitante || "",
-        JSON.stringify(motivos || []),
+        Number(aluno_id),
+        Number(escolaIdFinal),
+        limitString(local, 255) || "",
+        limitString(solicitante, 255) || "",
+        formatJsonField(motivos),
         relato || "",
-        condicao_geral || "",
-        JSON.stringify(sinais || []),
-        JSON.stringify(atendimentos || []),
+        limitString(condicao_geral, 100) || "",
+        formatJsonField(sinais),
+        formatJsonField(atendimentos),
         descricao_atendimento || "",
-        JSON.stringify(materiais || []),
-        outro_material || "",
-        desfecho || "",
-        comunicacao_resp || "",
-        hora_comunicacao || null,
-        hora_comparecimento || null,
-        socorrista_nome,
-        sinais_pa || null,
-        sinais_fc || null,
-        sinais_temperatura || null,
-        desfecho_detalhes || null
+        formatJsonField(materiais),
+        limitString(outro_material, 255) || "",
+        limitString(desfecho, 255) || "",
+        formatJsonField(comunicacao_resp),
+        formatTimeField(hora_comunicacao),
+        formatTimeField(hora_comparecimento),
+        limitString(socorrista_nome, 255) || "Sistema",
+        limitString(sinais_pa, 50),
+        limitString(sinais_fc, 50),
+        limitString(sinais_temperatura, 50),
+        limitString(desfecho_detalhes, 255)
       ]
     );
 
@@ -73,7 +118,7 @@ router.post("/", async (req, res) => {
     const numeroStr = String(insertedId).padStart(4, '0');
     const numero_atendimento = `APH-${ano}-${numeroStr}`;
 
-    await pool.query(
+    await db.query(
       `UPDATE aph_atendimentos SET numero_atendimento = ? WHERE id = ?`,
       [numero_atendimento, insertedId]
     );
@@ -86,15 +131,14 @@ router.post("/", async (req, res) => {
     });
   } catch (error) {
     console.error("[APH] Erro ao salvar atendimento:", error);
-    res.status(500).json({ error: "Erro interno ao registrar atendimento." });
+    res.status(500).json({ error: error.message || "Erro interno ao registrar atendimento." });
   }
 });
-
 
 // [PUT] /api/aph/:id - Edita um atendimento existente
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
-  const escola_id = req.user?.escola_id;
+  const escolaIdFinal = req.user?.escola_id || req.escola_id || req.body.escola_id;
 
   const {
     aluno_id,
@@ -118,34 +162,71 @@ router.put("/:id", async (req, res) => {
     desfecho_detalhes,
   } = req.body;
 
+  const db = req.db || pool;
+
   try {
-    const [result] = await pool.query(
-      "UPDATE aph_atendimentos " +
-      "SET " +
-      "  aluno_id = ?, local = ?, solicitante = ?, motivos = ?, relato = ?, " +
-      "  condicao_geral = ?, sinais = ?, atendimentos = ?, descricao_atendimento = ?, " +
-      "  materiais = ?, outro_material = ?, desfecho = ?, comunicacao_resp = ?, " +
-      "  hora_comunicacao = ?, hora_comparecimento = ?, sinais_pa = ?, sinais_fc = ?, " +
-      "  sinais_temperatura = ?, desfecho_detalhes = ? " +
-      "WHERE id = ? AND escola_id = ?",
-      [
-        aluno_id, local || "", solicitante || "", JSON.stringify(motivos || []), relato || "",
-        condicao_geral || "", JSON.stringify(sinais || []), JSON.stringify(atendimentos || []), descricao_atendimento || "",
-        JSON.stringify(materiais || []), outro_material || "", desfecho || "", comunicacao_resp || "",
-        hora_comunicacao || null, hora_comparecimento || null, sinais_pa || null, sinais_fc || null,
-        sinais_temperatura || null, desfecho_detalhes || null,
-        id, escola_id
-      ]
+    const params = [
+      aluno_id ? Number(aluno_id) : null,
+      limitString(local, 255) || "",
+      limitString(solicitante, 255) || "",
+      formatJsonField(motivos),
+      relato || "",
+      limitString(condicao_geral, 100) || "",
+      formatJsonField(sinais),
+      formatJsonField(atendimentos),
+      descricao_atendimento || "",
+      formatJsonField(materiais),
+      limitString(outro_material, 255) || "",
+      limitString(desfecho, 255) || "",
+      formatJsonField(comunicacao_resp),
+      formatTimeField(hora_comunicacao),
+      formatTimeField(hora_comparecimento),
+      limitString(sinais_pa, 50),
+      limitString(sinais_fc, 50),
+      limitString(sinais_temperatura, 50),
+      limitString(desfecho_detalhes, 255),
+      id
+    ];
+
+    let whereClause = "WHERE id = ?";
+    if (escolaIdFinal) {
+      whereClause += " AND escola_id = ?";
+      params.push(Number(escolaIdFinal));
+    }
+
+    const [result] = await db.query(
+      `UPDATE aph_atendimentos SET
+        aluno_id = COALESCE(?, aluno_id),
+        local = ?,
+        solicitante = ?,
+        motivos = ?,
+        relato = ?,
+        condicao_geral = ?,
+        sinais = ?,
+        atendimentos = ?,
+        descricao_atendimento = ?,
+        materiais = ?,
+        outro_material = ?,
+        desfecho = ?,
+        comunicacao_resp = ?,
+        hora_comunicacao = ?,
+        hora_comparecimento = ?,
+        sinais_pa = ?,
+        sinais_fc = ?,
+        sinais_temperatura = ?,
+        desfecho_detalhes = ?
+      ${whereClause}`,
+      params
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Atendimento no encontrado ou sem permisso." });
+      return res.status(404).json({ error: "Atendimento não encontrado ou sem permissão." });
     }
 
-    res.status(200).json({ success: true });
+    res.status(200).json({ success: true, message: "Atendimento atualizado com sucesso." });
   } catch (error) {
     console.error("[APH] Erro ao editar atendimento:", error);
-    res.status(500).json({ error: "Erro interno ao editar atendimento." });
+    res.status(500).json({ error: error.message || "Erro interno ao editar atendimento." });
   }
 });
 
