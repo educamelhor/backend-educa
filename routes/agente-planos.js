@@ -445,7 +445,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
           nd.item_idx,
           a.codigo        AS re,
           a.estudante     AS nome,
-          SUM(nd.nota)    AS nota
+          MAX(nd.nota)    AS nota
         FROM notas_diario nd
         JOIN alunos a ON a.id = nd.aluno_id
         WHERE nd.plano_id = ?

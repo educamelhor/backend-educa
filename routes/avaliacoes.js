@@ -1266,11 +1266,15 @@ router.post("/:id/exportar-boletim", async (req, res) => {
 
     const ano = plano.ano || new Date().getFullYear();
 
-    // 5) Buscar totais por aluno a partir de notas_diario
+    // 5) Buscar totais por aluno a partir de notas_diario (considera a maior nota entre original e RC por item)
     const [totais] = await conn.query(
-      `SELECT aluno_id, SUM(nota) AS total
-       FROM notas_diario
-       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?
+      `SELECT aluno_id, SUM(nota_item) AS total
+       FROM (
+         SELECT aluno_id, item_idx, MAX(nota) AS nota_item
+         FROM notas_diario
+         WHERE plano_id = ? AND turma_id = ? AND escola_id = ?
+         GROUP BY aluno_id, item_idx
+       ) t
        GROUP BY aluno_id
        HAVING total IS NOT NULL`,
       [planoId, turma_id, escola_id]
