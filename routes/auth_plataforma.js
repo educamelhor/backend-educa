@@ -31,8 +31,17 @@ async function enviarCodigoEmail(email, codigo) {
   await transporter.sendMail({
     from: `"EDUCA.MELHOR — Plataforma" <${SMTP_USER}>`,
     to: email,
-    subject: "Código de Confirmação — Plataforma",
-    text: `Seu código de verificação é: ${codigo}`,
+    subject: "Código de Verificação — Plataforma CEO",
+    text: `Seu código de confirmação da Plataforma CEO é: ${codigo}\n\nEste código expira em 5 minutos.`,
+    html: `<div style="font-family:sans-serif;max-width:420px;margin:0 auto;padding:24px;background:#0f172a;border-radius:16px;border:1px solid rgba(99,102,241,0.3);color:#f8fafc">
+      <div style="text-align:center;margin-bottom:16px">
+        <h2 style="color:#818cf8;margin:0;font-size:22px;font-weight:800">EDUCA.MELHOR</h2>
+        <p style="color:#94a3b8;font-size:12px;margin:4px 0 0 0;letter-spacing:1px;text-transform:uppercase">Painel de Gestão Global (CEO)</p>
+      </div>
+      <p style="color:#cbd5e1;font-size:14px;line-height:1.5">Seu código de verificação para acesso à <b>Plataforma CEO</b> é:</p>
+      <div style="font-size:36px;font-weight:900;letter-spacing:8px;color:#38bdf8;text-align:center;padding:18px;background:rgba(255,255,255,0.05);border-radius:12px;border:1px solid rgba(56,189,248,0.25);margin:16px 0">${codigo}</div>
+      <p style="color:#64748b;font-size:12px;text-align:center;margin:0">Este código é de uso único e expira em 5 minutos.</p>
+    </div>`,
   });
 }
 

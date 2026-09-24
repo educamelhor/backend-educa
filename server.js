@@ -3,6 +3,7 @@
 // ============================================================================
 import dotenv from "dotenv";
 import express from "express";
+import bcrypt from "bcryptjs";
 
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -1349,6 +1350,31 @@ async function bootstrap() {
   } catch (migErr) {
     console.warn("[MIGRATION] sistema_manutencao (não crítico):", migErr.message);
   }
+
+  // [2026-09-24] Garantir usuário CEO santos.morais.andre@gmail.com (SUPER_ADMIN com escola_id = 0)
+  try {
+    const senhaHash = await bcrypt.hash("EducaMelhor@2025!", 10);
+    const [existingCeo] = await pool.query(
+      "SELECT id FROM usuarios WHERE LOWER(email) = 'santos.morais.andre@gmail.com' AND escola_id = 0 LIMIT 1"
+    );
+    if (!existingCeo.length) {
+      await pool.query(
+        `INSERT INTO usuarios (cpf, nome, email, perfil, escola_id, senha_hash, ativo)
+         VALUES ('80426069153', 'André Luiz Morais dos Santos', 'santos.morais.andre@gmail.com', 'SUPER_ADMIN', 0, ?, 1)`,
+        [senhaHash]
+      );
+      console.log("[MIGRATION] Usuário CEO santos.morais.andre@gmail.com inserido com sucesso ✅");
+    } else {
+      await pool.query(
+        "UPDATE usuarios SET senha_hash = ?, ativo = 1, perfil = 'SUPER_ADMIN' WHERE id = ?",
+        [senhaHash, existingCeo[0].id]
+      );
+      console.log("[MIGRATION] Usuário CEO santos.morais.andre@gmail.com atualizado com sucesso ✅");
+    }
+  } catch (ceoErr) {
+    console.warn("[MIGRATION] Erro ao sincronizar CEO santos.morais.andre@gmail.com:", ceoErr.message);
+  }
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)
