@@ -395,6 +395,9 @@ router.get("/", verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("Erro ao listar professores:", err);
     res.status(500).json({ message: "Erro ao listar professores." });
+  }
+});
+
 /* ============================================================================
  * GET /api/professores/:id/modulacoes
  * Retorna as turmas e disciplinas moduladas de um professor específico
