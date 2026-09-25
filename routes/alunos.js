@@ -125,12 +125,12 @@ router.get("/", verificarEscola, async (req, res) => {
     console.log("ðŸ”Ž /api/alunos â†’ filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
     console.log("ðŸ”Ž /api/alunos â†’ req.user:", req.user);
 
-    const where = ["a.escola_id = ?", "m.ano_letivo = ?"];
+    const where = ["a.escola_id = ?"];
     // âš ï¸ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
-    const params = [SPACES_PUBLIC_BASE, escola_id, anoEfetivo];
+    const params = [SPACES_PUBLIC_BASE, escola_id];
 
     if (turma_id) {
-      where.push("m.turma_id = ?");
+      where.push("COALESCE(m.turma_id, a.turma_id) = ?");
       params.push(Number(turma_id));
     }
 
@@ -144,8 +144,8 @@ router.get("/", verificarEscola, async (req, res) => {
     }
 
     const statusNorm = String(status || "").trim().toLowerCase();
-    if (statusNorm === "ativo" || statusNorm === "inativo") {
-      where.push("m.status = ?");
+    if (typeof status !== "undefined" && (status === "ativo" || status === "inativo")) {
+      where.push("COALESCE(m.status, a.status, 'ativo') = ?");
       params.push(statusNorm);
     }
 
@@ -156,18 +156,19 @@ router.get("/", verificarEscola, async (req, res) => {
 
     const whereSql = `WHERE ${where.join(" AND ")}`;
 
+    // LEFT JOIN para incluir alunos sem matrícula formal no ano (ex: importados via IEDUCAR).
+    // O ano_letivo fica no ON do JOIN para não excluir alunos sem linha em matriculas.
     const countSql = `
       SELECT COUNT(*) AS total
       FROM alunos AS a
-      INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
-      LEFT JOIN  turmas     AS t ON t.id = m.turma_id
-      LEFT JOIN  escolas    AS e ON e.id = a.escola_id
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ?
+      LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
+      LEFT JOIN  escolas   AS e ON e.id = a.escola_id
       ${whereSql}
     `;
 
-    // Filtra params: SPACES_PUBLIC_BASE nÃ£o deve ir para o COUNT (jÃ¡ que COUNT usa os mesmos binds do WHERE e ignoramos o bind inicial do SELECT principal)
-    // SPACES_PUBLIC_BASE Ã© o params[0], entÃ£o paramsCount pula ele.
-    const paramsCount = params.slice(1);
+    // paramsCount: anoEfetivo (para o LEFT JOIN ON) + restante do params sem o SPACES_PUBLIC_BASE (params[0])
+    const paramsCount = [anoEfetivo, ...params.slice(1)];
     const [countRows] = await pool.query(countSql, paramsCount);
     const total = countRows[0].total;
 
@@ -180,10 +181,10 @@ router.get("/", verificarEscola, async (req, res) => {
              a.sexo,
              a.cpf,
              a.atendimento_diferencial,
-             m.status,
+             COALESCE(m.status, a.status, 'ativo') AS status,
              a.foto,
 
-             -- URL canÃ´nica do Spaces (novo padrÃ£o do EDUCA-CAPTURE):
+             -- URL canônica do Spaces (novo padrão do EDUCA-CAPTURE):
              CASE
                WHEN a.foto LIKE 'http%' THEN a.foto
                ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
@@ -191,10 +192,10 @@ router.get("/", verificarEscola, async (req, res) => {
 
              t.nome  AS turma,
              t.turno,
-             m.turma_id,
-             m.ano_letivo,
+             COALESCE(m.turma_id, a.turma_id) AS turma_id,
+             COALESCE(m.ano_letivo, ?)         AS ano_letivo,
 
-             -- LGPD: consentimento de imagem pelo responsÃ¡vel
+             -- LGPD: consentimento de imagem pelo responsável
              COALESCE(
                (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
                   FROM responsaveis_alunos ra
@@ -203,15 +204,16 @@ router.get("/", verificarEscola, async (req, res) => {
              ) AS consentimento_imagem
 
       FROM alunos AS a
-      -- JOIN via matriculas (fonte canÃ´nica de turma/ano a partir de 2026-03)
-      INNER JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id
-      LEFT JOIN  turmas     AS t ON t.id = m.turma_id
-      LEFT JOIN  escolas    AS e ON e.id = a.escola_id
+      -- LEFT JOIN: inclui alunos sem matrícula formal no ano (ex: importados via IEDUCAR)
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ?
+      LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
+      LEFT JOIN  escolas   AS e ON e.id = a.escola_id
       ${whereSql}
       ORDER BY a.estudante
       LIMIT ? OFFSET ?
     `;
-    params.push(Number(limit), Number(offset));
+    // params: [SPACES_PUBLIC_BASE, escola_id, anoEfetivo(where), ...filtros, anoEfetivo(coalesce ano_letivo), anoEfetivo(LEFT JOIN ON), limit, offset]
+    params.push(anoEfetivo, anoEfetivo, Number(limit), Number(offset));
 
     console.log("ðŸ”Ž /api/alunos â†’ SQL:", sql.replace(/\s+/g, " ").trim());
     console.log("ðŸ”Ž /api/alunos â†’ params:", params);
