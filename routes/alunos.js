@@ -102,8 +102,8 @@ router.get("/publico", async (req, res) => {
 /* ============================================================================
  * 3) LISTAR ALUNOS (com filtros)
  * GET /api/alunos?turma_id=&filtro=&status=&limit=&offset=
- * - Filtra por escola do usuÃ¡rio (req.user.escola_id)
- * - Filtros: turma_id, busca textual (nome/cÃ³digo/turma/turno) e status (ativo/inativo)
+ * - Filtra por escola do usuário (req.user.escola_id) em alunos ou matriculas
+ * - Filtros: turma_id, busca textual (nome/código/turma/turno) e status (ativo/inativo)
  * ========================================================================== */
 router.get("/", verificarEscola, async (req, res) => {
   try {
@@ -118,16 +118,25 @@ router.get("/", verificarEscola, async (req, res) => {
     } = req.query;
     const { escola_id } = req.user;
 
-    // Ano letivo efetivo: usa o parÃ¢metro ou calcula o padrÃ£o (corte 31/jan)
+    // Ano letivo efetivo: usa o parâmetro ou calcula o padrão (corte 31/jan)
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
 
-    // DEBUG: o que chegou do front e do token
-    console.log("ðŸ”Ž /api/alunos â†’ filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
-    console.log("ðŸ”Ž /api/alunos â†’ req.user:", req.user);
+    // Auto-repair em background: ajusta a.escola_id para alunos que possuem matricula mas a.escola_id e nulo/0/divergente
+    pool.query(`
+      UPDATE alunos a
+      INNER JOIN matriculas m ON m.aluno_id = a.id
+      SET a.escola_id = m.escola_id
+      WHERE (a.escola_id IS NULL OR a.escola_id = 0 OR a.escola_id != m.escola_id)
+        AND m.escola_id = ?
+    `, [Number(escola_id)]).catch(e => console.error("Auto-sync escola_id err:", e.message));
 
-    const where = ["a.escola_id = ?"];
-    // âš ï¸ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
-    const params = [SPACES_PUBLIC_BASE, escola_id];
+    // DEBUG: o que chegou do front e do token
+    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
+    console.log("🔎 /api/alunos → req.user:", req.user);
+
+    const where = ["(a.escola_id = ? OR m.escola_id = ?)"];
+    // ⚠️ ordem dos params importa: o SQL abaixo usa SPACES_PUBLIC_BASE no primeiro "?"
+    const params = [SPACES_PUBLIC_BASE, Number(escola_id), Number(escola_id)];
 
     if (turma_id) {
       where.push("COALESCE(m.turma_id, a.turma_id) = ?");
@@ -157,21 +166,19 @@ router.get("/", verificarEscola, async (req, res) => {
     const whereSql = `WHERE ${where.join(" AND ")}`;
 
     // LEFT JOIN para incluir alunos sem matrícula formal no ano (ex: importados via IEDUCAR).
-    // O ano_letivo fica no ON do JOIN para não excluir alunos sem linha em matriculas.
     const countSql = `
-      SELECT COUNT(*) AS total
+      SELECT COUNT(DISTINCT a.id) AS total
       FROM alunos AS a
-      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ${anoEfetivo}
-      LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
-      LEFT JOIN  escolas   AS e ON e.id = a.escola_id
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.ano_letivo = ${anoEfetivo} AND m.escola_id = ${Number(escola_id)}
+      LEFT JOIN turmas AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
+      LEFT JOIN escolas AS e ON e.id = COALESCE(a.escola_id, m.escola_id)
       ${whereSql}
     `;
 
     // paramsCount: pula SPACES_PUBLIC_BASE (params[0]) pois countSql nao tem CONCAT
-    // anoEfetivo ja esta embutido como literal no JOIN ON do countSql
     const paramsCount = params.slice(1);
     const [countRows] = await pool.query(countSql, paramsCount);
-    const total = countRows[0].total;
+    const total = countRows[0] ? countRows[0].total : 0;
 
     const sql = `
       SELECT
@@ -188,7 +195,7 @@ router.get("/", verificarEscola, async (req, res) => {
              -- URL canônica do Spaces (novo padrão do EDUCA-CAPTURE):
              CASE
                WHEN a.foto LIKE 'http%' THEN a.foto
-               ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', a.escola_id)), '/alunos/', a.codigo, '.jpg')
+               ELSE CONCAT(?, 'uploads/', COALESCE(e.apelido, CONCAT('escola_', COALESCE(a.escola_id, m.escola_id))), '/alunos/', a.codigo, '.jpg')
              END AS foto_url,
 
              t.nome  AS turma,
@@ -200,15 +207,14 @@ router.get("/", verificarEscola, async (req, res) => {
              COALESCE(
                (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
                   FROM responsaveis_alunos ra
-                 WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id),
+                 WHERE ra.aluno_id = a.id AND (ra.escola_id = a.escola_id OR ra.escola_id = m.escola_id)),
                0
              ) AS consentimento_imagem
 
       FROM alunos AS a
-      -- LEFT JOIN: inclui alunos sem matrícula formal no ano (ex: importados via IEDUCAR)
-      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ${anoEfetivo}
-      LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
-      LEFT JOIN  escolas   AS e ON e.id = a.escola_id
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.ano_letivo = ${anoEfetivo} AND m.escola_id = ${Number(escola_id)}
+      LEFT JOIN turmas AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
+      LEFT JOIN escolas AS e ON e.id = COALESCE(a.escola_id, m.escola_id)
       ${whereSql}
       ORDER BY a.estudante
       LIMIT ? OFFSET ?
@@ -421,18 +427,20 @@ router.get("/por-codigo/:codigo", verificarEscola, async (req, res) => {
   try {
     const { codigo } = req.params;
     const { escola_id } = req.user;
+    const anoLetivoAtual = anoLetivoPadrao();
     const [[aluno]] = await pool.query(
       `SELECT a.id, a.codigo, a.estudante AS nome,
               DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
-              a.sexo, a.foto, a.status,
+              a.sexo, a.foto, COALESCE(m.status, a.status, 'ativo') AS status,
               t.nome AS turma, t.turno
        FROM alunos a
-       LEFT JOIN turmas t ON t.id = a.turma_id
-       WHERE a.codigo = ? AND a.escola_id = ?`,
-      [codigo, escola_id]
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = ? AND m.ano_letivo = ?
+       LEFT JOIN turmas t ON t.id = COALESCE(m.turma_id, a.turma_id)
+       WHERE a.codigo = ? AND (a.escola_id = ? OR m.escola_id = ?)`,
+      [Number(escola_id), anoLetivoAtual, codigo, Number(escola_id), Number(escola_id)]
     );
     if (!aluno) {
-      return res.status(404).json({ message: "Aluno nÃ£o encontrado." });
+      return res.status(404).json({ message: "Aluno não encontrado." });
     }
     res.json(aluno);
   } catch (err) {
