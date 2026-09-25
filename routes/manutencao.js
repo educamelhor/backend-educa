@@ -77,7 +77,7 @@ router.get("/diagnostico-bruce", async (req, res) => {
 
     // 5) Existing plans for Ciências in escola 1
     const [planosCiencias] = await pool.query(
-      "SELECT id, escola_id, ano, bimestre, disciplina, turmas, status, usuario_id, professor_nome FROM planos_avaliacao WHERE escola_id = 1 AND disciplina LIKE '%Ciências%'"
+      "SELECT id, escola_id, ano, bimestre, disciplina, turmas, status, usuario_id FROM planos_avaliacao WHERE escola_id = 1 AND disciplina LIKE '%Ciências%'"
     );
 
     // 6) Check user 100160 full row
