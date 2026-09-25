@@ -395,6 +395,178 @@ router.get("/", verificarEscola, async (req, res) => {
   } catch (err) {
     console.error("Erro ao listar professores:", err);
     res.status(500).json({ message: "Erro ao listar professores." });
+/* ============================================================================
+ * GET /api/professores/:id/modulacoes
+ * Retorna as turmas e disciplinas moduladas de um professor específico
+ * ========================================================================== */
+router.get("/:id/modulacoes", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const escolaId = req.user?.escola_id || req.escola_id;
+
+    const [rows] = await pool.query(
+      `SELECT m.id, m.turma_id, m.disciplina_id, m.aulas,
+              t.nome AS turma_nome, t.turno, t.ano, t.serie,
+              d.nome AS disciplina_nome
+         FROM modulacao m
+         JOIN turmas t ON t.id = m.turma_id
+         LEFT JOIN disciplinas d ON d.id = m.disciplina_id
+        WHERE m.professor_id = ? AND m.escola_id = ?
+        ORDER BY t.nome, d.nome`,
+      [Number(id), Number(escolaId)]
+    );
+
+    return res.json({ ok: true, modulacoes: rows });
+  } catch (err) {
+    console.error("Erro ao buscar modulações do professor:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar modulações do professor." });
+  }
+});
+
+/* ============================================================================
+ * POST /api/professores/substituir
+ * Substituição de Regência (transfere modulacao e vinculos de professor_origem para professor_destino)
+ * ========================================================================== */
+router.post("/substituir", autenticarToken, verificarEscola, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const escolaId = req.user?.escola_id || req.escola_id;
+    const {
+      professor_origem_id,
+      professor_destino_id,
+      inativar_origem = true,
+      remover_alocacoes_origem = true,
+      motivo = ""
+    } = req.body;
+
+    if (!professor_origem_id || !professor_destino_id) {
+      connection.release();
+      return res.status(400).json({ ok: false, message: "Professor de origem e professor substituto são obrigatórios." });
+    }
+
+    if (Number(professor_origem_id) === Number(professor_destino_id)) {
+      connection.release();
+      return res.status(400).json({ ok: false, message: "O professor substituto deve ser diferente do professor de origem." });
+    }
+
+    await connection.beginTransaction();
+
+    // 1. Validação de Permissão e Escola
+    const [origemRows] = await connection.query(
+      "SELECT id, nome, status FROM professores WHERE id = ? AND escola_id = ?",
+      [Number(professor_origem_id), Number(escolaId)]
+    );
+    const [destinoRows] = await connection.query(
+      "SELECT id, nome, status FROM professores WHERE id = ? AND escola_id = ?",
+      [Number(professor_destino_id), Number(escolaId)]
+    );
+
+    if (!origemRows.length) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ ok: false, message: "Professor de origem não encontrado nesta escola." });
+    }
+
+    if (!destinoRows.length) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ ok: false, message: "Professor substituto não encontrado nesta escola." });
+    }
+
+    const professorOrigem = origemRows[0];
+    const professorDestino = destinoRows[0];
+
+    if (professorDestino.status !== "ativo") {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ ok: false, message: "O professor substituto precisa estar com status 'ativo'." });
+    }
+
+    // 2. Buscar Alocações Atuais do Professor de Origem
+    const [modulacoesOrigem] = await connection.query(
+      `SELECT m.turma_id, m.disciplina_id, m.aulas, t.turno, t.ano, t.nome AS turma_nome, d.nome AS disciplina_nome
+         FROM modulacao m
+         JOIN turmas t ON t.id = m.turma_id
+         LEFT JOIN disciplinas d ON d.id = m.disciplina_id
+        WHERE m.professor_id = ? AND m.escola_id = ?`,
+      [Number(professor_origem_id), Number(escolaId)]
+    );
+
+    if (!modulacoesOrigem.length) {
+      await connection.rollback();
+      connection.release();
+      return res.status(200).json({
+        ok: false,
+        message: `O professor ${professorOrigem.nome} não possui regências/turmas moduladas para transferir.`,
+        turmas_transferidas: 0,
+        detalhes: []
+      });
+    }
+
+    // 3. Garantir Vínculos do Substituto (professor_vinculos)
+    for (const mod of modulacoesOrigem) {
+      const turno = mod.turno || "MATUTINO";
+      const discId = mod.disciplina_id;
+      const aulas = mod.aulas || 1;
+
+      if (discId) {
+        await connection.query(
+          `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
+           VALUES (?, ?, ?, ?, ?, 'ativo')`,
+          [Number(professor_destino_id), Number(escolaId), turno, discId, aulas]
+        );
+      }
+    }
+
+    // 4. Transferir / Clonar Modulação (modulacao)
+    const detalhes = [];
+    for (const mod of modulacoesOrigem) {
+      await connection.query(
+        `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
+        [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, mod.aulas || 1]
+      );
+      const label = mod.disciplina_nome ? `${mod.turma_nome} - ${mod.disciplina_nome}` : mod.turma_nome;
+      detalhes.push(label);
+    }
+
+    // Se remover_alocacoes_origem === true: Remover alocações da tabela modulacao para o professor de origem
+    if (remover_alocacoes_origem) {
+      await connection.query(
+        `DELETE FROM modulacao WHERE professor_id = ? AND escola_id = ?`,
+        [Number(professor_origem_id), Number(escolaId)]
+      );
+    }
+
+    // 5. Inativação da Origem (se solicitado)
+    if (inativar_origem) {
+      await connection.query(
+        `UPDATE professores SET status = 'inativo' WHERE id = ? AND escola_id = ?`,
+        [Number(professor_origem_id), Number(escolaId)]
+      );
+    }
+
+    await connection.commit();
+    connection.release();
+
+    // 6. Auditoria / Log
+    console.log(
+      `[SUBSTITUICAO] Professor ${professorOrigem.nome} (ID: ${professorOrigem.id}) substituído por ${professorDestino.nome} (ID: ${professorDestino.id}). ${modulacoesOrigem.length} turmas transferidas.${motivo ? ` Motivo: ${motivo}` : ""}`
+    );
+
+    return res.json({
+      ok: true,
+      message: "Substituição realizada com sucesso!",
+      turmas_transferidas: modulacoesOrigem.length,
+      detalhes: [...new Set(detalhes)]
+    });
+
+  } catch (err) {
+    await connection.rollback();
+    connection.release();
+    console.error("Erro na substituição de regência:", err);
+    return res.status(500).json({ ok: false, message: "Erro interno ao realizar a substituição de regência." });
   }
 });
 
