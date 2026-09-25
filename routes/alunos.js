@@ -161,14 +161,15 @@ router.get("/", verificarEscola, async (req, res) => {
     const countSql = `
       SELECT COUNT(*) AS total
       FROM alunos AS a
-      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ?
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ${anoEfetivo}
       LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
       LEFT JOIN  escolas   AS e ON e.id = a.escola_id
       ${whereSql}
     `;
 
-    // paramsCount: anoEfetivo (para o LEFT JOIN ON) + restante do params sem o SPACES_PUBLIC_BASE (params[0])
-    const paramsCount = [anoEfetivo, ...params.slice(1)];
+    // paramsCount: pula SPACES_PUBLIC_BASE (params[0]) pois countSql nao tem CONCAT
+    // anoEfetivo ja esta embutido como literal no JOIN ON do countSql
+    const paramsCount = params.slice(1);
     const [countRows] = await pool.query(countSql, paramsCount);
     const total = countRows[0].total;
 
@@ -193,7 +194,7 @@ router.get("/", verificarEscola, async (req, res) => {
              t.nome  AS turma,
              t.turno,
              COALESCE(m.turma_id, a.turma_id) AS turma_id,
-             COALESCE(m.ano_letivo, ?)         AS ano_letivo,
+             COALESCE(m.ano_letivo, ${anoEfetivo}) AS ano_letivo,
 
              -- LGPD: consentimento de imagem pelo responsável
              COALESCE(
@@ -205,15 +206,16 @@ router.get("/", verificarEscola, async (req, res) => {
 
       FROM alunos AS a
       -- LEFT JOIN: inclui alunos sem matrícula formal no ano (ex: importados via IEDUCAR)
-      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ?
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ${anoEfetivo}
       LEFT JOIN  turmas    AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
       LEFT JOIN  escolas   AS e ON e.id = a.escola_id
       ${whereSql}
       ORDER BY a.estudante
       LIMIT ? OFFSET ?
     `;
-    // params: [SPACES_PUBLIC_BASE, escola_id, anoEfetivo(where), ...filtros, anoEfetivo(coalesce ano_letivo), anoEfetivo(LEFT JOIN ON), limit, offset]
-    params.push(anoEfetivo, anoEfetivo, Number(limit), Number(offset));
+    // params: [SPACES_PUBLIC_BASE, escola_id, ...filtros, limit, offset]
+    // anoEfetivo esta embutido como literal no SQL (JOIN ON e COALESCE) — nao usa ?
+    params.push(Number(limit), Number(offset));
 
     console.log("ðŸ”Ž /api/alunos â†’ SQL:", sql.replace(/\s+/g, " ").trim());
     console.log("ðŸ”Ž /api/alunos â†’ params:", params);
