@@ -4,8 +4,47 @@
 // Tabela `sistema_manutencao` (1 registro ativo por vez)
 // =========================================================================
 import express from "express";
+import pool from "../db.js";
 
 const router = express.Router();
+
+router.get("/diagnostico-bruce", async (req, res) => {
+  try {
+    const [professoresBruce] = await pool.query(
+      "SELECT id, nome, cpf, escola_id, status, turma_id, disciplina_id, turno, aulas FROM professores WHERE nome LIKE '%BRUCE%' OR cpf LIKE '%993449%' OR cpf LIKE '%993.449%'"
+    );
+    const [usuariosBruce] = await pool.query(
+      "SELECT id, nome, cpf, escola_id, perfil, ativo, email, celular FROM usuarios WHERE nome LIKE '%BRUCE%' OR cpf LIKE '%993449%' OR cpf LIKE '%993.449%'"
+    );
+    const [modulacaoBruce] = await pool.query(
+      `SELECT m.id, m.escola_id, m.professor_id, m.disciplina_id, m.turma_id, m.aulas,
+              p.nome as prof_nome, p.cpf as prof_cpf, p.escola_id as prof_escola_id,
+              d.nome as disc_nome,
+              t.nome as turma_nome, t.ano as turma_ano, t.turno as turma_turno, t.escola_id as turma_escola_id
+       FROM modulacao m
+       LEFT JOIN professores p ON p.id = m.professor_id
+       LEFT JOIN disciplinas d ON d.id = m.disciplina_id
+       LEFT JOIN turmas t ON t.id = m.turma_id
+       WHERE p.nome LIKE '%BRUCE%' OR m.professor_id IN (SELECT id FROM professores WHERE nome LIKE '%BRUCE%' OR cpf LIKE '%993449%')`
+    );
+    const [professoresCristiane] = await pool.query(
+      "SELECT id, nome, cpf, escola_id, status FROM professores WHERE nome LIKE '%CRISTIANE%'"
+    );
+    const [escolas] = await pool.query(
+      "SELECT id, nome, apelido FROM escolas WHERE nome LIKE '%CEF%04%' OR apelido LIKE '%CEF%04%'"
+    );
+    return res.json({
+      ok: true,
+      professoresBruce,
+      usuariosBruce,
+      modulacaoBruce,
+      professoresCristiane,
+      escolas
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // ── Helper: garante que a tabela existe ──
 async function ensureTable(db) {
