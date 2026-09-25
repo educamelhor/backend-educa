@@ -8,37 +8,6 @@ import pool from "../db.js";
 
 const router = express.Router();
 
-router.get("/diagnostico-bruce", async (req, res) => {
-  try {
-    const jwt = (await import("jsonwebtoken")).default;
-    const secret = process.env.JWT_SECRET;
-
-    // Generate real JWT exactly like auth.js does for Bruce (user 100160, escola 1)
-    const token = jwt.sign(
-      {
-        scope: "escola",
-        usuario_id: 100160,
-        usuarioId: 100160,
-        escola_id: 1,
-        nome_escola: "CEF04-CCMDF",
-        perfil: "professor",
-        perfis: ["professor"],
-        permissoes: [],
-      },
-      secret,
-      { expiresIn: "8h" }
-    );
-
-    // Call internal route handlers or inspect req.user resolution
-    return res.json({
-      ok: true,
-      token,
-      msg: "Token generated for Bruce. Test via curl."
-    });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
 
 
 // ── Helper: garante que a tabela existe ──

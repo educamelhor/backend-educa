@@ -461,7 +461,10 @@ router.post(
 // ────────────────────────────────────────────────
 router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
   try {
-    const escolaId = req.user?.escola_id;
+    const escolaId =
+      req.escola_id ||
+      req.user?.escola_id ||
+      (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
     const disciplinaFiltrada = req.query.disciplina;
 
     // Obtém o CPF do professor logado
@@ -498,10 +501,10 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
          JOIN modulacao m ON m.turma_id = t.id
          JOIN professores p ON p.id = m.professor_id
          WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?`,
+           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
         [Number(escolaId), cleanCpf]
       );
-      anoLetivo = maxRow?.max_ano || new Date().getFullYear();
+      anoLetivo = Number(maxRow?.max_ano) || new Date().getFullYear();
     }
 
     // ─── Query principal ─────────────────────────────────────────────────────
@@ -537,7 +540,7 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
 
     sql += `
           WHERE p.escola_id = ?
-            AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+            AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
         )
       ORDER BY
         t.ano  DESC,
@@ -580,7 +583,10 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
 // ────────────────────────────────────────────────
 router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
   try {
-    const escolaId = req.user?.escola_id;
+    const escolaId =
+      req.escola_id ||
+      req.user?.escola_id ||
+      (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
 
     let cpf = req.user?.cpf;
     const userId =
@@ -607,7 +613,7 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
     // O filtro status='ativo' fica em corretores-disponiveis (quem pode RECEBER novos lotes).
     const [rows] = await pool.query(
       `SELECT id FROM professores
-       WHERE escola_id = ? AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+       WHERE escola_id = ? AND REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
        ORDER BY id`,
       [escolaId, cleanCpf]
     );
@@ -630,7 +636,10 @@ router.get("/me/id", autenticarToken, verificarEscola, async (req, res) => {
 // ────────────────────────────────────────────────
 router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
   try {
-    const escolaId = req.user?.escola_id;
+    const escolaId =
+      req.escola_id ||
+      req.user?.escola_id ||
+      (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
     const anoLetivo = req.query.ano ? Number(req.query.ano) : new Date().getFullYear();
 
 
@@ -677,7 +686,7 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
        JOIN turmas t      ON t.id = m.turma_id
        JOIN disciplinas d ON d.id = m.disciplina_id
        WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
          AND t.escola_id = ?
          AND t.ano = (
            SELECT MAX(t2.ano)
@@ -685,7 +694,7 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
            JOIN modulacao m2 ON m2.turma_id = t2.id
            JOIN professores p2 ON p2.id = m2.professor_id
            WHERE p2.escola_id = ?
-             AND REPLACE(REPLACE(p2.cpf, '.', ''), '-', '') = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p2.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
          )
        ORDER BY nome ASC`,
       [escolaId, cleanCpf, escolaId, escolaId, cleanCpf]
@@ -841,7 +850,10 @@ router.get("/por-cpf-e-disciplina/:cpf/:disciplina_id", verificarEscola, async (
 // ────────────────────────────────────────────────
 router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, async (req, res) => {
   try {
-    const escolaId = req.user?.escola_id;
+    const escolaId =
+      req.escola_id ||
+      req.user?.escola_id ||
+      (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
     const turmaId = Number(req.params.turmaId);
 
     let cpf = req.user?.cpf;
@@ -870,7 +882,7 @@ router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, 
        JOIN modulacao m   ON m.professor_id = p.id
        JOIN disciplinas d ON d.id = m.disciplina_id
        WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+         AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
          AND m.turma_id = ?
        ORDER BY d.nome ASC`,
       [escolaId, cleanCpf, turmaId]
