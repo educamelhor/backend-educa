@@ -2093,78 +2093,64 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
       console.log(`\n[educadf.pap] ▶ ITEM ${iIdx + 1}/${itensParaExportar.length}: "${nomeAtividade}" | data: "${dataStr}"`);
 
-      // ── A partir do 2º item: precisa re-abrir a aba Procedimentos e re-confirmar bimestre ──
+      // ── A partir do 2º item: aproveita que o modal já fecha no diário/bimestre correto ──
       if (iIdx > 0) {
-        console.log(`[educadf.pap] [item ${iIdx+1}] Re-abrindo aba Procedimentos...`);
         await removerBackdrops(page);
-        await session.delay(1500);
+        const botaoCriarVisivel = await page.locator("button:has-text('Criar procedimento avaliativo'), button:has-text('Criar Procedimento')")
+          .first().isVisible({ timeout: 2000 }).catch(() => false);
 
-        const reCoords = await page.evaluate(() => {
-          const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
-            const t = (l.textContent || '').toLowerCase();
-            return t.includes('procedimento') && t.includes('avaliativo');
+        if (!botaoCriarVisivel) {
+          console.log(`[educadf.pap] [item ${iIdx+1}] Re-abrindo aba Procedimentos...`);
+          const reCoords = await page.evaluate(() => {
+            const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
+              const t = (l.textContent || '').toLowerCase();
+              return t.includes('procedimento') && t.includes('avaliativo');
+            });
+            if (!el) return null;
+            el.scrollIntoView({ block: 'center' });
+            const rect = el.getBoundingClientRect();
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
           });
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center' });
-          const rect = el.getBoundingClientRect();
-          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-        });
-        if (reCoords) {
-          await page.mouse.click(reCoords.x, reCoords.y);
-          await session.delay(3000);
+          if (reCoords) {
+            await page.mouse.click(reCoords.x, reCoords.y);
+            await session.delay(1500);
+          }
+        } else {
+          console.log(`[educadf.pap] ⚡ [item ${iIdx+1}] Diário e botão "Criar" já prontos — prosseguindo diretamente!`);
         }
-
-        // Re-confirma bimestre após re-abrir aba
-        await page.waitForSelector(bimSelector, { timeout: 15000 }).catch(() => {});
-        await removerBackdrops(page);
-        await session.delay(1000);
-
-        const tabReInfo = await page.evaluate((num) => {
-          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-          const alvo = `${num}O BIMESTRE`;
-          const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
-            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
-          if (!tabs.length) return null;
-          const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
-          if (!tabAlvo) return { error: 'nao encontrado' };
-          tabAlvo.scrollIntoView({ block: 'center' });
-          const rect = tabAlvo.getBoundingClientRect();
-          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
-        }, bimNumPAP);
-
-        if (tabReInfo && !tabReInfo.error) {
-          await page.mouse.click(tabReInfo.x, tabReInfo.y);
-          await session.delay(3000);
-          console.log(`[educadf.pap] [item ${iIdx+1}] Bimestre re-selecionado: "${tabReInfo.txt}"`);
-        }
-        await session.screenshot(`pap_item${iIdx+1}_pronto`);
       }
 
-      // ── Verifica se este item já existe na tabela do EDUCADF ──
+      // ── Verifica se este item já existe na tabela do EDUCADF (novo design 2026 + legado) ──
       const _nomeAlvo = _normNome(nomeAtividade);
       const procedimentosExistentes = await page.evaluate(() => {
         const textos = new Set();
-        document.querySelectorAll('th').forEach(th => {
+        // Novo design (2026): .ev-topo, .ev-turma, .ev-card, botões de ação e inputs com aria-label
+        document.querySelectorAll('.ev-topo, .ev-turma, .ev-card, [class*="ev-"]').forEach(el => {
+          const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt.length > 1 && txt.length < 200) textos.add(txt);
+        });
+        document.querySelectorAll('button[aria-label*="procedimento"], [aria-label*="Nota de"]').forEach(el => {
+          const lbl = el.getAttribute('aria-label') || '';
+          const procMatch = lbl.match(/procedimento\s+([^.]+)/i);
+          if (procMatch) textos.add(procMatch[1].trim());
+          const notaMatch = lbl.match(/\s+em\s+([^.]+)/i);
+          if (notaMatch) textos.add(notaMatch[1].trim());
+        });
+        // Design legado: th
+        document.querySelectorAll('th, th span, th div, th a').forEach(th => {
           const txt = (th.textContent || '').replace(/\s+/g, ' ').trim();
           if (txt.length > 1 && txt.length < 500) textos.add(txt);
-        });
-        document.querySelectorAll('th span, th div, th a').forEach(el => {
-          const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (txt.length > 2 && txt.length < 200) textos.add(txt);
         });
         return [...textos];
       });
 
       const jaExiste = procedimentosExistentes.some(nome => {
         const normNome = _normNome(nome);
-        return normNome === _nomeAlvo || normNome.includes(_nomeAlvo);
+        return normNome === _nomeAlvo || normNome.includes(_nomeAlvo) || _nomeAlvo.includes(normNome);
       });
 
       if (jaExiste) {
         console.log(`[educadf.pap] ⏭️  [item ${iIdx+1}] "${nomeAtividade}" já existe — pulando.`);
-        await session.screenshot(`pap_item${iIdx+1}_ja_existe`);
         totalJaExistia++;
         ultimaMensagem = `"${nomeAtividade}" já existia.`;
         continue;
@@ -2184,7 +2170,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         try {
           const loc = page.locator(`button:has-text('${texto}')`).first();
           if (await loc.count() > 0) {
-            await loc.click({ timeout: 20000 });
+            await loc.click({ timeout: 10000 });
             botaoCriarClicado = true;
             break;
           }
@@ -2194,7 +2180,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
       if (!botaoCriarClicado) {
         const jsClicked = await page.evaluate(() => {
-          const btns = [...document.querySelectorAll('button.btn-primary, button.btn-success')];
+          const btns = [...document.querySelectorAll('button.btn-primary, button.btn-success, button.btn-info')];
           const el = btns.find(b => b.textContent?.toLowerCase().includes('criar') || b.textContent?.toLowerCase().includes('novo') || b.textContent?.toLowerCase().includes('adicionar'));
           if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
           return false;
@@ -2209,25 +2195,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       }
 
       await removerBackdrops(page);
-      await session.delay(TIMING.actionDelay + 500);
-      await session.screenshot(`pap_item${iIdx+1}_modal_aberto`);
+      await session.delay(600);
 
       // ── Aguarda modal ──
-      await page.waitForSelector('text=Criar Instrumento/Procedimento Avaliativo', { timeout: TIMING.defaultTimeout }).catch(() => {
+      await page.waitForSelector('text=Criar Instrumento/Procedimento Avaliativo, ngb-modal-window', { timeout: TIMING.defaultTimeout }).catch(() => {
         console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Modal não encontrado via texto.`);
       });
-      await session.delay(500);
-
-      // ── Helper: dispara eventos Angular ──
-      const dispatchAngularOk = async (selector) => {
-        await page.evaluate((sel) => {
-          const el = document.querySelector(sel);
-          if (!el) return;
-          ['input', 'change', 'keyup', 'blur'].forEach(ev =>
-            el.dispatchEvent(new Event(ev, { bubbles: true, cancelable: true }))
-          );
-        }, selector);
-      };
+      await session.delay(300);
 
       // ── Campo: Nome ──
       const nomeOk = await page.evaluate((nome) => {
@@ -2254,12 +2228,12 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         return true;
       }, nomeAtividade);
       console.log(`[educadf.pap] [item ${iIdx+1}] Nome ${nomeOk ? '✅' : '⚠️'}: "${nomeAtividade}"`);
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(400);
 
       // ── Campo: Tipo ──
       if (itemAtual.tipo_avaliacao) {
         await selecionarTipoNoModal(page, itemAtual.tipo_avaliacao);
-        await page.waitForTimeout(800);
+        await page.waitForTimeout(500);
       }
 
       // ── Campo: Data ──
@@ -2288,8 +2262,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }, itemAtual.descricao);
       }
 
-      await page.waitForTimeout(1000);
-      await session.screenshot(`pap_item${iIdx+1}_modal_preenchido`);
+      await page.waitForTimeout(500);
 
       // ── Salvar ──
       const salvarOk = await page.evaluate(() => {
@@ -2311,95 +2284,31 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       });
       if (!salvarOk) {
         const btnSalvar = page.locator('ngb-modal-window button.btn-success, .modal button.btn-success').first();
-        await btnSalvar.click({ timeout: 10000, force: true }).catch(() => {});
+        await btnSalvar.click({ timeout: 8000, force: true }).catch(() => {});
       }
 
-      await session.delay(3000);
-      await session.screenshot(`pap_item${iIdx+1}_pos_salvar`);
+      // Aguarda modal fechar
+      const modalFechou = await page.locator('ngb-modal-window')
+        .waitFor({ state: 'detached', timeout: 8000 })
+        .then(() => true)
+        .catch(() => false);
 
-      const modalAindaAberto = await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
+      const modalAindaAberto = !modalFechou && await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
       let itemOk = !modalAindaAberto;
-
-      if (!modalAindaAberto) {
-        // Verificação adicional: re-lê a tabela para confirmar a coluna foi criada
-        await page.waitForTimeout(1500);
-        const confirmadoNaTabela = await page.evaluate((nome) => {
-          const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
-          const alvo = norm(nome);
-          const headers = [...document.querySelectorAll('table th, thead th')];
-          return headers.some(th => norm(th.textContent || '').includes(alvo));
-        }, nomeAtividade);
-        
-        itemOk = confirmadoNaTabela;
-        if (!itemOk) {
-          console.warn(`[educadf.pap] ⚠️ Modal fechou mas coluna não apareceu na tabela. Item pode não ter sido criado.`);
-        }
-      }
 
       if (itemOk) {
         totalCriados++;
-        console.log(`[educadf.pap] ✅ [item ${iIdx+1}] "${nomeAtividade}" criado.`);
-
-        // ── Workaround: re-editar para forçar data ──
-        if (dataFormatadaWk) {
-          console.log(`[educadf.pap] [item ${iIdx+1}] Workaround: re-editando para forçar data "${dataFormatadaWk}"...`);
-          await session.delay(4000);
-          try {
-            const editClicked = await page.evaluate((nome) => {
-              const normalize = s => s.toLowerCase().trim();
-              const alvo = normalize(nome);
-              const headers = [...document.querySelectorAll('th')];
-              for (const el of headers) {
-                const txt = el.textContent || '';
-                if (txt.length < 200 && normalize(txt).includes(alvo)) {
-                  const btn = el.querySelector('button, a, i.fa-edit, i.fa-pencil, i.fa-pen, [class*="edit"], [class*="pencil"]');
-                  if (btn) {
-                    const clickTarget = btn.closest('button, a') || btn;
-                    clickTarget.scrollIntoView({ block: 'center' });
-                    clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    return `clicou em: ${clickTarget.tagName}`;
-                  }
-                  return `TH encontrado mas sem botão`;
-                }
-              }
-              return null;
-            }, nomeAtividade);
-
-            if (editClicked && editClicked.startsWith('clicou')) {
-              await page.waitForSelector('text=Editar Instrumento/Procedimento Avaliativo', { timeout: 15000 }).catch(() =>
-                page.waitForSelector('ngb-modal-window', { timeout: 5000 }).catch(() => {})
-              );
-              await session.delay(1000);
-              const calOkEdit = await navegarCalendarioEClicarDia(page, dataStr);
-              if (calOkEdit) {
-                console.log(`[educadf.pap] [item ${iIdx+1}] Workaround data ✅: "${dataFormatadaWk}"`);
-              }
-              await page.waitForTimeout(500);
-              await page.evaluate(() => {
-                const btn = document.querySelector('ngb-modal-window button.btn-success, .modal button.btn-success');
-                if (btn) {
-                  btn.scrollIntoView({ block: 'center' });
-                  btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                }
-              });
-              await session.delay(3000);
-              console.log(`[educadf.pap] [item ${iIdx+1}] Workaround concluído.`);
-            } else {
-              console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Workaround: lápis não clicado. "${editClicked}"`);
-            }
-          } catch (wkErr) {
-            console.warn(`[educadf.pap] ⚠️ [item ${iIdx+1}] Workaround falhou: ${wkErr.message}`);
-          }
-        }
+        console.log(`[educadf.pap] ✅ [item ${iIdx+1}] "${nomeAtividade}" criado com sucesso.`);
         ultimaMensagem = `"${nomeAtividade}" criado com sucesso.`;
+        await removerBackdrops(page);
+        await page.waitForTimeout(500);
       } else {
         ultimoOk = false;
         itensFalhados.push(nomeAtividade);
-        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] "${nomeAtividade}": Falhou na criação (modal aberto ou não confirmado).`);
+        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] "${nomeAtividade}": Falhou na criação (modal permaneceu aberto).`);
         ultimaMensagem = `Falha para "${nomeAtividade}".`;
-        // Fecha modal para não bloquear próximo item
         await page.keyboard.press('Escape').catch(() => {});
-        await session.delay(1500);
+        await session.delay(1000);
       }
     } // fim do loop de itens
 
