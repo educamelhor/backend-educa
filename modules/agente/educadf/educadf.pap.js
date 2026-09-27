@@ -30,6 +30,9 @@
 //   Sal btn: button.btn-success com texto "Salvar" e ícone de disquete
 // ============================================================================
 
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { loginEducaDF } from './educadf.login.js';
 import { TIMING } from './educadf.selectors.js';
 
@@ -615,7 +618,213 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
 }
 
 // ============================================================================
+// HELPER: importarNotasViaCSV — NOVO fluxo de importação em lote EDUCADF (2026)
+// ============================================================================
+// O EDUCADF 2026 disponibilizou o botão "Importar notas", que baixa uma
+// planilha modelo em formato CSV (delimitador ';') com as colunas:
+//   RE;NOME;[Coluna 1];[Coluna 2];...;QUADRO AULA
+//
+// Vantagens:
+// - Processamento atômico em lote (< 5s por turma em vez de 60-90s)
+// - Não sofre com lentidão de renderização do Angular
+// - Mantém o QUADRO AULA (código da matrícula) intacto
+// ============================================================================
+async function importarNotasViaCSV(page, session, colunasParaExportar) {
+  const norm = s => String(s || '').toUpperCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  let tempDir = null;
+
+  try {
+    console.log('[educadf.notas.csv] 1/6 Verificando botão "Importar notas"...');
+    const impBtn = page.locator("button:has-text('Importar notas')").first();
+    if ((await impBtn.count()) === 0 || !(await impBtn.isVisible({ timeout: 5000 }).catch(() => false))) {
+      return { ok: false, motivo: 'Botão "Importar notas" não visível na tela' };
+    }
+
+    console.log('[educadf.notas.csv] 2/6 Abrindo modal "Importar notas"...');
+    await impBtn.click();
+    await page.waitForSelector('ngb-modal-window, .modal.show, button:has-text("Baixar modelo")', { timeout: 8000 });
+    await page.waitForTimeout(1000);
+
+    const baixarBtn = page.locator("button:has-text('Baixar modelo')").first();
+    if ((await baixarBtn.count()) === 0) {
+      await page.keyboard.press('Escape').catch(() => {});
+      return { ok: false, motivo: 'Botão "Baixar modelo" não encontrado no modal' };
+    }
+
+    console.log('[educadf.notas.csv] 3/6 Baixando modelo CSV do EDUCADF...');
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'educadf_csv_'));
+    const csvPath = path.join(tempDir, 'modelo-notas.csv');
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 15000 }),
+      baixarBtn.click()
+    ]);
+    await download.saveAs(csvPath);
+
+    let rawCsv = fs.readFileSync(csvPath, 'utf8');
+    const hasBOM = rawCsv.charCodeAt(0) === 0xFEFF;
+    const content = hasBOM ? rawCsv.slice(1) : rawCsv;
+    const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+    if (lines.length < 2) {
+      await page.locator("button:has-text('Cancelar')").first().click().catch(() => {});
+      return { ok: false, motivo: 'CSV modelo retornado pelo EDUCADF não possui alunos cadastrados' };
+    }
+
+    const header = lines[0].split(';').map(h => h.trim());
+    const reIdx = header.indexOf('RE');
+    const nomeIdx = header.indexOf('NOME');
+    const quadroAulaIdx = header.indexOf('QUADRO AULA');
+
+    if (reIdx === -1 || quadroAulaIdx === -1) {
+      await page.locator("button:has-text('Cancelar')").first().click().catch(() => {});
+      return { ok: false, motivo: 'CSV modelo com cabeçalho incompatível (RE ou QUADRO AULA ausente)' };
+    }
+
+    console.log(`[educadf.notas.csv] 4/6 Mapeando colunas: [${header.join('; ')}]`);
+    const colunasMapeadas = [];
+
+    for (const col of colunasParaExportar) {
+      const colNorm = norm(col.nomeColuna);
+      let idx = -1;
+
+      // Busca exata
+      for (let i = 0; i < header.length; i++) {
+        if (i === reIdx || i === nomeIdx || i === quadroAulaIdx) continue;
+        if (norm(header[i]) === colNorm) { idx = i; break; }
+      }
+      // Busca parcial por tokens
+      if (idx === -1) {
+        const tokens = colNorm.split(' ').filter(t => t.length > 2);
+        for (let i = 0; i < header.length; i++) {
+          if (i === reIdx || i === nomeIdx || i === quadroAulaIdx) continue;
+          const hNorm = norm(header[i]);
+          if (tokens.every(t => hNorm.includes(t)) || tokens.some(t => hNorm.includes(t))) {
+            idx = i; break;
+          }
+        }
+      }
+
+      if (idx !== -1) {
+        const porRE = new Map();
+        const porNome = new Map();
+        for (const a of (col.alunos || [])) {
+          if (a.nota !== null && a.nota !== undefined) {
+            const notaStr = String(Number(a.nota).toFixed(1)).replace('.', ',');
+            if (a.re) porRE.set(String(a.re).trim().replace(/^0+/, ''), notaStr);
+            if (a.nome) porNome.set(norm(a.nome), notaStr);
+          }
+        }
+        colunasMapeadas.push({ colIdx: idx, nomeColuna: col.nomeColuna, nomeCsv: header[idx], porRE, porNome });
+        console.log(`[educadf.notas.csv]    ✔ "${col.nomeColuna}" -> coluna [${idx}] ("${header[idx]}") com ${porRE.size || porNome.size} notas`);
+      } else {
+        console.warn(`[educadf.notas.csv]    ⚠️ Coluna "${col.nomeColuna}" não encontrada no cabeçalho do CSV`);
+      }
+    }
+
+    if (colunasMapeadas.length === 0) {
+      await page.locator("button:has-text('Cancelar')").first().click().catch(() => {});
+      return { ok: false, motivo: 'Nenhuma coluna do plano corresponde aos cabeçalhos do modelo CSV' };
+    }
+
+    console.log('[educadf.notas.csv] 5/6 Preenchendo linhas do CSV...');
+    let totalNotasPreenchidas = 0;
+    const novasLinhas = [lines[0]];
+
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(';');
+      const re = String(parts[reIdx] || '').trim().replace(/^0+/, '');
+      const nomeAluno = norm(parts[nomeIdx] || '');
+
+      for (const col of colunasMapeadas) {
+        let nota = null;
+        if (re && col.porRE.has(re)) {
+          nota = col.porRE.get(re);
+        } else if (nomeAluno && col.porNome.has(nomeAluno)) {
+          nota = col.porNome.get(nomeAluno);
+        } else if (nomeAluno) {
+          const tokens = nomeAluno.split(' ').filter(t => t.length > 2);
+          for (const [key, val] of col.porNome.entries()) {
+            if (tokens.length >= 2 && key.includes(tokens[0]) && key.includes(tokens[tokens.length - 1])) {
+              nota = val;
+              break;
+            }
+          }
+        }
+
+        if (nota !== null) {
+          parts[col.colIdx] = nota;
+          totalNotasPreenchidas++;
+        }
+      }
+
+      novasLinhas.push(parts.join(';'));
+    }
+
+    if (totalNotasPreenchidas === 0) {
+      await page.locator("button:has-text('Cancelar')").first().click().catch(() => {});
+      return { ok: false, motivo: 'Nenhuma nota de aluno encontrada para preencher no CSV' };
+    }
+
+    // Salva o CSV preenchido
+    const novoCsv = (hasBOM ? '\uFEFF' : '') + novasLinhas.join('\r\n');
+    fs.writeFileSync(csvPath, novoCsv, 'utf8');
+    console.log(`[educadf.notas.csv] ✅ CSV preenchido com ${totalNotasPreenchidas} notas em ${lines.length - 1} estudantes`);
+
+    // 6. Upload do arquivo
+    console.log('[educadf.notas.csv] 6/6 Enviando arquivo CSV via setInputFiles...');
+    await page.setInputFiles('input[type="file"]', csvPath);
+    await page.waitForTimeout(2000);
+
+    // Confirmação do modal
+    const btnConfirmar = page.locator("button.btn-primary:has-text('Importar'), button.btn-success:has-text('Importar'), button:has-text('Importar')").last();
+    const isEnabled = await btnConfirmar.isEnabled({ timeout: 5000 }).catch(() => false);
+    if (!isEnabled) {
+      const motivo = await page.evaluate(() => {
+        const m = document.querySelector('.modal, ngb-modal-window');
+        return m?.innerText?.substring(0, 300) || '';
+      });
+      await page.locator("button:has-text('Cancelar')").first().click().catch(() => {});
+      return { ok: false, motivo: `Botão Importar permaneceu desabilitado: ${motivo}` };
+    }
+
+    const btnText = await btnConfirmar.textContent().catch(() => '');
+    console.log(`[educadf.notas.csv] Clicando em "${btnText.trim()}"...`);
+    await btnConfirmar.click();
+    await page.waitForTimeout(3000);
+
+    // Clicar em Salvar
+    console.log('[educadf.notas.csv] Clicando em Salvar...');
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(500);
+    const salvarLoc = page.locator("button.btn-success:has-text('Salvar'), button:has-text('Salvar'), button.btn-success").last();
+    if ((await salvarLoc.count()) > 0 && (await salvarLoc.isVisible({ timeout: 3000 }).catch(() => false))) {
+      await salvarLoc.click({ timeout: 8000 });
+      console.log('[educadf.notas.csv] ✅ Botão Salvar clicado!');
+      await page.waitForTimeout(3000);
+    }
+
+    return {
+      ok: true,
+      totalPreenchidos: totalNotasPreenchidas,
+      totalErros: 0
+    };
+
+  } catch (err) {
+    console.warn(`[educadf.notas.csv] Erro no fluxo CSV: ${err.message}`);
+    return { ok: false, motivo: err.message };
+  } finally {
+    if (tempDir) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+// ============================================================================
 // HELPER: Converte dataStr em objeto Date UTC
+
 // ============================================================================
 function parseDateUTC(dataStr) {
   if (!dataStr) return null;
@@ -2736,15 +2945,33 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     const alunosNaoEncontrados  = []; // dessincronização: está no EDUCA.MELHOR mas não no EDUCADF
     const alunosDesabilitados   = []; // ausentes: campo bloqueado pelo EDUCADF (sem presença no dia)
 
-    // ── Detecta novo design (2026): inputs pa-nota com aria-label estruturado ──
-    const isNovoDesignNotas = await page.evaluate(() => {
-      return document.querySelectorAll('input.pa-nota, input[aria-label*="Nota de"]').length > 0;
-    });
+    // ── ESTRATÉGIA 1 (PRIMÁRIA): Importação em lote ultra-rápida via modelo CSV (design 2026) ──
+    let importadoViaCsv = false;
+    try {
+      console.log('[educadf.notas] 🚀 Tentando importação em lote via modelo CSV...');
+      const resCsv = await importarNotasViaCSV(page, session, colunasParaExportar);
+      if (resCsv && resCsv.ok) {
+        totalPreenchidos = resCsv.totalPreenchidos;
+        importadoViaCsv = true;
+        console.log(`[educadf.notas] 🚀 Importação em lote via CSV concluída com SUCESSO! (${totalPreenchidos} notas importadas)`);
+        await session.screenshot('notas_07_csv_importado');
+      } else {
+        console.warn(`[educadf.notas] ⚠️ Importação CSV não executada (${resCsv?.motivo || 'erro desconhecido'}) — acionando fallback de preenchimento direto no DOM...`);
+      }
+    } catch (errCsv) {
+      console.warn(`[educadf.notas] ⚠️ Falha na tentativa CSV: ${errCsv.message} — acionando fallback direto...`);
+    }
 
-    if (isNovoDesignNotas) {
-      console.log('[educadf.notas] ✅ Novo design detectado: preenchimento direto por aria-label');
+    if (!importadoViaCsv) {
+      // ── ESTRATÉGIA 2 (FALLBACK): Preenchimento campo a campo no DOM ──
+      const isNovoDesignNotas = await page.evaluate(() => {
+        return document.querySelectorAll('input.pa-nota, input[aria-label*="Nota de"]').length > 0;
+      });
 
-      for (let c = 0; c < colunasParaExportar.length; c++) {
+      if (isNovoDesignNotas) {
+        console.log('[educadf.notas] ✅ Novo design detectado: preenchimento direto por aria-label');
+
+        for (let c = 0; c < colunasParaExportar.length; c++) {
         const colunaData = colunasParaExportar[c];
         const targetColuna = colunaData.nomeColuna;
         const alunos = colunaData.alunos || [];
@@ -3166,6 +3393,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // Aguarda o servidor confirmar o save (rede Angular)
     await session.delay(salvarClicado ? 4000 : 1500);
     await session.screenshot('notas_08_finalizado');
+    } // FIM if (!importadoViaCsv)
 
     const ok = totalPreenchidos > 0;
     console.log(`\n[educadf.notas] ✅ Concluído: ${totalPreenchidos} notas preenchidas, ${totalErros} erros.`);
