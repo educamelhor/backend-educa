@@ -227,8 +227,28 @@ export class EducaDFBrowser {
     const timeout = opts.timeout || this.timeout;
     try {
       await this.page.waitForSelector(selector, { state: 'visible', timeout });
-      await this.page.fill(selector, '');  // Limpar primeiro
-      await this.page.fill(selector, value);
+
+      // IMPORTANTE: page.fill() NÃO aciona validação Angular (form fica ng-pristine/ng-invalid).
+      // Solução: click → Ctrl+A (seleciona tudo) → type (char a char) → blur
+      // Isso simula digitação real e aciona ng-dirty/ng-touched/ng-valid.
+      await this.page.click(selector);
+      await this.delay(200);
+      await this.page.keyboard.press('Control+A');
+      await this.delay(100);
+      await this.page.keyboard.press('Backspace');
+      await this.delay(100);
+      if (value) {
+        await this.page.keyboard.type(value, { delay: opts.typeDelay || 40 });
+      }
+      // Disparar blur para Angular detectar o fim da edição
+      await this.page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) {
+          el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }, selector);
+
       await this.delay(opts.delay || 500);
     } catch (err) {
       console.warn(`[EducaDFBrowser] safeFill falhou para "${selector}": ${err.message}`);

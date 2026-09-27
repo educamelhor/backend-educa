@@ -67,7 +67,10 @@ const DISCIPLINA_EDUCADF_MAP = {
  * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Português')
  * @returns {string} - Nome no EDUCADF (ex: 'LÍNGUA PORTUGUESA')
  */
-function mapearDisciplina(disciplina) {
+function mapearDisciplina(disciplina, disciplinaOficial) {
+  if (disciplinaOficial && disciplinaOficial !== disciplina) {
+    return disciplinaOficial;
+  }
   if (!disciplina) return disciplina;
   const upper = String(disciplina).trim().toUpperCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos para lookup
@@ -119,46 +122,6 @@ function nomesCorrespondem(nomeA, nomeB) {
   // Considera correspondência se pelo menos 60% dos tokens do nome menor coincidem
   const menor = Math.min(tokensA.length, tokensB.length);
   return menor > 0 && matches.length >= Math.ceil(menor * 0.6);
-}
-
-/**
- * Comparação fuzzy/inteligente de Unidade Escolar / Escola:
- * Compara nome oficial (ex: CENTRO EDUCACIONAL POMPÍLIO MARQUES DE SOUSA),
- * apelido (POMPS, CEF 04) e palavras-chave exclusivas.
- */
-function escolasCorrespondem(opcaoTexto, escolaAlvo) {
-  if (!opcaoTexto) return false;
-  const norm = (s) => String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9 ]/g, ' ').trim();
-  const opt = norm(opcaoTexto);
-  
-  const nomesParaTestar = [];
-  if (typeof escolaAlvo === 'object' && escolaAlvo !== null) {
-    if (escolaAlvo.nome) nomesParaTestar.push(escolaAlvo.nome);
-    if (escolaAlvo.apelido) nomesParaTestar.push(escolaAlvo.apelido);
-    if (escolaAlvo.busca) nomesParaTestar.push(escolaAlvo.busca);
-  } else if (typeof escolaAlvo === 'string') {
-    nomesParaTestar.push(escolaAlvo);
-  }
-
-  // Atalhos específicos conhecidos
-  if (opt.includes('POMPILIO') || opt.includes('POMPS') || opt.includes('MARQUES DE SOUSA')) {
-    if (nomesParaTestar.some(n => norm(n).includes('POMP') || norm(n).includes('POMPS') || norm(n).includes('MARQUES'))) return true;
-  }
-  if (opt.includes('04 DE PLANALTINA') || opt.includes('CEF 04') || opt.includes('FUNDAMENTAL 04')) {
-    if (nomesParaTestar.some(n => norm(n).includes('04') || norm(n).includes('CEF04') || norm(n).includes('PLANALTINA'))) return true;
-  }
-
-  for (const n of nomesParaTestar) {
-    const target = norm(n);
-    if (!target) continue;
-    if (opt === target || opt.includes(target) || target.includes(opt)) return true;
-    
-    // Compara palavras-chave significativas (> 3 letras, ignorando genéricos)
-    const palavrasAlvo = target.split(/\s+/).filter(w => w.length > 3 && !['CENTRO', 'ENSINO', 'FUNDAMENTAL', 'EDUCACIONAL', 'ESCOLA', 'CLASSE', 'COLEGIO'].includes(w));
-    if (palavrasAlvo.length > 0 && palavrasAlvo.some(w => opt.includes(w) && w.length >= 5)) return true;
-  }
-
-  return false;
 }
 
 // ============================================================================
@@ -534,6 +497,120 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
   }
 
   await page.keyboard.press('Escape');
+  return false;
+}
+
+// ============================================================================
+// HELPER: selecionarLombada — NOVO design de filtros EDUCADF (2026)
+// ============================================================================
+// O EDUCADF redesenhou a barra de filtros: em vez de ng-select laterais,
+// agora usa button.dc-lombada-botao em barra horizontal.
+// Ao clicar num botão, ele expande e um ng-select[placeholder="Escolha"] surge.
+//
+// Uso:
+//   await selecionarLombada(page, 'Turma', '9º Ano - A')
+//   await selecionarLombada(page, 'Componente', 'ARTES')
+//   await selecionarLombada(page, 'Professor', 'Dandara Raiza', 8000, nomesCorrespondem)
+//
+// Retorna true se selecionou com sucesso, false caso contrário.
+// ============================================================================
+async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyFn = null) {
+  const norm = (s) => String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ').toUpperCase().trim();
+  const valorNorm = norm(valor);
+
+  // ── 1. Verifica se o botão da lombada existe ──────────────────────────
+  const btnInfo = await page.evaluate((lbl) => {
+    const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
+    const found = btns.find(b =>
+      (b.getAttribute('aria-label') || '').toLowerCase().includes(lbl.toLowerCase())
+    );
+    if (!found) return null;
+    const valorEl = found.querySelector('.dc-lombada-valor');
+    return {
+      ariaLabel:  found.getAttribute('aria-label'),
+      valorAtual: valorEl?.textContent?.trim() || '',
+    };
+  }, labelPart);
+
+  if (!btnInfo) {
+    console.warn(`[educadf.pap] Lombada "${labelPart}" não encontrada (novo design não ativo ou label diferente)`);
+    return false;
+  }
+
+  // ── 2. Já está preenchido com o valor correto? ────────────────────────
+  const { valorAtual } = btnInfo;
+  if (valorAtual && valorAtual !== 'Escolher') {
+    const jaOk = fuzzyFn
+      ? fuzzyFn(valorAtual, valor)
+      : (norm(valorAtual).includes(valorNorm) || valorNorm.includes(norm(valorAtual)));
+    if (jaOk) {
+      console.log(`[educadf.pap] ⚡ Lombada "${labelPart}" já pré-selecionada: "${valorAtual}"`);
+      return true;
+    }
+  }
+
+  // ── 3. Clica no botão para abrir o seletor ───────────────────────────
+  await page.evaluate((lbl) => {
+    const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
+    const found = btns.find(b =>
+      (b.getAttribute('aria-label') || '').toLowerCase().includes(lbl.toLowerCase())
+    );
+    if (found) { found.scrollIntoViewIfNeeded?.(); found.click(); }
+  }, labelPart);
+  await page.waitForTimeout(1500);
+
+  // ── 4. Aguarda ng-select aparecer ────────────────────────────────────
+  const ngSelect = await page.waitForSelector('ng-select', { timeout: 6000 }).catch(() => null);
+
+  // ── 5. Função auxiliar: tenta clicar numa opção matching ─────────────
+  const encontrarEClicar = async () => {
+    const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
+    for (const opt of opts) {
+      const txt = await opt.textContent().catch(() => '');
+      const txtNorm = norm(txt);
+      const match = fuzzyFn
+        ? fuzzyFn(valor, txt)
+        : (txtNorm.includes(valorNorm) || valorNorm.includes(txtNorm));
+      if (match) {
+        await opt.click();
+        await page.waitForTimeout(500);
+        console.log(`[educadf.pap] ✅ Lombada "${labelPart}" = "${txt.trim().substring(0, 60)}"`);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // ── 6. Tenta opções já visíveis (sem digitar) ─────────────────────────
+  if (await encontrarEClicar()) return true;
+
+  // ── 7. Digita para filtrar as opções ─────────────────────────────────
+  const inp = ngSelect ? await ngSelect.$('input').catch(() => null) : null;
+  if (inp) {
+    // Usa tokens do valor para pesquisa (remove ordinais, pontuação)
+    const tokens = valor.replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ')
+      .trim().split(' ').filter(t => t.length > 1).slice(0, 2).join(' ');
+    await inp.fill(tokens);
+    await page.waitForTimeout(1500);
+
+    if (await encontrarEClicar()) return true;
+
+    // Fallback: primeira opção disponível
+    const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
+    if (opts.length > 0) {
+      const firstTxt = await opts[0].textContent().catch(() => '');
+      await opts[0].click();
+      console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" fallback → "${firstTxt.trim().substring(0, 50)}"`);
+      await page.waitForTimeout(500);
+      return true;
+    }
+  }
+
+  // ── 8. Falhou — fecha o seletor ───────────────────────────────────────
+  await page.keyboard.press('Escape').catch(() => {});
+  console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" = "${valor}" NÃO encontrada`);
   return false;
 }
 
@@ -1071,132 +1148,218 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 4: Filtros laterais
-    // Ano (2026) e Regional já pré-selecionados.
+    // PASSO 4: Filtros — detecta novo design (lombada) ou fallback para ng-select
+    // NOVO (2026): button.dc-lombada-botao em barra horizontal
+    // ANTIGO: ng-select em sidebar lateral
+    // Ano (2026) e Regional já pré-selecionados pelo portal.
     // Preencher: Turma/Agrupamento + Professor + Componente
     // IMPORTANTE: Componente deve usar o nome do EDUCADF (mapeado da disciplina)
     // ══════════════════════════════════════════════════════════════════════
-    const componenteEducaDF = mapearDisciplina(plano.disciplina);
+    const componenteEducaDF = mapearDisciplina(plano.disciplina, plano.disciplinaOficial);
     const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
     console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
 
+    // ── Detecta qual design de filtro está ativo ────────────────────────
+    const isLombada = await page.waitForSelector('button.dc-lombada-botao', { timeout: 12000 })
+      .then(() => true)
+      .catch(() => false);
 
-    // ── Aguarda os ng-selects da página carregarem (até 15s) ────────────
-    await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
-      console.warn('[educadf.pap] ng-select não apareceu em 15s — tentando assim mesmo...')
-    );
-    await page.waitForTimeout(1000);
+    if (isLombada) {
+      // ══════════════════════════════════════════════════════════════════
+      // NOVO DESIGN (2026): barra de filtros horizontal com lombada
+      // Unidade Escolar é AUTO-PREENCHIDA pelo login do professor.
+      // Apenas Turma, Professor e Componente precisam de seleção.
+      // ══════════════════════════════════════════════════════════════════
+      console.log('[educadf.pap] ✅ Nova barra de filtros (dc-lombada) detectada');
 
-    // ── Unidade Escolar (OBRIGATÓRIO se campo existir): seleciona a escola ──
-    const placeholdersUnidade = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
-    for (const ph of placeholdersUnidade) {
-      const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-      if (!exists) continue;
-      console.log(`[educadf.pap] Filtro Unidade Escolar encontrado: "${ph}"`);
+      // ── Turma (OBRIGATÓRIO) ──────────────────────────────────────────
+      let turmaOk = await selecionarLombada(page, 'Turma', turmaEducaDF);
+      if (!turmaOk && plano.turmas !== turmaEducaDF) {
+        console.warn(`[educadf.pap] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
+        turmaOk = await selecionarLombada(page, 'Turma', plano.turmas);
+      }
+      if (!turmaOk) {
+        const semDadosPortal = await page.evaluate(() => !!window.__educaDFSemDados).catch(() => false);
+        if (erroPortalDetectado?.erro || semDadosPortal) {
+          const detalhe = erroPortalDetectado?.mensagem || 'dropdown retornou sem dados';
+          throw Object.assign(
+            new Error(`EDUCADF não carregou as turmas disponíveis (${detalhe}). O portal está com instabilidade. Tente novamente em alguns minutos.`),
+            { errorCode: 'PORTAL_INDISPONIVEL' }
+          );
+        }
+        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
+      }
+      await page.waitForTimeout(800);
 
-      const escolaInfo = {
-        nome: plano.escolaNome || '',
-        apelido: plano.escolaApelido || '',
-        busca: plano.escolaBusca || 'POMPÍLIO'
-      };
+      // ── Professor (frequentemente auto-preenchido pelo login) ─────────
+      if (plano.professorNome) {
+        const profOk = await selecionarLombada(page, 'Professor', plano.professorNome, 8000, nomesCorrespondem);
+        if (!profOk) console.warn('[educadf.pap] ⚠️  Lombada Professor não encontrada — continuando');
+        await page.waitForTimeout(800);
+      }
 
-      const termoPrincipal = plano.escolaBusca || plano.escolaApelido || plano.escolaNome || 'POMPÍLIO';
-      const unidadeOk = await selecionarNgSelect(
-        page, 
-        ph, 
-        termoPrincipal, 
-        8000, 
-        (opcao) => escolasCorrespondem(opcao, escolaInfo)
+      // ── Componente Curricular ─────────────────────────────────────────
+      // Pode aparecer (ou habilitar) só após a turma ser selecionada
+      if (componenteEducaDF) {
+        await page.waitForTimeout(500);
+        const compOk = await selecionarLombada(page, 'Componente', componenteEducaDF) ||
+                       await selecionarLombada(page, 'Curricular', componenteEducaDF);
+        if (!compOk) console.warn(`[educadf.pap] ⚠️  Componente "${componenteEducaDF}" não selecionado — continuando`);
+      }
+
+    } else {
+      // ══════════════════════════════════════════════════════════════════
+      // DESIGN ANTIGO (fallback): ng-select em sidebar lateral
+      // ══════════════════════════════════════════════════════════════════
+      console.warn('[educadf.pap] Lombada não detectada — usando ng-select (design antigo)');
+
+      // ── Aguarda os ng-selects da página carregarem (até 15s) ──────────
+      await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
+        console.warn('[educadf.pap] ng-select não apareceu em 15s — tentando assim mesmo...')
       );
+      await page.waitForTimeout(1000);
 
-      if (unidadeOk) {
-        console.log(`[educadf.pap] ✅ Unidade Escolar selecionada/confirmada com sucesso`);
-      } else {
-        console.warn(`[educadf.pap] ⚠️ Não foi possível confirmar Unidade Escolar ("${termoPrincipal}") — tentando continuar...`);
-      }
+      // ── Unidade Escolar (OBRIGATÓRIO se campo existir) ─────────────────
+      const placeholdersUnidade = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
+      for (const ph of placeholdersUnidade) {
+        const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
+        if ((await ngUnidade.count()) === 0) continue;
+        console.log(`[educadf.pap] Filtro Unidade Escolar encontrado: "${ph}"`);
 
-      await page.waitForTimeout(2000); // aguarda turmas carregarem após selecionar escola
-      break;
-    }
-
-    // ── Turma (OBRIGATÓRIO): sem turma não prosseguir ─────────────────
-    const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
-    let turmaOk = false;
-    for (const ph of placeholdersTurma) {
-      const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-      if (exists) {
-        console.log(`[educadf.pap] Filtro Turma encontrado com placeholder: "${ph}"`);
-        // Tenta primeiro com formato EDUCADF, depois com original como fallback
-        turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
-        if (!turmaOk) {
-          console.warn(`[educadf.pap] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
-          turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+        const termoBusca = plano.escola?.nomeBusca;
+        const nomeEsperado = plano.escola?.nomeOficial;
+        if (!termoBusca) {
+          throw Object.assign(
+            new Error('Configuração da escola não fornecida. Acesse as Configurações do Agente e preencha o nome da escola no EDUCADF.'),
+            { errorCode: 'CONFIG_ESCOLA_AUSENTE' }
+          );
         }
-        if (turmaOk) break;
+
+        const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const targetUE = normUE(nomeEsperado);
+
+        const alreadySelectedUE = await ngUnidade.locator('.ng-value-label').textContent().catch(() => '');
+        if (alreadySelectedUE && (normUE(alreadySelectedUE).includes(targetUE) || targetUE.includes(normUE(alreadySelectedUE).trim()))) {
+          console.log(`[educadf.pap] ⚡ Unidade Escolar já estava pré-selecionada: "${alreadySelectedUE.trim()}"`);
+          break;
+        }
+
+        await ngUnidade.click();
+        await page.waitForTimeout(500);
+        const inputUE = ngUnidade.locator("input[type='text']").first();
+        if ((await inputUE.count()) > 0) {
+          await inputUE.fill(termoBusca);
+        } else {
+          await page.keyboard.type(termoBusca, { delay: 30 });
+        }
+        await page.waitForTimeout(1500);
+
+        const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
+        const countUE = await opcoesUE.count();
+        let unidadeOk = false;
+
+        for (let i = 0; i < countUE; i++) {
+          const txt = (await opcoesUE.nth(i).textContent()) || '';
+          if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+            await opcoesUE.nth(i).click();
+            unidadeOk = true;
+            console.log(`[educadf.pap] ✅ Unidade Escolar selecionada: "${txt.trim().substring(0, 60)}"`);
+            break;
+          }
+        }
+
+        if (!unidadeOk && countUE > 0) {
+          await opcoesUE.first().click();
+          const txtFb = (await opcoesUE.first().textContent().catch(() => '')) || '';
+          console.warn(`[educadf.pap] ⚠️  Match exato não encontrado. Selecionou: "${txtFb.trim().substring(0, 60)}"`);
+          unidadeOk = true;
+        }
+
+        if (!unidadeOk) {
+          await page.keyboard.press('Escape');
+          console.warn('[educadf.pap] ⚠️  Nenhuma opção de Unidade Escolar — tentando continuar...');
+        }
+
+        await page.waitForTimeout(1500);
+        break;
       }
-    }
-    if (!turmaOk) {
-      // Verifica as duas causas possíveis para turma não encontrada:
-      // A) Portal mostrou erro antes de carregar (erroPortalDetectado, capturado antes de removerBackdrops)
-      // B) Dropdown só mostrou "NO ITEMS FOUND" = portal sem dados (marcado em window.__educaDFSemDados)
-      const semDadosPortal = await page.evaluate(() => !!window.__educaDFSemDados).catch(() => false);
 
-      if (erroPortalDetectado?.erro || semDadosPortal) {
-        const detalhe = erroPortalDetectado?.mensagem || 'dropdown retornou sem dados';
-        throw Object.assign(
-          new Error(`EDUCADF não carregou as turmas disponíveis (${detalhe}). O portal está com instabilidade. Tente novamente em alguns minutos.`),
-          { errorCode: 'PORTAL_INDISPONIVEL' }
-        );
-      }
-
-      // Realmente não encontrou a turma (portal estava ok, turma não existe no EDUCADF)
-      throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
-    }
-    await page.waitForTimeout(800);
-
-    // ── Professor: usa fuzzy matching pois nomes podem diferir entre sistemas ─
-    if (plano.professorNome) {
-      const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
-      let profOk = false;
-      for (const ph of placeholdersProfessor) {
+      // ── Turma (OBRIGATÓRIO) ──────────────────────────────────────────
+      const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
+      let turmaOk = false;
+      for (const ph of placeholdersTurma) {
         const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
         if (exists) {
-          console.log(`[educadf.pap] Filtro Professor encontrado com placeholder: "${ph}"`);
-          profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
-          if (profOk) break;
+          console.log(`[educadf.pap] Filtro Turma encontrado com placeholder: "${ph}"`);
+          turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
+          if (!turmaOk) {
+            console.warn(`[educadf.pap] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
+            turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+          }
+          if (turmaOk) break;
         }
       }
-      if (!profOk) {
-        console.warn('[educadf.pap] ⚠️  ng-select Professor não encontrado — continuando sem filtrar professor');
+      if (!turmaOk) {
+        const semDadosPortal = await page.evaluate(() => !!window.__educaDFSemDados).catch(() => false);
+        if (erroPortalDetectado?.erro || semDadosPortal) {
+          const detalhe = erroPortalDetectado?.mensagem || 'dropdown retornou sem dados';
+          throw Object.assign(
+            new Error(`EDUCADF não carregou as turmas disponíveis (${detalhe}). O portal está com instabilidade. Tente novamente em alguns minutos.`),
+            { errorCode: 'PORTAL_INDISPONIVEL' }
+          );
+        }
+        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
       }
-    }
-    await page.waitForTimeout(800);
+      await page.waitForTimeout(800);
 
-    // ── Componente: usa o nome mapeado do EDUCADF ─────────────────────────────
-    if (componenteEducaDF) {
-      const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
-      let compOk = false;
-      for (const ph of placeholdersComp) {
-        const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-        if (exists) {
-          console.log(`[educadf.pap] Filtro Componente encontrado com placeholder: "${ph}"`);
-          compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
-          if (compOk) break;
+      // ── Professor ────────────────────────────────────────────────────
+      if (plano.professorNome) {
+        const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
+        let profOk = false;
+        for (const ph of placeholdersProfessor) {
+          const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+          if (exists) {
+            console.log(`[educadf.pap] Filtro Professor encontrado com placeholder: "${ph}"`);
+            profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
+            if (profOk) break;
+          }
+        }
+        if (!profOk) {
+          console.warn('[educadf.pap] ⚠️  ng-select Professor não encontrado — continuando sem filtrar professor');
         }
       }
-      if (!compOk) {
-        console.warn(`[educadf.pap] ⚠️  Componente "${componenteEducaDF}" não selecionado — continuando`);
+      await page.waitForTimeout(800);
+
+      // ── Componente ───────────────────────────────────────────────────
+      if (componenteEducaDF) {
+        const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
+        let compOk = false;
+        for (const ph of placeholdersComp) {
+          const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+          if (exists) {
+            console.log(`[educadf.pap] Filtro Componente encontrado com placeholder: "${ph}"`);
+            compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
+            if (compOk) break;
+          }
+        }
+        if (!compOk) {
+          console.warn(`[educadf.pap] ⚠️  Componente "${componenteEducaDF}" não selecionado — continuando`);
+        }
       }
-    }
+    } // fim else (design antigo)
 
     await session.screenshot('pap_04_filtros');
+
+
+
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 7: Clicar em Filtrar
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 7/16 Clicando em Filtrar...');
     try {
-      await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 });
+      // NOVO DESIGN: botão dentro de <app-button-filtrar>; fallback para seletor antigo
+      await page.locator("app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first().click({ timeout: 8000 });
       await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() =>
         console.warn('[educadf.pap] domcontentloaded timeout após Filtrar — continuando...')
       );
@@ -1332,8 +1495,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       return { ok: false, message: `Bimestre inválido no plano: "${plano.bimestre}".`, durationMs: 0 };
     }
 
-    const BIM_TARGET_MONTH = { '1': 3, '2': 5, '3': 8, '4': 10 };
-    const mesAlvo = BIM_TARGET_MONTH[bimNumPAP] || null;
+    const calendarioMap = plano.calendarioMap || {
+      bimestral: { '1': 3, '2': 5, '3': 8, '4': 10 },
+      semestral: { '1': 4, '2': 9 }
+    };
+    const regimeTurma = plano.regimeTurma || 'anual';
+    const mapaRegime = (regimeTurma === 'semestral') ? calendarioMap.semestral : calendarioMap.bimestral;
+    const mesAlvo = mapaRegime?.[String(bimNumPAP)] || null;
 
     if (mesAlvo) {
       console.log(`[educadf.pap] 7.5/16 Navegando calendário para mês ${mesAlvo} (bimestre ${bimNumPAP}º)...`);
@@ -1703,6 +1871,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       .replace(/\s+/g, ' ').trim();
 
     let totalCriados  = 0;
+    const itensFalhados = [];
     let totalJaExistia = 0;
     let ultimoOk = true;
     let ultimaMensagem = '';
@@ -1940,7 +2109,23 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       await session.screenshot(`pap_item${iIdx+1}_pos_salvar`);
 
       const modalAindaAberto = await page.locator('text=Criar Instrumento/Procedimento Avaliativo').isVisible().catch(() => false);
-      const itemOk = !modalAindaAberto;
+      let itemOk = !modalAindaAberto;
+
+      if (!modalAindaAberto) {
+        // Verificação adicional: re-lê a tabela para confirmar a coluna foi criada
+        await page.waitForTimeout(1500);
+        const confirmadoNaTabela = await page.evaluate((nome) => {
+          const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+          const alvo = norm(nome);
+          const headers = [...document.querySelectorAll('table th, thead th')];
+          return headers.some(th => norm(th.textContent || '').includes(alvo));
+        }, nomeAtividade);
+        
+        itemOk = confirmadoNaTabela;
+        if (!itemOk) {
+          console.warn(`[educadf.pap] ⚠️ Modal fechou mas coluna não apareceu na tabela. Item pode não ter sido criado.`);
+        }
+      }
 
       if (itemOk) {
         totalCriados++;
@@ -2000,8 +2185,9 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         ultimaMensagem = `"${nomeAtividade}" criado com sucesso.`;
       } else {
         ultimoOk = false;
-        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] "${nomeAtividade}": modal ainda aberto após salvar.`);
-        ultimaMensagem = `Modal ainda aberto para "${nomeAtividade}" — verifique validações.`;
+        itensFalhados.push(nomeAtividade);
+        console.error(`[educadf.pap] ❌ [item ${iIdx+1}] "${nomeAtividade}": Falhou na criação (modal aberto ou não confirmado).`);
+        ultimaMensagem = `Falha para "${nomeAtividade}".`;
         // Fecha modal para não bloquear próximo item
         await page.keyboard.press('Escape').catch(() => {});
         await session.delay(1500);
@@ -2009,18 +2195,20 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     } // fim do loop de itens
 
     await session.screenshot('pap_loop_concluido');
-    console.log(`[educadf.pap] ✅ Loop concluído: ${totalCriados} criado(s), ${totalJaExistia} já existia(m).`);
+    console.log(`[educadf.pap] ✅ Loop concluído: ${totalCriados} criado(s), ${totalJaExistia} já existia(m). Falhados: ${itensFalhados.length}`);
 
     const tudoJaExistia = totalJaExistia === itensParaExportar.length && totalCriados === 0;
+    const algumFalhou = itensFalhados.length > 0;
 
     return {
-      ok: ultimoOk || totalCriados > 0 || tudoJaExistia,
-      errorCode: tudoJaExistia ? 'JA_EXISTE' : undefined,
+      ok: !algumFalhou && (ultimoOk || totalCriados > 0 || tudoJaExistia),
+      errorCode: tudoJaExistia ? 'JA_EXISTE' : (algumFalhou ? 'MIGRACAO_PARCIAL' : undefined),
       totalCriados,
       totalJaExistia,
+      itensFalhados,
       message: tudoJaExistia
         ? `Todos os ${itensParaExportar.length} procedimento(s) já estavam cadastrados no EDUCADF para ${plano.turmas} · ${plano.bimestre}.`
-        : `${totalCriados} de ${itensParaExportar.length} procedimento(s) criado(s) para ${plano.turmas} · ${plano.bimestre}. ${ultimaMensagem}`,
+        : `${totalCriados} de ${itensParaExportar.length} procedimento(s) criado(s) para ${plano.turmas} · ${plano.bimestre}. ${algumFalhou ? 'Falhou: ' + itensFalhados.join(', ') : ultimaMensagem}`,
       durationMs: Date.now() - startedAt,
     };
 
@@ -2088,106 +2276,165 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     await removerBackdrops(page);
     await session.screenshot('notas_02_calendario');
 
-    // PASSO 3: Filtros — idêntico ao da Etapa 1
-    const componenteEducaDF = mapearDisciplina(plano.disciplina);
+    // PASSO 3: Filtros — detecta novo design (lombada) ou fallback para ng-select
+    const componenteEducaDF = mapearDisciplina(plano.disciplina, plano.disciplinaOficial);
     const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
     console.log(`[educadf.notas] 3/7 Aplicando filtros — Turma: "${plano.turmas}" ("${turmaEducaDF}") | Componente: ${componenteEducaDF}`);
 
-    // Aguarda os ng-selects carregarem (Angular pode demorar)
-    await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
-      console.warn('[educadf.notas] ng-select não apareceu em 15s — tentando assim mesmo...')
-    );
-    await page.waitForTimeout(1000);
+    // ── Detecta qual design de filtro está ativo ────────────────────────
+    const isLombadaN = await page.waitForSelector('button.dc-lombada-botao', { timeout: 12000 })
+      .then(() => true)
+      .catch(() => false);
 
-    // ── Unidade Escolar (OBRIGATÓRIO se campo existir) ──────────────────
-    const placeholdersUnidadeN = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
-    for (const ph of placeholdersUnidadeN) {
-      const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-      if (!exists) continue;
-      console.log(`[educadf.notas] Filtro Unidade Escolar encontrado: "${ph}"`);
+    if (isLombadaN) {
+      // ══════════════════════════════════════════════════════════════════
+      // NOVO DESIGN (2026): barra de filtros horizontal com lombada
+      // ══════════════════════════════════════════════════════════════════
+      console.log('[educadf.notas] ✅ Nova barra de filtros (dc-lombada) detectada');
 
-      const escolaInfo = {
-        nome: plano.escolaNome || '',
-        apelido: plano.escolaApelido || '',
-        busca: plano.escolaBusca || 'POMPÍLIO'
-      };
+      let turmaOk = await selecionarLombada(page, 'Turma', turmaEducaDF);
+      if (!turmaOk && plano.turmas !== turmaEducaDF) {
+        console.warn(`[educadf.notas] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
+        turmaOk = await selecionarLombada(page, 'Turma', plano.turmas);
+      }
+      if (!turmaOk) {
+        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF.`);
+      }
+      await page.waitForTimeout(800);
 
-      const termoPrincipal = plano.escolaBusca || plano.escolaApelido || plano.escolaNome || 'POMPÍLIO';
-      const unidadeOk = await selecionarNgSelect(
-        page, 
-        ph, 
-        termoPrincipal, 
-        8000, 
-        (opcao) => escolasCorrespondem(opcao, escolaInfo)
+      if (plano.professorNome) {
+        const profOk = await selecionarLombada(page, 'Professor', plano.professorNome, 8000, nomesCorrespondem);
+        if (!profOk) console.warn('[educadf.notas] ⚠️ Lombada Professor não encontrada — continuando');
+        await page.waitForTimeout(800);
+      }
+
+      if (componenteEducaDF) {
+        await page.waitForTimeout(500);
+        const compOk = await selecionarLombada(page, 'Componente', componenteEducaDF) ||
+                       await selecionarLombada(page, 'Curricular', componenteEducaDF);
+        if (!compOk) console.warn(`[educadf.notas] ⚠️ Componente "${componenteEducaDF}" não selecionado — continuando`);
+      }
+
+    } else {
+      // ══════════════════════════════════════════════════════════════════
+      // DESIGN ANTIGO (fallback): ng-select em sidebar lateral
+      // ══════════════════════════════════════════════════════════════════
+      console.warn('[educadf.notas] Lombada não detectada — usando ng-select (design antigo)');
+      await page.waitForSelector('ng-select', { timeout: 15000 }).catch(() =>
+        console.warn('[educadf.notas] ng-select não apareceu em 15s — tentando assim mesmo...')
       );
+      await page.waitForTimeout(1000);
 
-      if (unidadeOk) {
-        console.log(`[educadf.notas] ✅ Unidade Escolar selecionada/confirmada com sucesso`);
-      } else {
-        console.warn(`[educadf.notas] ⚠️ Não foi possível confirmar Unidade Escolar ("${termoPrincipal}") — tentando continuar...`);
-      }
-
-      await page.waitForTimeout(2000);
-      break;
-    }
-
-    // ── Turma (OBRIGATÓRIO) — múltiplos placeholders alternativos ──────────
-    const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
-    let turmaOk = false;
-    for (const ph of placeholdersTurma) {
-      const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-      if (exists) {
-        console.log(`[educadf.notas] Filtro Turma encontrado com placeholder: "${ph}"`);
-        turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
-        if (!turmaOk) {
-          console.warn(`[educadf.notas] Formato EDUCADF "${turmaEducaDF}" não encontrado - tentando original "${plano.turmas}"`);
-          turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+      const placeholdersUnidadeN = ['Unidade Escolar', 'Escola', 'Unidade de Ensino', 'Selecione a Unidade'];
+      for (const ph of placeholdersUnidadeN) {
+        const ngUnidade = page.locator(`ng-select[placeholder="${ph}"]`);
+        if ((await ngUnidade.count()) === 0) continue;
+        console.log(`[educadf.notas] Filtro Unidade Escolar encontrado: "${ph}"`);
+        const termoBusca = plano.escola?.nomeBusca;
+        const nomeEsperado = plano.escola?.nomeOficial;
+        if (!termoBusca) {
+          throw Object.assign(
+            new Error('Configuração da escola não fornecida. Acesse as Configurações do Agente e preencha o nome da escola no EDUCADF.'),
+            { errorCode: 'CONFIG_ESCOLA_AUSENTE' }
+          );
         }
-        if (turmaOk) break;
+        const normUE = (s) => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const targetUE = normUE(nomeEsperado);
+        const alreadySelectedUE = await ngUnidade.locator('.ng-value-label').textContent().catch(() => '');
+        if (alreadySelectedUE && (normUE(alreadySelectedUE).includes(targetUE) || targetUE.includes(normUE(alreadySelectedUE).trim()))) {
+          console.log(`[educadf.notas] ⚡ Unidade Escolar já estava pré-selecionada: "${alreadySelectedUE.trim()}"`);
+          break;
+        }
+        await ngUnidade.click();
+        await page.waitForTimeout(500);
+        const inputUE = ngUnidade.locator("input[type='text']").first();
+        if ((await inputUE.count()) > 0) {
+          await inputUE.fill(termoBusca);
+        } else {
+          await page.keyboard.type(termoBusca, { delay: 30 });
+        }
+        await page.waitForTimeout(1500);
+        const opcoesUE = page.locator('.ng-dropdown-panel .ng-option');
+        const countUE = await opcoesUE.count();
+        let unidadeOk = false;
+        for (let i = 0; i < countUE; i++) {
+          const txt = (await opcoesUE.nth(i).textContent()) || '';
+          if (normUE(txt).includes(targetUE) || targetUE.includes(normUE(txt).trim())) {
+            await opcoesUE.nth(i).click();
+            unidadeOk = true;
+            console.log(`[educadf.notas] ✅ Unidade Escolar selecionada`);
+            break;
+          }
+        }
+        if (!unidadeOk && countUE > 0) {
+          await opcoesUE.first().click();
+          unidadeOk = true;
+        }
+        if (!unidadeOk) await page.keyboard.press('Escape');
+        await page.waitForTimeout(1500);
+        break;
       }
-    }
-    if (!turmaOk) {
-      throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a página carregou corretamente.`);
-    }
-    await page.waitForTimeout(800);
 
-    // ── Professor (não crítico — fuzzy match) ────────────────────────────────
-    if (plano.professorNome) {
-      const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
-      let profOk = false;
-      for (const ph of placeholdersProfessor) {
+      const placeholdersTurma = ['Turma/Agrupamento', 'Turma', 'Agrupamento', 'Selecione a Turma'];
+      let turmaOk = false;
+      for (const ph of placeholdersTurma) {
         const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
         if (exists) {
-          console.log(`[educadf.notas] Filtro Professor encontrado com placeholder: "${ph}"`);
-          profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
-          if (profOk) break;
+          console.log(`[educadf.notas] Filtro Turma encontrado com placeholder: "${ph}"`);
+          turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
+          if (!turmaOk) {
+            console.warn(`[educadf.notas] Formato EDUCADF "${turmaEducaDF}" não encontrado - tentando original "${plano.turmas}"`);
+            turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+          }
+          if (turmaOk) break;
         }
       }
-      if (!profOk) console.warn('[educadf.notas] ⚠️ ng-select Professor não encontrado — continuando sem filtrar professor');
-    }
-    await page.waitForTimeout(800);
+      if (!turmaOk) {
+        throw new Error(`Filtro Turma não encontrado ou não selecionado para "${plano.turmas}". Verifique se a página carregou corretamente.`);
+      }
+      await page.waitForTimeout(800);
 
-    // ── Componente (não crítico) ───────────────────────────────────────────
-    if (componenteEducaDF) {
-      const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
-      let compOk = false;
-      for (const ph of placeholdersComp) {
-        const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
-        if (exists) {
-          console.log(`[educadf.notas] Filtro Componente encontrado com placeholder: "${ph}"`);
-          compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
-          if (compOk) break;
+      if (plano.professorNome) {
+        const placeholdersProfessor = ['Professor', 'Docente', 'Selecione o Professor', 'Professor/Docente'];
+        let profOk = false;
+        for (const ph of placeholdersProfessor) {
+          const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+          if (exists) {
+            console.log(`[educadf.notas] Filtro Professor encontrado com placeholder: "${ph}"`);
+            profOk = await selecionarNgSelect(page, ph, plano.professorNome, 8000, nomesCorrespondem);
+            if (profOk) break;
+          }
         }
+        if (!profOk) console.warn('[educadf.notas] ⚠️ ng-select Professor não encontrado — continuando sem filtrar professor');
       }
-      if (!compOk) console.warn(`[educadf.notas] ⚠️ Componente "${componenteEducaDF}" não selecionado — continuando`);
-    }
+      await page.waitForTimeout(800);
+
+      if (componenteEducaDF) {
+        const placeholdersComp = ['Componente', 'Componente Curricular', 'Disciplina', 'Matéria'];
+        let compOk = false;
+        for (const ph of placeholdersComp) {
+          const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
+          if (exists) {
+            console.log(`[educadf.notas] Filtro Componente encontrado com placeholder: "${ph}"`);
+            compOk = await selecionarNgSelect(page, ph, componenteEducaDF);
+            if (compOk) break;
+          }
+        }
+        if (!compOk) console.warn(`[educadf.notas] ⚠️ Componente "${componenteEducaDF}" não selecionado — continuando`);
+      }
+    } // fim else (design antigo)
 
     await session.screenshot('notas_03_filtros');
 
-    // PASSO 4: Clicar Filtrar (mesmo padrão Etapa 1)
+    // PASSO 4: Clicar Filtrar
+    // NOVO DESIGN: botão dentro de <app-button-filtrar>
+    // ANTIGO: button:has-text('Filtrar')
     console.log('[educadf.notas] 4/7 Clicando em Filtrar...');
     try {
-      await page.locator("button:has-text('Filtrar')").first().click({ timeout: 8000 });
+      // Tenta novo seletor primeiro (app-button-filtrar), depois fallback
+      const filtrarLoc = page.locator("app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first();
+      await filtrarLoc.click({ timeout: 8000 });
+
       await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() =>
         console.warn('[educadf.notas] domcontentloaded timeout após Filtrar — continuando...')
       );
@@ -2297,7 +2544,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     await session.delay(2000);
     await removerBackdrops(page);
 
-    const compNorm  = normStr(mapearDisciplina(plano.disciplina));
+    const compNorm  = normStr(mapearDisciplina(plano.disciplina, plano.disciplinaOficial));
     const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
     const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
     const fcEvs     = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
