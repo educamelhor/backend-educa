@@ -28,6 +28,19 @@ const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
+// Auto-migration: garante que a coluna semestre existe na tabela professor_vinculos
+(async () => {
+  try {
+    await pool.query(
+      "ALTER TABLE professor_vinculos ADD COLUMN IF NOT EXISTS semestre TINYINT DEFAULT NULL COMMENT '0/null=Anual, 1=1º Semestre, 2=2º Semestre'"
+    );
+  } catch (err) {
+    try {
+      await pool.query("ALTER TABLE professor_vinculos ADD COLUMN semestre TINYINT DEFAULT NULL");
+    } catch (e) {}
+  }
+})();
+
 // ────────────────────────────────────────────────
 // DigitalOcean Spaces (S3 compatível) — usado em PRODUÇÃO para persistir uploads
 // Mantém no banco o caminho relativo: /uploads/<APELIDO>/professores/<id>.<ext>
@@ -355,7 +368,7 @@ router.get("/", verificarEscola, async (req, res) => {
     if (profIds.length) {
       const ph = profIds.map(() => "?").join(",");
       const [vinRows] = await pool.query(
-        `SELECT pv.id, pv.professor_id, pv.turno, pv.disciplina_id, pv.aulas, pv.status AS vinculo_status,
+        `SELECT pv.id, pv.professor_id, pv.turno, pv.disciplina_id, pv.aulas, pv.semestre, pv.status AS vinculo_status,
                 d.nome AS disciplina_nome
            FROM professor_vinculos pv
            LEFT JOIN disciplinas d ON d.id = pv.disciplina_id
@@ -978,7 +991,7 @@ router.get("/por-cpf/:cpf", verificarEscola, async (req, res) => {
 
     // Busca vínculos atuais
     const [vinculos] = await pool.query(
-      `SELECT pv.id, pv.turno, pv.disciplina_id, pv.aulas, pv.status AS vinculo_status,
+      `SELECT pv.id, pv.turno, pv.disciplina_id, pv.aulas, pv.semestre, pv.status AS vinculo_status,
               d.nome AS disciplina_nome
          FROM professor_vinculos pv
          LEFT JOIN disciplinas d ON d.id = pv.disciplina_id
@@ -1303,9 +1316,11 @@ router.post("/", verificarEscola, async (req, res) => {
       disciplina_id = null,
       turno = null,
       aulas = 0,
+      semestre = null,
     } = req.body;
     const { escola_id } = req.user;
 
+    const semVal = semestre != null ? Number(semestre) : null;
     const cpfLimpo = String(cpf || "").replace(/\D/g, "");
 
     if (!cpfLimpo || cpfLimpo.length !== 11 || !nome) {
@@ -1349,9 +1364,9 @@ router.post("/", verificarEscola, async (req, res) => {
     // Se vieram dados de vínculo no body, cria o primeiro vínculo automaticamente
     if (disciplina_id && turno) {
       await pool.query(
-        `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
-         VALUES (?, ?, ?, ?, ?, 'ativo')`,
-        [novoProfId, escola_id, turno, disciplina_id, aulas || 0]
+        `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'ativo')`,
+        [novoProfId, escola_id, turno, disciplina_id, aulas || 0, semVal]
       ).catch(() => null); // Falha silenciosa: tabela pode não existir ainda
     }
 
@@ -1375,13 +1390,13 @@ router.post("/", verificarEscola, async (req, res) => {
 
 // ────────────────────────────────────────────────
 // POST: Adicionar vínculo a professor existente
-// Body: { turno, disciplina_id, aulas }
+// Body: { turno, disciplina_id, aulas, semestre }
 // ────────────────────────────────────────────────
 router.post("/:id/vinculos", verificarEscola, async (req, res) => {
   try {
     const profId = Number(req.params.id);
     const { escola_id } = req.user;
-    const { turno, disciplina_id, aulas = 0 } = req.body;
+    const { turno, disciplina_id, aulas = 0, semestre = null } = req.body;
 
     if (!turno || !disciplina_id) {
       return res.status(400).json({ message: "turno e disciplina_id são obrigatórios." });
@@ -1397,12 +1412,14 @@ router.post("/:id/vinculos", verificarEscola, async (req, res) => {
     );
     if (!prof) return res.status(404).json({ message: "Professor não encontrado." });
 
+    const semVal = semestre != null ? Number(semestre) : null;
+
     // Insere o vínculo
     await pool.query(
-      `INSERT INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
-       VALUES (?, ?, ?, ?, ?, 'ativo')
-       ON DUPLICATE KEY UPDATE aulas = VALUES(aulas), status = 'ativo'`,
-      [profId, escola_id, turno, disciplina_id, aulas]
+      `INSERT INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'ativo')
+       ON DUPLICATE KEY UPDATE aulas = VALUES(aulas), semestre = VALUES(semestre), status = 'ativo'`,
+      [profId, escola_id, turno, disciplina_id, aulas, semVal]
     );
 
     // Atualiza legado (compatibilidade com módulos que ainda leem professores.disciplina_id)
