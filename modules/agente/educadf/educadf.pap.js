@@ -2736,12 +2736,120 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     const alunosNaoEncontrados  = []; // dessincronização: está no EDUCA.MELHOR mas não no EDUCADF
     const alunosDesabilitados   = []; // ausentes: campo bloqueado pelo EDUCADF (sem presença no dia)
 
-    for (let c = 0; c < colunasParaExportar.length; c++) {
-      const colunaData = colunasParaExportar[c];
-      const targetColuna = colunaData.nomeColuna;
-      const alunos = colunaData.alunos || [];
+    // ── Detecta novo design (2026): inputs pa-nota com aria-label estruturado ──
+    const isNovoDesignNotas = await page.evaluate(() => {
+      return document.querySelectorAll('input.pa-nota, input[aria-label*="Nota de"]').length > 0;
+    });
 
-      console.log(`\n[educadf.notas] --- Iniciando preenchimento da coluna: "${targetColuna}" (${c+1}/${colunasParaExportar.length}) ---`);
+    if (isNovoDesignNotas) {
+      console.log('[educadf.notas] ✅ Novo design detectado: preenchimento direto por aria-label');
+
+      for (let c = 0; c < colunasParaExportar.length; c++) {
+        const colunaData = colunasParaExportar[c];
+        const targetColuna = colunaData.nomeColuna;
+        const alunos = colunaData.alunos || [];
+
+        console.log(`\n[educadf.notas] --- Preenchendo coluna: "${targetColuna}" (${c+1}/${colunasParaExportar.length}) ---`);
+
+        for (const aluno of alunos) {
+          if (aluno.nota === null || aluno.nota === undefined) {
+            console.log(`  → [${aluno.re || aluno.nome}] sem nota na coluna "${targetColuna}" — pulando`);
+            continue;
+          }
+
+          const notaStr = String(Number(aluno.nota).toFixed(1)).replace('.', ',');
+
+          const inputInfo = await page.evaluate(({ nome, re, colName, uid }) => {
+            const norm = s => String(s || '').toUpperCase().normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+            const nomeNorm = norm(nome);
+            const colNorm = norm(colName);
+            const inputs = [...document.querySelectorAll('input.pa-nota, input[aria-label*="Nota de"]')];
+
+            // 1. Match exato por aria-label ("Nota de [NOME] em [COLUNA]")
+            let target = inputs.find(inp => {
+              const lbl = norm(inp.getAttribute('aria-label') || '');
+              return lbl.includes(nomeNorm) && lbl.includes(colNorm);
+            });
+
+            // 2. Match por tokens do nome e da coluna
+            if (!target) {
+              const nomeTokens = nomeNorm.split(' ').filter(t => t.length > 2);
+              const colTokens = colNorm.split(' ').filter(t => t.length > 2);
+              target = inputs.find(inp => {
+                const lbl = norm(inp.getAttribute('aria-label') || '');
+                const hasNome = nomeTokens.length >= 2
+                  ? (lbl.includes(nomeTokens[0]) && lbl.includes(nomeTokens[nomeTokens.length - 1]))
+                  : (nomeTokens.length ? lbl.includes(nomeTokens[0]) : false);
+                const hasCol = colTokens.some(ct => lbl.includes(ct));
+                return hasNome && hasCol;
+              });
+            }
+
+            if (!target) return { ok: false, motivo: `input não encontrado para "${nome}" em "${colName}"` };
+            if (target.disabled || target.hasAttribute('disabled')) {
+              return { ok: false, disabled: true, motivo: `aluno ausente no dia (${colName})` };
+            }
+
+            target.setAttribute('data-notas-uid', uid);
+            return { ok: true, uid, ariaLabel: target.getAttribute('aria-label') };
+          }, {
+            nome: aluno.nome,
+            re: aluno.re,
+            colName: targetColuna,
+            uid: `nota-${c}-${aluno.re || aluno.nome.replace(/\s+/g, '_')}`
+          });
+
+          if (!inputInfo.ok) {
+            totalErros++;
+            if (inputInfo.disabled) {
+              alunosDesabilitados.push({ nome: aluno.nome, re: aluno.re });
+              console.warn(`  🚫 ${aluno.nome} → campo desabilitado (ausente no dia)`);
+            } else {
+              alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: inputInfo.motivo });
+              console.warn(`  ⚠️  ${aluno.nome} → ${inputInfo.motivo}`);
+            }
+            continue;
+          }
+
+          try {
+            const loc = page.locator(`[data-notas-uid="${inputInfo.uid}"]`);
+            await loc.scrollIntoViewIfNeeded().catch(() => {});
+            await loc.click({ clickCount: 3 });
+            await loc.pressSequentially(notaStr, { delay: 30 });
+            await page.keyboard.press('Tab');
+
+            await page.evaluate((uid) => {
+              const el = document.querySelector(`[data-notas-uid="${uid}"]`);
+              if (el) {
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+              }
+            }, inputInfo.uid);
+
+            await page.waitForTimeout(100);
+            totalPreenchidos++;
+            console.log(`  ✔ ${String(aluno.nome).padEnd(45)} nota=${notaStr}  [${targetColuna}]`);
+          } catch (e) {
+            totalErros++;
+            alunosNaoEncontrados.push({ nome: aluno.nome, re: aluno.re, motivo: e.message });
+            console.warn(`  ⚠️  ${aluno.nome} → Falha no fill: ${e.message}`);
+          }
+        } // fim loop alunos
+        await session.screenshot(`notas_07b_${targetColuna.replace(/[^a-z0-9]/gi, '_')}_preenchida`);
+      } // fim loop colunas
+    } else {
+      console.log('[educadf.notas] Design antigo detectado: preenchimento via tabela/colunaIdx');
+
+      for (let c = 0; c < colunasParaExportar.length; c++) {
+        const colunaData = colunasParaExportar[c];
+        const targetColuna = colunaData.nomeColuna;
+        const alunos = colunaData.alunos || [];
+
+        console.log(`\n[educadf.notas] --- Iniciando preenchimento da coluna: "${targetColuna}" (${c+1}/${colunasParaExportar.length}) ---`);
+
 
     // 7a. Descobre o índice td da coluna pelo alinhamento VISUAL (bounding rect)
     // ─ A tabela do EDUCADF tem thead com múltiplas linhas (datas + nomes),
@@ -2981,7 +3089,8 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     await session.screenshot(`notas_07b_${targetColuna.replace(/[^a-z0-9]/gi, '_')}_preenchida`);
 
-    } // FIM do loop de colunas
+    } // FIM do loop de colunas (design antigo)
+  } // FIM else (design antigo)
 
     // ── 7c. SALVAR — botão verde no canto inferior direito ─────────────────
     // O EDUCADF exige clicar "Salvar" após preencher as notas.
