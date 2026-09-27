@@ -443,15 +443,16 @@ router.post('/:id/exportar-notas', async (req, res) => {
       const [rows] = await db.query(`
         SELECT
           nd.item_idx,
+          nd.oportunidade_idx,
           a.codigo        AS re,
           a.estudante     AS nome,
-          MAX(nd.nota)    AS nota
+          nd.nota,
+          nd.cor
         FROM notas_diario nd
         JOIN alunos a ON a.id = nd.aluno_id
         WHERE nd.plano_id = ?
           AND nd.nota IS NOT NULL
           AND (a.status = 'ativo' OR a.status IS NULL)
-        GROUP BY nd.item_idx, a.id, a.codigo, a.estudante
       `, [planoId]);
       notasRaw = rows || [];
     } catch (e) {
@@ -460,28 +461,72 @@ router.post('/:id/exportar-notas', async (req, res) => {
 
     // Agrupa e soma as notas por "Atividade" (o nome da coluna consolidada no EDUCADF)
     const notasPorAtividade = {}; // { 'Caderno': { '1234': {re, nome, nota} } }
-    
-    for (const notaRaw of notasRaw) {
-      const itemDef = itens[notaRaw.item_idx];
-      if (!itemDef) continue;
-      
-      // CRÍTICO: usar o mesmo fallback da Etapa 1 (itensComDataMap linha 192).
-      // Etapa 1 cria a coluna no EDUCADF com: atividade || tipo_avaliacao || 'Avaliação Bimestral'
-      // Etapa 2 DEVE usar o mesmo fallback para encontrar a coluna pelo nome correto no EDUCADF.
-      const atividadeNome = (itemDef.atividade || itemDef.tipo_avaliacao || 'Avaliação Bimestral').trim();
-      if (!notasPorAtividade[atividadeNome]) {
-         notasPorAtividade[atividadeNome] = {};
+
+    const notasMap = {};
+    for (const r of notasRaw) {
+      const alunoKey = String(r.re || r.nome);
+      if (!notasMap[alunoKey]) {
+        notasMap[alunoKey] = {
+          re: String(r.re || ''),
+          nome: String(r.nome || ''),
+          itens: {}
+        };
       }
-      
-      const alunoKey = String(notaRaw.re || notaRaw.nome);
-      if (!notasPorAtividade[atividadeNome][alunoKey]) {
-         notasPorAtividade[atividadeNome][alunoKey] = {
-            re: String(notaRaw.re || ''),
-            nome: String(notaRaw.nome || ''),
+      if (!notasMap[alunoKey].itens[r.item_idx]) {
+        notasMap[alunoKey].itens[r.item_idx] = {};
+      }
+      notasMap[alunoKey].itens[r.item_idx][r.oportunidade_idx] = {
+        nota: Number(r.nota),
+        cor: r.cor
+      };
+    }
+
+    for (const [alunoKey, alunoData] of Object.entries(notasMap)) {
+      itens.forEach((itemDef, itemIdx) => {
+        const itemNotas = alunoData.itens[itemIdx];
+        if (!itemNotas) return;
+
+        const atividadeNome = (itemDef.atividade || itemDef.tipo_avaliacao || 'Avaliação Bimestral').trim();
+        if (!notasPorAtividade[atividadeNome]) {
+          notasPorAtividade[atividadeNome] = {};
+        }
+
+        const freq = Number(itemDef.oportunidades) || 1;
+        let totalItem = 0;
+
+        for (let opIdx = 0; opIdx < freq; opIdx++) {
+          const entryOrig = itemNotas[opIdx];
+          const isAusente = entryOrig?.cor === "ausente";
+          const numOrig = (!isAusente && entryOrig && !isNaN(entryOrig.nota)) ? entryOrig.nota : null;
+
+          const rcOpIdx = freq > 1 ? 100 + opIdx : 1;
+          const entryRC = itemNotas[rcOpIdx] || (freq === 1 ? itemNotas[100] : null);
+          const numRC = (entryRC && !isNaN(entryRC.nota)) ? entryRC.nota : null;
+
+          const rcpOpIdx = freq > 1 ? 200 + opIdx : 2;
+          const entryRCp = itemNotas[rcpOpIdx] || (freq === 1 ? itemNotas[200] : null);
+          const numRCp = (entryRCp && !isNaN(entryRCp.nota)) ? entryRCp.nota : null;
+
+          if (isAusente) {
+            if (numRCp !== null) totalItem += numRCp;
+            continue;
+          }
+
+          const candidatos = [numOrig, numRC, numRCp].filter(n => n !== null);
+          if (candidatos.length > 0) {
+            totalItem += Math.max(...candidatos);
+          }
+        }
+
+        if (!notasPorAtividade[atividadeNome][alunoKey]) {
+          notasPorAtividade[atividadeNome][alunoKey] = {
+            re: alunoData.re,
+            nome: alunoData.nome,
             nota: 0
-         };
-      }
-      notasPorAtividade[atividadeNome][alunoKey].nota += Number(notaRaw.nota);
+          };
+        }
+        notasPorAtividade[atividadeNome][alunoKey].nota += totalItem;
+      });
     }
 
     const colunas = Object.keys(notasPorAtividade).map(nomeColuna => {

@@ -1212,7 +1212,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
 
     // 1) Buscar o plano
     const [[plano]] = await conn.query(
-      "SELECT id, disciplina, bimestre, ano, escola_id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
+      "SELECT id, disciplina, bimestre, ano, escola_id, status, itens FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
       [planoId, escola_id]
     );
     if (!plano) {
@@ -1266,19 +1266,87 @@ router.post("/:id/exportar-boletim", async (req, res) => {
 
     const ano = plano.ano || new Date().getFullYear();
 
-    // 5) Buscar totais por aluno a partir de notas_diario (considera a maior nota entre original e RC por item)
-    const [totais] = await conn.query(
-      `SELECT aluno_id, SUM(nota_item) AS total
-       FROM (
-         SELECT aluno_id, item_idx, MAX(nota) AS nota_item
-         FROM notas_diario
-         WHERE plano_id = ? AND turma_id = ? AND escola_id = ?
-         GROUP BY aluno_id, item_idx
-       ) t
-       GROUP BY aluno_id
-       HAVING total IS NOT NULL`,
+    // 5) Buscar totais por aluno a partir de notas_diario (calcula somatória de todas as subdivisões e maior nota entre original e RC/RCp)
+    const [rowsNotas] = await conn.query(
+      `SELECT aluno_id, item_idx, oportunidade_idx, nota, cor
+       FROM notas_diario
+       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?`,
       [planoId, turma_id, escola_id]
     );
+
+    if (rowsNotas.length === 0) {
+      conn.release();
+      return res.status(400).json({ error: "Nenhuma nota encontrada no diário para exportar." });
+    }
+
+    const arrItens = Array.isArray(plano.itens) ? plano.itens : JSON.parse(plano.itens || "[]");
+
+    const notasPorAluno = {};
+    for (const r of rowsNotas) {
+      if (!notasPorAluno[r.aluno_id]) notasPorAluno[r.aluno_id] = {};
+      notasPorAluno[r.aluno_id][`${r.item_idx}_${r.oportunidade_idx}`] = {
+        nota: Number(r.nota),
+        cor: r.cor
+      };
+    }
+
+    const totais = [];
+    for (const [alunoIdStr, mapaNotas] of Object.entries(notasPorAluno)) {
+      const aluno_id = parseInt(alunoIdStr, 10);
+      let totalRegular = 0;
+      let totalExtra = 0;
+
+      arrItens.forEach((item, itemIdx) => {
+        const isExtra = !!item.ponto_extra || !!item.eh_ponto_extra || item.tipo_avaliacao === "Ponto Extra";
+
+        if (item.fixo_direcao) {
+          const entry = mapaNotas[`${itemIdx}_0`];
+          if (entry && !isNaN(entry.nota)) {
+            totalRegular += entry.nota;
+          }
+          return;
+        }
+
+        if (isExtra) {
+          const entry = mapaNotas[`${itemIdx}_0`];
+          if (entry && !isNaN(entry.nota)) {
+            totalExtra += entry.nota;
+          }
+          return;
+        }
+
+        const freq = Number(item.oportunidades) || 1;
+        for (let opIdx = 0; opIdx < freq; opIdx++) {
+          const entryOrig = mapaNotas[`${itemIdx}_${opIdx}`];
+          const isAusente = entryOrig?.cor === "ausente";
+          const numOrig = (!isAusente && entryOrig && !isNaN(entryOrig.nota)) ? entryOrig.nota : null;
+
+          const rcOpIdx = freq > 1 ? 100 + opIdx : 1;
+          const entryRC = mapaNotas[`${itemIdx}_${rcOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_100`] : null);
+          const numRC = (entryRC && !isNaN(entryRC.nota)) ? entryRC.nota : null;
+
+          const rcpOpIdx = freq > 1 ? 200 + opIdx : 2;
+          const entryRCp = mapaNotas[`${itemIdx}_${rcpOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_200`] : null);
+          const numRCp = (entryRCp && !isNaN(entryRCp.nota)) ? entryRCp.nota : null;
+
+          if (isAusente) {
+            if (numRCp !== null) {
+              totalRegular += numRCp;
+            }
+            continue;
+          }
+
+          const candidatos = [numOrig, numRC, numRCp].filter(n => n !== null);
+          if (candidatos.length > 0) {
+            totalRegular += Math.max(...candidatos);
+          }
+        }
+      });
+
+      let totalFinal = totalRegular + totalExtra;
+      if (totalFinal > 10) totalFinal = 10;
+      totais.push({ aluno_id, total: totalFinal });
+    }
 
     if (totais.length === 0) {
       conn.release();
