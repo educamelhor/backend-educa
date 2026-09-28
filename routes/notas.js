@@ -474,6 +474,73 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /turmas/:turmaId/media-anual?ano=2026
+// Retorna a média anual acumulada de todos os alunos da turma por disciplina.
+// Regra: soma de todas as notas lançadas no ano dividida por 4 (disciplinas anuais).
+// ---------------------------------------------------------------------------
+router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => {
+  try {
+    const escola_id = req.user?.escola_id;
+    const { turmaId } = req.params;
+    const ano = parseInt(req.query.ano) || new Date().getFullYear();
+
+    console.log(`[media-anual] escola_id=${escola_id}, turmaId=${turmaId}, ano=${ano}`);
+
+    // 1) Alunos matriculados na turma (ordenados por nome)
+    const [alunos] = await db.query(
+      `SELECT DISTINCT a.id, a.estudante AS nome, a.codigo
+       FROM matriculas m
+       JOIN alunos a ON a.id = m.aluno_id
+       WHERE m.turma_id = ? AND m.escola_id = ? AND m.ano_letivo = ?
+       ORDER BY a.estudante`,
+      [turmaId, escola_id, ano]
+    );
+
+    const alunoIds = alunos.map(a => a.id);
+    if (alunoIds.length === 0) {
+      return res.json({ ok: true, alunos: [], disciplinas: [], medias: {} });
+    }
+
+    // 2) Média anual por aluno e disciplina (soma de notas no ano / 4)
+    const placeholders = alunoIds.map(() => "?").join(",");
+    const [rows] = await db.query(
+      `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina,
+              ROUND(SUM(n.nota) / 4.0, 1) AS media
+       FROM notas n
+       JOIN disciplinas d ON d.id = n.disciplina_id
+       WHERE n.aluno_id IN (${placeholders})
+         AND n.ano = ?
+       GROUP BY n.aluno_id, n.disciplina_id, d.nome
+       ORDER BY d.nome`,
+      [...alunoIds, ano]
+    );
+
+    // 3) Montar lista de disciplinas únicas
+    const discMap = new Map();
+    for (const r of rows) {
+      if (!discMap.has(r.disciplina_id)) {
+        discMap.set(r.disciplina_id, {
+          id: r.disciplina_id,
+          nome: r.disciplina,
+        });
+      }
+    }
+    const disciplinas = [...discMap.values()];
+
+    // 4) Montar mapa de médias: { "alunoId_disciplinaId": media }
+    const mediasMap = {};
+    for (const r of rows) {
+      mediasMap[`${r.aluno_id}_${r.disciplina_id}`] = Number(r.media);
+    }
+
+    return res.json({ ok: true, alunos, disciplinas, medias: mediasMap });
+  } catch (err) {
+    console.error("[media-anual] Erro:", err.message);
+    return res.status(500).json({ ok: false, error: "Erro ao carregar média anual." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /mapa-nota/flag
 // Toggle de flag amarelo (não destaque) por professor/aluno/disciplina/bimestre/ano.
 // O professor só pode flagear disciplinas que ele próprio leciona na turma.
