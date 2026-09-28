@@ -92,32 +92,52 @@ async function buscarNomeProfessor(db, planoId, fallbackUsuarioId) {
   return '';
 }
 
-// ── Helper: extrai termo de busca limpo para a escola no EDUCADF ─────────────
-function extrairTermoBuscaEscola(nomeEscola, apelidoEscola) {
-  const apelidoNorm = String(apelidoEscola || '').trim().toUpperCase();
-  if (apelidoNorm === 'POMPS' || apelidoNorm.includes('POMP')) return 'POMPÍLIO';
-  if (apelidoNorm.includes('04') || apelidoNorm.includes('CEF04') || apelidoNorm.includes('CEF 04')) return '04 DE PLANALTINA';
+const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
 
-  if (!nomeEscola) return apelidoNorm || '';
-  const limpo = String(nomeEscola).trim().toUpperCase();
-  
-  // Se contiver número e localidade (ex: '04 DE PLANALTINA', 'CEF 04 DE PLANALTINA')
-  const matchNum = limpo.match(/\b0?\d+\s+DE\s+[A-Z]+/i);
-  if (matchNum) return matchNum[0].trim();
-
-  // Remove termos genéricos de início
-  const semGenericos = limpo
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/^CENTRO\s+(DE\s+)?(ENSINO\s+)?(FUNDAMENTAL|MEDIO|EDUCACIONAL)?\s*/i, '')
-    .replace(/^ESCOLA\s+(CLASSE|FUNDAMENTAL)?\s*/i, '')
-    .replace(/^COL[EÉ]GIO\s*/i, '')
-    .trim();
-  
-  const palavras = semGenericos.split(/\s+/).filter(w => w.length > 2);
-  return palavras[0] || limpo.substring(0, 15);
+// ── Funções Auxiliares do Agente ──────────────────────────────────────────────
+async function lerConfigAgente(db, escolaId) {
+  const chaves = [
+    'agente.educadf.escola_nome_busca',
+    'agente.educadf.escola_nome_oficial',
+    'agente.educadf.calendario_map',
+  ];
+  const [rows] = await db.query(
+    `SELECT chave, valor FROM configuracoes_escola WHERE escola_id = ? AND chave IN (?)`,
+    [escolaId, chaves]
+  );
+  const cfg = Object.fromEntries(rows.map(r => [r.chave, r.valor]));
+  return {
+    escolaNomeBusca:   cfg['agente.educadf.escola_nome_busca'] || '',
+    escolaNomeOficial: cfg['agente.educadf.escola_nome_oficial'] || '',
+    calendarioMap:     cfg['agente.educadf.calendario_map'] ? JSON.parse(cfg['agente.educadf.calendario_map']) : {
+      bimestral: { '1': 3, '2': 5, '3': 8, '4': 10 },
+      semestral: { '1': 4, '2': 9 }
+    },
+  };
 }
 
-const PERFIL_MAP = { 1: 'professor', 2: 'secretario', 3: 'diretor' };
+const MAX_TENTATIVAS_PORTAL = 3;
+const DELAY_RETRY_PORTAL_MS = [15_000, 30_000, 60_000];
+
+async function executarComRetry(db, planoId, msgPrefix, fn) {
+  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS_PORTAL; tentativa++) {
+    const resultado = await fn();
+    if (resultado.ok || !['PORTAL_INDISPONIVEL', 'PORTAL_TIMEOUT', 'TIMEOUT_LOGIN'].includes(resultado.errorCode)) {
+      return resultado;
+    }
+    if (tentativa < MAX_TENTATIVAS_PORTAL) {
+      const delay = DELAY_RETRY_PORTAL_MS[tentativa - 1];
+      console.log(`[agente-planos] ${msgPrefix} Portal instável (tentativa ${tentativa}/${MAX_TENTATIVAS_PORTAL}). Aguardando ${delay/1000}s...`);
+      await db.query(
+        `UPDATE planos_avaliacao SET agente_ultimo_erro = ? WHERE id = ?`,
+        [`Portal instável. Tentativa ${tentativa}/${MAX_TENTATIVAS_PORTAL}. Retentando em ${delay/1000}s.`, planoId]
+      ).catch(() => {});
+      await new Promise(r => setTimeout(r, delay));
+    } else {
+      return resultado;
+    }
+  }
+}
 
 // ============================================================================
 // POST /api/agente-planos/:id/exportar-estrutura
@@ -213,34 +233,41 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     // Monta array de itens com data resolvida (data_inicio do banco ou fallback por bimestre)
     // E deduplica por nome da atividade para garantir que sub-divisões do PAP não criem colunas duplicadas
     const itensComDataMap = new Map();
-    itens.forEach(item => {
+    itens.forEach((item, index) => {
       // CRÍTICO: o nomeAtividade aqui é a CHAVE de deduplicação, e é o nome que será
       // enviado ao Playwright da Etapa 1 para criar a coluna no EDUCADF.
       // A Etapa 2 deve usar o mesmo fallback para encontrar a coluna pelo nome.
-      const nomeAtividade = (item.atividade || item.tipo_avaliacao || 'Avaliação Bimestral').trim();
-      if (!itensComDataMap.has(nomeAtividade)) {
-        let dataResolvida = item.data_inicio;
-        
-        if (!dataResolvida) {
-          if (item.fixo_direcao && dataGabaritoSecundario) {
-             dataResolvida = dataGabaritoSecundario;
-             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback secundário gabarito: ${dataResolvida}`);
-          } else {
-             dataResolvida = dataFallback;
-             console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback genérico: ${dataResolvida}`);
-          }
-        }
-
-        itensComDataMap.set(nomeAtividade, {
-          atividade:      nomeAtividade,
-          tipo_avaliacao: item.tipo_avaliacao,
-          data_inicio:    dataResolvida,
-          data:           dataResolvida,
-          descricao:      item.descricao,
-          nota_total:     item.nota_total,
-          fixo_direcao:   !!item.fixo_direcao,
-        });
+      let nomeBase = (item.atividade || '').trim();
+      if (!nomeBase) {
+        nomeBase = item.tipo_avaliacao ? `${item.tipo_avaliacao} (${index + 1})` : `Avaliação ${index + 1}`;
       }
+      let nomeAtividade = nomeBase;
+      let sufixo = 2;
+      while (itensComDataMap.has(nomeAtividade)) {
+        nomeAtividade = `${nomeBase} ${sufixo++}`;
+      }
+
+      let dataResolvida = item.data_inicio;
+      
+      if (!dataResolvida) {
+        if (item.fixo_direcao && dataGabaritoSecundario) {
+           dataResolvida = dataGabaritoSecundario;
+           console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback secundário gabarito: ${dataResolvida}`);
+        } else {
+           dataResolvida = dataFallback;
+           console.log(`[agente-planos] item "${nomeAtividade}": data_inicio null   fallback genérico: ${dataResolvida}`);
+        }
+      }
+
+      itensComDataMap.set(nomeAtividade, {
+        atividade:      nomeAtividade,
+        tipo_avaliacao: item.tipo_avaliacao,
+        data_inicio:    dataResolvida,
+        data:           dataResolvida,
+        descricao:      item.descricao,
+        nota_total:     item.nota_total,
+        fixo_direcao:   !!item.fixo_direcao,
+      });
     });
     const itensComData = Array.from(itensComDataMap.values());
 
@@ -263,55 +290,35 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
-    // Busca dados da escola para Unidade Escolar no EDUCADF
-    let escolaNome = '';
-    let escolaApelido = '';
-    let escolaBusca = '';
-    try {
-      const [[escolaDb]] = await db.query(
-        'SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1',
-        [escolaId]
-      );
-      if (escolaDb) {
-        escolaNome = escolaDb.nome || '';
-        escolaApelido = escolaDb.apelido || '';
-        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome, escolaDb.apelido);
-      }
-    } catch (e) {
-      console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
-    }
+    // Busca o nome oficial da turma mapeado pela Secretaria
+    const [[turmaDb]] = await db.query(
+      'SELECT nome_oficial, regime FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.turmas, escolaId]
+    );
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    const regimeTurma = turmaDb?.regime || 'anual';
 
-    // Busca o nome oficial da turma mapeado pela Secretaria (respeita turno se informado)
-    let turmaOficial = plano.turmas;
-    try {
-      const [turmasDb] = await db.query(
-        `SELECT nome_oficial, turno FROM turmas 
-         WHERE escola_id = ? 
-           AND (
-             nome = ? 
-             OR REPLACE(REPLACE(nome, 'º', ''), '°', '') = REPLACE(REPLACE(?, 'º', ''), '°', '')
-           )
-         ORDER BY (turno <=> ?) DESC, id ASC`,
-        [escolaId, plano.turmas, plano.turmas, plano.turno || null]
-      );
-      if (turmasDb?.[0]?.nome_oficial) {
-        turmaOficial = turmasDb[0].nome_oficial;
-      }
-    } catch (e) {
-      console.warn('[agente-planos] Falha ao buscar nome_oficial da turma:', e.message);
-    }
+    // Busca nome oficial da disciplina
+    const [[discDb]] = await db.query(
+      'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.disciplina, escolaId]
+    );
+    const disciplinaOficial = discDb?.nome_oficial || plano.disciplina;
+
+    const configAgente = await lerConfigAgente(db, escolaId);
 
     const dadosPlano = {
-      turmas:        plano.turmas,
-      turmaOficial:  turmaOficial,
-      disciplina:    plano.disciplina,
-      bimestre:      plano.bimestre,
-      ano:           plano.ano,
+      turmas:            plano.turmas,
+      turmaOficial:      turmaOficial,
+      disciplina:        plano.disciplina,
+      disciplinaOficial: disciplinaOficial,
+      bimestre:          plano.bimestre,
+      ano:               plano.ano,
       professorNome,
-      escolaNome,
-      escolaApelido,
-      escolaBusca,
-      itens:         itensComData,      // array completo — todos os itens do professor
+      itens:             itensComData,
+      escola:            { nomeBusca: configAgente.escolaNomeBusca, nomeOficial: configAgente.escolaNomeOficial },
+      calendarioMap:     configAgente.calendarioMap,
+      regimeTurma:       regimeTurma
     };
 
     // ── 5. SET lock + resposta imediata 202 ──────────────────────────────────
@@ -323,17 +330,20 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       let resultado;
       try {
         console.log(`[agente-planos] ▶ Estrutura plano=${planoId} | ${plano.turmas} | ${plano.bimestre}`);
-        resultado = await EducaDFBrowser.withSession(
-          async (session) => exportarPAPEducaDF(
-            session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
-          ),
-          { escolaId, professorId: usuarioId, headless: true }
-        );
+        resultado = await executarComRetry(db, planoId, 'Estrutura', async () => {
+          return await EducaDFBrowser.withSession(
+            async (session) => exportarPAPEducaDF(
+              session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
+            ),
+            { escolaId, professorId: usuarioId, headless: true }
+          );
+        });
 
-        const sucesso = resultado.ok || resultado.errorCode === 'JA_EXISTE';
-        const resultVal = resultado.errorCode === 'JA_EXISTE' ? 'JA_EXISTIA' : 'CRIADO';
+        const totalEsperado = dadosPlano.itens.length;
+        const totalConfirmado = (resultado.totalCriados || 0) + (resultado.totalJaExistia || 0);
+        const migracaoCompleta = resultado.ok && (totalConfirmado === totalEsperado);
 
-        if (sucesso) {
+        if (migracaoCompleta) {
           // UPDATE primário: sempre funciona (colunas garantidas)
           await db.query(
             `UPDATE planos_avaliacao
@@ -344,23 +354,22 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
             [planoId]
           ).catch(e => console.warn('[agente-planos] UPDATE estrutura (base):', e.message));
 
-          // UPDATE secundário: tenta gravar resultado (coluna pode não existir ainda)
           db.query(
-            `UPDATE planos_avaliacao SET agente_exportado_resultado = ? WHERE id = ?`,
-            [resultVal, planoId]
-          ).catch(() => {/* coluna agente_exportado_resultado ainda não existe — ignorar */});
+            `UPDATE planos_avaliacao SET agente_exportado_resultado = 'CRIADO' WHERE id = ?`,
+            [planoId]
+          ).catch(() => {});
 
-          console.log(`[agente-planos] ✅ Estrutura plano=${planoId} (${resultVal})`);
+          console.log(`[agente-planos] ✅ Estrutura plano=${planoId} (Completa: ${totalConfirmado}/${totalEsperado})`);
         } else {
-          const erroMsg = (resultado.message || 'Erro desconhecido no agente').substring(0, 500);
+          let erroMsg = (resultado.message || 'Erro desconhecido no agente').substring(0, 500);
+          if (resultado.ok && totalConfirmado < totalEsperado) {
+             erroMsg = `Migração parcial: ${totalConfirmado}/${totalEsperado} procedimento(s) confirmado(s) no EDUCADF.`;
+          }
           // Grava mensagem de erro para exibição ao usuário
           await db.query(
             `UPDATE planos_avaliacao SET agente_executando_desde = NULL, agente_ultimo_erro = ? WHERE id = ?`,
             [erroMsg, planoId]
-          ).catch(async () => {
-            // Coluna pode não existir ainda — tenta só limpar lock
-            await clearLock(db, planoId);
-          });
+          ).catch(async () => { await clearLock(db, planoId); });
           console.warn(`[agente-planos] ❌ Estrutura plano=${planoId}: ${erroMsg}`);
         }
 
@@ -568,55 +577,35 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
 
-    // Busca dados da escola para Unidade Escolar no EDUCADF
-    let escolaNome = '';
-    let escolaApelido = '';
-    let escolaBusca = '';
-    try {
-      const [[escolaDb]] = await db.query(
-        'SELECT nome, apelido FROM escolas WHERE id = ? LIMIT 1',
-        [escolaId]
-      );
-      if (escolaDb) {
-        escolaNome = escolaDb.nome || '';
-        escolaApelido = escolaDb.apelido || '';
-        escolaBusca = extrairTermoBuscaEscola(escolaDb.nome, escolaDb.apelido);
-      }
-    } catch (e) {
-      console.warn('[agente-planos] Falha ao buscar nome da escola:', e.message);
-    }
+    // Busca o nome oficial da turma mapeado pela Secretaria
+    const [[turmaDb]] = await db.query(
+      'SELECT nome_oficial, regime FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.turmas, escolaId]
+    );
+    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    const regimeTurma = turmaDb?.regime || 'anual';
 
-    // Busca o nome oficial da turma mapeado pela Secretaria (respeita turno se informado)
-    let turmaOficial = plano.turmas;
-    try {
-      const [turmasDb] = await db.query(
-        `SELECT nome_oficial, turno FROM turmas 
-         WHERE escola_id = ? 
-           AND (
-             nome = ? 
-             OR REPLACE(REPLACE(nome, 'º', ''), '°', '') = REPLACE(REPLACE(?, 'º', ''), '°', '')
-           )
-         ORDER BY (turno <=> ?) DESC, id ASC`,
-        [escolaId, plano.turmas, plano.turmas, plano.turno || null]
-      );
-      if (turmasDb?.[0]?.nome_oficial) {
-        turmaOficial = turmasDb[0].nome_oficial;
-      }
-    } catch (e) {
-      console.warn('[agente-planos] Falha ao buscar nome_oficial da turma:', e.message);
-    }
+    // Busca nome oficial da disciplina
+    const [[discDb]] = await db.query(
+      'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      [plano.disciplina, escolaId]
+    );
+    const disciplinaOficial = discDb?.nome_oficial || plano.disciplina;
+
+    const configAgente = await lerConfigAgente(db, escolaId);
 
     const dadosPlano = {
-      turmas:        plano.turmas,
-      turmaOficial:  turmaOficial,
-      disciplina:    plano.disciplina,
-      bimestre:      plano.bimestre,
-      ano:           plano.ano,
+      turmas:            plano.turmas,
+      turmaOficial:      turmaOficial,
+      disciplina:        plano.disciplina,
+      disciplinaOficial: disciplinaOficial,
+      bimestre:          plano.bimestre,
+      ano:               plano.ano,
       professorNome,
-      escolaNome,
-      escolaApelido,
-      escolaBusca,
-      colunas:       colunas,
+      colunas:           colunas,
+      escola:            { nomeBusca: configAgente.escolaNomeBusca, nomeOficial: configAgente.escolaNomeOficial },
+      calendarioMap:     configAgente.calendarioMap,
+      regimeTurma:       regimeTurma
     };
 
     // ── 6. SET lock + resposta imediata 202 ──────────────────────────────────
@@ -628,12 +617,14 @@ router.post('/:id/exportar-notas', async (req, res) => {
       let resultado;
       try {
         console.log(`[agente-planos] ▶ Notas plano=${planoId} | ${plano.turmas} | ${colunas.length} colunas mapeadas`);
-        resultado = await EducaDFBrowser.withSession(
-          async (session) => exportarNotasEducaDF(
-            session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
-          ),
-          { escolaId, professorId: usuarioId, headless: true }
-        );
+        resultado = await executarComRetry(db, planoId, 'Notas', async () => {
+          return await EducaDFBrowser.withSession(
+            async (session) => exportarNotasEducaDF(
+              session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
+            ),
+            { escolaId, professorId: usuarioId, headless: true }
+          );
+        });
 
         if (resultado.ok) {
           // UPDATE primário: sempre funciona

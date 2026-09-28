@@ -118,7 +118,7 @@ async function syncFromCeoTemplate(db, escolaId) {
 // ── Guard: perfil deve ser diretor ou vice_diretor ──
 function guardDiretor(req, res, next) {
   const perfil = String(req.headers["x-perfil"] || "").toLowerCase().trim();
-  if (perfil === "diretor" || perfil === "vice_diretor") {
+  if (perfil === "diretor" || perfil === "vice_diretor" || perfil === "coordenador_pedagogico") {
     return next();
   }
   return res.status(403).json({

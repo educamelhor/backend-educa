@@ -668,13 +668,16 @@ router.post("/", async (req, res) => {
           mapaAtual[ia.id] = ia.atividade;
         }
 
-        // IDs dos itens que vêm do frontend
-        const idsFrontend = itens.filter(i => i.id).map(i => i.id);
+        // IDs e Nomes dos itens que vêm do frontend
+        const idsFrontend = new Set(itens.filter(i => i.id).map(i => i.id));
+        const atividadesFrontend = new Set(itens.map(i => (i.atividade || '').trim().toLowerCase()));
 
         // Itens do banco que o professor quer remover
-        const itensParaRemover = itensAtuais.filter(
-          ia => !idsFrontend.includes(ia.id)
-        );
+        const itensParaRemover = itensAtuais.filter(ia => {
+          if (idsFrontend.has(ia.id)) return false;
+          if (atividadesFrontend.has((ia.atividade || '').trim().toLowerCase())) return false;
+          return true;
+        });
 
         // Bloqueia remoção de itens que já têm notas lançadas
         for (const itemRemover of itensParaRemover) {
@@ -701,9 +704,13 @@ router.post("/", async (req, res) => {
 
         // UPSERT: atualiza existentes, insere novos
         for (const item of itens) {
-          const itemId = item.id;
+          const itemNome = (item.atividade || '').trim().toLowerCase();
+          const itemBanco = itensAtuais.find(ia => 
+            ia.id === item.id || 
+            (ia.atividade || '').trim().toLowerCase() === itemNome
+          );
 
-          if (itemId && mapaAtual[itemId]) {
+          if (itemBanco) {
             // Atualiza o item existente (preserva ID => preserva integridade das notas)
             await conn.query(
               `UPDATE itens_avaliacao
@@ -727,7 +734,7 @@ router.post("/", async (req, res) => {
                 item.nota_invertida || 0,
                 item.descricao || null,
                 item.fixo_direcao ? 1 : 0,
-                itemId,
+                itemBanco.id,
               ]
             );
           } else {

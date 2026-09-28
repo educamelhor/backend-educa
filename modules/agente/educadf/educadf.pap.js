@@ -911,6 +911,8 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
       return tag.includes('date') || tag.includes('calendar') || tag.includes('picker');
     }).map(el => el.tagName.toLowerCase()).filter((v, i, a) => a.indexOf(v) === i);
 
+    const isFlatpickr = !!modal.querySelector('.flatpickr-input') || (dateInp?.className || '').includes('flatpickr') || !!dateInp?._flatpickr;
+
     return {
       dateInputValue: dateInp?.value || 'not-found',
       dateInputType: dateInp?.type || 'unknown',
@@ -918,78 +920,83 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
       toggleBtn: toggleInfo,
       dpAlreadyExists: dpExists,
       dateComponents: dateComponents.join(', ') || 'nenhum',
+      isFlatpickr,
     };
   });
   console.log('[educadf.pap] calendario diagnostico:', JSON.stringify(diagnostico));
 
-  // ── PASSO 2: Tenta abrir o popup do datepicker ───────────────────────────
-  const popupAberto = await page.evaluate(() => {
-    const modal = document.querySelector('ngb-modal-window');
-    if (!modal) return 'modal-not-found';
+  if (!diagnostico.isFlatpickr) {
+    // ── PASSO 2: Tenta abrir o popup do datepicker (legado ngb-datepicker) ────
+    const popupAberto = await page.evaluate(() => {
+      const modal = document.querySelector('ngb-modal-window');
+      if (!modal) return 'modal-not-found';
 
-    const allInputs = [...modal.querySelectorAll('input')];
-    const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
-    if (!dateInp) return 'date-input-not-found';
+      const allInputs = [...modal.querySelectorAll('input')];
+      const dateInp = allInputs.find(inp => /\d{1,2}\s+\w{3}/.test(inp.value || ''));
+      if (!dateInp) return 'date-input-not-found';
 
-    // Estratégia A: clicar no botão de toggle (ícone calendário)
-    const parent = dateInp.closest('.input-group') || dateInp.parentElement;
-    if (parent) {
-      // Tenta encontrar o toggle via atributo Angular
-      let toggle = parent.querySelector('[ngbDatepickerToggle] button, button[ngbDatepickerToggle]');
-      // Tenta via ícone de calendário
-      if (!toggle) {
-        const allBtns = [...parent.querySelectorAll('button')];
-        toggle = allBtns.find(b => {
-          const icon = b.querySelector('i, span, svg');
-          if (!icon) return false;
-          const cls = (icon.className || '') + ' ' + (b.className || '');
-          return cls.includes('calendar') || cls.includes('datepicker');
-        });
-      }
-      // Tenta qualquer botão no input-group-append
-      if (!toggle) {
-        toggle = parent.querySelector('.input-group-append button, .input-group-text');
-      }
-      if (toggle) {
-        toggle.scrollIntoView({ block: 'center' });
-        toggle.click();
-        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return 'toggle-clicado:' + toggle.tagName + '.' + toggle.className;
-      }
-    }
-
-    // Estratégia B: clicar no próprio input (pode funcionar em alguns setups)
-    dateInp.focus();
-    dateInp.click();
-    dateInp.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    // Estratégia C: simular Escape + re-focus (some datepickers toggle on focus)
-    return 'input-clicado:' + dateInp.value;
-  });
-  console.log('[educadf.pap] calendario: tentativa abertura -> ' + popupAberto);
-  await page.waitForTimeout(1000);
-
-  // ── PASSO 3: Verifica se ngb-datepicker apareceu no document ─────────────
-  let calPopupOk = false;
-  for (let attempt = 0; attempt < 3 && !calPopupOk; attempt++) {
-    calPopupOk = await page.evaluate(() => !!document.querySelector('ngb-datepicker'));
-    if (!calPopupOk) {
-      console.warn('[educadf.pap] calendario: popup nao apareceu (tentativa ' + (attempt+1) + '/3)');
-      // Tenta novamente: click do Playwright com force no input ou button
-      try {
-        const toggle = page.locator('ngb-modal-window .input-group button, ngb-modal-window .input-group-append button').first();
-        if (await toggle.count() > 0) {
-          await toggle.click({ force: true, timeout: 2000 }).catch(() => {});
+      // Estratégia A: clicar no botão de toggle (ícone calendário)
+      const parent = dateInp.closest('.input-group') || dateInp.parentElement;
+      if (parent) {
+        // Tenta encontrar o toggle via atributo Angular
+        let toggle = parent.querySelector('[ngbDatepickerToggle] button, button[ngbDatepickerToggle]');
+        // Tenta via ícone de calendário
+        if (!toggle) {
+          const allBtns = [...parent.querySelectorAll('button')];
+          toggle = allBtns.find(b => {
+            const icon = b.querySelector('i, span, svg');
+            if (!icon) return false;
+            const cls = (icon.className || '') + ' ' + (b.className || '');
+            return cls.includes('calendar') || cls.includes('datepicker');
+          });
         }
-      } catch {}
-      await page.waitForTimeout(600);
-    }
-  }
+        // Tenta qualquer botão no input-group-append
+        if (!toggle) {
+          toggle = parent.querySelector('.input-group-append button, .input-group-text');
+        }
+        if (toggle) {
+          toggle.scrollIntoView({ block: 'center' });
+          toggle.click();
+          toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return 'toggle-clicado:' + toggle.tagName + '.' + toggle.className;
+        }
+      }
 
-  // ── Se o popup abriu, usa navegação por calendário (estratégia visual) ────
-  if (calPopupOk) {
-    console.log('[educadf.pap] calendario: popup ngb-datepicker encontrado! Navegando...');
-    return await _navegarCalendarioPopup(page, tDay, tMonth, tYear);
+      // Estratégia B: clicar no próprio input (pode funcionar em alguns setups)
+      dateInp.focus();
+      dateInp.click();
+      dateInp.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      // Estratégia C: simular Escape + re-focus (some datepickers toggle on focus)
+      return 'input-clicado:' + dateInp.value;
+    });
+    console.log('[educadf.pap] calendario: tentativa abertura -> ' + popupAberto);
+    await page.waitForTimeout(1000);
+
+    // ── PASSO 3: Verifica se ngb-datepicker apareceu no document ─────────────
+    let calPopupOk = false;
+    for (let attempt = 0; attempt < 3 && !calPopupOk; attempt++) {
+      calPopupOk = await page.evaluate(() => !!document.querySelector('ngb-datepicker'));
+      if (!calPopupOk) {
+        console.warn('[educadf.pap] calendario: popup nao apareceu (tentativa ' + (attempt+1) + '/3)');
+        // Tenta novamente: click do Playwright com force no input ou button
+        try {
+          const toggle = page.locator('ngb-modal-window .input-group button, ngb-modal-window .input-group-append button').first();
+          if (await toggle.count() > 0) {
+            await toggle.click({ force: true, timeout: 2000 }).catch(() => {});
+          }
+        } catch {}
+        await page.waitForTimeout(600);
+      }
+    }
+
+    // ── Se o popup abriu, usa navegação por calendário (estratégia visual) ────
+    if (calPopupOk) {
+      console.log('[educadf.pap] calendario: popup ngb-datepicker encontrado! Navegando...');
+      return await _navegarCalendarioPopup(page, tDay, tMonth, tYear);
+    }
+  } else {
+    console.log('[educadf.pap] ⚡ Flatpickr detectado (design 2026) — preenchendo data diretamente sem espera');
   }
 
   // ── FALLBACK FLATPICKR: O input usa a classe flatpickr-input ──────────────
@@ -1766,7 +1773,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }
 
         // Aguarda o calendário re-renderizar
-        await session.delay(2000);
+        await session.delay(800);
 
         // Re-aguarda eventos no novo mês
         try {
@@ -1776,7 +1783,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }
       }
 
-      await session.delay(1000);
+      await session.delay(500);
       await session.screenshot('pap_07_5_calendario_bimestre_correto');
     }
 
@@ -1913,7 +1920,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
       console.log(`[educadf.pap] 10a Tab "${tabInfo.txt}" em (${tabInfo.x.toFixed(0)}, ${tabInfo.y.toFixed(0)})`);
       await page.mouse.click(tabInfo.x, tabInfo.y);
-      await session.delay(3000);
+      await session.delay(1200);
 
       // Verifica se mudou
       const check = await page.evaluate((num) => {
@@ -1948,7 +1955,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // o do mês atual). Solução: re-selecionar o bimestre APÓS o re-clique.
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 10c Re-clicando "Procedimentos Avaliativos" via mouse.click...');
-    await session.delay(2000);
+    await session.delay(800);
 
     const reClickCoords = await page.evaluate(() => {
       const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
@@ -1968,7 +1975,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       console.warn('[educadf.pap] ⚠️ 10c Aba Procedimentos não encontrada');
     }
 
-    await session.delay(3000);
+    await session.delay(1000);
     await session.screenshot('pap_06c_procedimentos_reaberta');
     await removerBackdrops(page);
 
@@ -1989,7 +1996,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await page.waitForSelector(bimSelector, { timeout: 15000 })
       .catch(() => console.warn('[educadf.pap] ⚠️ 10d Timeout aguardando tabs de bimestre pós re-clique'));
     await removerBackdrops(page);
-    await session.delay(1500);
+    await session.delay(800);
 
     // Verifica se o bimestre AINDA está correto após o re-clique
     const checkPosReclick = await page.evaluate((num) => {
@@ -2025,11 +2032,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
         }, bimNumPAP);
 
-        if (!tabInfoRe || tabInfoRe.error) { await session.delay(2000); continue; }
+        if (!tabInfoRe || tabInfoRe.error) { await session.delay(1200); continue; }
 
         console.log(`[educadf.pap] 10d Re-click bimestre "${tabInfoRe.txt}" em (${tabInfoRe.x.toFixed(0)}, ${tabInfoRe.y.toFixed(0)})`);
         await page.mouse.click(tabInfoRe.x, tabInfoRe.y);
-        await session.delay(3000);
+        await session.delay(1200);
 
         // Verifica novamente
         const checkFinal = await page.evaluate((num) => {
@@ -2062,10 +2069,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       console.log(`[educadf.pap] ✅ 10d Bimestre ${bimNumPAP}º permaneceu correto após re-clique.`);
     }
 
-    await session.delay(2000);
-    await session.screenshot('pap_10d_bimestre_final');
-
-    await session.delay(2000);
+    await session.delay(800);
     await session.screenshot('pap_10d_bimestre_final');
 
     // ═══════════════════════════════════════════════════════════════════════
