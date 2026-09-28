@@ -1326,4 +1326,78 @@ router.post("/devices/register", authAppPaisOuAluno, async (req, res) => {
   }
 });
 
+// ============================================================================
+// POST /telemetria/evento — Ingestão de métricas de uso e cliques em cards
+// ============================================================================
+router.post("/telemetria/evento", async (req, res) => {
+  const db = pool;
+  try {
+    const {
+      evento,
+      perfil,
+      modulo,
+      card_id,
+      card_label,
+      tela,
+      escola_id,
+      aluno_id,
+      turma_id,
+      serie,
+      turma_nome,
+      plataforma,
+      metadados,
+    } = req.body || {};
+
+    if (!evento) {
+      return res.status(400).json({ ok: false, message: "Evento é obrigatório." });
+    }
+
+    // Identifica usuário pelo token Bearer se enviado
+    let usuario_id = null;
+    let perfilFinal = perfil || "DESCONHECIDO";
+    const authHeader = req.headers.authorization || "";
+    if (authHeader.startsWith("Bearer ")) {
+      try {
+        const decoded = jwt.verify(authHeader.split(" ")[1], APP_PAIS_JWT_SECRET);
+        if (decoded?.tipo === "ALUNO") {
+          usuario_id = decoded.aluno_id;
+          perfilFinal = "ALUNO";
+        } else if (decoded?.responsavel_id) {
+          usuario_id = decoded.responsavel_id;
+          perfilFinal = "RESPONSAVEL";
+        }
+      } catch {}
+    }
+
+    await db.query(
+      `INSERT INTO app_telemetria_eventos (
+        escola_id, aluno_id, turma_id, serie, turma_nome,
+        perfil, usuario_id, evento, modulo, card_id,
+        card_label, tela, plataforma, metadados
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        escola_id || null,
+        aluno_id || null,
+        turma_id || null,
+        serie || null,
+        turma_nome || null,
+        perfilFinal,
+        usuario_id || null,
+        String(evento).slice(0, 50),
+        modulo ? String(modulo).slice(0, 50) : null,
+        card_id ? String(card_id).slice(0, 50) : null,
+        card_label ? String(card_label).slice(0, 100) : null,
+        tela ? String(tela).slice(0, 50) : null,
+        plataforma ? String(plataforma).slice(0, 20) : null,
+        metadados ? JSON.stringify(metadados) : null,
+      ]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[APP_PAIS] Erro em /telemetria/evento:", err?.message);
+    return res.status(500).json({ ok: false, message: "Erro ao gravar telemetria." });
+  }
+});
+
 export default router;

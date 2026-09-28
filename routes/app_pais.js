@@ -437,6 +437,40 @@ async function runStartupMigrations() {
   } catch (e) {
     console.warn('[APP_PAIS][MIGRATION] Erro ao garantir responsavel demo:', e.message);
   }
+
+  // 5. Tabela de telemetria e analise de engajamento mobile (cards, telas, perfis)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_telemetria_eventos (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        escola_id INT NULL,
+        aluno_id BIGINT NULL,
+        turma_id INT NULL,
+        serie VARCHAR(50) NULL,
+        turma_nome VARCHAR(100) NULL,
+        perfil VARCHAR(20) NOT NULL,
+        usuario_id BIGINT NULL,
+        evento VARCHAR(50) NOT NULL,
+        modulo VARCHAR(50) NULL,
+        card_id VARCHAR(50) NULL,
+        card_label VARCHAR(100) NULL,
+        tela VARCHAR(50) NULL,
+        plataforma VARCHAR(20) NULL,
+        metadados JSON NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_telem_created (created_at),
+        INDEX idx_telem_escola (escola_id),
+        INDEX idx_telem_serie (serie),
+        INDEX idx_telem_turma (turma_id),
+        INDEX idx_telem_perfil (perfil),
+        INDEX idx_telem_modulo (modulo),
+        INDEX idx_telem_evento (evento)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    console.log('[APP_PAIS][MIGRATION] app_telemetria_eventos — OK');
+  } catch (e) {
+    console.warn('[APP_PAIS][MIGRATION] Erro ao criar app_telemetria_eventos:', e.message);
+  }
 }
 
 runStartupMigrations().catch(err =>
