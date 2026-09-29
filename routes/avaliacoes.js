@@ -1021,7 +1021,7 @@ router.post("/:id/salvar-notas", async (req, res) => {
 
     // Verificar se o plano pertence a essa escola
     const [[plano]] = await pool.query(
-      "SELECT id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
+      "SELECT id, status, disciplina, bimestre FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
       [planoId, escola_id]
     );
     if (!plano) {
@@ -1037,37 +1037,146 @@ router.post("/:id/salvar-notas", async (req, res) => {
       return res.status(403).json({ error: "Diário já fechado para esta turma. Não é possível editar." });
     }
 
-    // Preparar batch UPSERT
-    const entries = Object.entries(notas);
-    if (entries.length === 0) {
-      return res.json({ ok: true, message: "Nenhuma nota para salvar.", total: 0 });
+    // 1) Obter itens do plano para identificar itens fixo_direcao (Prova Bimestral da Direção)
+    const [itensPlano] = await pool.query(
+      "SELECT id, fixo_direcao FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC",
+      [planoId]
+    );
+    const fixoDirecaoItemIndices = new Set();
+    itensPlano.forEach((item, idx) => {
+      if (item.fixo_direcao === 1 || item.fixo_direcao === true) {
+        fixoDirecaoItemIndices.add(idx);
+      }
+    });
+
+    // 2) Detectar alunos com notas importadas do Gabarito Oficial (para proteger contra exclusão indevida)
+    let alunosComGabarito = new Set();
+    try {
+      if (plano.disciplina && plano.bimestre) {
+        const bimestreNum = String(plano.bimestre).replace(/\D/g, "");
+        const [gabsRows] = await pool.query(
+          `SELECT DISTINCT ga.id
+           FROM gabarito_avaliacoes ga
+           WHERE ga.escola_id = ?
+             AND ga.bimestre LIKE ?
+             AND JSON_CONTAINS(
+               CONVERT(ga.disciplinas_config USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+               JSON_OBJECT('nome', CONVERT(? USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+             )`,
+          [escola_id, `%${bimestreNum}%`, plano.disciplina]
+        );
+        if (gabsRows.length > 0) {
+          const gabIds = gabsRows.map(g => g.id);
+          const placeholders = gabIds.map(() => "?").join(",");
+          const [alunosGabRows] = await pool.query(
+            `SELECT DISTINCT a.id AS aluno_id
+             FROM gabarito_respostas gr
+             JOIN alunos a
+               ON CONVERT(a.codigo USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  = CONVERT(gr.codigo_aluno USING utf8mb4) COLLATE utf8mb4_unicode_ci
+              AND a.escola_id = ?
+             JOIN matriculas m ON m.aluno_id = a.id AND m.turma_id = ? AND m.escola_id = ?
+             WHERE gr.avaliacao_id IN (${placeholders})
+               AND gr.escola_id = ?`,
+            [escola_id, turma_id, escola_id, ...gabIds, escola_id]
+          );
+          alunosComGabarito = new Set(alunosGabRows.map(r => r.aluno_id));
+        }
+      }
+    } catch (gabErr) {
+      console.warn("[salvar-notas] Aviso ao checar alunosComGabarito:", gabErr.message);
     }
 
+    // 3) Preparar batch de notas válidas e mapear chaves presentes
     const values = [];
-    for (const [key, valor] of entries) {
+    const keysPresentes = new Set();
+    const entries = Object.entries(notas);
+
+    for (const [key, rawVal] of entries) {
+      if (rawVal === "" || rawVal === null || rawVal === undefined) continue;
       const parts = key.split("_");
       if (parts.length < 3) continue;
       const alunoId = parseInt(parts[0], 10);
       const itemIdx = parseInt(parts[1], 10);
       const opIdx = parseInt(parts[2], 10);
       if (isNaN(alunoId) || isNaN(itemIdx) || isNaN(opIdx)) continue;
+
+      const numVal = parseFloat(String(rawVal));
+      if (isNaN(numVal)) continue;
+
       const cor = cores?.[key] || null;
-      values.push([escola_id, planoId, turma_id, alunoId, itemIdx, opIdx, valor, cor]);
+      values.push([escola_id, planoId, turma_id, alunoId, itemIdx, opIdx, numVal, cor]);
+      keysPresentes.add(`${alunoId}_${itemIdx}_${opIdx}`);
     }
 
-    if (values.length === 0) {
-      return res.json({ ok: true, message: "Nenhuma nota válida.", total: 0 });
-    }
-
-    // Batch UPSERT
-    await pool.query(
-      `INSERT INTO notas_diario (escola_id, plano_id, turma_id, aluno_id, item_idx, oportunidade_idx, nota, cor)
-       VALUES ?
-       ON DUPLICATE KEY UPDATE nota = VALUES(nota), cor = VALUES(cor), updated_at = NOW()`,
-      [values]
+    // 4) Identificar notas existentes no banco que foram apagadas pelo professor
+    const [rowsExistentes] = await pool.query(
+      `SELECT id, aluno_id, item_idx, oportunidade_idx
+       FROM notas_diario
+       WHERE plano_id = ? AND turma_id = ? AND escola_id = ?`,
+      [planoId, turma_id, escola_id]
     );
 
-    return res.json({ ok: true, message: `${values.length} nota(s) salva(s) com sucesso.`, total: values.length });
+    const idsParaDeletar = [];
+    for (const row of rowsExistentes) {
+      const rowKey = `${row.aluno_id}_${row.item_idx}_${row.oportunidade_idx}`;
+      if (!keysPresentes.has(rowKey)) {
+        // Protege apenas notas oficiais do Gabarito (fixo_direcao de alunos com resposta no gabarito)
+        const isGabaritoProtegido = fixoDirecaoItemIndices.has(row.item_idx) && alunosComGabarito.has(row.aluno_id);
+        if (!isGabaritoProtegido) {
+          idsParaDeletar.push(row.id);
+        }
+      }
+    }
+
+    // 5) Executar exclusão e upsert dentro de transação atômica
+    if (idsParaDeletar.length > 0 || values.length > 0) {
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+
+        if (idsParaDeletar.length > 0) {
+          await conn.query(
+            `DELETE FROM notas_diario WHERE id IN (?)`,
+            [idsParaDeletar]
+          );
+        }
+
+        if (values.length > 0) {
+          await conn.query(
+            `INSERT INTO notas_diario (escola_id, plano_id, turma_id, aluno_id, item_idx, oportunidade_idx, nota, cor)
+             VALUES ?
+             ON DUPLICATE KEY UPDATE nota = VALUES(nota), cor = VALUES(cor), updated_at = NOW()`,
+            [values]
+          );
+        }
+
+        await conn.commit();
+      } catch (dbErr) {
+        await conn.rollback();
+        throw dbErr;
+      } finally {
+        conn.release();
+      }
+    }
+
+    let message = "Diário salvo com sucesso!";
+    if (values.length > 0 && idsParaDeletar.length > 0) {
+      message = `Diário salvo com sucesso! (${values.length} nota(s) salva(s), ${idsParaDeletar.length} apagada(s))`;
+    } else if (values.length > 0) {
+      message = `Diário salvo com sucesso! (${values.length} nota(s) salva(s))`;
+    } else if (idsParaDeletar.length > 0) {
+      message = `Diário salvo com sucesso! (${idsParaDeletar.length} nota(s) apagada(s))`;
+    } else {
+      message = "Diário atualizado com sucesso.";
+    }
+
+    return res.json({
+      ok: true,
+      message,
+      total: values.length,
+      deletadas: idsParaDeletar.length,
+    });
   } catch (err) {
     console.error("Erro ao salvar notas do diário:", err);
     return res.status(500).json({ error: "Erro ao salvar notas." });
