@@ -1400,4 +1400,22 @@ router.post("/telemetria/evento", async (req, res) => {
   }
 });
 
+// GET /telemetria/conferencia — Consulta eventos gravados para verificação
+router.get("/telemetria/conferencia", async (req, res) => {
+  const db = pool;
+  try {
+    const [eventos] = await db.query(
+      `SELECT id, escola_id, aluno_id, usuario_id, perfil, evento, modulo, card_label, tela, plataforma, serie, turma_nome, created_at
+       FROM app_telemetria_eventos
+       ORDER BY id DESC
+       LIMIT 25`
+    );
+    const [[totalRow]] = await db.query(`SELECT COUNT(*) AS total FROM app_telemetria_eventos`);
+    return res.json({ ok: true, total: totalRow?.total || 0, eventos });
+  } catch (err) {
+    console.error("[APP_PAIS] Erro em /telemetria/conferencia:", err?.message);
+    return res.status(500).json({ ok: false, message: err?.message });
+  }
+});
+
 export default router;
