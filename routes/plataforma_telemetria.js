@@ -34,47 +34,66 @@ function formatFaixaHorario(hora, perfil) {
   if (h >= 6 && h < 12) periodo = "Manhã";
   else if (h >= 12 && h < 14) periodo = "Almoço";
   else if (h >= 14 && h < 18) periodo = "Tarde";
-  else if (h >= 18 && h < 23) periodo = "Noite";
+  else if (h >= 18 && h < 24) periodo = "Noite";
   else periodo = "Madrugada";
 
   return `${String(h).padStart(2, "0")}:00 - ${String(hFim).padStart(2, "0")}:00 (${periodo})`;
 }
 
-// Formata último acesso de forma humana
+// Formata último acesso de forma humana no fuso horário de Brasília (America/Sao_Paulo = UTC-3)
 function formatUltimoAcesso(dt) {
   if (!dt) return "Sem registros recentes";
   const date = new Date(dt);
+  const tz = "America/Sao_Paulo";
+
+  const dateFmt = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: tz,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  const timeFmt = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
   const now = new Date();
-  const isToday =
-    date.getDate() === now.getDate() &&
-    date.getMonth() === now.getMonth() &&
-    date.getFullYear() === now.getFullYear();
+  const hojeStr = dateFmt.format(now);
+  const dataEventoStr = dateFmt.format(date);
 
-  const horaStr = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  if (isToday) return `Hoje às ${horaStr}`;
+  const ontemDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const ontemStr = dateFmt.format(ontemDate);
 
-  const ontem = new Date(now);
-  ontem.setDate(now.getDate() - 1);
-  const isOntem =
-    date.getDate() === ontem.getDate() &&
-    date.getMonth() === ontem.getMonth() &&
-    date.getFullYear() === ontem.getFullYear();
+  const horaStr = timeFmt.format(date);
 
-  if (isOntem) return `Ontem às ${horaStr}`;
+  if (dataEventoStr === hojeStr) return `Hoje às ${horaStr}`;
+  if (dataEventoStr === ontemStr) return `Ontem às ${horaStr}`;
 
-  return `${date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} às ${horaStr}`;
+  return `${dataEventoStr.slice(0, 5)} às ${horaStr}`;
 }
 
-// Gera array dos últimos 7 dias da semana
+// Gera array dos últimos 7 dias da semana no fuso horário de Brasília
 function buildUltimos7Dias(diasAgrupados = {}) {
   const nomesDias = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
   const resultado = [];
-  const hoje = new Date();
+  const tz = "America/Sao_Paulo";
+
+  // Obter ano, mes, dia de hoje em Brasília (evita shift de UTC virar o dia antes das 21h BRT)
+  const now = new Date();
+  const spDateStr = now.toLocaleDateString("en-CA", { timeZone: tz }); // YYYY-MM-DD
+  const [ano, mes, dia] = spDateStr.split("-").map(Number);
+  const hojeSp = new Date(ano, mes - 1, dia);
 
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(hoje);
-    d.setDate(hoje.getDate() - i);
-    const keyIso = d.toISOString().slice(0, 10);
+    const d = new Date(hojeSp);
+    d.setDate(hojeSp.getDate() - i);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const keyIso = `${y}-${m}-${day}`;
     const diaSemana = nomesDias[d.getDay()];
     resultado.push({
       data: keyIso,
@@ -148,7 +167,7 @@ router.get("/overview", async (req, res) => {
       SELECT
         escola_id,
         COUNT(DISTINCT COALESCE(usuario_id, aluno_id)) AS usuarios_app,
-        SUM(CASE WHEN created_at >= CURDATE() THEN 1 ELSE 0 END) AS acessos_hoje,
+        SUM(CASE WHEN DATE(DATE_SUB(created_at, INTERVAL 3 HOUR)) = DATE(DATE_SUB(NOW(), INTERVAL 3 HOUR)) THEN 1 ELSE 0 END) AS acessos_hoje,
         SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS acessos_7d,
         COUNT(*) AS acessos_30d,
         MAX(created_at) AS ultimo_acesso,
@@ -168,18 +187,18 @@ router.get("/overview", async (req, res) => {
       statsMap.set(Number(s.escola_id), s);
     }
 
-    // 3. Consulta de histórico de 7 dias por escola
+    // 3. Consulta de histórico de 7 dias por escola (ajustado para fuso BRT -03:00)
     const [historicoRows] = await db.query(
       `
       SELECT
         escola_id,
-        DATE(created_at) AS dia_iso,
+        DATE(DATE_SUB(created_at, INTERVAL 3 HOUR)) AS dia_iso,
         COUNT(*) AS total
       FROM app_telemetria_eventos
       WHERE escola_id IN (${placeholders})
         AND ${perfilCond}
-        AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-      GROUP BY escola_id, DATE(created_at)
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY escola_id, DATE(DATE_SUB(created_at, INTERVAL 3 HOUR))
       `,
       [...escolaIds, ...perfilParams]
     );
@@ -223,18 +242,18 @@ router.get("/overview", async (req, res) => {
       }
     }
 
-    // 5. Consulta de faixa de pico de horário por escola
+    // 5. Consulta de faixa de pico de horário por escola (ajustado para fuso BRT -03:00)
     const [picoRows] = await db.query(
       `
       SELECT
         escola_id,
-        HOUR(created_at) AS hora,
+        HOUR(DATE_SUB(created_at, INTERVAL 3 HOUR)) AS hora,
         COUNT(*) AS total_hora
       FROM app_telemetria_eventos
       WHERE escola_id IN (${placeholders})
         AND ${perfilCond}
         AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY escola_id, HOUR(created_at)
+      GROUP BY escola_id, HOUR(DATE_SUB(created_at, INTERVAL 3 HOUR))
       ORDER BY escola_id ASC, total_hora DESC
       `,
       [...escolaIds, ...perfilParams]
