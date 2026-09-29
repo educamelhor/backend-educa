@@ -31,6 +31,7 @@ router.get("/", verificarEscola, async (req, res) => {
         id,
         nome AS nome,
         nome AS disciplina,
+        abreviatura,
         nome_oficial,
         etapa,
         turno,
@@ -69,7 +70,7 @@ router.get("/", verificarEscola, async (req, res) => {
  * Cria uma nova disciplina para a escola do usuário
  */
 router.post("/", verificarEscola, async (req, res) => {
-  const { nome, carga, etapa, turno } = req.body;
+  const { nome, carga, etapa, turno, abreviatura } = req.body;
   const { escola_id } = req.user;
 
   if (!nome || carga == null) {
@@ -78,6 +79,9 @@ router.post("/", verificarEscola, async (req, res) => {
 
   const etapaFinal = etapa?.trim().toUpperCase() || "GERAL";
   const turnoFinal = turno?.trim().toUpperCase() || "INTEGRAL";
+  const abreviaturaFinal = abreviatura && typeof abreviatura === 'string' && abreviatura.trim()
+    ? abreviatura.trim().toUpperCase()
+    : null;
 
   try {
     // ✅ Validação de unicidade: nome normalizado + etapa + turno + escola_id
@@ -94,13 +98,13 @@ router.post("/", verificarEscola, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, etapa, turno, carga, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-      [nomeNormalizado, etapaFinal, turnoFinal, carga, escola_id]
+      `INSERT INTO disciplinas (nome, abreviatura, etapa, turno, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga, escola_id]
     );
 
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, etapa, turno, carga, escola_id
+      `SELECT id, nome AS disciplina, abreviatura, etapa, turno, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -157,7 +161,7 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, carga, etapa, turno } = req.body;
+    const { nome, carga, etapa, turno, abreviatura } = req.body;
     const { escola_id } = req.user;
 
     if (!nome || carga == null) {
@@ -166,6 +170,9 @@ router.put("/:id", verificarEscola, async (req, res) => {
 
     const etapaFinal = etapa?.trim().toUpperCase() || "GERAL";
     const turnoFinal = turno?.trim().toUpperCase() || "INTEGRAL";
+    const abreviaturaFinal = abreviatura && typeof abreviatura === 'string' && abreviatura.trim()
+      ? abreviatura.trim().toUpperCase()
+      : null;
 
     // ✅ Validação de unicidade ao editar: exclui o próprio registro
     const nomeNormalizado = nome.trim();
@@ -182,9 +189,9 @@ router.put("/:id", verificarEscola, async (req, res) => {
 
     const [result] = await pool.query(
       `UPDATE disciplinas
-       SET nome = ?, etapa = ?, turno = ?, carga = ?
+       SET nome = ?, abreviatura = ?, etapa = ?, turno = ?, carga = ?
        WHERE id = ? AND escola_id = ?`,
-      [nomeNormalizado, etapaFinal, turnoFinal, carga, id, escola_id]
+      [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga, id, escola_id]
     );
 
     if (result.affectedRows === 0) {

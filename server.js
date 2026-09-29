@@ -675,6 +675,25 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration data_aplicacao (não crítico):", migErr.message);
   }
 
+  // [2026-09-29] Coluna abreviatura na tabela disciplinas
+  try {
+    const [colsAbrev] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'disciplinas' AND COLUMN_NAME = 'abreviatura'
+    `);
+    if (colsAbrev.length === 0) {
+      await pool.query(`
+        ALTER TABLE disciplinas
+          ADD COLUMN abreviatura VARCHAR(20) DEFAULT NULL
+          COMMENT 'Abreviatura opcional da disciplina (ex: PORT, MAT, BIO)'
+          AFTER nome
+      `);
+      console.log("[MIGRATION] Coluna 'abreviatura' adicionada em 'disciplinas' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration abreviatura em disciplinas (não crítico):", migErr.message);
+  }
+
   // [2026-04-24] Tabela de OTP codes do App Pais
   try {
     await pool.query(`
