@@ -63,6 +63,7 @@ import plataformaRouter from "./routes/plataforma.js";
 import plataformaUsageRouter from "./routes/plataforma_usage.js";
 import plataformaSuporteRouter from "./routes/plataforma_suporte.js";
 import modulosPlataformaRouter from "./routes/plataforma_modulos.js";
+import plataformaTelemetriaRouter from "./routes/plataforma_telemetria.js";
 import gabaritosGeneratorRoutes from "./routes/gabaritosGeneratorRoutes.js";
 import gabaritoPdfRouter from "./routes/gabaritoPdf.js";
 import gabaritoAvaliacoesRouter from "./routes/gabaritoAvaliacoes.js";
@@ -1390,6 +1391,7 @@ async function bootstrap() {
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
   app.use("/api/plataforma/modulos", autenticarToken, exigirEscopo("plataforma"), modulosPlataformaRouter);
+  app.use("/api/plataforma/telemetria", autenticarToken, exigirEscopo("plataforma"), plataformaTelemetriaRouter);
   app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
   app.use("/api/sistema", manutencaoRouter); // Público: GET /api/sistema/status (sem auth)
 
