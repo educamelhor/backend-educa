@@ -334,21 +334,32 @@ router.patch("/respostas/:id/anular", verificarEscola, async (req, res) => {
     const usuarioNome = req.user.nome || req.user.name || req.user.email || "Coordenação";
 
     // 1. Atualizar gabarito_respostas
-    await pool.query(
-      `UPDATE gabarito_respostas
-       SET status = 'anulado',
-           nota = 0.00,
-           acertos = 0,
-           motivo_anulacao = ?,
-           anulado_em = NOW(),
-           anulado_por = ?,
-           anulado_por_nome = ?,
-           anulado_observacao = ?,
-           nota_original = ?,
-           acertos_original = ?
-       WHERE id = ? AND escola_id = ?`,
-      [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, id, escola_id]
-    );
+    try {
+      await pool.query(
+        `UPDATE gabarito_respostas
+         SET status = 'anulado',
+             nota = 0.00,
+             acertos = 0,
+             motivo_anulacao = ?,
+             anulado_em = NOW(),
+             anulado_por = ?,
+             anulado_por_nome = ?,
+             anulado_observacao = ?,
+             nota_original = ?,
+             acertos_original = ?
+         WHERE id = ? AND escola_id = ?`,
+        [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, id, escola_id]
+      );
+    } catch (uErr) {
+      if (uErr.code === 'ER_BAD_FIELD_ERROR') {
+        await pool.query(
+          `UPDATE gabarito_respostas SET nota = 0.00, acertos = 0 WHERE id = ? AND escola_id = ?`,
+          [id, escola_id]
+        );
+      } else {
+        throw uErr;
+      }
+    }
 
     // 2. Sincronizar gabarito_arquivos se existir
     try {
@@ -365,7 +376,19 @@ router.patch("/respostas/:id/anular", verificarEscola, async (req, res) => {
         [motivo, usuarioId, usuarioNome, observacao || null, resp.avaliacao_id, escola_id, resp.codigo_aluno]
       );
     } catch (syncErr) {
-      console.warn("[ANULAR] Erro ao sincronizar gabarito_arquivos (não crítico):", syncErr.message);
+      if (syncErr.code === 'ER_BAD_FIELD_ERROR') {
+        try {
+          await pool.query(
+            `UPDATE gabarito_arquivos a
+             JOIN gabarito_lotes l ON l.id = a.lote_id
+             SET a.status = 'anulado'
+             WHERE l.avaliacao_id = ? AND a.escola_id = ? AND a.codigo_aluno = ?`,
+            [resp.avaliacao_id, escola_id, resp.codigo_aluno]
+          );
+        } catch (_) {}
+      } else {
+        console.warn("[ANULAR] Erro ao sincronizar gabarito_arquivos (não crítico):", syncErr.message);
+      }
     }
 
     // 3. Criar ocorrência disciplinar se solicitado
@@ -375,7 +398,7 @@ router.patch("/respostas/:id/anular", verificarEscola, async (req, res) => {
         let alunoId = resp.aluno_id;
         if (!alunoId) {
           const [[alunoRow]] = await pool.query(
-            `SELECT id FROM alunos WHERE escola_id = ? AND (matricula = ? OR id = ?) LIMIT 1`,
+            `SELECT id FROM alunos WHERE escola_id = ? AND (codigo = ? OR id = ?) LIMIT 1`,
             [escola_id, resp.codigo_aluno, Number(resp.codigo_aluno) || 0]
           );
           if (alunoRow) alunoId = alunoRow.id;
@@ -386,20 +409,40 @@ router.patch("/respostas/:id/anular", verificarEscola, async (req, res) => {
             ? `Anulação de gabarito na avaliação: "${resp.avaliacao_titulo || 'Avaliação'}". Motivo: ${motivo}. Obs: ${observacao}`
             : `Anulação de gabarito na avaliação: "${resp.avaliacao_titulo || 'Avaliação'}". Motivo: ${motivo}.`;
 
-          await pool.query(
-            `INSERT INTO ocorrencias_disciplinares
-               (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
-             VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
-            [
-              alunoId,
-              escola_id,
-              motivo,
-              tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
-              descFinal,
-              convocar_responsavel ? 1 : 0,
-              usuarioId,
-            ]
-          );
+          try {
+            await pool.query(
+              `INSERT INTO ocorrencias_disciplinares
+                 (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
+               VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
+              [
+                alunoId,
+                escola_id,
+                motivo,
+                tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+                descFinal,
+                convocar_responsavel ? 1 : 0,
+                usuarioId,
+              ]
+            );
+          } catch (insErr) {
+            if (insErr.code === 'ER_BAD_FIELD_ERROR') {
+              await pool.query(
+                `INSERT INTO ocorrencias_disciplinares
+                   (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, convocar_responsavel)
+                 VALUES (?, ?, CURDATE(), ?, ?, ?, ?)`,
+                [
+                  alunoId,
+                  escola_id,
+                  motivo,
+                  tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+                  descFinal,
+                  convocar_responsavel ? 1 : 0,
+                ]
+              );
+            } else {
+              throw insErr;
+            }
+          }
           ocorrenciaCriada = true;
         }
       } catch (ocErr) {

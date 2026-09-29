@@ -2600,8 +2600,7 @@ router.post("/scan-mobile/confirmar-leitura", async (req, res) => {
     const [result] = await pool.query(
       `UPDATE gabarito_arquivos
          SET respostas_aluno = ?,
-             status          = CASE WHEN status = 'pendente' THEN 'identificado' ELSE status END,
-             updated_at      = NOW()
+             status          = CASE WHEN status = 'pendente' THEN 'identificado' ELSE status END
        WHERE id = ? AND escola_id = ?`,
       [JSON.stringify(respostas), arquivo_id, escola_id]
     );
@@ -2629,7 +2628,7 @@ router.patch("/arquivos/:id/ausente", async (req, res) => {
     const novoStatus = desfazer ? "pendente" : "ausente";
 
     const [result] = await pool.query(
-      `UPDATE gabarito_arquivos SET status = ?, updated_at = NOW()
+      `UPDATE gabarito_arquivos SET status = ?
        WHERE id = ? AND escola_id = ?`,
       [novoStatus, id, escola_id]
     );
@@ -2705,82 +2704,105 @@ router.patch("/arquivos/:id/anular", async (req, res) => {
     if (desfazer) {
       // Reverter anulação
       const novoStatus = arq.respostas_aluno ? "corrigido" : (arq.codigo_aluno ? "identificado" : "pendente");
-      await pool.query(
-        `UPDATE gabarito_arquivos
-         SET status = ?, motivo_anulacao = NULL, anulado_em = NULL, anulado_por = NULL, anulado_por_nome = NULL, anulado_observacao = NULL, updated_at = NOW()
-         WHERE id = ? AND escola_id = ?`,
-        [novoStatus, id, escola_id]
-      );
+      try {
+        await pool.query(
+          `UPDATE gabarito_arquivos
+           SET status = ?, motivo_anulacao = NULL, anulado_em = NULL, anulado_por = NULL, anulado_por_nome = NULL, anulado_observacao = NULL
+           WHERE id = ?`,
+          [novoStatus, id]
+        );
+      } catch (uErr) {
+        if (uErr.code === 'ER_BAD_FIELD_ERROR') {
+          await pool.query(`UPDATE gabarito_arquivos SET status = ? WHERE id = ?`, [novoStatus, id]);
+        } else {
+          throw uErr;
+        }
+      }
 
       // Reverter também em gabarito_respostas se existir
       if (arq.avaliacao_id && arq.codigo_aluno) {
-        const [[resp]] = await pool.query(
-          `SELECT id, nota_original, acertos_original FROM gabarito_respostas
-           WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
-          [arq.avaliacao_id, arq.codigo_aluno, escola_id]
-        );
-        if (resp) {
-          const notaRestaurada = resp.nota_original != null ? Number(resp.nota_original) : (arq.nota != null ? Number(arq.nota) : 0);
-          const acertosRestaurados = resp.acertos_original != null ? Number(resp.acertos_original) : (arq.acertos != null ? Number(arq.acertos) : 0);
-          await pool.query(
-            `UPDATE gabarito_respostas
-             SET status = 'regular',
-                 nota = ?,
-                 acertos = ?,
-                 motivo_anulacao = NULL,
-                 anulado_em = NULL,
-                 anulado_por = NULL,
-                 anulado_por_nome = NULL,
-                 anulado_observacao = NULL,
-                 nota_original = NULL,
-                 acertos_original = NULL
-             WHERE id = ? AND escola_id = ?`,
-            [notaRestaurada, acertosRestaurados, resp.id, escola_id]
+        try {
+          const [[resp]] = await pool.query(
+            `SELECT id, nota_original, acertos_original FROM gabarito_respostas
+             WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
+            [arq.avaliacao_id, arq.codigo_aluno, escola_id]
           );
+          if (resp) {
+            const notaRestaurada = resp.nota_original != null ? Number(resp.nota_original) : (arq.nota != null ? Number(arq.nota) : 0);
+            const acertosRestaurados = resp.acertos_original != null ? Number(resp.acertos_original) : (arq.acertos != null ? Number(arq.acertos) : 0);
+            await pool.query(
+              `UPDATE gabarito_respostas
+               SET status = 'regular',
+                   nota = ?,
+                   acertos = ?,
+                   motivo_anulacao = NULL,
+                   anulado_em = NULL,
+                   anulado_por = NULL,
+                   anulado_por_nome = NULL,
+                   anulado_observacao = NULL,
+                   nota_original = NULL,
+                   acertos_original = NULL
+               WHERE id = ?`,
+              [notaRestaurada, acertosRestaurados, resp.id]
+            );
+          }
+        } catch (respErr) {
+          console.warn("[ANULAR-ARQUIVO] Erro ao sincronizar gabarito_respostas no desfazer:", respErr.message);
         }
       }
     } else {
       // Anular gabarito
-      await pool.query(
-        `UPDATE gabarito_arquivos
-         SET status = 'anulado',
-             motivo_anulacao = ?,
-             anulado_em = NOW(),
-             anulado_por = ?,
-             anulado_por_nome = ?,
-             anulado_observacao = ?,
-             updated_at = NOW()
-         WHERE id = ? AND escola_id = ?`,
-        [motivo, usuarioId, usuarioNome, observacao || null, id, escola_id]
-      );
+      try {
+        await pool.query(
+          `UPDATE gabarito_arquivos
+           SET status = 'anulado',
+               motivo_anulacao = ?,
+               anulado_em = NOW(),
+               anulado_por = ?,
+               anulado_por_nome = ?,
+               anulado_observacao = ?
+           WHERE id = ?`,
+          [motivo, usuarioId, usuarioNome, observacao || null, id]
+        );
+      } catch (uErr) {
+        if (uErr.code === 'ER_BAD_FIELD_ERROR') {
+          await pool.query(`UPDATE gabarito_arquivos SET status = 'anulado' WHERE id = ?`, [id]);
+        } else {
+          throw uErr;
+        }
+      }
 
       // Sincronizar ou criar registro anulado em gabarito_respostas
       if (arq.avaliacao_id && arq.codigo_aluno) {
-        const [[resp]] = await pool.query(
-          `SELECT id, nota, acertos, nota_original, acertos_original
-           FROM gabarito_respostas
-           WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
-          [arq.avaliacao_id, arq.codigo_aluno, escola_id]
-        );
-
-        if (resp) {
-          const notaOrig = resp.nota_original != null ? resp.nota_original : resp.nota;
-          const acertosOrig = resp.acertos_original != null ? resp.acertos_original : resp.acertos;
-          await pool.query(
-            `UPDATE gabarito_respostas
-             SET status = 'anulado',
-                 nota = 0.00,
-                 acertos = 0,
-                 motivo_anulacao = ?,
-                 anulado_em = NOW(),
-                 anulado_por = ?,
-                 anulado_por_nome = ?,
-                 anulado_observacao = ?,
-                 nota_original = ?,
-                 acertos_original = ?
-             WHERE id = ? AND escola_id = ?`,
-            [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, resp.id, escola_id]
+        try {
+          const [[resp]] = await pool.query(
+            `SELECT id, nota, acertos, nota_original, acertos_original
+             FROM gabarito_respostas
+             WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
+            [arq.avaliacao_id, arq.codigo_aluno, escola_id]
           );
+
+          if (resp) {
+            const notaOrig = resp.nota_original != null ? resp.nota_original : resp.nota;
+            const acertosOrig = resp.acertos_original != null ? resp.acertos_original : resp.acertos;
+            await pool.query(
+              `UPDATE gabarito_respostas
+               SET status = 'anulado',
+                   nota = 0.00,
+                   acertos = 0,
+                   motivo_anulacao = ?,
+                   anulado_em = NOW(),
+                   anulado_por = ?,
+                   anulado_por_nome = ?,
+                   anulado_observacao = ?,
+                   nota_original = ?,
+                   acertos_original = ?
+               WHERE id = ?`,
+              [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, resp.id]
+            );
+          }
+        } catch (respErr) {
+          console.warn("[ANULAR-ARQUIVO] Erro ao sincronizar gabarito_respostas no anular:", respErr.message);
         }
       }
 
@@ -2790,7 +2812,7 @@ router.patch("/arquivos/:id/anular", async (req, res) => {
           let alunoId = null;
           if (arq.codigo_aluno) {
             const [[alunoRow]] = await pool.query(
-              `SELECT id FROM alunos WHERE escola_id = ? AND (matricula = ? OR id = ?) LIMIT 1`,
+              `SELECT id FROM alunos WHERE escola_id = ? AND (codigo = ? OR id = ?) LIMIT 1`,
               [escola_id, arq.codigo_aluno, Number(arq.codigo_aluno) || 0]
             );
             if (alunoRow) alunoId = alunoRow.id;
@@ -2800,20 +2822,40 @@ router.patch("/arquivos/:id/anular", async (req, res) => {
               ? `Anulação de gabarito por cola/fraude na turma: "${arq.turma_nome || ''}". Motivo: ${motivo}. Obs: ${observacao}`
               : `Anulação de gabarito por cola/fraude na turma: "${arq.turma_nome || ''}". Motivo: ${motivo}.`;
 
-            await pool.query(
-              `INSERT INTO ocorrencias_disciplinares
-                 (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
-               VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
-              [
-                alunoId,
-                escola_id,
-                motivo,
-                tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
-                descFinal,
-                convocar_responsavel ? 1 : 0,
-                usuarioId,
-              ]
-            );
+            try {
+              await pool.query(
+                `INSERT INTO ocorrencias_disciplinares
+                   (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
+                 VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
+                [
+                  alunoId,
+                  escola_id,
+                  motivo,
+                  tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+                  descFinal,
+                  convocar_responsavel ? 1 : 0,
+                  usuarioId,
+                ]
+              );
+            } catch (insErr) {
+              if (insErr.code === 'ER_BAD_FIELD_ERROR') {
+                await pool.query(
+                  `INSERT INTO ocorrencias_disciplinares
+                     (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, convocar_responsavel)
+                   VALUES (?, ?, CURDATE(), ?, ?, ?, ?)`,
+                  [
+                    alunoId,
+                    escola_id,
+                    motivo,
+                    tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+                    descFinal,
+                    convocar_responsavel ? 1 : 0,
+                  ]
+                );
+              } else {
+                throw insErr;
+              }
+            }
           }
         } catch (ocErr) {
           console.warn("[ANULAR-ARQUIVO] Erro ao criar ocorrência:", ocErr.message);

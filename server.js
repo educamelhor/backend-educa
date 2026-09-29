@@ -888,7 +888,7 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao expandir ENUM 'origem' (não crítico):", migErr.message);
   }
 
-  // [2026-09-29] Módulo Gabarito — Anulação por cola / fraude (gabarito_respostas + gabarito_arquivos)
+  // [2026-09-29] Módulo Gabarito — Anulação por cola / fraude (gabarito_respostas)
   try {
     const [colsResp] = await pool.query(`
       SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -896,29 +896,32 @@ async function bootstrap() {
         AND COLUMN_NAME IN ('status', 'motivo_anulacao', 'anulado_em', 'anulado_por', 'anulado_por_nome', 'anulado_observacao', 'nota_original', 'acertos_original')
     `);
     const existentesResp = new Set(colsResp.map(c => c.COLUMN_NAME));
-    const addRespCols = [];
-    if (!existentesResp.has('status'))
-      addRespCols.push(`ADD COLUMN status ENUM('regular', 'anulado') NOT NULL DEFAULT 'regular' COMMENT 'Status: regular ou anulado por cola/fraude'`);
-    if (!existentesResp.has('motivo_anulacao'))
-      addRespCols.push(`ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação (ex: Cola / Fraude)'`);
-    if (!existentesResp.has('anulado_em'))
-      addRespCols.push(`ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'`);
-    if (!existentesResp.has('anulado_por'))
-      addRespCols.push(`ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'`);
-    if (!existentesResp.has('anulado_por_nome'))
-      addRespCols.push(`ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'`);
-    if (!existentesResp.has('anulado_observacao'))
-      addRespCols.push(`ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'`);
-    if (!existentesResp.has('nota_original'))
-      addRespCols.push(`ADD COLUMN nota_original DECIMAL(5,2) DEFAULT NULL COMMENT 'Nota original preservada para restauração'`);
-    if (!existentesResp.has('acertos_original'))
-      addRespCols.push(`ADD COLUMN acertos_original INT DEFAULT NULL COMMENT 'Acertos originais preservados para restauração'`);
-    if (addRespCols.length > 0) {
-      await pool.query(`ALTER TABLE gabarito_respostas ${addRespCols.join(', ')}`);
-      console.log("[MIGRATION] Colunas de anulação/cola adicionadas em 'gabarito_respostas' ✅");
+    const respDefs = [
+      { col: 'status', def: `ADD COLUMN status ENUM('regular', 'anulado') NOT NULL DEFAULT 'regular' COMMENT 'Status: regular ou anulado por cola/fraude'` },
+      { col: 'motivo_anulacao', def: `ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação (ex: Cola / Fraude)'` },
+      { col: 'anulado_em', def: `ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'` },
+      { col: 'anulado_por', def: `ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'` },
+      { col: 'anulado_por_nome', def: `ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'` },
+      { col: 'anulado_observacao', def: `ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'` },
+      { col: 'nota_original', def: `ADD COLUMN nota_original DECIMAL(5,2) DEFAULT NULL COMMENT 'Nota original preservada para restauração'` },
+      { col: 'acertos_original', def: `ADD COLUMN acertos_original INT DEFAULT NULL COMMENT 'Acertos originais preservados para restauração'` }
+    ];
+    for (const item of respDefs) {
+      if (!existentesResp.has(item.col)) {
+        try {
+          await pool.query(`ALTER TABLE gabarito_respostas ${item.def}`);
+          console.log(`[MIGRATION] Coluna '${item.col}' adicionada em 'gabarito_respostas' ✅`);
+        } catch (colErr) {
+          console.warn(`[MIGRATION] Aviso ao adicionar '${item.col}' em 'gabarito_respostas':`, colErr.message);
+        }
+      }
     }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration gabarito_respostas (não crítico):", migErr.message);
+  }
 
-    // gabarito_arquivos: verificar ENUM de status e colunas de anulação
+  // [2026-09-29] Módulo Gabarito — ENUM status e colunas de anulação (gabarito_arquivos)
+  try {
     const [[enumArqStatus]] = await pool.query(`
       SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE()
@@ -927,11 +930,15 @@ async function bootstrap() {
       LIMIT 1
     `);
     if (enumArqStatus && !String(enumArqStatus.COLUMN_TYPE).includes('anulado')) {
-      await pool.query(`
-        ALTER TABLE gabarito_arquivos
-          MODIFY COLUMN status ENUM('pendente', 'identificado', 'corrigido', 'erro', 'ausente', 'anulado') DEFAULT 'pendente'
-      `);
-      console.log("[MIGRATION] ENUM 'status' em gabarito_arquivos expandido (+ anulado) ✅");
+      try {
+        await pool.query(`
+          ALTER TABLE gabarito_arquivos
+            MODIFY COLUMN status ENUM('pendente', 'identificado', 'corrigido', 'erro', 'ausente', 'anulado') DEFAULT 'pendente'
+        `);
+        console.log("[MIGRATION] ENUM 'status' em gabarito_arquivos expandido (+ anulado) ✅");
+      } catch (enumErr) {
+        console.warn("[MIGRATION] Aviso ao expandir ENUM status em gabarito_arquivos:", enumErr.message);
+      }
     }
 
     const [colsArq] = await pool.query(`
@@ -940,23 +947,25 @@ async function bootstrap() {
         AND COLUMN_NAME IN ('motivo_anulacao', 'anulado_em', 'anulado_por', 'anulado_por_nome', 'anulado_observacao')
     `);
     const existentesArq = new Set(colsArq.map(c => c.COLUMN_NAME));
-    const addArqCols = [];
-    if (!existentesArq.has('motivo_anulacao'))
-      addArqCols.push(`ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação'`);
-    if (!existentesArq.has('anulado_em'))
-      addArqCols.push(`ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'`);
-    if (!existentesArq.has('anulado_por'))
-      addArqCols.push(`ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'`);
-    if (!existentesArq.has('anulado_por_nome'))
-      addArqCols.push(`ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'`);
-    if (!existentesArq.has('anulado_observacao'))
-      addArqCols.push(`ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'`);
-    if (addArqCols.length > 0) {
-      await pool.query(`ALTER TABLE gabarito_arquivos ${addArqCols.join(', ')}`);
-      console.log("[MIGRATION] Colunas de anulação adicionadas em 'gabarito_arquivos' ✅");
+    const arqDefs = [
+      { col: 'motivo_anulacao', def: `ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação'` },
+      { col: 'anulado_em', def: `ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'` },
+      { col: 'anulado_por', def: `ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'` },
+      { col: 'anulado_por_nome', def: `ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'` },
+      { col: 'anulado_observacao', def: `ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'` }
+    ];
+    for (const item of arqDefs) {
+      if (!existentesArq.has(item.col)) {
+        try {
+          await pool.query(`ALTER TABLE gabarito_arquivos ${item.def}`);
+          console.log(`[MIGRATION] Coluna '${item.col}' adicionada em 'gabarito_arquivos' ✅`);
+        } catch (colErr) {
+          console.warn(`[MIGRATION] Aviso ao adicionar '${item.col}' em 'gabarito_arquivos':`, colErr.message);
+        }
+      }
     }
   } catch (migErr) {
-    console.warn("[MIGRATION] Erro ao aplicar migration de anulação por cola (não crítico):", migErr.message);
+    console.warn("[MIGRATION] Erro ao aplicar migration gabarito_arquivos (não crítico):", migErr.message);
   }
 
 
