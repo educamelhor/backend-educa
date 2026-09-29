@@ -55,6 +55,25 @@ router.get("/status", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/sistema/diagnostico-telemetria — Conferência de telemetria
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/diagnostico-telemetria", async (req, res) => {
+  const db = pool;
+  try {
+    const [eventos] = await db.query(`
+      SELECT id, escola_id, aluno_id, usuario_id, perfil, evento, modulo, card_label, tela, plataforma, serie, turma_nome, created_at
+      FROM app_telemetria_eventos
+      ORDER BY id DESC
+      LIMIT 20
+    `);
+    const [count] = await db.query(`SELECT COUNT(*) as total FROM app_telemetria_eventos`);
+    return res.json({ ok: true, total: count[0]?.total || 0, eventos });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/plataforma/manutencao — CEO consulta status
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/", async (req, res) => {
