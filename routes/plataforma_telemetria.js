@@ -26,9 +26,7 @@ function getColorForCard(label, modulo) {
 // Helper para descrição amigável de faixa horária de pico
 function formatFaixaHorario(hora, perfil) {
   if (hora === null || hora === undefined || hora < 0) {
-    return perfil === "ALUNO"
-      ? "06:45 - 07:30 e 12:15 - 13:00 (Entrada / Saída)"
-      : "18:00 - 21:00 (Noite)";
+    return "Aguardando primeiros acessos";
   }
   const h = Number(hora);
   const hFim = (h + 2) % 24;
@@ -310,17 +308,17 @@ router.get("/overview", async (req, res) => {
         // Fallback estrutural amigável caso a escola ainda não tenha cliques registrados
         if (perfil === "RESPONSAVEL") {
           topCardsFormatados = [
-            { label: "Boletim Escolar", cliques: 0, pct: 45, color: "#38bdf8" },
-            { label: "Registros Disciplinares", cliques: 0, pct: 28, color: "#818cf8" },
-            { label: "Frequência & Atestados", cliques: 0, pct: 17, color: "#34d399" },
-            { label: "Comunicados & Avisos", cliques: 0, pct: 10, color: "#f59e0b" },
+            { label: "Boletim Escolar", cliques: 0, pct: 0, color: "#38bdf8" },
+            { label: "Registros Disciplinares", cliques: 0, pct: 0, color: "#818cf8" },
+            { label: "Frequência & Atestados", cliques: 0, pct: 0, color: "#34d399" },
+            { label: "Comunicados & Avisos", cliques: 0, pct: 0, color: "#f59e0b" },
           ];
         } else {
           topCardsFormatados = [
-            { label: "Carteirinha Digital", cliques: 0, pct: 46, color: "#a855f7" },
-            { label: "Boletim Escolar", cliques: 0, pct: 32, color: "#38bdf8" },
-            { label: "Horários de Aulas", cliques: 0, pct: 14, color: "#f59e0b" },
-            { label: "Conteúdos & Tarefas", cliques: 0, pct: 8, color: "#10b981" },
+            { label: "Carteirinha Digital", cliques: 0, pct: 0, color: "#a855f7" },
+            { label: "Boletim Escolar", cliques: 0, pct: 0, color: "#38bdf8" },
+            { label: "Horários de Aulas", cliques: 0, pct: 0, color: "#f59e0b" },
+            { label: "Conteúdos & Tarefas", cliques: 0, pct: 0, color: "#10b981" },
           ];
         }
       }

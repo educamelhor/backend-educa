@@ -1352,8 +1352,8 @@ router.post("/telemetria/evento", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Evento é obrigatório." });
     }
 
-    // Identifica usuário pelo token Bearer se enviado
-    let usuario_id = null;
+    // Identifica usuário pelo token Bearer se enviado ou pelo body
+    let usuario_id = req.body?.usuario_id || null;
     let perfilFinal = perfil || "DESCONHECIDO";
     const authHeader = req.headers.authorization || "";
     if (authHeader.startsWith("Bearer ")) {
