@@ -273,14 +273,11 @@ router.get("/overview", async (req, res) => {
       const iosCount = Number(stat.ios_count || 0);
       const totalDispositivos = androidCount + iosCount;
 
-      let androidPct = 82;
-      let iosPct = 18;
+      let androidPct = null;
+      let iosPct = null;
       if (totalDispositivos > 0) {
         androidPct = Math.round((androidCount / totalDispositivos) * 100);
         iosPct = 100 - androidPct;
-      } else if (perfil === "ALUNO") {
-        androidPct = 78;
-        iosPct = 22;
       }
 
       // Consolidação de acumuladores globais
@@ -296,32 +293,12 @@ router.get("/overview", async (req, res) => {
       const cardsBrutos = topCardsMap.get(Number(esc.id)) || [];
       const totalCliquesCards = cardsBrutos.reduce((acc, c) => acc + c.cliques, 0) || 1;
 
-      let topCardsFormatados = [];
-      if (cardsBrutos.length > 0) {
-        topCardsFormatados = cardsBrutos.map((c) => ({
-          label: c.label,
-          cliques: c.cliques,
-          pct: Math.round((c.cliques / totalCliquesCards) * 100),
-          color: getColorForCard(c.label, c.modulo),
-        }));
-      } else {
-        // Fallback estrutural amigável caso a escola ainda não tenha cliques registrados
-        if (perfil === "RESPONSAVEL") {
-          topCardsFormatados = [
-            { label: "Boletim Escolar", cliques: 0, pct: 0, color: "#38bdf8" },
-            { label: "Registros Disciplinares", cliques: 0, pct: 0, color: "#818cf8" },
-            { label: "Frequência & Atestados", cliques: 0, pct: 0, color: "#34d399" },
-            { label: "Comunicados & Avisos", cliques: 0, pct: 0, color: "#f59e0b" },
-          ];
-        } else {
-          topCardsFormatados = [
-            { label: "Carteirinha Digital", cliques: 0, pct: 0, color: "#a855f7" },
-            { label: "Boletim Escolar", cliques: 0, pct: 0, color: "#38bdf8" },
-            { label: "Horários de Aulas", cliques: 0, pct: 0, color: "#f59e0b" },
-            { label: "Conteúdos & Tarefas", cliques: 0, pct: 0, color: "#10b981" },
-          ];
-        }
-      }
+      const topCardsFormatados = cardsBrutos.map((c) => ({
+        label: c.label,
+        cliques: c.cliques,
+        pct: Math.round((c.cliques / totalCliquesCards) * 100),
+        color: getColorForCard(c.label, c.modulo),
+      }));
 
       // Histórico dos 7 dias
       const diasDict = historicoMap.get(Number(esc.id)) || {};
@@ -372,8 +349,8 @@ router.get("/overview", async (req, res) => {
 
     // Percentuais consolidados de dispositivos
     const totalDispGeral = somaAndroidGeral + somaIosGeral;
-    let androidPctGeral = 80;
-    let iosPctGeral = 20;
+    let androidPctGeral = null;
+    let iosPctGeral = null;
     if (totalDispGeral > 0) {
       androidPctGeral = Math.round((somaAndroidGeral / totalDispGeral) * 100);
       iosPctGeral = 100 - androidPctGeral;
