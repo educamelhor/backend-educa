@@ -558,6 +558,7 @@ router.get("/:id/arquivos", verificarEscola, async (req, res) => {
       `SELECT a.id, a.arquivo_nome, a.arquivo_path, a.codigo_aluno, a.nome_aluno,
               a.turma_id, a.status, a.qr_data, a.respostas_aluno, a.acertos, a.nota,
               a.corrigido_em, a.corrigido_por,
+              a.motivo_anulacao, a.anulado_em, a.anulado_por, a.anulado_por_nome, a.anulado_observacao,
               (SELECT COUNT(*) FROM gabarito_ajustes_manuais m WHERE m.arquivo_id = a.id AND m.status = 'pendente') as ajustes_pendentes
        FROM gabarito_arquivos a
        WHERE a.lote_id = ? AND a.escola_id = ?
@@ -2666,6 +2667,191 @@ router.patch("/arquivos/:id/ausente", async (req, res) => {
   } catch (err) {
     console.error("[ausente] Erro:", err);
     res.status(500).json({ error: err?.message || "Erro ao atualizar status." });
+  }
+});
+
+// ─── PATCH /api/gabarito-lotes/arquivos/:id/anular ─────────────────────────────
+// Anula gabarito por cola/fraude (ou desfaz voltando para 'corrigido'/'identificado')
+// Atualiza gabarito_arquivos e sincroniza gabarito_respostas se existir
+router.patch("/arquivos/:id/anular", async (req, res) => {
+  const { id } = req.params;
+  const {
+    desfazer = false,
+    motivo = "Cola / Fraude durante a prova",
+    observacao = "",
+    criar_ocorrencia = false,
+    tipo_ocorrencia = "Fraude / Desonestidade Acadêmica",
+    convocar_responsavel = false,
+  } = req.body;
+  const { escola_id } = req.user;
+  const usuarioId = req.user?.id || null;
+  const usuarioNome = req.user?.nome || req.user?.name || req.user?.email || "Coordenação/Professor";
+
+  try {
+    const [[arq]] = await pool.query(
+      `SELECT a.*, l.avaliacao_id, l.turma_nome
+       FROM gabarito_arquivos a
+       JOIN gabarito_lotes l ON l.id = a.lote_id
+       WHERE a.id = ? AND a.escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (!arq) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    let sessionProgress = null;
+
+    if (desfazer) {
+      // Reverter anulação
+      const novoStatus = arq.respostas_aluno ? "corrigido" : (arq.codigo_aluno ? "identificado" : "pendente");
+      await pool.query(
+        `UPDATE gabarito_arquivos
+         SET status = ?, motivo_anulacao = NULL, anulado_em = NULL, anulado_por = NULL, anulado_por_nome = NULL, anulado_observacao = NULL, updated_at = NOW()
+         WHERE id = ? AND escola_id = ?`,
+        [novoStatus, id, escola_id]
+      );
+
+      // Reverter também em gabarito_respostas se existir
+      if (arq.avaliacao_id && arq.codigo_aluno) {
+        const [[resp]] = await pool.query(
+          `SELECT id, nota_original, acertos_original FROM gabarito_respostas
+           WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
+          [arq.avaliacao_id, arq.codigo_aluno, escola_id]
+        );
+        if (resp) {
+          const notaRestaurada = resp.nota_original != null ? Number(resp.nota_original) : (arq.nota != null ? Number(arq.nota) : 0);
+          const acertosRestaurados = resp.acertos_original != null ? Number(resp.acertos_original) : (arq.acertos != null ? Number(arq.acertos) : 0);
+          await pool.query(
+            `UPDATE gabarito_respostas
+             SET status = 'regular',
+                 nota = ?,
+                 acertos = ?,
+                 motivo_anulacao = NULL,
+                 anulado_em = NULL,
+                 anulado_por = NULL,
+                 anulado_por_nome = NULL,
+                 anulado_observacao = NULL,
+                 nota_original = NULL,
+                 acertos_original = NULL
+             WHERE id = ? AND escola_id = ?`,
+            [notaRestaurada, acertosRestaurados, resp.id, escola_id]
+          );
+        }
+      }
+    } else {
+      // Anular gabarito
+      await pool.query(
+        `UPDATE gabarito_arquivos
+         SET status = 'anulado',
+             motivo_anulacao = ?,
+             anulado_em = NOW(),
+             anulado_por = ?,
+             anulado_por_nome = ?,
+             anulado_observacao = ?,
+             updated_at = NOW()
+         WHERE id = ? AND escola_id = ?`,
+        [motivo, usuarioId, usuarioNome, observacao || null, id, escola_id]
+      );
+
+      // Sincronizar ou criar registro anulado em gabarito_respostas
+      if (arq.avaliacao_id && arq.codigo_aluno) {
+        const [[resp]] = await pool.query(
+          `SELECT id, nota, acertos, nota_original, acertos_original
+           FROM gabarito_respostas
+           WHERE avaliacao_id = ? AND codigo_aluno = ? AND escola_id = ?`,
+          [arq.avaliacao_id, arq.codigo_aluno, escola_id]
+        );
+
+        if (resp) {
+          const notaOrig = resp.nota_original != null ? resp.nota_original : resp.nota;
+          const acertosOrig = resp.acertos_original != null ? resp.acertos_original : resp.acertos;
+          await pool.query(
+            `UPDATE gabarito_respostas
+             SET status = 'anulado',
+                 nota = 0.00,
+                 acertos = 0,
+                 motivo_anulacao = ?,
+                 anulado_em = NOW(),
+                 anulado_por = ?,
+                 anulado_por_nome = ?,
+                 anulado_observacao = ?,
+                 nota_original = ?,
+                 acertos_original = ?
+             WHERE id = ? AND escola_id = ?`,
+            [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, resp.id, escola_id]
+          );
+        }
+      }
+
+      // Criar ocorrência disciplinar se solicitado
+      if (criar_ocorrencia) {
+        try {
+          let alunoId = null;
+          if (arq.codigo_aluno) {
+            const [[alunoRow]] = await pool.query(
+              `SELECT id FROM alunos WHERE escola_id = ? AND (matricula = ? OR id = ?) LIMIT 1`,
+              [escola_id, arq.codigo_aluno, Number(arq.codigo_aluno) || 0]
+            );
+            if (alunoRow) alunoId = alunoRow.id;
+          }
+          if (alunoId) {
+            const descFinal = observacao
+              ? `Anulação de gabarito por cola/fraude na turma: "${arq.turma_nome || ''}". Motivo: ${motivo}. Obs: ${observacao}`
+              : `Anulação de gabarito por cola/fraude na turma: "${arq.turma_nome || ''}". Motivo: ${motivo}.`;
+
+            await pool.query(
+              `INSERT INTO ocorrencias_disciplinares
+                 (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
+               VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
+              [
+                alunoId,
+                escola_id,
+                motivo,
+                tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+                descFinal,
+                convocar_responsavel ? 1 : 0,
+                usuarioId,
+              ]
+            );
+          }
+        } catch (ocErr) {
+          console.warn("[ANULAR-ARQUIVO] Erro ao criar ocorrência:", ocErr.message);
+        }
+      }
+    }
+
+    // Progresso da sessão
+    if (arq?.lote_id) {
+      const [[prog]] = await pool.query(
+        `SELECT
+           COUNT(*) as total,
+           SUM(status IN ('identificado','corrigido')) as capturados,
+           SUM(status = 'ausente') as ausentes,
+           SUM(status = 'anulado') as anulados,
+           SUM(status = 'pendente') as pendentes
+         FROM gabarito_arquivos WHERE lote_id = ?`,
+        [arq.lote_id]
+      );
+      sessionProgress = {
+        total:      Number(prog?.total      || 0),
+        capturados: Number(prog?.capturados || 0),
+        ausentes:   Number(prog?.ausentes   || 0),
+        anulados:   Number(prog?.anulados   || 0),
+        pendentes:  Number(prog?.pendentes  || 0),
+      };
+    }
+
+    res.json({
+      ok: true,
+      desfazer,
+      status: desfazer ? (arq.respostas_aluno ? "corrigido" : "identificado") : "anulado",
+      motivo_anulacao: desfazer ? null : motivo,
+      sessionProgress,
+    });
+  } catch (err) {
+    console.error("[anular-arquivo] Erro:", err);
+    res.status(500).json({ error: err?.message || "Erro ao processar anulação do arquivo." });
   }
 });
 

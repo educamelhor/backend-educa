@@ -297,6 +297,204 @@ router.get("/respostas/:id/arquivo-gabarito", verificarEscola, async (req, res) 
   }
 });
 
+// ─── PATCH /api/gabaritos/respostas/:id/anular ─────────────────────────────
+// Anula o gabarito do aluno pego colando ou cometendo infração
+// Zera a nota para 0.00 e preserva a nota original para permitir reversão
+router.patch("/respostas/:id/anular", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const { id } = req.params;
+  const {
+    motivo = "Cola / Fraude durante a prova",
+    observacao = "",
+    criar_ocorrencia = false,
+    tipo_ocorrencia = "Fraude / Desonestidade Acadêmica",
+    convocar_responsavel = false,
+  } = req.body;
+
+  try {
+    const [[resp]] = await pool.query(
+      `SELECT r.*, a.titulo AS avaliacao_titulo
+       FROM gabarito_respostas r
+       JOIN gabarito_avaliacoes a ON a.id = r.avaliacao_id
+       WHERE r.id = ? AND r.escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (!resp) {
+      return res.status(404).json({ error: "Resultado não encontrado." });
+    }
+
+    if (resp.status === "anulado") {
+      return res.status(400).json({ error: "Este gabarito já está anulado." });
+    }
+
+    const notaOrig = resp.nota_original != null ? resp.nota_original : resp.nota;
+    const acertosOrig = resp.acertos_original != null ? resp.acertos_original : resp.acertos;
+    const usuarioId = req.user.id || null;
+    const usuarioNome = req.user.nome || req.user.name || req.user.email || "Coordenação";
+
+    // 1. Atualizar gabarito_respostas
+    await pool.query(
+      `UPDATE gabarito_respostas
+       SET status = 'anulado',
+           nota = 0.00,
+           acertos = 0,
+           motivo_anulacao = ?,
+           anulado_em = NOW(),
+           anulado_por = ?,
+           anulado_por_nome = ?,
+           anulado_observacao = ?,
+           nota_original = ?,
+           acertos_original = ?
+       WHERE id = ? AND escola_id = ?`,
+      [motivo, usuarioId, usuarioNome, observacao || null, notaOrig, acertosOrig, id, escola_id]
+    );
+
+    // 2. Sincronizar gabarito_arquivos se existir
+    try {
+      await pool.query(
+        `UPDATE gabarito_arquivos a
+         JOIN gabarito_lotes l ON l.id = a.lote_id
+         SET a.status = 'anulado',
+             a.motivo_anulacao = ?,
+             a.anulado_em = NOW(),
+             a.anulado_por = ?,
+             a.anulado_por_nome = ?,
+             a.anulado_observacao = ?
+         WHERE l.avaliacao_id = ? AND a.escola_id = ? AND a.codigo_aluno = ?`,
+        [motivo, usuarioId, usuarioNome, observacao || null, resp.avaliacao_id, escola_id, resp.codigo_aluno]
+      );
+    } catch (syncErr) {
+      console.warn("[ANULAR] Erro ao sincronizar gabarito_arquivos (não crítico):", syncErr.message);
+    }
+
+    // 3. Criar ocorrência disciplinar se solicitado
+    let ocorrenciaCriada = false;
+    if (criar_ocorrencia) {
+      try {
+        let alunoId = resp.aluno_id;
+        if (!alunoId) {
+          const [[alunoRow]] = await pool.query(
+            `SELECT id FROM alunos WHERE escola_id = ? AND (matricula = ? OR id = ?) LIMIT 1`,
+            [escola_id, resp.codigo_aluno, Number(resp.codigo_aluno) || 0]
+          );
+          if (alunoRow) alunoId = alunoRow.id;
+        }
+
+        if (alunoId) {
+          const descFinal = observacao
+            ? `Anulação de gabarito na avaliação: "${resp.avaliacao_titulo || 'Avaliação'}". Motivo: ${motivo}. Obs: ${observacao}`
+            : `Anulação de gabarito na avaliação: "${resp.avaliacao_titulo || 'Avaliação'}". Motivo: ${motivo}.`;
+
+          await pool.query(
+            `INSERT INTO ocorrencias_disciplinares
+               (aluno_id, escola_id, data_ocorrencia, motivo, tipo_ocorrencia, descricao, registro_interno, convocar_responsavel, usuario_registro_id)
+             VALUES (?, ?, CURDATE(), ?, ?, ?, 1, ?, ?)`,
+            [
+              alunoId,
+              escola_id,
+              motivo,
+              tipo_ocorrencia || "Fraude / Desonestidade Acadêmica",
+              descFinal,
+              convocar_responsavel ? 1 : 0,
+              usuarioId,
+            ]
+          );
+          ocorrenciaCriada = true;
+        }
+      } catch (ocErr) {
+        console.warn("[ANULAR] Erro ao criar ocorrência disciplinar (não crítico):", ocErr.message);
+      }
+    }
+
+    res.json({
+      ok: true,
+      status: "anulado",
+      motivo_anulacao: motivo,
+      nota_original: notaOrig,
+      acertos_original: acertosOrig,
+      ocorrenciaCriada,
+      message: "Gabarito anulado com sucesso.",
+    });
+  } catch (err) {
+    console.error("Erro ao anular gabarito:", err);
+    res.status(500).json({ error: "Erro ao anular gabarito." });
+  }
+});
+
+// ─── PATCH /api/gabaritos/respostas/:id/desfazer-anulacao ──────────────────
+// Restaura a nota e status originais do gabarito
+router.patch("/respostas/:id/desfazer-anulacao", verificarEscola, async (req, res) => {
+  const { escola_id } = req.user;
+  const { id } = req.params;
+
+  try {
+    const [[resp]] = await pool.query(
+      `SELECT r.*
+       FROM gabarito_respostas r
+       WHERE r.id = ? AND r.escola_id = ?`,
+      [id, escola_id]
+    );
+
+    if (!resp) {
+      return res.status(404).json({ error: "Resultado não encontrado." });
+    }
+
+    if (resp.status !== "anulado") {
+      return res.status(400).json({ error: "Este gabarito não está anulado." });
+    }
+
+    const notaRestaurada = resp.nota_original != null ? Number(resp.nota_original) : 0.00;
+    const acertosRestaurados = resp.acertos_original != null ? Number(resp.acertos_original) : 0;
+
+    // 1. Restaurar gabarito_respostas
+    await pool.query(
+      `UPDATE gabarito_respostas
+       SET status = 'regular',
+           nota = ?,
+           acertos = ?,
+           motivo_anulacao = NULL,
+           anulado_em = NULL,
+           anulado_por = NULL,
+           anulado_por_nome = NULL,
+           anulado_observacao = NULL,
+           nota_original = NULL,
+           acertos_original = NULL
+       WHERE id = ? AND escola_id = ?`,
+      [notaRestaurada, acertosRestaurados, id, escola_id]
+    );
+
+    // 2. Sincronizar gabarito_arquivos se existir
+    try {
+      await pool.query(
+        `UPDATE gabarito_arquivos a
+         JOIN gabarito_lotes l ON l.id = a.lote_id
+         SET a.status = IF(a.respostas_aluno IS NOT NULL, 'corrigido', 'identificado'),
+             a.motivo_anulacao = NULL,
+             a.anulado_em = NULL,
+             a.anulado_por = NULL,
+             a.anulado_por_nome = NULL,
+             a.anulado_observacao = NULL
+         WHERE l.avaliacao_id = ? AND a.escola_id = ? AND a.codigo_aluno = ?`,
+        [resp.avaliacao_id, escola_id, resp.codigo_aluno]
+      );
+    } catch (syncErr) {
+      console.warn("[DESFAZER-ANULAR] Erro ao sincronizar gabarito_arquivos:", syncErr.message);
+    }
+
+    res.json({
+      ok: true,
+      status: "regular",
+      nota: notaRestaurada,
+      acertos: acertosRestaurados,
+      message: "Anulação revertida com sucesso. Nota original restaurada.",
+    });
+  } catch (err) {
+    console.error("Erro ao desfazer anulação:", err);
+    res.status(500).json({ error: "Erro ao desfazer anulação." });
+  }
+});
+
 // ─── GET /api/gabaritos/nome-unicos ──────────────────────────────────────────
 // Compat: lista nomes únicos da tabela legada
 router.get("/nome-unicos", verificarEscola, async (req, res) => {

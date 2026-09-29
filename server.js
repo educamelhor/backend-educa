@@ -888,6 +888,78 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao expandir ENUM 'origem' (não crítico):", migErr.message);
   }
 
+  // [2026-09-29] Módulo Gabarito — Anulação por cola / fraude (gabarito_respostas + gabarito_arquivos)
+  try {
+    const [colsResp] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gabarito_respostas'
+        AND COLUMN_NAME IN ('status', 'motivo_anulacao', 'anulado_em', 'anulado_por', 'anulado_por_nome', 'anulado_observacao', 'nota_original', 'acertos_original')
+    `);
+    const existentesResp = new Set(colsResp.map(c => c.COLUMN_NAME));
+    const addRespCols = [];
+    if (!existentesResp.has('status'))
+      addRespCols.push(`ADD COLUMN status ENUM('regular', 'anulado') NOT NULL DEFAULT 'regular' COMMENT 'Status: regular ou anulado por cola/fraude'`);
+    if (!existentesResp.has('motivo_anulacao'))
+      addRespCols.push(`ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação (ex: Cola / Fraude)'`);
+    if (!existentesResp.has('anulado_em'))
+      addRespCols.push(`ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'`);
+    if (!existentesResp.has('anulado_por'))
+      addRespCols.push(`ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'`);
+    if (!existentesResp.has('anulado_por_nome'))
+      addRespCols.push(`ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'`);
+    if (!existentesResp.has('anulado_observacao'))
+      addRespCols.push(`ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'`);
+    if (!existentesResp.has('nota_original'))
+      addRespCols.push(`ADD COLUMN nota_original DECIMAL(5,2) DEFAULT NULL COMMENT 'Nota original preservada para restauração'`);
+    if (!existentesResp.has('acertos_original'))
+      addRespCols.push(`ADD COLUMN acertos_original INT DEFAULT NULL COMMENT 'Acertos originais preservados para restauração'`);
+    if (addRespCols.length > 0) {
+      await pool.query(`ALTER TABLE gabarito_respostas ${addRespCols.join(', ')}`);
+      console.log("[MIGRATION] Colunas de anulação/cola adicionadas em 'gabarito_respostas' ✅");
+    }
+
+    // gabarito_arquivos: verificar ENUM de status e colunas de anulação
+    const [[enumArqStatus]] = await pool.query(`
+      SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'gabarito_arquivos'
+        AND COLUMN_NAME = 'status'
+      LIMIT 1
+    `);
+    if (enumArqStatus && !String(enumArqStatus.COLUMN_TYPE).includes('anulado')) {
+      await pool.query(`
+        ALTER TABLE gabarito_arquivos
+          MODIFY COLUMN status ENUM('pendente', 'identificado', 'corrigido', 'erro', 'ausente', 'anulado') DEFAULT 'pendente'
+      `);
+      console.log("[MIGRATION] ENUM 'status' em gabarito_arquivos expandido (+ anulado) ✅");
+    }
+
+    const [colsArq] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gabarito_arquivos'
+        AND COLUMN_NAME IN ('motivo_anulacao', 'anulado_em', 'anulado_por', 'anulado_por_nome', 'anulado_observacao')
+    `);
+    const existentesArq = new Set(colsArq.map(c => c.COLUMN_NAME));
+    const addArqCols = [];
+    if (!existentesArq.has('motivo_anulacao'))
+      addArqCols.push(`ADD COLUMN motivo_anulacao VARCHAR(255) DEFAULT NULL COMMENT 'Motivo da anulação'`);
+    if (!existentesArq.has('anulado_em'))
+      addArqCols.push(`ADD COLUMN anulado_em DATETIME DEFAULT NULL COMMENT 'Data e hora da anulação'`);
+    if (!existentesArq.has('anulado_por'))
+      addArqCols.push(`ADD COLUMN anulado_por INT DEFAULT NULL COMMENT 'ID do usuário que realizou a anulação'`);
+    if (!existentesArq.has('anulado_por_nome'))
+      addArqCols.push(`ADD COLUMN anulado_por_nome VARCHAR(255) DEFAULT NULL COMMENT 'Nome do usuário que realizou a anulação'`);
+    if (!existentesArq.has('anulado_observacao'))
+      addArqCols.push(`ADD COLUMN anulado_observacao TEXT DEFAULT NULL COMMENT 'Observações detalhadas da anulação'`);
+    if (addArqCols.length > 0) {
+      await pool.query(`ALTER TABLE gabarito_arquivos ${addArqCols.join(', ')}`);
+      console.log("[MIGRATION] Colunas de anulação adicionadas em 'gabarito_arquivos' ✅");
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration de anulação por cola (não crítico):", migErr.message);
+  }
+
+
   // ─────────────────────────────────────────────────────────────────────────────
   // [2026-05-01] Banco Global de Questões — correta_texto + temas + tabelas
   // ─────────────────────────────────────────────────────────────────────────────
