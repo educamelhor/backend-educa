@@ -499,13 +499,14 @@ router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => 
 
     const alunoIds = alunos.map(a => a.id);
     if (alunoIds.length === 0) {
-      return res.json({ ok: true, alunos: [], disciplinas: [], medias: {} });
+      return res.json({ ok: true, alunos: [], disciplinas: [], medias: {}, somas: {} });
     }
 
-    // 2) Média anual por aluno e disciplina (soma de notas no ano / 4)
+    // 2) Média anual e soma por aluno e disciplina (soma de notas no ano / 4)
     const placeholders = alunoIds.map(() => "?").join(",");
     const [rows] = await db.query(
       `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina, d.abreviatura,
+              ROUND(SUM(n.nota), 1) AS soma,
               ROUND(SUM(n.nota) / 4.0, 1) AS media
        FROM notas n
        JOIN disciplinas d ON d.id = n.disciplina_id
@@ -529,13 +530,15 @@ router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => 
     }
     const disciplinas = [...discMap.values()];
 
-    // 4) Montar mapa de médias: { "alunoId_disciplinaId": media }
+    // 4) Montar mapas de médias e somas: { "alunoId_disciplinaId": valor }
     const mediasMap = {};
+    const somasMap = {};
     for (const r of rows) {
       mediasMap[`${r.aluno_id}_${r.disciplina_id}`] = Number(r.media);
+      somasMap[`${r.aluno_id}_${r.disciplina_id}`] = Number(r.soma);
     }
 
-    return res.json({ ok: true, alunos, disciplinas, medias: mediasMap });
+    return res.json({ ok: true, alunos, disciplinas, medias: mediasMap, somas: somasMap });
   } catch (err) {
     console.error("[media-anual] Erro:", err.message);
     return res.status(500).json({ ok: false, error: "Erro ao carregar média anual." });
