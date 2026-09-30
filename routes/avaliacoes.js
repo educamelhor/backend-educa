@@ -1328,13 +1328,20 @@ router.post("/:id/exportar-boletim", async (req, res) => {
 
     // 1) Buscar o plano
     const [[plano]] = await conn.query(
-      "SELECT id, disciplina, bimestre, ano, escola_id, status, itens FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
+      "SELECT id, disciplina, bimestre, ano, escola_id, status FROM planos_avaliacao WHERE id = ? AND escola_id = ?",
       [planoId, escola_id]
     );
     if (!plano) {
       conn.release();
       return res.status(404).json({ error: "Plano não encontrado." });
     }
+
+    // Buscar os itens de avaliação do plano (ordenados por id ASC para corresponder a item_idx)
+    const [itensPlano] = await conn.query(
+      "SELECT * FROM itens_avaliacao WHERE plano_id = ? ORDER BY id ASC",
+      [planoId]
+    );
+    const arrItens = itensPlano || [];
 
     // 2) Se o diário já está fechado, bloquear qualquer operação
     const [[jaFechado]] = await conn.query(
@@ -1395,7 +1402,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       return res.status(400).json({ error: "Nenhuma nota encontrada no diário para exportar." });
     }
 
-    const arrItens = Array.isArray(plano.itens) ? plano.itens : JSON.parse(plano.itens || "[]");
+    let inTransaction = false;
 
     const notasPorAluno = {};
     for (const r of rowsNotas) {
@@ -1407,61 +1414,76 @@ router.post("/:id/exportar-boletim", async (req, res) => {
     }
 
     const totais = [];
-    for (const [alunoIdStr, mapaNotas] of Object.entries(notasPorAluno)) {
-      const aluno_id = parseInt(alunoIdStr, 10);
-      let totalRegular = 0;
-      let totalExtra = 0;
-
-      arrItens.forEach((item, itemIdx) => {
-        const isExtra = !!item.ponto_extra || !!item.eh_ponto_extra || item.tipo_avaliacao === "Ponto Extra";
-
-        if (item.fixo_direcao) {
-          const entry = mapaNotas[`${itemIdx}_0`];
-          if (entry && !isNaN(entry.nota)) {
-            totalRegular += entry.nota;
+    if (arrItens.length === 0) {
+      // Fallback de segurança se itens_avaliacao não tiver registros
+      for (const [alunoIdStr, mapaNotas] of Object.entries(notasPorAluno)) {
+        const aluno_id = parseInt(alunoIdStr, 10);
+        let total = 0;
+        for (const entry of Object.values(mapaNotas)) {
+          if (entry && !isNaN(entry.nota) && entry.cor !== 'ausente') {
+            total += entry.nota;
           }
-          return;
         }
+        totais.push({ aluno_id, total: Math.min(10, total) });
+      }
+    } else {
+      for (const [alunoIdStr, mapaNotas] of Object.entries(notasPorAluno)) {
+        const aluno_id = parseInt(alunoIdStr, 10);
+        let totalRegular = 0;
+        let totalExtra = 0;
 
-        if (isExtra) {
-          const entry = mapaNotas[`${itemIdx}_0`];
-          if (entry && !isNaN(entry.nota)) {
-            totalExtra += entry.nota;
-          }
-          return;
-        }
+        arrItens.forEach((item, itemIdx) => {
+          const isExtra = !!item.ponto_extra || !!item.eh_ponto_extra || item.tipo_avaliacao === "Ponto Extra";
+          const isFixo = !!item.fixo_direcao;
 
-        const freq = Number(item.oportunidades) || 1;
-        for (let opIdx = 0; opIdx < freq; opIdx++) {
-          const entryOrig = mapaNotas[`${itemIdx}_${opIdx}`];
-          const isAusente = entryOrig?.cor === "ausente";
-          const numOrig = (!isAusente && entryOrig && !isNaN(entryOrig.nota)) ? entryOrig.nota : null;
-
-          const rcOpIdx = freq > 1 ? 100 + opIdx : 1;
-          const entryRC = mapaNotas[`${itemIdx}_${rcOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_100`] : null);
-          const numRC = (entryRC && !isNaN(entryRC.nota)) ? entryRC.nota : null;
-
-          const rcpOpIdx = freq > 1 ? 200 + opIdx : 2;
-          const entryRCp = mapaNotas[`${itemIdx}_${rcpOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_200`] : null);
-          const numRCp = (entryRCp && !isNaN(entryRCp.nota)) ? entryRCp.nota : null;
-
-          if (isAusente) {
-            if (numRCp !== null) {
-              totalRegular += numRCp;
+          if (isFixo) {
+            const entry = mapaNotas[`${itemIdx}_0`];
+            if (entry && !isNaN(entry.nota)) {
+              totalRegular += entry.nota;
             }
-            continue;
+            return;
           }
 
-          const candidatos = [numOrig, numRC, numRCp].filter(n => n !== null);
-          if (candidatos.length > 0) {
-            totalRegular += Math.max(...candidatos);
+          if (isExtra) {
+            const entry = mapaNotas[`${itemIdx}_0`];
+            if (entry && !isNaN(entry.nota)) {
+              totalExtra += entry.nota;
+            }
+            return;
           }
-        }
-      });
 
-      let totalFinal = totalRegular + totalExtra;
-      if (totalFinal > 10) totalFinal = 10;
-      totais.push({ aluno_id, total: totalFinal });
+          const freq = Number(item.oportunidades) || 1;
+          for (let opIdx = 0; opIdx < freq; opIdx++) {
+            const entryOrig = mapaNotas[`${itemIdx}_${opIdx}`];
+            const isAusente = entryOrig?.cor === "ausente";
+            const numOrig = (!isAusente && entryOrig && entryOrig.nota !== null && !isNaN(entryOrig.nota)) ? entryOrig.nota : null;
+
+            const rcOpIdx = freq > 1 ? 100 + opIdx : 1;
+            const entryRC = mapaNotas[`${itemIdx}_${rcOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_100`] : null);
+            const numRC = (entryRC && entryRC.nota !== null && !isNaN(entryRC.nota)) ? entryRC.nota : null;
+
+            const rcpOpIdx = freq > 1 ? 200 + opIdx : 2;
+            const entryRCp = mapaNotas[`${itemIdx}_${rcpOpIdx}`] || (freq === 1 ? mapaNotas[`${itemIdx}_200`] : null);
+            const numRCp = (entryRCp && entryRCp.nota !== null && !isNaN(entryRCp.nota)) ? entryRCp.nota : null;
+
+            if (isAusente) {
+              if (numRCp !== null) {
+                totalRegular += numRCp;
+              }
+              continue;
+            }
+
+            const candidatos = [numOrig, numRC, numRCp].filter(n => n !== null);
+            if (candidatos.length > 0) {
+              totalRegular += Math.max(...candidatos);
+            }
+          }
+        });
+
+        let totalFinal = totalRegular + totalExtra;
+        if (totalFinal > 10) totalFinal = 10;
+        totais.push({ aluno_id, total: totalFinal });
+      }
     }
 
     if (totais.length === 0) {
@@ -1471,6 +1493,7 @@ router.post("/:id/exportar-boletim", async (req, res) => {
 
     // 6) Transação: UPSERT nas notas + registrar fechamento
     await conn.beginTransaction();
+    inTransaction = true;
 
     let inseridas = 0;
     let atualizadas = 0;
@@ -1515,10 +1538,12 @@ router.post("/:id/exportar-boletim", async (req, res) => {
       },
     });
   } catch (err) {
-    await conn.rollback();
+    if (inTransaction) {
+      try { await conn.rollback(); } catch (_) {}
+    }
     conn.release();
     console.error("Erro ao exportar notas para boletim:", err);
-    return res.status(500).json({ error: "Erro ao exportar notas para o boletim." });
+    return res.status(500).json({ error: "Erro ao exportar notas para o boletim.", detalhe: err.message });
   }
 });
 
