@@ -402,7 +402,7 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
 
     const placeholders = alunoIds.map(() => "?").join(",");
     const [notasRows] = await db.query(
-      `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina, n.nota
+      `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina, d.abreviatura, n.nota
        FROM notas n
        JOIN disciplinas d ON d.id = n.disciplina_id
        WHERE n.aluno_id IN (${placeholders})
@@ -451,6 +451,7 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
         discMap.set(n.disciplina_id, {
           id: n.disciplina_id,
           nome: n.disciplina,
+          abreviatura: n.abreviatura || null,
           minha: discsProfessor.has(n.disciplina_id),
         });
       }
@@ -504,13 +505,13 @@ router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => 
     // 2) Média anual por aluno e disciplina (soma de notas no ano / 4)
     const placeholders = alunoIds.map(() => "?").join(",");
     const [rows] = await db.query(
-      `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina,
+      `SELECT n.aluno_id, n.disciplina_id, d.nome AS disciplina, d.abreviatura,
               ROUND(SUM(n.nota) / 4.0, 1) AS media
        FROM notas n
        JOIN disciplinas d ON d.id = n.disciplina_id
        WHERE n.aluno_id IN (${placeholders})
          AND n.ano = ?
-       GROUP BY n.aluno_id, n.disciplina_id, d.nome
+       GROUP BY n.aluno_id, n.disciplina_id, d.nome, d.abreviatura
        ORDER BY d.nome`,
       [...alunoIds, ano]
     );
@@ -522,6 +523,7 @@ router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => 
         discMap.set(r.disciplina_id, {
           id: r.disciplina_id,
           nome: r.disciplina,
+          abreviatura: r.abreviatura || null,
         });
       }
     }
