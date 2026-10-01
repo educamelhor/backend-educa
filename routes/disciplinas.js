@@ -70,7 +70,7 @@ router.get("/", verificarEscola, async (req, res) => {
  * Cria uma nova disciplina para a escola do usuário
  */
 router.post("/", verificarEscola, async (req, res) => {
-  const { nome, carga, etapa, turno, abreviatura } = req.body;
+  const { nome, carga, etapa, turno, abreviatura, nome_oficial } = req.body;
   const { escola_id } = req.user;
 
   if (!nome || carga == null) {
@@ -81,6 +81,9 @@ router.post("/", verificarEscola, async (req, res) => {
   const turnoFinal = turno?.trim().toUpperCase() || "INTEGRAL";
   const abreviaturaFinal = abreviatura && typeof abreviatura === 'string' && abreviatura.trim()
     ? abreviatura.trim().toUpperCase()
+    : null;
+  const nomeOficialFinal = nome_oficial && typeof nome_oficial === 'string' && nome_oficial.trim()
+    ? nome_oficial.trim()
     : null;
 
   try {
@@ -98,13 +101,13 @@ router.post("/", verificarEscola, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, abreviatura, etapa, turno, carga, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga, escola_id]
+      `INSERT INTO disciplinas (nome, abreviatura, nome_oficial, etapa, turno, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [nomeNormalizado, abreviaturaFinal, nomeOficialFinal, etapaFinal, turnoFinal, carga, escola_id]
     );
 
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, abreviatura, etapa, turno, carga, escola_id
+      `SELECT id, nome AS disciplina, abreviatura, nome_oficial, etapa, turno, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -161,7 +164,7 @@ router.delete("/:id", verificarEscola, async (req, res) => {
 router.put("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, carga, etapa, turno, abreviatura } = req.body;
+    const { nome, carga, etapa, turno, abreviatura, nome_oficial } = req.body;
     const { escola_id } = req.user;
 
     if (!nome || carga == null) {
@@ -187,12 +190,19 @@ router.put("/:id", verificarEscola, async (req, res) => {
       });
     }
 
-    const [result] = await pool.query(
-      `UPDATE disciplinas
-       SET nome = ?, abreviatura = ?, etapa = ?, turno = ?, carga = ?
-       WHERE id = ? AND escola_id = ?`,
-      [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga, id, escola_id]
-    );
+    let updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, etapa = ?, turno = ?, carga = ?`;
+    const updateParams = [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga];
+
+    if (nome_oficial !== undefined) {
+      const nomeOficialFinal = typeof nome_oficial === 'string' && nome_oficial.trim() ? nome_oficial.trim() : null;
+      updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, nome_oficial = ?, etapa = ?, turno = ?, carga = ?`;
+      updateParams.splice(2, 0, nomeOficialFinal);
+    }
+
+    updateSql += `, updated_at = NOW() WHERE id = ? AND escola_id = ?`;
+    updateParams.push(id, escola_id);
+
+    const [result] = await pool.query(updateSql, updateParams);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Disciplina não encontrada ou não pertence à sua escola." });

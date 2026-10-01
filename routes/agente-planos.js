@@ -303,7 +303,7 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
       [plano.disciplina, escolaId]
     );
-    const disciplinaOficial = discDb?.nome_oficial || plano.disciplina;
+    const disciplinaOficial = discDb?.nome_oficial || null;
 
     const configAgente = await lerConfigAgente(db, escolaId);
 
@@ -590,7 +590,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
       'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
       [plano.disciplina, escolaId]
     );
-    const disciplinaOficial = discDb?.nome_oficial || plano.disciplina;
+    const disciplinaOficial = discDb?.nome_oficial || null;
 
     const configAgente = await lerConfigAgente(db, escolaId);
 

@@ -52,40 +52,141 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
     return res.status(400).json({ ok: false, logs, message: "Nenhum arquivo enviado." });
   }
 
-  // ── Normaliza texto removendo diacríticos para matching robusto ──────────
-  // O pdf-parse pode entregar 'LÍNGUA PORTUGUESA' como 'L\uFFFDNGUA PORTUGUESA'.
-  // Ao normalizar ambos os lados (PDF e banco) conseguimos fazer o match.
-  const normalizeStr = (s) =>
-    (s || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "") // remove diacríticos
-      .toUpperCase()
-      .replace(/\s+/g, " ")
-      .trim();
+  // ── Mapeamento canônico universal da SEEDF ──────────────────────────────
+  // Usado como correspondência bilateral quando a escola ainda não definiu
+  // nome_oficial manualmente no modal "Mapeamento Global de Disciplinas".
+  const SEEDF_CANONICAL_ALIASES = [
+    {
+      canon: "PARTE DIVERSIFICADA I",
+      aliases: [
+        "PARTE DIVERSIFICADA I", "PRATICA DIVERSIFICADA I", "PRATICAS DIVERSIFICADAS I",
+        "PRATICA DIVERSIFICADA 1", "PRATICAS DIVERSIFICADAS 1", "PARTE DIVERSIFICADA 1"
+      ]
+    },
+    {
+      canon: "PARTE DIVERSIFICADA II",
+      aliases: [
+        "PARTE DIVERSIFICADA II", "PRATICA DIVERSIFICADA II", "PRATICAS DIVERSIFICADAS II",
+        "PRATICA DIVERSIFICADA 2", "PRATICAS DIVERSIFICADAS 2", "PARTE DIVERSIFICADA 2"
+      ]
+    },
+    {
+      canon: "PARTE DIVERSIFICADA III",
+      aliases: [
+        "PARTE DIVERSIFICADA III", "PRATICA DIVERSIFICADA III", "PRATICAS DIVERSIFICADAS III",
+        "PRATICA DIVERSIFICADA 3", "PRATICAS DIVERSIFICADAS 3", "PARTE DIVERSIFICADA 3"
+      ]
+    },
+    {
+      canon: "LÍNGUA PORTUGUESA",
+      aliases: ["LINGUA PORTUGUESA", "PORTUGUES", "PORTUGUESA", "LP", "L PORTUGUESA"]
+    },
+    {
+      canon: "MATEMÁTICA",
+      aliases: ["MATEMATICA", "MAT"]
+    },
+    {
+      canon: "CIÊNCIAS NATURAIS",
+      aliases: ["CIENCIAS NATURAIS", "CIENCIAS", "CIENCIA", "CN"]
+    },
+    {
+      canon: "EDUCAÇÃO FÍSICA",
+      aliases: ["EDUCACAO FISICA", "ED FISICA", "ED. FISICA", "EF"]
+    },
+    {
+      canon: "HISTÓRIA",
+      aliases: ["HISTORIA", "HIST"]
+    },
+    {
+      canon: "GEOGRAFIA",
+      aliases: ["GEOGRAFIA", "GEO"]
+    },
+    {
+      canon: "ARTES",
+      aliases: ["ARTES", "ARTE"]
+    },
+    {
+      canon: "LEM/INGLÊS",
+      aliases: ["LEM/INGLES", "INGLES", "LEM INGLES", "LINGUA INGLESA", "LINGUA ESTRANGEIRA INGLES", "LINGUA ESTRANGEIRA INGLESA"]
+    },
+    {
+      canon: "LEM/ESPANHOL",
+      aliases: ["LEM/ESPANHOL", "ESPANHOL", "LEM ESPANHOL", "LINGUA ESPANHOLA"]
+    },
+    {
+      canon: "ENSINO RELIGIOSO",
+      aliases: ["ENSINO RELIGIOSO", "RELIGIAO", "ER"]
+    },
+    {
+      canon: "BIOLOGIA",
+      aliases: ["BIOLOGIA", "BIO"]
+    },
+    {
+      canon: "FÍSICA",
+      aliases: ["FISICA", "FIS"]
+    },
+    {
+      canon: "QUÍMICA",
+      aliases: ["QUIMICA", "QUI"]
+    },
+    {
+      canon: "FILOSOFIA",
+      aliases: ["FILOSOFIA", "FIL"]
+    },
+    {
+      canon: "SOCIOLOGIA",
+      aliases: ["SOCIOLOGIA", "SOC"]
+    }
+  ];
+
+  const norm = (s) => (s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase().replace(/[^A-Z0-9]/g, " ").replace(/\s+/g, " ").trim();
+
+  function resolverDisciplina(discNameRaw, listaDisciplinas) {
+    if (!discNameRaw) return null;
+    const targetNorm = norm(discNameRaw);
+
+    // 1. Prioridade Máxima: nome_oficial configurado pela escola no modal
+    for (const d of listaDisciplinas) {
+      if (d.nome_oficial && norm(d.nome_oficial) === targetNorm) {
+        return d;
+      }
+    }
+
+    // 2. Segunda Prioridade: nome local exato/normalizado da disciplina
+    for (const d of listaDisciplinas) {
+      if (d.nome && norm(d.nome) === targetNorm) {
+        return d;
+      }
+    }
+
+    // 3. Terceira Prioridade: Busca via grupo canônico da SEEDF
+    for (const group of SEEDF_CANONICAL_ALIASES) {
+      const allVariants = [norm(group.canon), ...group.aliases.map(norm)];
+      if (allVariants.includes(targetNorm)) {
+        for (const d of listaDisciplinas) {
+          const dNomeNorm = norm(d.nome);
+          const dOficNorm = norm(d.nome_oficial);
+          if (allVariants.includes(dNomeNorm) || (dOficNorm && allVariants.includes(dOficNorm))) {
+            return d;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
 
   // 1. Carregar mapeamento de disciplinas da escola em memória
-  let discMap = {};     // chave: nome exato (upper) → id
-  let discMapNorm = {}; // chave: nome normalizado (sem acento, upper) → id
+  let disciplinasEscola = [];
   try {
-    const [disciplinas] = await pool.query(
+    const [rows] = await pool.query(
       "SELECT id, nome, nome_oficial FROM disciplinas WHERE escola_id = ?",
       [escola_id]
     );
-
-    for (const d of disciplinas) {
-      // Registra pelo nome_oficial (ex: "PARTE DIVERSIFICADA II") e pelo nome amigável (ex: "Geometria")
-      if (d.nome_oficial) {
-        const key = d.nome_oficial.trim().toUpperCase();
-        discMap[key] = d.id;
-        discMapNorm[normalizeStr(d.nome_oficial)] = d.id;
-      }
-      if (d.nome) {
-        const key = d.nome.trim().toUpperCase();
-        discMap[key] = d.id;
-        discMapNorm[normalizeStr(d.nome)] = d.id;
-      }
-    }
-    logs.push(`🔗 [Agente] Carregados ${disciplinas.length} mapeamentos de disciplinas da escola.`);
+    disciplinasEscola = rows;
+    logs.push(`🔗 [Agente] Carregadas ${disciplinasEscola.length} disciplina(s) cadastradas para a escola.`);
   } catch (err) {
     console.error("Erro ao carregar disciplinas:", err);
     logs.push("❌ [Agente] Erro ao buscar correspondência de disciplinas no banco.");
@@ -188,22 +289,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         // a do FINAL marca o início da seção de zeros que corromperia os dados.
         //
         // Estratégia: encontrar o marcador ITINERÁRIO que vem APÓS o primeiro
-        // "CURSANDO" (âncora das notas reais), e cortar ali.
+        // status escolar (âncora das notas reais), e cortar ali.
         const rawNorm = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
         const MARKER_NORM = "ITINERARIO FORMATIVO";
 
-        // Âncora: posição do primeiro CURSANDO (início das notas reais)
-        const firstCursando = rawNorm.indexOf("CURSANDO");
+        // Âncora: posição do primeiro status escolar (início das notas reais)
+        const firstAnchor = rawNorm.search(/(?:CURSANDO|APROVADO|RECUPERACAO|REPROVADO)/);
 
-        // Encontra o marcador que aparece DEPOIS do primeiro CURSANDO
+        // Encontra o marcador que aparece DEPOIS do primeiro status escolar
         let markerPos = rawNorm.indexOf(MARKER_NORM);
-        while (markerPos >= 0 && markerPos <= firstCursando) {
+        while (markerPos >= 0 && markerPos <= firstAnchor) {
           markerPos = rawNorm.indexOf(MARKER_NORM, markerPos + MARKER_NORM.length);
         }
-        const cutPoint = (markerPos > firstCursando) ? markerPos : rawText.length;
+        const cutPoint = (markerPos > firstAnchor) ? markerPos : rawText.length;
 
         const textParaCurriculo = rawText.substring(0, cutPoint);
-        logs.push(`  📐 Currículo isolado: corte em ${cutPoint}/${rawText.length} (1º CURSANDO em ${firstCursando}, ITINERÁRIO pós-notas em ${markerPos}).`);
+        logs.push(`  📐 Currículo isolado: corte em ${cutPoint}/${rawText.length} (âncora em ${firstAnchor}, ITINERÁRIO pós-notas em ${markerPos}).`);
 
         const lines = textParaCurriculo.split("\n");
         let parsedGrades = 0;
@@ -212,22 +313,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         const discIdsProcessados = new Set();
 
         for (const line of lines) {
-          // Só processa linhas que contenham "CURSANDO"
-          if (!/CURSANDO/i.test(line)) continue;
+          // Processa linhas que contenham indicação de situação escolar
+          if (!/(?:CURSANDO|APROVADO|REPROVADO|RECUPERAÇÃO|RECUPERACAO)/i.test(line)) continue;
 
-          // Extrai o nome da disciplina: texto antes do primeiro "X,XX N"
-          const discMatch = line.match(/^([A-ZÀ-ÿa-z/ ]{3,}?)\s+(\d+,\d+)\s+(\d+)/);
+          // Extrai o nome da disciplina: texto antes do primeiro par "X,XX N"
+          const discMatch = line.match(/^([A-ZÀ-ÿa-z/ .'-]{2,}?)\s*(\d+,\d+)\s+(\d+)/);
           if (!discMatch) continue;
 
           const discNameRaw = discMatch[1].trim();
 
-          // Tenta mapear — primeiro com normalização (resistente a encoding),
-          // depois pela chave direta como fallback.
-          const discNameNorm = normalizeStr(discNameRaw);
-          const discId = discMapNorm[discNameNorm] ?? discMap[discNameRaw.toUpperCase()];
+          // Resolução bilateral e inteligente da disciplina:
+          // 1º nome_oficial (modal) -> 2º nome local -> 3º aliases canônicos SEEDF
+          const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+          const discId = discObj ? discObj.id : null;
 
           if (!discId) {
-            logs.push(`  ⚠️ Ignorado: "${discNameRaw}" → normalizado: "${discNameNorm}" (sem mapeamento na escola)`);
+            logs.push(`  ⚠️ Ignorado: "${discNameRaw}" (sem mapeamento na escola. Vincule em Secretaria > Disciplinas > Mapeamento Global)`);
             continue;
           }
 

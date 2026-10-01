@@ -38,41 +38,61 @@ import { TIMING } from './educadf.selectors.js';
 
 // ============================================================================
 // MAPEAMENTO DE DISCIPLINAS: EDUCA.MELHOR → EDUCADF (Componente)
-// Atualizado em: 26/04/2026 — confirmado via screenshots do portal EDUCADF
+// Mapeamento canônico universal para escolas públicas da SEEDF.
+// Disciplinas específicas de cada escola (ex: Geometria, Prática Estudantil, Robótica)
+// são configuradas via modal "Mapeamento Global de Disciplinas" (nome_oficial).
 // ============================================================================
 const DISCIPLINA_EDUCADF_MAP = {
   // EDUCA.MELHOR nome (uppercase) → EDUCADF Componente (como aparece no dropdown)
-  'PORTUGUES':           'LÍNGUA PORTUGUESA',
-  'PORTUGUÊS':           'LÍNGUA PORTUGUESA',
-  'LINGUA PORTUGUESA':   'LÍNGUA PORTUGUESA',
-  'INGLES':              'LEM/INGLÊS',
-  'INGLÊS':              'LEM/INGLÊS',
-  'LEM INGLES':          'LEM/INGLÊS',
-  'CIENCIAS':            'CIÊNCIAS NATURAIS',
-  'CIÊNCIAS':            'CIÊNCIAS NATURAIS',
-  'ED FISICA':           'EDUCAÇÃO FÍSICA',
-  'ED. FISICA':          'EDUCAÇÃO FÍSICA',
-  'EDUCACAO FISICA':     'EDUCAÇÃO FÍSICA',
-  'EDUCAÇÃO FÍSICA':     'EDUCAÇÃO FÍSICA',
-  'PRATICA ESTUDANTIL':  'PARTE DIVERSIFICADA I',
-  'PRÁTICA ESTUDANTIL':  'PARTE DIVERSIFICADA I',
-  'GEOMETRIA':           'PARTE DIVERSIFICADA II',
-  // Sem correspondente no EDUCA.MELHOR — ignorados pelo agente:
-  // 'ENSINO RELIGIOSO'   → não existe
-  // 'PARTE DIVERSIFICADA III' → não existe
-  // Mantidos iguais (não precisam de mapeamento):
-  // ARTES, GEOGRAFIA, HISTÓRIA, MATEMÁTICA
+  'PORTUGUES':                 'LÍNGUA PORTUGUESA',
+  'PORTUGUÊS':                 'LÍNGUA PORTUGUESA',
+  'LINGUA PORTUGUESA':         'LÍNGUA PORTUGUESA',
+  'INGLES':                    'LEM/INGLÊS',
+  'INGLÊS':                    'LEM/INGLÊS',
+  'LEM INGLES':                'LEM/INGLÊS',
+  'ESPANHOL':                  'LEM/ESPANHOL',
+  'LEM ESPANHOL':              'LEM/ESPANHOL',
+  'CIENCIAS':                  'CIÊNCIAS NATURAIS',
+  'CIÊNCIAS':                  'CIÊNCIAS NATURAIS',
+  'CIENCIAS NATURAIS':         'CIÊNCIAS NATURAIS',
+  'ED FISICA':                 'EDUCAÇÃO FÍSICA',
+  'ED. FISICA':                'EDUCAÇÃO FÍSICA',
+  'EDUCACAO FISICA':           'EDUCAÇÃO FÍSICA',
+  'EDUCAÇÃO FÍSICA':           'EDUCAÇÃO FÍSICA',
+  // Parte Diversificada / Práticas Diversificadas (padrão universal SEEDF)
+  'PARTE DIVERSIFICADA I':     'PARTE DIVERSIFICADA I',
+  'PRATICA DIVERSIFICADA I':   'PARTE DIVERSIFICADA I',
+  'PRÁTICA DIVERSIFICADA I':   'PARTE DIVERSIFICADA I',
+  'PRATICAS DIVERSIFICADAS I': 'PARTE DIVERSIFICADA I',
+  'PRÁTICAS DIVERSIFICADAS I': 'PARTE DIVERSIFICADA I',
+  'PARTE DIVERSIFICADA 1':     'PARTE DIVERSIFICADA I',
+  'PARTE DIVERSIFICADA II':    'PARTE DIVERSIFICADA II',
+  'PRATICA DIVERSIFICADA II':  'PARTE DIVERSIFICADA II',
+  'PRÁTICA DIVERSIFICADA II':  'PARTE DIVERSIFICADA II',
+  'PRATICAS DIVERSIFICADAS II': 'PARTE DIVERSIFICADA II',
+  'PRÁTICAS DIVERSIFICADAS II': 'PARTE DIVERSIFICADA II',
+  'PARTE DIVERSIFICADA 2':     'PARTE DIVERSIFICADA II',
+  'PARTE DIVERSIFICADA III':   'PARTE DIVERSIFICADA III',
+  'PRATICA DIVERSIFICADA III': 'PARTE DIVERSIFICADA III',
+  'PRÁTICA DIVERSIFICADA III': 'PARTE DIVERSIFICADA III',
+  'PRATICAS DIVERSIFICADAS III': 'PARTE DIVERSIFICADA III',
+  'PRÁTICAS DIVERSIFICADAS III': 'PARTE DIVERSIFICADA III',
+  'PARTE DIVERSIFICADA 3':     'PARTE DIVERSIFICADA III',
+  // Componentes com grafia idêntica mantidos iguais:
+  // ARTES, GEOGRAFIA, HISTÓRIA, MATEMÁTICA, ENSINO RELIGIOSO
 };
 
 /**
  * Converte o nome da disciplina do EDUCA.MELHOR → Componente EDUCADF.
- * Normaliza acentos e espaços antes da lookup para maior robustez.
- * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Português')
+ * Se houver disciplinaOficial configurada no banco (via modal Mapeamento Global),
+ * ela é prioridade absoluta. Caso contrário, consulta o dicionário canônico da SEEDF.
+ * @param {string} disciplina - Nome no EDUCA.MELHOR (ex: 'Português', 'Práticas Diversificadas I')
+ * @param {string} [disciplinaOficial] - Nome oficial configurado no banco (ex: 'PARTE DIVERSIFICADA I')
  * @returns {string} - Nome no EDUCADF (ex: 'LÍNGUA PORTUGUESA')
  */
 function mapearDisciplina(disciplina, disciplinaOficial) {
-  if (disciplinaOficial && disciplinaOficial !== disciplina) {
-    return disciplinaOficial;
+  if (disciplinaOficial && String(disciplinaOficial).trim() !== '') {
+    return String(disciplinaOficial).trim();
   }
   if (!disciplina) return disciplina;
   const upper = String(disciplina).trim().toUpperCase()
