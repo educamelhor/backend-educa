@@ -235,154 +235,345 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         continue;
       }
 
-      // ── Processar páginas ímpares (boletim do estudante) ─────────────────
-      // No padrão EDUCADF cada boletim ocupa 2 páginas (ímpares = dados, pares = rodapé).
-      // Um arquivo com apenas 1 aluno tem 2 páginas, portanto processa só a página 1.
-      // Um arquivo com N alunos processa páginas 1, 3, 5, ... N*2-1.
-      for (let i = 0; i < pageTexts.length; i += 2) {
-        const pageNum = i + 1;
-        const rawText = pageTexts[i].text;
+      // ── PASSO 1: Detecção automática da etapa no cabeçalho do PDF ───────
+      const firstPageRaw = pageTexts[0]?.text || "";
+      const firstPageNorm = firstPageRaw
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toUpperCase();
 
-        // Identifica nome e RE do estudante na página
-        const nameMatch = rawText.match(/Nome do\(a\) Estudante:\s*([^\r\n]+)/);
-        const reMatch   = rawText.match(/(?:RE\s*RE\s*n[ºo]?|RERE\s*n[ºo]?):\s*(\d+)/i);
+      const isMedio =
+        firstPageNorm.includes("BOLETIM ESCOLAR - ENSINO MEDIO") ||
+        firstPageNorm.includes("ENSINO MEDIO");
 
-        if (!nameMatch || !reMatch) {
-          logs.push(`⚠️ [Agente] Página ${pageNum}: não foi possível identificar estudante (Nome/RE). Pulando.`);
-          continue;
-        }
+      const etapaDetectada = isMedio ? "MEDIO" : "FUNDAMENTAL";
+      logs.push(`🏷️ [Agente] Etapa detectada no arquivo: ${etapaDetectada === "MEDIO" ? "ENSINO MÉDIO" : "ENSINO FUNDAMENTAL"}`);
 
-        const studentName = nameMatch[1].replace(/\s+RE\s*RE\s*n[ºo]?.*$/i, "").trim();
-        const re = parseInt(reMatch[1].trim(), 10);
-        totalAlunos++;
+      // ── PASSO 2: Roteamento por etapa (Lógica do Fundamental 100% intacta) ─
+      if (etapaDetectada === "FUNDAMENTAL") {
+        // ── FLUXO ENSINO FUNDAMENTAL (100% INTACTO E VALIDADO) ────────────
+        // No padrão EDUCADF cada boletim ocupa 2 páginas (ímpares = dados, pares = rodapé).
+        // Um arquivo com apenas 1 aluno tem 2 páginas, portanto processa só a página 1.
+        // Um arquivo com N alunos processa páginas 1, 3, 5, ... N*2-1.
+        for (let i = 0; i < pageTexts.length; i += 2) {
+          const pageNum = i + 1;
+          const rawText = pageTexts[i].text;
 
-        // Busca o aluno no banco pelo código (RE)
-        const [dbAlunos] = await conn.query(
-          "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
-          [re, escola_id]
-        );
+          // Identifica nome e RE do estudante na página
+          const nameMatch = rawText.match(/Nome do\(a\) Estudante:\s*([^\r\n]+)/);
+          const reMatch   = rawText.match(/(?:RE\s*RE\s*n[ºo]?|RERE\s*n[ºo]?):\s*(\d+)/i);
 
-        if (dbAlunos.length === 0) {
-          logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
-          totalFalhas++;
-          continue;
-        }
-
-        const dbA = dbAlunos[0];
-        logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
-
-        // ── Parser de notas — multi-bimestre ───────────────────────────────
-        // O EDUCADF coloca todos os bimestres lançados na mesma linha:
-        //   "ARTES 4,80 0 6,50 2 CURSANDO"          → pares: [(4.80,0), (6.50,2)]
-        //   "PARTE DIVERSIFICADA II 3,07 0 CURSANDO" → pares: [(3.07,0)]
-        //
-        // ATENÇÃO: O PDF possui dois blocos de disciplinas na mesma página.
-        // O pdf-parse decodifica os títulos normalmente (sem letras dobradas):
-        //   Linha 11: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 1º header (antes das notas reais)
-        //   Linha 19: "PARTE DIVERSIFICADA II 3,07 0 2,30 1 CURSANDO" ← notas reais
-        //   Linha 29: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 2º header
-        //   Linha 37: "PARTE DIVERSIFICADA II 0,00 0 0,00 0 CURSANDO" ← zeros que corrompem
-        //
-        // Solução: o PDF tem duas seções de disciplinas na mesma página.
-        // A linha "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -" aparece tanto
-        // ANTES quanto DEPOIS das notas reais — a do INÍCIO é o header repetido,
-        // a do FINAL marca o início da seção de zeros que corromperia os dados.
-        //
-        // Estratégia: encontrar o marcador ITINERÁRIO que vem APÓS o primeiro
-        // status escolar (âncora das notas reais), e cortar ali.
-        const rawNorm = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-        const MARKER_NORM = "ITINERARIO FORMATIVO";
-
-        // Âncora: posição do primeiro status escolar (início das notas reais)
-        const firstAnchor = rawNorm.search(/(?:CURSANDO|APROVADO|RECUPERACAO|REPROVADO)/);
-
-        // Encontra o marcador que aparece DEPOIS do primeiro status escolar
-        let markerPos = rawNorm.indexOf(MARKER_NORM);
-        while (markerPos >= 0 && markerPos <= firstAnchor) {
-          markerPos = rawNorm.indexOf(MARKER_NORM, markerPos + MARKER_NORM.length);
-        }
-        const cutPoint = (markerPos > firstAnchor) ? markerPos : rawText.length;
-
-        const textParaCurriculo = rawText.substring(0, cutPoint);
-        logs.push(`  📐 Currículo isolado: corte em ${cutPoint}/${rawText.length} (âncora em ${firstAnchor}, ITINERÁRIO pós-notas em ${markerPos}).`);
-
-        const lines = textParaCurriculo.split("\n");
-        let parsedGrades = 0;
-
-        // Set de salvaguarda: nunca processa o mesmo discId duas vezes por aluno.
-        const discIdsProcessados = new Set();
-
-        for (const line of lines) {
-          // Processa linhas que contenham indicação de situação escolar
-          if (!/(?:CURSANDO|APROVADO|REPROVADO|RECUPERAÇÃO|RECUPERACAO)/i.test(line)) continue;
-
-          // Extrai o nome da disciplina: texto antes do primeiro par "X,XX N"
-          const discMatch = line.match(/^([A-ZÀ-ÿa-z/ .'-]{2,}?)\s*(\d+,\d+)\s+(\d+)/);
-          if (!discMatch) continue;
-
-          const discNameRaw = discMatch[1].trim();
-
-          // Resolução bilateral e inteligente da disciplina:
-          // 1º nome_oficial (modal) -> 2º nome local -> 3º aliases canônicos SEEDF
-          const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
-          const discId = discObj ? discObj.id : null;
-
-          if (!discId) {
-            logs.push(`  ⚠️ Ignorado: "${discNameRaw}" (sem mapeamento na escola. Vincule em Secretaria > Disciplinas > Mapeamento Global)`);
+          if (!nameMatch || !reMatch) {
+            logs.push(`⚠️ [Agente] Página ${pageNum}: não foi possível identificar estudante (Nome/RE). Pulando.`);
             continue;
           }
 
-          // Salvaguarda: pula se já processou esta disciplina neste aluno
-          if (discIdsProcessados.has(discId)) {
-            logs.push(`  ⏩ ${discNameRaw.padEnd(26)} | Duplicata ignorada (seção ITINERÁRIO).`);
-            continue;
-          }
-          discIdsProcessados.add(discId);
+          const studentName = nameMatch[1].replace(/\s+RE\s*RE\s*n[ºo]?.*$/i, "").trim();
+          const re = parseInt(reMatch[1].trim(), 10);
+          totalAlunos++;
 
-          // Extrai todos os pares (nota vírgula, faltas) da linha
-          const pairRegex = /(\d+,\d+)\s+(\d+)/g;
-          const pairs = [];
-          let m;
-          while ((m = pairRegex.exec(line)) !== null) {
-            pairs.push({
-              nota:   parseFloat(m[1].replace(",", ".")),
-              faltas: parseInt(m[2], 10),
-            });
-          }
+          // Busca o aluno no banco pelo código (RE)
+          const [dbAlunos] = await conn.query(
+            "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
+            [re, escola_id]
+          );
 
-          // Seleciona o par do bimestre desejado (índice 0-based)
-          const bimIdx = bimNum - 1;
-          if (bimIdx >= pairs.length) {
-            logs.push(`  ⏭️ ${discNameRaw.padEnd(26)} | ${bimNum}º bim não lançado neste PDF.`);
+          if (dbAlunos.length === 0) {
+            logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
+            totalFalhas++;
             continue;
           }
 
-          const { nota: gradeVal, faltas: absencesVal } = pairs[bimIdx];
-          const absencesToInsert = faltasActive ? absencesVal : 0;
+          const dbA = dbAlunos[0];
+          logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
 
-          const [resUpsert] = await conn.query(`
-            INSERT INTO notas
-              (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-            ON DUPLICATE KEY UPDATE
-              nota             = VALUES(nota),
-              faltas           = VALUES(faltas),
-              data_lancamento  = NOW()
-          `, [escola_id, dbA.id, anoNum, bimNum, discId, gradeVal, absencesToInsert]);
+          // ── Parser de notas — multi-bimestre ───────────────────────────────
+          // O EDUCADF coloca todos os bimestres lançados na mesma linha:
+          //   "ARTES 4,80 0 6,50 2 CURSANDO"          → pares: [(4.80,0), (6.50,2)]
+          //   "PARTE DIVERSIFICADA II 3,07 0 CURSANDO" → pares: [(3.07,0)]
+          //
+          // ATENÇÃO: O PDF possui dois blocos de disciplinas na mesma página.
+          // O pdf-parse decodifica os títulos normalmente (sem letras dobradas):
+          //   Linha 11: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 1º header (antes das notas reais)
+          //   Linha 19: "PARTE DIVERSIFICADA II 3,07 0 2,30 1 CURSANDO" ← notas reais
+          //   Linha 29: "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -"  ← 2º header
+          //   Linha 37: "PARTE DIVERSIFICADA II 0,00 0 0,00 0 CURSANDO" ← zeros que corrompem
+          //
+          // Solução: o PDF tem duas seções de disciplinas na mesma página.
+          // A linha "ITINERÁRIO FORMATIVO - ITINERÁRIO FORMATIVO -" aparece tanto
+          // ANTES quanto DEPOIS das notas reais — a do INÍCIO é o header repetido,
+          // a do FINAL marca o início da seção de zeros que corromperia os dados.
+          //
+          // Estratégia: encontrar o marcador ITINERÁRIO que vem APÓS o primeiro
+          // status escolar (âncora das notas reais), e cortar ali.
+          const rawNorm = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+          const MARKER_NORM = "ITINERARIO FORMATIVO";
 
-          parsedGrades++;
+          // Âncora: posição do primeiro status escolar (início das notas reais)
+          const firstAnchor = rawNorm.search(/(?:CURSANDO|APROVADO|RECUPERACAO|REPROVADO)/);
 
-          if (resUpsert.affectedRows === 1) {
-            totalInseridos++;
-            logs.push(`  ✔ ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert}`);
-          } else if (resUpsert.affectedRows === 2) {
-            totalAtualizados++;
-            logs.push(`  🔄 ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert} (Atualizado)`);
+          // Encontra o marcador que aparece DEPOIS do primeiro status escolar
+          let markerPos = rawNorm.indexOf(MARKER_NORM);
+          while (markerPos >= 0 && markerPos <= firstAnchor) {
+            markerPos = rawNorm.indexOf(MARKER_NORM, markerPos + MARKER_NORM.length);
+          }
+          const cutPoint = (markerPos > firstAnchor) ? markerPos : rawText.length;
+
+          const textParaCurriculo = rawText.substring(0, cutPoint);
+          logs.push(`  📐 Currículo isolado: corte em ${cutPoint}/${rawText.length} (âncora em ${firstAnchor}, ITINERÁRIO pós-notas em ${markerPos}).`);
+
+          const lines = textParaCurriculo.split("\n");
+          let parsedGrades = 0;
+
+          // Set de salvaguarda: nunca processa o mesmo discId duas vezes por aluno.
+          const discIdsProcessados = new Set();
+
+          for (const line of lines) {
+            // Processa linhas que contenham indicação de situação escolar
+            if (!/(?:CURSANDO|APROVADO|REPROVADO|RECUPERAÇÃO|RECUPERACAO)/i.test(line)) continue;
+
+            // Extrai o nome da disciplina: texto antes do primeiro par "X,XX N"
+            const discMatch = line.match(/^([A-ZÀ-ÿa-z/ .'-]{2,}?)\s*(\d+,\d+)\s+(\d+)/);
+            if (!discMatch) continue;
+
+            const discNameRaw = discMatch[1].trim();
+
+            // Resolução bilateral e inteligente da disciplina:
+            // 1º nome_oficial (modal) -> 2º nome local -> 3º aliases canônicos SEEDF
+            const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            const discId = discObj ? discObj.id : null;
+
+            if (!discId) {
+              logs.push(`  ⚠️ Ignorado: "${discNameRaw}" (sem mapeamento na escola. Vincule em Secretaria > Disciplinas > Mapeamento Global)`);
+              continue;
+            }
+
+            // Salvaguarda: pula se já processou esta disciplina neste aluno
+            if (discIdsProcessados.has(discId)) {
+              logs.push(`  ⏩ ${discNameRaw.padEnd(26)} | Duplicata ignorada (seção ITINERÁRIO).`);
+              continue;
+            }
+            discIdsProcessados.add(discId);
+
+            // Extrai todos os pares (nota vírgula, faltas) da linha
+            const pairRegex = /(\d+,\d+)\s+(\d+)/g;
+            const pairs = [];
+            let m;
+            while ((m = pairRegex.exec(line)) !== null) {
+              pairs.push({
+                nota:   parseFloat(m[1].replace(",", ".")),
+                faltas: parseInt(m[2], 10),
+              });
+            }
+
+            // Seleciona o par do bimestre desejado (índice 0-based)
+            const bimIdx = bimNum - 1;
+            if (bimIdx >= pairs.length) {
+              logs.push(`  ⏭️ ${discNameRaw.padEnd(26)} | ${bimNum}º bim não lançado neste PDF.`);
+              continue;
+            }
+
+            const { nota: gradeVal, faltas: absencesVal } = pairs[bimIdx];
+            const absencesToInsert = faltasActive ? absencesVal : 0;
+
+            const [resUpsert] = await conn.query(`
+              INSERT INTO notas
+                (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
+              VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+              ON DUPLICATE KEY UPDATE
+                nota             = VALUES(nota),
+                faltas           = VALUES(faltas),
+                data_lancamento  = NOW()
+            `, [escola_id, dbA.id, anoNum, bimNum, discId, gradeVal, absencesToInsert]);
+
+            parsedGrades++;
+
+            if (resUpsert.affectedRows === 1) {
+              totalInseridos++;
+              logs.push(`  ✔ ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert}`);
+            } else if (resUpsert.affectedRows === 2) {
+              totalAtualizados++;
+              logs.push(`  🔄 ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${gradeVal.toFixed(2)} | Faltas: ${absencesToInsert} (Atualizado)`);
+            }
+          }
+
+          if (parsedGrades === 0) {
+            logs.push(`  ⚠️ Nenhuma nota estruturada para ${dbA.estudante}. Verifique os logs de "Ignorado" acima.`);
           }
         }
+      } else {
+        // ── FLUXO ENSINO MÉDIO (Páginas 1 e 2 agregadas, FGB e Itinerários) ─
+        // No Ensino Médio cada estudante ocupa 2 páginas:
+        // Página 1: Formação Geral Básica (FGB) e início dos Itinerários
+        // Página 2: Continuação dos Itinerários Formativos (Unidades Curriculares)
+        for (let i = 0; i < pageTexts.length; i += 2) {
+          const pageNum1 = i + 1;
+          const pageNum2 = i + 2;
+          const p1Raw = pageTexts[i]?.text || "";
+          const p2Raw = pageTexts[i + 1]?.text || "";
 
-        if (parsedGrades === 0) {
-          logs.push(`  ⚠️ Nenhuma nota estruturada para ${dbA.estudante}. Verifique os logs de "Ignorado" acima.`);
+          // Identifica nome e RE do estudante na primeira página do boletim
+          const nameMatch = p1Raw.match(/Nome do\(a\) Estudante:\s*([^\r\n]+)/);
+          const reMatch   = p1Raw.match(/(?:RE\s*RE\s*n[ºo]?|RERE\s*n[ºo]?):\s*(\d+)/i);
+
+          if (!nameMatch || !reMatch) {
+            logs.push(`⚠️ [Agente] Páginas ${pageNum1}/${pageNum2}: não foi possível identificar estudante (Nome/RE). Pulando.`);
+            continue;
+          }
+
+          const studentName = nameMatch[1].replace(/\s+RE\s*RE\s*n[ºo]?.*$/i, "").trim();
+          const re = parseInt(reMatch[1].trim(), 10);
+          totalAlunos++;
+
+          // Busca o aluno no banco pelo código (RE)
+          const [dbAlunos] = await conn.query(
+            "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
+            [re, escola_id]
+          );
+
+          if (dbAlunos.length === 0) {
+            logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
+            totalFalhas++;
+            continue;
+          }
+
+          const dbA = dbAlunos[0];
+          logs.push(`👤 [Agente Médio] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
+
+          // Isolamento das tabelas de notas da página 1 e página 2 (corta antes do rodapé de assinatura)
+          const p2Cut = p2Raw.search(/Data de Emissão:/i);
+          const p2Curriculo = p2Cut > 0 ? p2Raw.substring(0, p2Cut) : p2Raw;
+
+          const combinedLines = [...p1Raw.split("\n"), ...p2Curriculo.split("\n")];
+          let parsedGrades = 0;
+
+          // Reconstrução de linhas com união de quebras de linha em nomes longos de disciplinas
+          let inGradesTable = false;
+          const discLines = [];
+          let pendingPrefix = "";
+
+          for (let l of combinedLines) {
+            l = l.trim();
+            if (!l) continue;
+
+            if (/Data de Emissão:/i.test(l)) {
+              inGradesTable = false;
+              continue;
+            }
+            if (/Situação/i.test(l)) {
+              inGradesTable = true;
+              pendingPrefix = "";
+              continue;
+            }
+            if (!inGradesTable) continue;
+
+            if (/^ITINERÁRIO FORMATIVO -/i.test(l) || /^Componentes\/Unidades/i.test(l) || /^[0-9]\.º Bimestre/i.test(l)) {
+              pendingPrefix = "";
+              continue;
+            }
+            if (/^(?:ABA|Cur\.Temp|AP|AC|CC|EP|ES|ER|EI|SE|REC|RE|RP|RF)\s+(?:ABA|Cur\.Temp|AP|AC|CC|EP|ES|ER|EI|SE|REC|RE|RP|RF)/i.test(l)) {
+              continue;
+            }
+
+            const hasStatus = /(?:CURSANDO|APROVADO|REPROVADO|RECUPERAÇÃO|RECUPERACAO)/i.test(l);
+            const hasGrade = /\d+,\d+|\b(?:EP|ES|ER|EI|SE)\b/.test(l);
+
+            if (hasStatus && hasGrade) {
+              const full = pendingPrefix ? (pendingPrefix + " " + l) : l;
+              pendingPrefix = "";
+              discLines.push(full);
+            } else {
+              pendingPrefix = pendingPrefix ? (pendingPrefix + " " + l) : l;
+            }
+          }
+
+          // Set de salvaguarda: nunca processa o mesmo discId duas vezes por aluno
+          const discIdsProcessados = new Set();
+
+          // Mapa de conceitos formativos da SEEDF para escala decimal
+          const CONCEITO_NOTA_MAP = {
+            EP: 10.0, // Envolvimento Pleno
+            ES: 8.0,  // Envolvimento Satisfatório
+            ER: 6.0,  // Envolvimento Regular
+            EI: 4.0,  // Envolvimento Insatisfatório
+            SE: 0.0,  // Sem Envolvimento
+          };
+
+          for (const line of discLines) {
+            // Extrai o nome da disciplina antes do primeiro número ou conceito
+            const discMatch = line.match(/^([A-ZÀ-ÿa-z0-9/ .'-]{2,}?)\s+(?:\d+,\d+|\b(?:EP|ES|ER|EI|SE)\b)/);
+            if (!discMatch) continue;
+
+            const discNameRaw = discMatch[1].trim();
+
+            const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            const discId = discObj ? discObj.id : null;
+
+            if (!discId) {
+              logs.push(`  ⚠️ Ignorado: "${discNameRaw}" (sem mapeamento na escola. Vincule em Secretaria > Disciplinas > Mapeamento Global)`);
+              continue;
+            }
+
+            if (discIdsProcessados.has(discId)) {
+              logs.push(`  ⏩ ${discNameRaw.padEnd(26)} | Duplicata ignorada.`);
+              continue;
+            }
+            discIdsProcessados.add(discId);
+
+            // Extrai pares de nota/falta ou conceito/falta
+            const pairRegex = /(\d+,\d+|\b(?:EP|ES|ER|EI|SE)\b)\s+(\d+)/g;
+            const pairs = [];
+            let m;
+            while ((m = pairRegex.exec(line)) !== null) {
+              const rawVal = m[1].toUpperCase();
+              let notaNum = 0;
+              if (CONCEITO_NOTA_MAP[rawVal] !== undefined) {
+                notaNum = CONCEITO_NOTA_MAP[rawVal];
+              } else {
+                notaNum = parseFloat(rawVal.replace(",", "."));
+              }
+              pairs.push({
+                nota: notaNum,
+                faltas: parseInt(m[2], 10),
+                rawNota: rawVal,
+              });
+            }
+
+            // Seleciona o par do bimestre desejado (índice 0-based)
+            const bimIdx = bimNum - 1;
+            if (bimIdx >= pairs.length) {
+              logs.push(`  ⏭️ ${discNameRaw.padEnd(26)} | ${bimNum}º bim não lançado neste PDF.`);
+              continue;
+            }
+
+            const { nota: gradeVal, faltas: absencesVal, rawNota } = pairs[bimIdx];
+            const absencesToInsert = faltasActive ? absencesVal : 0;
+
+            const [resUpsert] = await conn.query(`
+              INSERT INTO notas
+                (escola_id, aluno_id, ano, bimestre, disciplina_id, nota, faltas, data_lancamento)
+              VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+              ON DUPLICATE KEY UPDATE
+                nota             = VALUES(nota),
+                faltas           = VALUES(faltas),
+                data_lancamento  = NOW()
+            `, [escola_id, dbA.id, anoNum, bimNum, discId, gradeVal, absencesToInsert]);
+
+            parsedGrades++;
+
+            const notaDisplay = rawNota && isNaN(rawNota) ? `${rawNota} (${gradeVal.toFixed(1)})` : gradeVal.toFixed(2);
+            if (resUpsert.affectedRows === 1) {
+              totalInseridos++;
+              logs.push(`  ✔ ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${notaDisplay} | Faltas: ${absencesToInsert}`);
+            } else if (resUpsert.affectedRows === 2) {
+              totalAtualizados++;
+              logs.push(`  🔄 ${discNameRaw.padEnd(26)} | ${bimNum}º Bim: ${notaDisplay} | Faltas: ${absencesToInsert} (Atualizado)`);
+            }
+          }
+
+          if (parsedGrades === 0) {
+            logs.push(`  ⚠️ Nenhuma nota estruturada para ${dbA.estudante}. Verifique os logs de "Ignorado" acima.`);
+          }
         }
       }
     }
