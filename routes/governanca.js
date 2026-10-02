@@ -123,6 +123,16 @@ async function syncFromCeoTemplate(db, escolaId) {
 
 // ── Garantir chaves de liberação do boletim no App por bimestre ──
 async function ensureBoletimAppConfigs(db, escolaId) {
+  try {
+    // Normaliza nome da categoria de boletim para ser sempre minusculo
+    await db.query(
+      `UPDATE configuracoes_escola SET categoria = 'boletim' WHERE escola_id = ? AND LOWER(categoria) = 'boletim'`,
+      [Number(escolaId)]
+    );
+  } catch {
+    // ignora se der erro
+  }
+
   const configs = [
     { chave: "boletim.app.liberar_1bimestre", desc: "Liberar notas do 1º Bimestre no App EDUCA MOBILE", ordem: 100 },
     { chave: "boletim.app.liberar_2bimestre", desc: "Liberar notas do 2º Bimestre no App EDUCA MOBILE", ordem: 101 },
@@ -468,17 +478,18 @@ router.get("/", guardDiretor, async (req, res) => {
       [escolaId]
     );
 
-    // Agrupa por categoria para o frontend
+    // Agrupa por categoria para o frontend (normalizando em minúsculo)
     const agrupado = {};
     for (const row of rows) {
-      if (!agrupado[row.categoria]) agrupado[row.categoria] = [];
+      const catNorm = String(row.categoria || "geral").toLowerCase().trim();
+      if (!agrupado[catNorm]) agrupado[catNorm] = [];
       let opcoes = null;
       try {
         opcoes = row.opcoes_json ? JSON.parse(row.opcoes_json) : null;
       } catch {
         opcoes = null;
       }
-      agrupado[row.categoria].push({ ...row, opcoes_json: opcoes });
+      agrupado[catNorm].push({ ...row, categoria: catNorm, opcoes_json: opcoes });
     }
 
     return res.json({ ok: true, configuracoes: agrupado });
