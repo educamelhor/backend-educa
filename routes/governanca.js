@@ -84,7 +84,13 @@ async function syncFromCeoTemplate(db, escolaId) {
     }
 
     // ── 2) Remover itens órfãos (excluídos pelo CEO) ──
-    const chavesValidas = ceoItens.map(i => i.chave);
+    const CHAVES_PROTEGIDAS_APP = [
+      "boletim.app.liberar_1bimestre",
+      "boletim.app.liberar_2bimestre",
+      "boletim.app.liberar_3bimestre",
+      "boletim.app.liberar_4bimestre",
+    ];
+    const chavesValidas = [...new Set([...ceoItens.map(i => i.chave), ...CHAVES_PROTEGIDAS_APP])];
     const placeholders = chavesValidas.map(() => "?").join(",");
     await db.query(
       `DELETE FROM configuracoes_escola 
@@ -115,6 +121,28 @@ async function syncFromCeoTemplate(db, escolaId) {
   }
 }
 
+// ── Garantir chaves de liberação do boletim no App por bimestre ──
+async function ensureBoletimAppConfigs(db, escolaId) {
+  const configs = [
+    { chave: "boletim.app.liberar_1bimestre", desc: "Liberar notas do 1º Bimestre no App EDUCA MOBILE", ordem: 100 },
+    { chave: "boletim.app.liberar_2bimestre", desc: "Liberar notas do 2º Bimestre no App EDUCA MOBILE", ordem: 101 },
+    { chave: "boletim.app.liberar_3bimestre", desc: "Liberar notas do 3º Bimestre no App EDUCA MOBILE", ordem: 102 },
+    { chave: "boletim.app.liberar_4bimestre", desc: "Liberar notas do 4º Bimestre no App EDUCA MOBILE", ordem: 103 },
+  ];
+  for (const c of configs) {
+    try {
+      await db.query(
+        `INSERT IGNORE INTO configuracoes_escola 
+         (escola_id, categoria, chave, valor, descricao, tipo, ordem, ativo) 
+         VALUES (?, 'boletim', ?, '1', ?, 'boolean', ?, 1)`,
+        [Number(escolaId), c.chave, c.desc, c.ordem]
+      );
+    } catch {
+      // ignora duplicatas
+    }
+  }
+}
+
 // ── Guard: perfil deve ser diretor ou vice_diretor ──
 function guardDiretor(req, res, next) {
   const perfil = String(req.headers["x-perfil"] || "").toLowerCase().trim();
@@ -135,6 +163,75 @@ router.options("/", (req, res) => res.status(204).end());
 // ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
+// ── GET /api/governanca/boletim-app-config?escola_id=X ────────────
+// Retorna governança de liberação de notas por bimestre no App.
+// Sobrescreve com '1' caso a data atual >= data_limite_ceo do bimestre.
+// ─────────────────────────────────────────────────────────────────
+router.get("/boletim-app-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
+  try {
+    await ensureTable(db);
+    await ensureBoletimAppConfigs(db, escolaId);
+
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave LIKE 'boletim.app.liberar_%'`,
+      [escolaId]
+    );
+
+    const configDiretor = {
+      "boletim.app.liberar_1bimestre": "1",
+      "boletim.app.liberar_2bimestre": "1",
+      "boletim.app.liberar_3bimestre": "1",
+      "boletim.app.liberar_4bimestre": "1",
+    };
+
+    for (const row of rows) {
+      configDiretor[row.chave] = row.valor;
+    }
+
+    let datas_limite_ceo = { "1": null, "2": null, "3": null, "4": null };
+    try {
+      const [tableCheck] = await db.query("SHOW TABLES LIKE 'governanca_ceo_boletim_datas'");
+      if (tableCheck.length > 0) {
+        const [datasRows] = await db.query("SELECT bimestre, data_limite FROM governanca_ceo_boletim_datas");
+        for (const dr of datasRows) {
+          if (dr.data_limite) {
+            const d = new Date(dr.data_limite);
+            datas_limite_ceo[String(dr.bimestre)] = d.toISOString().split("T")[0];
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[GOVERNANCA] erro ao buscar datas limite CEO:", e?.message);
+    }
+
+    const hojeStr = new Date().toISOString().split("T")[0];
+    const configFinal = { ...configDiretor };
+
+    for (let bim = 1; bim <= 4; bim++) {
+      const dLim = datas_limite_ceo[String(bim)];
+      if (dLim && hojeStr >= dLim) {
+        configFinal[`boletim.app.liberar_${bim}bimestre`] = "1";
+      }
+    }
+
+    return res.json({
+      ok: true,
+      config: configFinal,
+      config_diretor: configDiretor,
+      datas_limite_ceo,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][BOLETIM-APP-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar governança do app." });
+  }
+});
+
 // ── GET /api/governanca/boletim-config?escola_id=X ──────────────
 // Leitura RÁPIDA das flags de boletim (sem sync, sem ensure).
 // O sync completo roda só quando o diretor acessa Governança.
@@ -146,6 +243,10 @@ const BOLETIM_DEFAULTS = {
   "boletim.exibir_faltas": "1",
   "boletim.exibir_ranking": "1",
   "boletim.exibir_media_turma": "0",
+  "boletim.app.liberar_1bimestre": "1",
+  "boletim.app.liberar_2bimestre": "1",
+  "boletim.app.liberar_3bimestre": "1",
+  "boletim.app.liberar_4bimestre": "1",
 };
 
 router.get("/boletim-config", async (req, res) => {
@@ -356,6 +457,7 @@ router.get("/", guardDiretor, async (req, res) => {
 
   try {
     await ensureTable(db);
+    await ensureBoletimAppConfigs(db, escolaId);
     await syncFromCeoTemplate(db, escolaId);
 
     const [rows] = await db.query(
