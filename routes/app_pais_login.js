@@ -506,6 +506,71 @@ function authAppPaisOuAluno(req, res, next) {
 }
 
 // ============================================================================
+// GET /governanca/boletim-config — Governança Bimestral (Aluno + Responsável)
+// ============================================================================
+async function handleBoletimGovernancaConfig(req, res) {
+  const db = pool;
+  try {
+    let escolaId = Number(req.query.escola_id || req.headers["x-escola-id"]);
+
+    // Se aluno logado, descobre escola_id a partir do req.alunoAuth
+    if (!escolaId && req.alunoAuth) {
+      escolaId = Number(req.alunoAuth.escola_id);
+    }
+
+    // Se responsável logado, descobre escola_id do aluno
+    if (!escolaId && req.appPaisAuth) {
+      const alunoIdParam = Number(req.query.aluno_id);
+      if (alunoIdParam) {
+        const [[vinculo]] = await db.query(
+          "SELECT escola_id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND ativo = 1 LIMIT 1",
+          [req.appPaisAuth.responsavel_id, alunoIdParam]
+        );
+        if (vinculo) {
+          escolaId = Number(vinculo.escola_id);
+        }
+      }
+    }
+
+    if (!escolaId) {
+      return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+    }
+
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND (chave LIKE 'boletim.%' OR chave LIKE 'boletim.app.%')`,
+      [escolaId]
+    );
+
+    const DEFAULTS = {
+      "boletim.app.liberar_1bimestre": "1",
+      "boletim.app.liberar_2bimestre": "1",
+      "boletim.app.liberar_3bimestre": "0",
+      "boletim.app.liberar_4bimestre": "0",
+      "boletim.exibir_ano_anterior": "0",
+      "boletim.exibir_media_rodape": "1",
+      "boletim.exibir_faltas": "1",
+      "boletim.exibir_ranking": "1",
+    };
+
+    const config = { ...DEFAULTS };
+    for (const row of rows) {
+      config[row.chave] = row.valor;
+    }
+
+    return res.json({ ok: true, config });
+  } catch (err) {
+    console.error("[APP_PAIS][BOLETIM-GOVERNANCA-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar config do boletim." });
+  }
+}
+
+router.get("/governanca/boletim-config", authAppPaisOuAluno, handleBoletimGovernancaConfig);
+router.get("/governanca/boletim-app-config", authAppPaisOuAluno, handleBoletimGovernancaConfig);
+router.get("/boletim-app-config", authAppPaisOuAluno, handleBoletimGovernancaConfig);
+router.get("/boletim-config", authAppPaisOuAluno, handleBoletimGovernancaConfig);
+
+// ============================================================================
 // GET /ranking — proxy para o ranking anual de notas
 // ============================================================================
 router.get("/ranking", authAppPaisOuAluno, async (req, res) => {
