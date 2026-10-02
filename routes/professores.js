@@ -21,6 +21,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 // ✅ auth (garante req.user disponível neste router)
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
+import { resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1140,19 +1141,34 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
       return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
     }
 
-    // 2. Buscar alunos ativos com suas respectivas notas e faltas se existirem
+    // 2. Buscar disciplina e seus IDs equivalentes na escola para máxima tolerância
+    const [[targetDisc]] = await pool.query(
+      "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE id = ? AND escola_id = ?",
+      [disciplinaId, escolaId]
+    );
+
+    let equivalentDiscIds = [disciplinaId];
+    if (targetDisc) {
+      const [allDiscs] = await pool.query(
+        "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = ?",
+        [escolaId]
+      );
+      equivalentDiscIds = resolverIdsEquivalentes(targetDisc, allDiscs);
+    }
+
+    // 3. Buscar alunos ativos com suas respectivas notas e faltas se existirem
     const [rows] = await pool.query(
       `SELECT
         a.id AS aluno_id,
         a.estudante AS nome,
         a.codigo AS matricula,
         a.foto,
-        n.nota,
-        n.faltas
+        MAX(n.nota) AS nota,
+        MAX(n.faltas) AS faltas
       FROM matriculas m
       INNER JOIN alunos a ON a.id = m.aluno_id
       LEFT JOIN notas n ON n.aluno_id = a.id
-        AND n.disciplina_id = ?
+        AND n.disciplina_id IN (?)
         AND n.bimestre = ?
         AND n.ano = ?
         AND n.escola_id = ?
@@ -1161,8 +1177,9 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
         AND m.ano_letivo = ?
         AND m.status = 'ativo'
         AND (a.status = 'ativo' OR a.status IS NULL)
+      GROUP BY a.id, a.estudante, a.codigo, a.foto
       ORDER BY a.estudante ASC`,
-      [disciplinaId, bimestre, ano, escolaId, turmaId, escolaId, ano]
+      [equivalentDiscIds, bimestre, ano, escolaId, turmaId, escolaId, ano]
     );
 
     return res.json({ ok: true, alunos: rows });
@@ -1255,6 +1272,7 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
     }
 
     await conn.commit();
+    reconciliarNotasComModulacao(pool, escolaId).catch(() => {});
     return res.json({ ok: true, message: "Notas e faltas do boletim salvas com sucesso." });
   } catch (err) {
     await conn.rollback();

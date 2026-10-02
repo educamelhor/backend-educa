@@ -7,6 +7,7 @@ import { Router } from "express";
 import multer from "multer";
 import pdf from "pdf-parse";
 import pool from "../db.js";
+import { resolverDisciplina, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -52,137 +53,11 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
     return res.status(400).json({ ok: false, logs, message: "Nenhum arquivo enviado." });
   }
 
-  // ── Mapeamento canônico universal da SEEDF ──────────────────────────────
-  // Usado como correspondência bilateral quando a escola ainda não definiu
-  // nome_oficial manualmente no modal "Mapeamento Global de Disciplinas".
-  const SEEDF_CANONICAL_ALIASES = [
-    {
-      canon: "PARTE DIVERSIFICADA I",
-      aliases: [
-        "PARTE DIVERSIFICADA I", "PRATICA DIVERSIFICADA I", "PRATICAS DIVERSIFICADAS I",
-        "PRATICA DIVERSIFICADA 1", "PRATICAS DIVERSIFICADAS 1", "PARTE DIVERSIFICADA 1"
-      ]
-    },
-    {
-      canon: "PARTE DIVERSIFICADA II",
-      aliases: [
-        "PARTE DIVERSIFICADA II", "PRATICA DIVERSIFICADA II", "PRATICAS DIVERSIFICADAS II",
-        "PRATICA DIVERSIFICADA 2", "PRATICAS DIVERSIFICADAS 2", "PARTE DIVERSIFICADA 2"
-      ]
-    },
-    {
-      canon: "PARTE DIVERSIFICADA III",
-      aliases: [
-        "PARTE DIVERSIFICADA III", "PRATICA DIVERSIFICADA III", "PRATICAS DIVERSIFICADAS III",
-        "PRATICA DIVERSIFICADA 3", "PRATICAS DIVERSIFICADAS 3", "PARTE DIVERSIFICADA 3"
-      ]
-    },
-    {
-      canon: "LÍNGUA PORTUGUESA",
-      aliases: ["LINGUA PORTUGUESA", "PORTUGUES", "PORTUGUESA", "LP", "L PORTUGUESA"]
-    },
-    {
-      canon: "MATEMÁTICA",
-      aliases: ["MATEMATICA", "MAT"]
-    },
-    {
-      canon: "CIÊNCIAS NATURAIS",
-      aliases: ["CIENCIAS NATURAIS", "CIENCIAS", "CIENCIA", "CN"]
-    },
-    {
-      canon: "EDUCAÇÃO FÍSICA",
-      aliases: ["EDUCACAO FISICA", "ED FISICA", "ED. FISICA", "EF"]
-    },
-    {
-      canon: "HISTÓRIA",
-      aliases: ["HISTORIA", "HIST"]
-    },
-    {
-      canon: "GEOGRAFIA",
-      aliases: ["GEOGRAFIA", "GEO"]
-    },
-    {
-      canon: "ARTES",
-      aliases: ["ARTES", "ARTE"]
-    },
-    {
-      canon: "LEM/INGLÊS",
-      aliases: ["LEM/INGLES", "INGLES", "LEM INGLES", "LINGUA INGLESA", "LINGUA ESTRANGEIRA INGLES", "LINGUA ESTRANGEIRA INGLESA"]
-    },
-    {
-      canon: "LEM/ESPANHOL",
-      aliases: ["LEM/ESPANHOL", "ESPANHOL", "LEM ESPANHOL", "LINGUA ESPANHOLA"]
-    },
-    {
-      canon: "ENSINO RELIGIOSO",
-      aliases: ["ENSINO RELIGIOSO", "RELIGIAO", "ER"]
-    },
-    {
-      canon: "BIOLOGIA",
-      aliases: ["BIOLOGIA", "BIO"]
-    },
-    {
-      canon: "FÍSICA",
-      aliases: ["FISICA", "FIS"]
-    },
-    {
-      canon: "QUÍMICA",
-      aliases: ["QUIMICA", "QUI"]
-    },
-    {
-      canon: "FILOSOFIA",
-      aliases: ["FILOSOFIA", "FIL"]
-    },
-    {
-      canon: "SOCIOLOGIA",
-      aliases: ["SOCIOLOGIA", "SOC"]
-    }
-  ];
-
-  const norm = (s) => (s || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase().replace(/[^A-Z0-9]/g, " ").replace(/\s+/g, " ").trim();
-
-  function resolverDisciplina(discNameRaw, listaDisciplinas) {
-    if (!discNameRaw) return null;
-    const targetNorm = norm(discNameRaw);
-
-    // 1. Prioridade Máxima: nome_oficial configurado pela escola no modal
-    for (const d of listaDisciplinas) {
-      if (d.nome_oficial && norm(d.nome_oficial) === targetNorm) {
-        return d;
-      }
-    }
-
-    // 2. Segunda Prioridade: nome local exato/normalizado da disciplina
-    for (const d of listaDisciplinas) {
-      if (d.nome && norm(d.nome) === targetNorm) {
-        return d;
-      }
-    }
-
-    // 3. Terceira Prioridade: Busca via grupo canônico da SEEDF
-    for (const group of SEEDF_CANONICAL_ALIASES) {
-      const allVariants = [norm(group.canon), ...group.aliases.map(norm)];
-      if (allVariants.includes(targetNorm)) {
-        for (const d of listaDisciplinas) {
-          const dNomeNorm = norm(d.nome);
-          const dOficNorm = norm(d.nome_oficial);
-          if (allVariants.includes(dNomeNorm) || (dOficNorm && allVariants.includes(dOficNorm))) {
-            return d;
-          }
-        }
-      }
-    }
-
-    return null;
-  }
-
   // 1. Carregar mapeamento de disciplinas da escola em memória
   let disciplinasEscola = [];
   try {
     const [rows] = await pool.query(
-      "SELECT id, nome, nome_oficial FROM disciplinas WHERE escola_id = ?",
+      "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = ?",
       [escola_id]
     );
     disciplinasEscola = rows;
@@ -200,6 +75,9 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
 
   // Conexão com pool para gravação
   const conn = await pool.getConnection();
+
+  // Cache de disciplinas por turma para priorizar correspondência com a modulação da turma
+  const turmaDisciplinasMap = new Map();
 
   try {
     for (const file of req.files) {
@@ -272,11 +150,14 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           const re = parseInt(reMatch[1].trim(), 10);
           totalAlunos++;
 
-          // Busca o aluno no banco pelo código (RE)
-          const [dbAlunos] = await conn.query(
-            "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
-            [re, escola_id]
-          );
+          // Busca o aluno no banco pelo código (RE) com sua turma no ano letivo
+          const [dbAlunos] = await conn.query(`
+            SELECT a.id, a.estudante, COALESCE(m.turma_id, a.turma_id) AS turma_id
+            FROM alunos a
+            LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'
+            WHERE a.codigo = ? AND a.escola_id = ? AND (a.status = 'ativo' OR a.status IS NULL)
+            LIMIT 1
+          `, [anoNum, escola_id, re, escola_id]);
 
           if (dbAlunos.length === 0) {
             logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
@@ -285,7 +166,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           }
 
           const dbA = dbAlunos[0];
-          logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
+          logs.push(`👤 [Agente] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id}${dbA.turma_id ? ` | Turma: ${dbA.turma_id}` : ''})`);
+
+          // Carrega disciplinas da modulação da turma do aluno, se houver
+          let disciplinasTurma = [];
+          if (dbA.turma_id) {
+            if (!turmaDisciplinasMap.has(dbA.turma_id)) {
+              const [turmaDiscs] = await conn.query(`
+                SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
+                FROM modulacao m
+                JOIN disciplinas d ON d.id = m.disciplina_id
+                WHERE m.turma_id = ? AND m.escola_id = ?
+              `, [dbA.turma_id, escola_id]);
+              turmaDisciplinasMap.set(dbA.turma_id, turmaDiscs);
+            }
+            disciplinasTurma = turmaDisciplinasMap.get(dbA.turma_id);
+          }
 
           // ── Parser de notas — multi-bimestre ───────────────────────────────
           // O EDUCADF coloca todos os bimestres lançados na mesma linha:
@@ -339,8 +235,15 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
             const discNameRaw = discMatch[1].trim();
 
             // Resolução bilateral e inteligente da disciplina:
-            // 1º nome_oficial (modal) -> 2º nome local -> 3º aliases canônicos SEEDF
-            const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            // 1º Prioridade: Modulação da turma do aluno (garante correspondência exata com a turma)
+            // 2º Prioridade: Catálogo global de disciplinas da escola
+            let discObj = null;
+            if (disciplinasTurma && disciplinasTurma.length > 0) {
+              discObj = resolverDisciplina(discNameRaw, disciplinasTurma);
+            }
+            if (!discObj) {
+              discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            }
             const discId = discObj ? discObj.id : null;
 
             if (!discId) {
@@ -425,11 +328,14 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           const re = parseInt(reMatch[1].trim(), 10);
           totalAlunos++;
 
-          // Busca o aluno no banco pelo código (RE)
-          const [dbAlunos] = await conn.query(
-            "SELECT id, estudante FROM alunos WHERE codigo = ? AND escola_id = ? AND status = 'ativo' LIMIT 1",
-            [re, escola_id]
-          );
+          // Busca o aluno no banco pelo código (RE) com sua turma no ano letivo
+          const [dbAlunos] = await conn.query(`
+            SELECT a.id, a.estudante, COALESCE(m.turma_id, a.turma_id) AS turma_id
+            FROM alunos a
+            LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'
+            WHERE a.codigo = ? AND a.escola_id = ? AND (a.status = 'ativo' OR a.status IS NULL)
+            LIMIT 1
+          `, [anoNum, escola_id, re, escola_id]);
 
           if (dbAlunos.length === 0) {
             logs.push(`❌ [Agente] Estudante "${studentName}" (RE: ${re}) não encontrado como ativo no banco!`);
@@ -438,7 +344,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           }
 
           const dbA = dbAlunos[0];
-          logs.push(`👤 [Agente Médio] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id})`);
+          logs.push(`👤 [Agente Médio] Importando: ${dbA.estudante} (RE: ${re} | ID: ${dbA.id}${dbA.turma_id ? ` | Turma: ${dbA.turma_id}` : ''})`);
+
+          // Carrega disciplinas da modulação da turma do aluno, se houver
+          let disciplinasTurma = [];
+          if (dbA.turma_id) {
+            if (!turmaDisciplinasMap.has(dbA.turma_id)) {
+              const [turmaDiscs] = await conn.query(`
+                SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
+                FROM modulacao m
+                JOIN disciplinas d ON d.id = m.disciplina_id
+                WHERE m.turma_id = ? AND m.escola_id = ?
+              `, [dbA.turma_id, escola_id]);
+              turmaDisciplinasMap.set(dbA.turma_id, turmaDiscs);
+            }
+            disciplinasTurma = turmaDisciplinasMap.get(dbA.turma_id);
+          }
 
           // Isolamento das tabelas de notas da página 1 e página 2 (corta antes do rodapé de assinatura)
           const p2Cut = p2Raw.search(/Data de Emissão:/i);
@@ -504,9 +425,16 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
             const discMatch = line.match(/^([A-ZÀ-ÿa-z0-9/ .'-]{2,}?)\s+(?:\d+,\d+|\b(?:EP|ES|ER|EI|SE)\b)/);
             if (!discMatch) continue;
 
-            const discNameRaw = discMatch[1].trim();
-
-            const discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            // Resolução bilateral e inteligente da disciplina:
+            // 1º Prioridade: Modulação da turma do aluno (garante correspondência exata com a turma)
+            // 2º Prioridade: Catálogo global de disciplinas da escola
+            let discObj = null;
+            if (disciplinasTurma && disciplinasTurma.length > 0) {
+              discObj = resolverDisciplina(discNameRaw, disciplinasTurma);
+            }
+            if (!discObj) {
+              discObj = resolverDisciplina(discNameRaw, disciplinasEscola);
+            }
             const discId = discObj ? discObj.id : null;
 
             if (!discId) {
@@ -576,6 +504,16 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           }
         }
       }
+    }
+
+    // ── Reconciliação automática pós-importação ────────────────────────
+    try {
+      const reconciliadas = await reconciliarNotasComModulacao(conn, escola_id);
+      if (reconciliadas > 0) {
+        logs.push(`🔄 [Agente] ${reconciliadas} nota(s) reconciliada(s) automaticamente com a modulação da turma.`);
+      }
+    } catch (recErr) {
+      console.error("Erro na reconciliação pós-importação:", recErr);
     }
 
     logs.push("══════════════════════════════════════════════");
