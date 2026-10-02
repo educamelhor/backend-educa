@@ -350,27 +350,24 @@ router.get('/acompanhamento-notas', async (req, res) => {
     // Dispara reconciliação de notas x modulação de forma não-bloqueante
     reconciliarNotasComModulacao(pool, escola_id).catch(() => {});
 
+    // 1. Modulação com filtros
     let extraFilter = '';
-    const params = [
-      anoEfetivo, escola_id,
-      anoEfetivo, escola_id, anoEfetivo, bimEfetivo,
-      escola_id, anoEfetivo
-    ];
+    const paramsMod = [escola_id, anoEfetivo];
 
     if (turno && turno !== 'todos') {
       extraFilter += ' AND UPPER(t.turno) = UPPER(?)';
-      params.push(turno);
+      paramsMod.push(turno);
     }
     if (disciplina_id && disciplina_id !== 'todas') {
       extraFilter += ' AND d.id = ?';
-      params.push(Number(disciplina_id));
+      paramsMod.push(Number(disciplina_id));
     }
     if (turma_id && turma_id !== 'todas') {
       extraFilter += ' AND t.id = ?';
-      params.push(Number(turma_id));
+      paramsMod.push(Number(turma_id));
     }
 
-    const sql = `
+    const sqlMod = `
       SELECT 
         p.id AS professor_id,
         p.nome AS professor_nome,
@@ -379,84 +376,8 @@ router.get('/acompanhamento-notas', async (req, res) => {
         t.turno AS turno,
         d.id AS disciplina_id,
         d.nome AS disciplina_nome,
-        (
-          SELECT COUNT(DISTINCT a.id) 
-          FROM alunos a 
-          LEFT JOIN matriculas m_al ON m_al.aluno_id = a.id AND m_al.status = 'ativo' AND m_al.ano_letivo = ?
-          WHERE (a.turma_id = t.id OR m_al.turma_id = t.id)
-            AND (a.status = 'ativo' OR a.status IS NULL)
-            AND a.escola_id = ?
-        ) AS total_alunos,
-        (
-          SELECT COUNT(DISTINCT n.aluno_id)
-          FROM notas n
-          JOIN alunos a ON a.id = n.aluno_id
-          LEFT JOIN matriculas m_al ON m_al.aluno_id = a.id AND m_al.status = 'ativo' AND m_al.ano_letivo = ?
-          WHERE (a.turma_id = t.id OR m_al.turma_id = t.id)
-            AND (a.status = 'ativo' OR a.status IS NULL)
-            AND a.escola_id = ?
-            AND n.ano = ?
-            AND n.bimestre = ?
-            AND (n.nota IS NOT NULL OR n.faltas IS NOT NULL)
-            AND (
-              n.disciplina_id = d.id
-              OR n.disciplina_id IN (
-                SELECT d_sub.id FROM disciplinas d_sub
-                WHERE d_sub.escola_id = p.escola_id
-                  AND (
-                    UPPER(TRIM(d_sub.nome)) = UPPER(TRIM(d.nome))
-                    OR (d.nome_oficial IS NOT NULL AND (UPPER(TRIM(d_sub.nome)) = UPPER(TRIM(d.nome_oficial)) OR UPPER(TRIM(d_sub.nome_oficial)) = UPPER(TRIM(d.nome_oficial))))
-                    OR (d_sub.nome_oficial IS NOT NULL AND UPPER(TRIM(d_sub.nome_oficial)) = UPPER(TRIM(d.nome)))
-                    OR (d.abreviatura IS NOT NULL AND (UPPER(TRIM(d_sub.abreviatura)) = UPPER(TRIM(d.abreviatura)) OR UPPER(TRIM(d_sub.nome)) = UPPER(TRIM(d.abreviatura))))
-                    OR (d_sub.abreviatura IS NOT NULL AND UPPER(TRIM(d_sub.abreviatura)) = UPPER(TRIM(d.nome)))
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('PD1','PD 1','PARTE DIVERSIFICADA I','PRATICA DIVERSIFICADA I','PRATICAS DIVERSIFICADAS I','PARTE DIVERSIFICADA 1') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'PD1')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('PD1','PD 1','PARTE DIVERSIFICADA I','PRATICA DIVERSIFICADA I','PRATICAS DIVERSIFICADAS I','PARTE DIVERSIFICADA 1') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'PD1')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('PD2','PD 2','PARTE DIVERSIFICADA II','PRATICA DIVERSIFICADA II','PRATICAS DIVERSIFICADAS II','PARTE DIVERSIFICADA 2') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'PD2')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('PD2','PD 2','PARTE DIVERSIFICADA II','PRATICA DIVERSIFICADA II','PRATICAS DIVERSIFICADAS II','PARTE DIVERSIFICADA 2') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'PD2')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('PD3','PD 3','PARTE DIVERSIFICADA III','PRATICA DIVERSIFICADA III','PRATICAS DIVERSIFICADAS III','PARTE DIVERSIFICADA 3') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'PD3')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('PD3','PD 3','PARTE DIVERSIFICADA III','PRATICA DIVERSIFICADA III','PRATICAS DIVERSIFICADAS III','PARTE DIVERSIFICADA 3') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'PD3')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('PORTUGUÊS','PORTUGUES','LÍNGUA PORTUGUESA','LINGUA PORTUGUESA','LP') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) IN ('PORT','LP'))
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('PORTUGUÊS','PORTUGUES','LÍNGUA PORTUGUESA','LINGUA PORTUGUESA','LP') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) IN ('PORT','LP'))
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('MATEMÁTICA','MATEMATICA','MAT') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'MAT')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('MATEMÁTICA','MATEMATICA','MAT') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'MAT')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('CIÊNCIAS','CIENCIAS','CIÊNCIAS NATURAIS','CIENCIAS NATURAIS','CN') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) IN ('CIE','CN'))
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('CIÊNCIAS','CIENCIAS','CIÊNCIAS NATURAIS','CIENCIAS NATURAIS','CN') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) IN ('CIE','CN'))
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('HISTÓRIA','HISTORIA','HIST') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'HIST')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('HISTÓRIA','HISTORIA','HIST') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'HIST')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('GEOGRAFIA','GEO') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'GEO')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('GEOGRAFIA','GEO') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'GEO')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('ARTES','ARTE','ART') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'ART')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('ARTES','ARTE','ART') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'ART')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('EDUCAÇÃO FÍSICA','EDUCACAO FISICA','ED. FISICA','ED FISICA','EF') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'EF')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('EDUCAÇÃO FÍSICA','EDUCACAO FISICA','ED. FISICA','ED FISICA','EF') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'EF')
-                    )
-                    OR (
-                      (UPPER(TRIM(d.nome)) IN ('LEM/INGLÊS','LEM/INGLES','INGLÊS','INGLES','LEM INGLES','LÍNGUA INGLESA','LINGUA INGLESA') OR UPPER(TRIM(COALESCE(d.abreviatura,''))) = 'ING')
-                      AND (UPPER(TRIM(d_sub.nome)) IN ('LEM/INGLÊS','LEM/INGLES','INGLÊS','INGLES','LEM INGLES','LÍNGUA INGLESA','LINGUA INGLESA') OR UPPER(TRIM(COALESCE(d_sub.abreviatura,''))) = 'ING')
-                    )
-                  )
-              )
-            )
-        ) AS alunos_com_nota
+        d.nome_oficial AS disciplina_nome_oficial,
+        d.abreviatura AS disciplina_abreviatura
       FROM modulacao m
       JOIN professores p ON p.id = m.professor_id
       JOIN turmas t ON t.id = m.turma_id
@@ -467,11 +388,119 @@ router.get('/acompanhamento-notas', async (req, res) => {
       ORDER BY p.nome, t.nome, d.nome
     `;
 
-    const [rows] = await pool.query(sql, params);
+    const [modRows] = await pool.query(sqlMod, paramsMod);
+
+    if (modRows.length === 0) {
+      return res.json({
+        ano_letivo: anoEfetivo,
+        bimestre: bimEfetivo,
+        dados: []
+      });
+    }
+
+    // 2. Todas as disciplinas da escola (para resolver equivalências de forma instantânea)
+    const [todasDiscs] = await pool.query(
+      `SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = ?`,
+      [escola_id]
+    );
+
+    // 3. Total de alunos ativos por turma no ano letivo
+    const [alunosPorTurmaRows] = await pool.query(
+      `SELECT 
+         COALESCE(m.turma_id, a.turma_id) AS turma_id,
+         COUNT(DISTINCT a.id) AS total
+       FROM alunos a
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.status = 'ativo' AND m.ano_letivo = ? AND m.escola_id = ?
+       WHERE a.escola_id = ?
+         AND (a.status = 'ativo' OR a.status IS NULL)
+         AND COALESCE(m.turma_id, a.turma_id) IS NOT NULL
+       GROUP BY COALESCE(m.turma_id, a.turma_id)`,
+      [anoEfetivo, escola_id, escola_id]
+    );
+
+    const totalAlunosMap = new Map();
+    for (const r of alunosPorTurmaRows) {
+      totalAlunosMap.set(Number(r.turma_id), Number(r.total));
+    }
+
+    // 4. Notas lançadas no ano e bimestre (traz turma_id, disciplina_id e aluno_id)
+    const [notasLancadasRows] = await pool.query(
+      `SELECT 
+         COALESCE(m.turma_id, a.turma_id) AS turma_id,
+         n.disciplina_id,
+         n.aluno_id
+       FROM notas n
+       JOIN alunos a ON a.id = n.aluno_id
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.status = 'ativo' AND m.ano_letivo = ? AND m.escola_id = ?
+       WHERE n.escola_id = ?
+         AND n.ano = ?
+         AND n.bimestre = ?
+         AND (n.nota IS NOT NULL OR n.faltas IS NOT NULL)
+         AND (a.status = 'ativo' OR a.status IS NULL)
+         AND COALESCE(m.turma_id, a.turma_id) IS NOT NULL`,
+      [anoEfetivo, escola_id, escola_id, anoEfetivo, bimEfetivo]
+    );
+
+    // Mapa: "turmaId_discId" -> Set de aluno_ids
+    const notasMap = new Map();
+    for (const n of notasLancadasRows) {
+      const key = `${n.turma_id}_${n.disciplina_id}`;
+      if (!notasMap.has(key)) {
+        notasMap.set(key, new Set());
+      }
+      notasMap.get(key).add(n.aluno_id);
+    }
+
+    // Cache de IDs equivalentes por disciplina_id para evitar recomputar
+    const equivalenciasMap = new Map();
+
+    // 5. Montar o resultado final combinando os dados com tolerância multi-ID
+    const dados = modRows.map(row => {
+      const turmaId = Number(row.turma_id);
+      const discId = Number(row.disciplina_id);
+
+      if (!equivalenciasMap.has(discId)) {
+        const targetDisc = {
+          id: discId,
+          nome: row.disciplina_nome,
+          nome_oficial: row.disciplina_nome_oficial,
+          abreviatura: row.disciplina_abreviatura
+        };
+        const eqIds = resolverIdsEquivalentes(targetDisc, todasDiscs);
+        equivalenciasMap.set(discId, eqIds);
+      }
+
+      const eqIds = equivalenciasMap.get(discId);
+
+      // Agrupa alunos únicos que têm nota em qualquer uma das disciplinas equivalentes
+      const alunosComNotaSet = new Set();
+      for (const eqId of eqIds) {
+        const key = `${turmaId}_${eqId}`;
+        const setForDisc = notasMap.get(key);
+        if (setForDisc) {
+          for (const aId of setForDisc) {
+            alunosComNotaSet.add(aId);
+          }
+        }
+      }
+
+      return {
+        professor_id: row.professor_id,
+        professor_nome: row.professor_nome,
+        turma_id: row.turma_id,
+        turma_nome: row.turma_nome,
+        turno: row.turno,
+        disciplina_id: row.disciplina_id,
+        disciplina_nome: row.disciplina_nome,
+        total_alunos: totalAlunosMap.get(turmaId) || 0,
+        alunos_com_nota: alunosComNotaSet.size
+      };
+    });
+
     return res.json({
       ano_letivo: anoEfetivo,
       bimestre: bimEfetivo,
-      dados: rows
+      dados
     });
   } catch (err) {
     console.error('[relatorios] acompanhamento-notas:', err);
