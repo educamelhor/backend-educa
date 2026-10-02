@@ -259,16 +259,18 @@ const BOLETIM_DEFAULTS = {
   "boletim.app.liberar_4bimestre": "1",
 };
 
-router.get("/boletim-config", async (req, res) => {
+router.get(["/boletim-config", "/boletim-app-config"], async (req, res) => {
   const db = req.db;
-  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  const escolaId = Number(
+    req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]
+  );
   if (!escolaId)
     return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
 
   try {
     const [rows] = await db.query(
       `SELECT chave, valor FROM configuracoes_escola
-       WHERE escola_id = ? AND chave LIKE 'boletim.%'`,
+       WHERE escola_id = ? AND (chave LIKE 'boletim.%' OR chave LIKE 'boletim.app.%')`,
       [escolaId]
     );
 
