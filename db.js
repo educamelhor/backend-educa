@@ -164,7 +164,16 @@ pool
           receita_id BIGINT UNSIGNED NOT NULL,
           produto_id INT NOT NULL,
           FOREIGN KEY (receita_id) REFERENCES merenda_receitas(id) ON DELETE CASCADE
-      )`
+      )`,
+      // Governança CEO — Datas Limite Bimestrais do Boletim
+      `CREATE TABLE IF NOT EXISTS governanca_ceo_boletim_datas (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          bimestre INT NOT NULL UNIQUE,
+          data_limite DATE DEFAULT NULL,
+          descricao VARCHAR(255) DEFAULT NULL,
+          criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+          atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
     ];
     for (const sql of migrations) {
       try {

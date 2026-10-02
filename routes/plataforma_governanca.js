@@ -43,6 +43,32 @@ async function ensureTables(db) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_ceo_boletim_datas (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      bimestre INT NOT NULL UNIQUE,
+      data_limite DATE DEFAULT NULL,
+      descricao VARCHAR(255) DEFAULT NULL,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // Seed default para os 4 bimestres se não existirem
+  try {
+    const [bCheck] = await db.query("SELECT COUNT(*) AS total FROM governanca_ceo_boletim_datas");
+    if (bCheck[0]?.total === 0) {
+      for (let b = 1; b <= 4; b++) {
+        await db.query(
+          "INSERT IGNORE INTO governanca_ceo_boletim_datas (bimestre, descricao) VALUES (?, ?)",
+          [b, `Limite ${b}º Bimestre`]
+        );
+      }
+    }
+  } catch (e) {
+    console.warn("[CEO-GOV] Erro ao aplicar seed de datas limite do boletim:", e?.message);
+  }
+
   // Seed padrão: garante que as 6 categorias e 15 itens iniciais existam
   await seedDefaults(db);
 }
@@ -364,6 +390,68 @@ router.get("/completo", async (req, res) => {
   } catch (err) {
     console.error("[CEO-GOV][COMPLETO]", err);
     return res.status(500).json({ ok: false, message: "Erro ao carregar visão completa." });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PRAZOS DE BOLETIM (GOVERNANÇA CEO)
+// ═══════════════════════════════════════════════════════════════
+
+// ── GET /api/plataforma/governanca/boletim-datas ──
+router.get("/boletim-datas", async (req, res) => {
+  const db = req.db;
+  try {
+    await ensureTables(db);
+    const [rows] = await db.query(
+      `SELECT bimestre, DATE_FORMAT(data_limite, '%Y-%m-%d') AS data_limite, descricao
+       FROM governanca_ceo_boletim_datas
+       ORDER BY bimestre ASC`
+    );
+
+    const map = new Map(rows.map((r) => [r.bimestre, r]));
+    const datas = [1, 2, 3, 4].map((b) => {
+      const item = map.get(b);
+      return {
+        bimestre: b,
+        data_limite: item?.data_limite || null,
+        descricao: item?.descricao || `Limite ${b}º Bimestre`,
+      };
+    });
+
+    return res.json({ ok: true, datas });
+  } catch (err) {
+    console.error("[CEO-GOV][GET BOLETIM DATAS]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar datas limite do boletim." });
+  }
+});
+
+// ── PUT /api/plataforma/governanca/boletim-datas ──
+router.put("/boletim-datas", async (req, res) => {
+  const db = req.db;
+  const { datas } = req.body || {};
+  if (!Array.isArray(datas)) {
+    return res.status(400).json({ ok: false, message: "Parâmetro 'datas' deve ser uma lista." });
+  }
+
+  try {
+    await ensureTables(db);
+    for (const item of datas) {
+      const bim = Number(item.bimestre);
+      if ([1, 2, 3, 4].includes(bim)) {
+        const dLim = item.data_limite && String(item.data_limite).trim() ? String(item.data_limite).trim() : null;
+        const desc = item.descricao || `Limite ${bim}º Bimestre`;
+        await db.query(
+          `INSERT INTO governanca_ceo_boletim_datas (bimestre, data_limite, descricao)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE data_limite = VALUES(data_limite), descricao = VALUES(descricao)`,
+          [bim, dLim, desc]
+        );
+      }
+    }
+    return res.json({ ok: true, message: "Prazos bimestrais salvos com sucesso!" });
+  } catch (err) {
+    console.error("[CEO-GOV][PUT BOLETIM DATAS]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao atualizar datas limite do boletim." });
   }
 });
 

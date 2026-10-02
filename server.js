@@ -1490,6 +1490,7 @@ async function bootstrap() {
   app.use("/api/plataforma/usage", autenticarToken, exigirEscopo("plataforma"), plataformaUsageRouter);
   app.use("/api/plataforma/suporte", autenticarToken, exigirEscopo("plataforma"), plataformaSuporteRouter);
   app.use("/api/plataforma/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
+  app.use("/api/ceo/governanca", autenticarToken, exigirEscopo("plataforma"), plataformaGovernancaRouter);
   app.use("/api/plataforma/modulos", autenticarToken, exigirEscopo("plataforma"), modulosPlataformaRouter);
   app.use("/api/plataforma/telemetria", autenticarToken, exigirEscopo("plataforma"), plataformaTelemetriaRouter);
   app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
