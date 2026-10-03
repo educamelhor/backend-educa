@@ -477,7 +477,7 @@ const EDUCA_MOBILE_LOJAS = {
     "https://play.google.com/store/apps/details?id=br.com.sistemaeducamelhor.mobile",
 };
 
-app.get("/app", (req, res) => {
+function educaMobileDownload(req, res) {
   const ua = String(req.headers["user-agent"] || "");
   const forcado = String(req.query.plataforma || "").toLowerCase();
 
@@ -526,6 +526,16 @@ app.get("/app", (req, res) => {
   </main>
 </body>
 </html>`);
+}
+
+app.get("/app", educaMobileDownload);
+
+// Raiz do subdomínio dedicado: QR curto (https://app.sistemaeducamelhor.com.br).
+// Só responde nesse host; em qualquer outro, segue o fluxo normal (next()).
+app.get("/", (req, res, next) => {
+  const host = String(req.hostname || "").toLowerCase();
+  if (host === "app.sistemaeducamelhor.com.br") return educaMobileDownload(req, res);
+  return next();
 });
 
 // ============================================================================
