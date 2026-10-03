@@ -464,6 +464,71 @@ app.get("/api/health", (_req, res) =>
 );
 
 // ============================================================================
+// EDUCA MOBILE — Link inteligente de download (alvo do QR code do panfleto)
+// Detecta o aparelho pelo User-Agent e redireciona para a loja correta.
+//   iPhone/iPad/iPod -> App Store | Android -> Google Play
+//   Demais (desktop) -> página com os dois botões.
+// Usa 302 (temporário) de propósito: o QR impresso nunca muda, o destino sim.
+// Teste manual: /app?plataforma=ios  ou  /app?plataforma=android
+// ============================================================================
+const EDUCA_MOBILE_LOJAS = {
+  ios: "https://apps.apple.com/br/app/id6765784030",
+  android:
+    "https://play.google.com/store/apps/details?id=br.com.sistemaeducamelhor.mobile",
+};
+
+app.get("/app", (req, res) => {
+  const ua = String(req.headers["user-agent"] || "");
+  const forcado = String(req.query.plataforma || "").toLowerCase();
+
+  let plataforma = null;
+  if (forcado === "ios" || forcado === "android") plataforma = forcado;
+  else if (/iPhone|iPad|iPod/i.test(ua)) plataforma = "ios";
+  else if (/Android/i.test(ua)) plataforma = "android";
+
+  res.setHeader("Cache-Control", "no-store");
+
+  if (plataforma) return res.redirect(302, EDUCA_MOBILE_LOJAS[plataforma]);
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baixe o EDUCA Mobile</title>
+<meta name="description" content="O Boletim Escolar e Notificações na Palma da Sua Mão. Baixe o EDUCA Mobile grátis para Android e iPhone.">
+<style>
+  *{box-sizing:border-box;margin:0}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:linear-gradient(160deg,#FFB04D 0%,#FFA133 55%,#F28C28 100%);color:#1e3a5f}
+  .card{width:100%;max-width:420px;background:#fff;border-radius:28px;padding:36px 28px;text-align:center;
+    box-shadow:0 20px 50px rgba(30,58,95,.28)}
+  .tag{display:inline-block;background:#1e3a5f;color:#fff;font-weight:800;letter-spacing:.5px;
+    padding:8px 16px;border-radius:12px;font-size:20px;margin-bottom:16px}
+  h1{font-size:22px;line-height:1.25;margin-bottom:8px}
+  p{color:#475569;font-size:15px;line-height:1.5;margin-bottom:24px}
+  a.btn{display:block;padding:15px 18px;margin-top:12px;border-radius:14px;background:#111;color:#fff;
+    text-decoration:none;font-weight:700;font-size:16px}
+  a.btn:hover{background:#1e3a5f}
+  small{display:block;margin-top:20px;color:#94a3b8;font-size:12px}
+</style>
+</head>
+<body>
+  <main class="card">
+    <span class="tag">EDUCA MOBILE</span>
+    <h1>O Boletim Escolar e Notificações na Palma da Sua Mão</h1>
+    <p>Escolha a loja do seu celular e baixe grátis.</p>
+    <a class="btn" href="${EDUCA_MOBILE_LOJAS.android}">Baixar na Google Play (Android)</a>
+    <a class="btn" href="${EDUCA_MOBILE_LOJAS.ios}">Baixar na App Store (iPhone)</a>
+    <small>Dica: abra este link direto pelo celular para ir automaticamente à loja certa.</small>
+  </main>
+</body>
+</html>`);
+});
+
+// ============================================================================
 // EDUCA-CAPTURE — Páginas públicas (sem autenticação)
 // Usadas como Support URL e Privacy Policy URL no App Store Connect
 // ============================================================================
