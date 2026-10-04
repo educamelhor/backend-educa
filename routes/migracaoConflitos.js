@@ -21,7 +21,7 @@ router.get("/", verificarEscola, async (req, res) => {
 
     const [rows] = await pool.query(
       `SELECT 
-         c.id, c.escola_id, c.aluno_id, a.nome as aluno_nome,
+         c.id, c.escola_id, c.aluno_id, a.estudante as aluno_nome,
          t.nome as turma_nome, c.ano, c.bimestre, c.disciplina_nome,
          c.nota_id_1, c.nota_id_2, c.status, c.nota_escolhida_id, c.resolvido_em,
          n1.nota as nota_1_valor, n1.faltas as nota_1_faltas, n1.data_lancamento as nota_1_data, d1.etapa as nota_1_etapa,
@@ -35,7 +35,7 @@ router.get("/", verificarEscola, async (req, res) => {
        LEFT JOIN notas n2 ON n2.id = c.nota_id_2
        LEFT JOIN disciplinas d2 ON d2.id = n2.disciplina_id
        WHERE c.escola_id = ? AND (? = 'TODOS' OR c.status = ?)
-       ORDER BY c.status ASC, t.nome ASC, a.nome ASC, c.bimestre ASC`,
+       ORDER BY c.status ASC, t.nome ASC, a.estudante ASC, c.bimestre ASC`,
       [escola_id, status, status]
     );
 
