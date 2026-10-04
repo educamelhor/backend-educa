@@ -30,6 +30,7 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
     const turno = (req.query.turno || "").trim();
+    const semestre = req.query.semestre ? Number(req.query.semestre) : 1;
 
     if (!turno) {
       return res.status(400).json({ message: "Parâmetro 'turno' é obrigatório." });
@@ -55,10 +56,11 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
         AND d.escola_id  = ?
         AND t.turno = ?
         AND t.ano   = ?
+        AND (t.regime = 'anual' OR tc.semestre = ?)
       GROUP BY tc.disciplina_id, d.nome
       ORDER BY d.nome
       `,
-      [escola_id, escola_id, escola_id, turno, anoAtual]
+      [escola_id, escola_id, escola_id, turno, anoAtual, semestre]
     );
 
     // 2) OFERTA: professores ATIVOS nesse turno (por disciplina)
@@ -75,9 +77,10 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
       WHERE pv.escola_id = ?
         AND p.status != 'inativo'
         AND LOWER(pv.turno) = LOWER(?)
+        AND (pv.semestre = 0 OR pv.semestre = ?)
       GROUP BY pv.disciplina_id
       `,
-      [escola_id, turno]
+      [escola_id, turno, semestre]
     );
 
     // Indexar oferta por disciplina_id para merge rápido
@@ -123,6 +126,8 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
         t.id       AS turma_id,
         t.nome     AS turma_nome,
         t.turno,
+        t.regime,
+        tc.semestre,
         d.id       AS disciplina_id,
         d.nome     AS disciplina_nome,
         (tc.carga + 0) AS carga
@@ -134,14 +139,15 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
         AND d.escola_id  = ?
         AND t.turno = ?
         AND t.ano   = ?
+        AND (t.regime = 'anual' OR tc.semestre = ?)
       ORDER BY t.nome, d.nome
       `,
-      [escola_id, escola_id, escola_id, turno, anoAtual]
+      [escola_id, escola_id, escola_id, turno, anoAtual, semestre]
     );
-
 
     return res.json({
       turno,
+      semestre,
       resumo_por_disciplina: checklist,
       detalhe_por_turma: detalheTurmas,
     });
@@ -161,6 +167,8 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
   try {
     const { escola_id } = req.user;
     const turno = (req.query.turno || "").trim();
+
+    const semestre = req.query.semestre ? Number(req.query.semestre) : 1;
 
     if (!turno) {
       return res.status(400).json({ message: "Parâmetro 'turno' é obrigatório." });
@@ -186,9 +194,10 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
        WHERE m.escola_id = ?
          AND LOWER(t.turno) = LOWER(?)
          AND t.ano = ?
+         AND (t.regime = 'anual' OR m.semestre = ?)
        GROUP BY m.professor_id, p.nome, d.nome
        ORDER BY p.nome`,
-      [escola_id, turno, anoAtual]
+      [escola_id, turno, anoAtual, semestre]
     );
 
     // 2) Slots livres por professor neste turno

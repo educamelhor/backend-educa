@@ -89,7 +89,7 @@ router.post("/upsert", verificarEscola, (req, res) => {
 
 
 
-// POST /api/modulacao/remover  → remoção em lote (compatível)
+// POST /api/modulacao/remover  → remoção em lote (com proteção por semestre e auditoria)
 router.post("/remover", verificarEscola, async (req, res) => {
   const escola_id = req.user.escola_id;
   const { turno, itens } = req.body || {};
@@ -98,20 +98,58 @@ router.post("/remover", verificarEscola, async (req, res) => {
     return res.status(400).json({ message: "Nada para remover." });
   }
 
-  // Triples: [[prof, turma, disc], ...]
-  const triples = itens.map((it) => [
-    Number(it.professor_id),
-    Number(it.turma_id),
-    Number(it.disciplina_id),
-  ]);
+  // Prepara itens com suporte a semestre
+  const conds = [];
+  const params = [];
 
-  // (m.professor_id=? AND m.turma_id=? AND m.disciplina_id=?) OR ...
-  const cond = triples.map(() =>
-    "(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=?)"
-  ).join(" OR ");
-  const params = triples.flat();
+  for (const it of itens) {
+    const p = Number(it.professor_id);
+    const t = Number(it.turma_id);
+    const d = Number(it.disciplina_id);
+    const s = it.semestre != null ? Number(it.semestre) : null;
+
+    if (s != null) {
+      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=? AND m.semestre=?)");
+      params.push(p, t, d, s);
+    } else {
+      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=?)");
+      params.push(p, t, d);
+    }
+  }
+
+  const condSql = conds.join(" OR ");
 
   try {
+    // Auditoria antes de remover: registrar histórico
+    try {
+      const selectAuditSql = `
+        SELECT m.id, m.escola_id, m.professor_id, m.turma_id, m.disciplina_id, m.semestre, m.aulas
+        FROM modulacao m
+        WHERE m.escola_id = ? AND (${condSql})
+      `;
+      const [paraRemover] = await pool.query(selectAuditSql, [escola_id, ...params]);
+      if (paraRemover.length > 0) {
+        const histRows = paraRemover.map((r) => [
+          r.escola_id,
+          r.id,
+          r.professor_id,
+          r.turma_id,
+          r.disciplina_id,
+          r.semestre,
+          r.aulas,
+          'DELETE',
+          req.user?.id || null,
+        ]);
+        await pool.query(
+          `INSERT INTO modulacao_historico (escola_id, modulacao_id, professor_id, turma_id, disciplina_id, semestre, aulas, operacao, usuario_id)
+           VALUES ?`,
+          [histRows]
+        );
+      }
+    } catch (auditErr) {
+      console.warn("[modulacao/remover] Aviso na auditoria:", auditErr.message);
+    }
+
     if (turno) {
       // Com filtro de turno, validamos com JOIN em turmas
       const sql = `
@@ -120,7 +158,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
           JOIN turmas t ON t.id = m.turma_id
          WHERE m.escola_id = ?
            AND t.turno = ?
-           AND (${cond})
+           AND (${condSql})
       `;
       const [result] = await pool.query(sql, [escola_id, turno, ...params]);
       return res.json({ ok: true, removidos: result.affectedRows || 0 });
@@ -129,7 +167,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
       const sql = `
         DELETE m FROM modulacao m
          WHERE m.escola_id = ?
-           AND (${cond})
+           AND (${condSql})
       `;
       const [result] = await pool.query(sql, [escola_id, ...params]);
       return res.json({ ok: true, removidos: result.affectedRows || 0 });
@@ -148,7 +186,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
 
 // ============================================================================
 // DELETE /api/modulacao/:prof/:turma/:disc  → fallback 1-a-1
-// Aceita ?turno=... opcional p/ validar via JOIN turmas.
+// Aceita ?turno=... e ?semestre=... opcionais.
 // ============================================================================
 router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
   const escola_id = req.user.escola_id;
@@ -156,8 +194,16 @@ router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
   const t = Number(req.params.turma);
   const d = Number(req.params.disc);
   const turno = req.query.turno;
+  const semestre = req.query.semestre ? Number(req.query.semestre) : null;
 
   try {
+    let semClause = "";
+    const extraParams = [];
+    if (semestre) {
+      semClause = " AND m.semestre = ?";
+      extraParams.push(semestre);
+    }
+
     if (turno) {
       // Com filtro de turno, validamos com JOIN em turmas
       const sql = `
@@ -169,20 +215,22 @@ router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
            AND m.professor_id = ?
            AND m.turma_id = ?
            AND m.disciplina_id = ?
+           ${semClause}
       `;
-      await pool.query(sql, [escola_id, turno, p, t, d]);
+      await pool.query(sql, [escola_id, turno, p, t, d, ...extraParams]);
       return res.status(204).end();
     }
 
     // Sem turno: remove direto da modulacao
     const sql = `
-      DELETE FROM modulacao
-       WHERE escola_id = ?
-         AND professor_id = ?
-         AND turma_id = ?
-         AND disciplina_id = ?
+      DELETE FROM modulacao m
+       WHERE m.escola_id = ?
+         AND m.professor_id = ?
+         AND m.turma_id = ?
+         AND m.disciplina_id = ?
+         ${semClause}
     `;
-    await pool.query(sql, [escola_id, p, t, d]);
+    await pool.query(sql, [escola_id, p, t, d, ...extraParams]);
     return res.status(204).end();
   } catch (err) {
     console.error("Erro no remover (1-a-1):", err);

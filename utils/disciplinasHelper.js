@@ -246,9 +246,10 @@ export async function reconciliarNotasComModulacao(pool, escola_id) {
   try {
     // 1. Buscar todas as modulações ativas da escola
     const [modulacoes] = await pool.query(
-      `SELECT mo.turma_id, mo.disciplina_id, d.nome, d.nome_oficial, d.abreviatura
+      `SELECT mo.turma_id, mo.disciplina_id, mo.semestre, d.nome, d.nome_oficial, d.abreviatura, t.regime
        FROM modulacao mo
        JOIN disciplinas d ON d.id = mo.disciplina_id
+       LEFT JOIN turmas t ON t.id = mo.turma_id
        WHERE mo.escola_id = ? AND mo.turma_id IS NOT NULL`,
       [escola_id]
     );
@@ -280,13 +281,19 @@ export async function reconciliarNotasComModulacao(pool, escola_id) {
       if (!alunos.length) continue;
       const alunoIds = alunos.map(a => a.id);
 
+      // Se turma for semestral, restringe aos bimestres do semestre da modulação
+      let bimCondition = "";
+      if (mod.regime === "semestral") {
+        bimCondition = Number(mod.semestre) === 2 ? " AND bimestre IN (3, 4)" : " AND bimestre IN (1, 2)";
+      }
+
       // Busca notas desses alunos com outros IDs equivalentes
       const [notasParaMigrar] = await pool.query(
         `SELECT id, aluno_id, ano, bimestre, disciplina_id, nota, faltas
          FROM notas
          WHERE escola_id = ?
            AND aluno_id IN (?)
-           AND disciplina_id IN (?)`,
+           AND disciplina_id IN (?)${bimCondition}`,
         [escola_id, alunoIds, otherIds]
       );
 

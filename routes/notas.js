@@ -428,6 +428,7 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
     // Fonte de verdade: tripla professor_id + disciplina_id + turma_id na tabela modulacao
     // A ponte usuarios → professores é via CPF (não existe usuario_id em professores)
     // Um professor pode ter N disciplinas na mesma turma — DISTINCT retorna todas.
+    const semestreBim = bimestre <= 2 ? 1 : 2;
     let discsProfessor = new Set();
     try {
       const [discProfRows] = await db.query(
@@ -437,12 +438,14 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
            ON REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u.cpf, '.', ''), '-', '')
           AND p.escola_id = u.escola_id
          JOIN modulacao mo ON mo.professor_id = p.id AND mo.turma_id = ?
+         LEFT JOIN turmas t ON t.id = mo.turma_id
          WHERE u.id = ?
-           AND mo.escola_id = ?`,
-        [turmaId, usuario_id, escola_id]
+           AND mo.escola_id = ?
+           AND (t.regime = 'anual' OR mo.semestre = ?)`,
+        [turmaId, usuario_id, escola_id, semestreBim]
       );
       discsProfessor = new Set(discProfRows.map(r => r.disciplina_id));
-      console.log(`[mapa-nota] usuario_id=${usuario_id} → discsProfessor na turma ${turmaId}:`, [...discsProfessor]);
+      console.log(`[mapa-nota] usuario_id=${usuario_id} → discsProfessor na turma ${turmaId} (bimestre ${bimestre}, semestre ${semestreBim}):`, [...discsProfessor]);
     } catch (discErr) {
       // Nao critico: professor nao tera celulas editaveis, mas tabela continua funcional
       console.warn("[mapa-nota] Erro ao buscar disciplinas do professor:", discErr.message);
@@ -572,6 +575,7 @@ router.post("/mapa-nota/flag", verificarEscola, async (req, res) => {
     // Verificar se o professor leciona essa disciplina na turma (via professores + modulacao)
     if (turma_id) {
       let autorizado = false;
+      const semestreBim = Number(bimestre) <= 2 ? 1 : 2;
       try {
         const [[uRow]] = await db.query(
           `SELECT cpf FROM usuarios WHERE id = ? LIMIT 1`,
@@ -582,12 +586,14 @@ router.post("/mapa-nota/flag", verificarEscola, async (req, res) => {
           const [check] = await db.query(
             `SELECT mo.id FROM professores p
              JOIN modulacao mo ON mo.professor_id = p.id
+             LEFT JOIN turmas t ON t.id = mo.turma_id
              WHERE p.escola_id = ?
                AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
                AND mo.turma_id = ?
                AND mo.disciplina_id = ?
+               AND (t.regime = 'anual' OR mo.semestre = ?)
              LIMIT 1`,
-            [escola_id, cpfLimpo, turma_id, disciplina_id]
+            [escola_id, cpfLimpo, turma_id, disciplina_id, semestreBim]
           );
           autorizado = check.length > 0;
         }
