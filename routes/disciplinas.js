@@ -39,7 +39,7 @@ router.get("/", verificarEscola, async (req, res) => {
         carga,
         escola_id
       FROM disciplinas
-      WHERE escola_id = ?
+      WHERE escola_id = ? AND mesclada_em IS NULL
     `;
     const params = [targetEscolaId];
 
@@ -53,7 +53,7 @@ router.get("/", verificarEscola, async (req, res) => {
       params.push(String(turno).trim().toUpperCase());
     }
 
-    sql += " ORDER BY nome, etapa, turno";
+    sql += " ORDER BY nome";
 
     const [rows] = await pool.query(sql, params);
     res.json(rows);
@@ -88,16 +88,16 @@ router.post("/", verificarEscola, async (req, res) => {
     : null;
 
   try {
-    // ✅ Validação de unicidade: nome normalizado + etapa + turno + escola_id
+    // ✅ Validação de unicidade: nome normalizado + escola_id (ignora mescladas)
     const nomeNormalizado = nome.trim();
     const [[existente]] = await pool.query(
-      `SELECT id FROM disciplinas
-       WHERE LOWER(TRIM(nome)) = LOWER(?) AND UPPER(TRIM(etapa)) = ? AND UPPER(TRIM(turno)) = ? AND escola_id = ? LIMIT 1`,
-      [nomeNormalizado, etapaFinal, turnoFinal, escola_id]
+       `SELECT id FROM disciplinas
+        WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? AND mesclada_em IS NULL LIMIT 1`,
+       [nomeNormalizado, escola_id]
     );
     if (existente) {
       return res.status(409).json({
-        message: `Já existe a disciplina "${nomeNormalizado}" para a etapa "${etapaFinal}" / turno "${turnoFinal}" nesta escola.`
+        message: `Já existe a disciplina "${nomeNormalizado}" cadastrada nesta escola.`
       });
     }
 
@@ -178,16 +178,16 @@ router.put("/:id", verificarEscola, async (req, res) => {
       ? abreviatura.trim().toUpperCase()
       : null;
 
-    // ✅ Validação de unicidade ao editar: exclui o próprio registro
+    // ✅ Validação de unicidade ao editar: exclui o próprio registro e registros mesclados
     const nomeNormalizado = nome.trim();
     const [[duplicada]] = await pool.query(
       `SELECT id FROM disciplinas
-       WHERE LOWER(TRIM(nome)) = LOWER(?) AND UPPER(TRIM(etapa)) = ? AND UPPER(TRIM(turno)) = ? AND escola_id = ? AND id != ? LIMIT 1`,
-      [nomeNormalizado, etapaFinal, turnoFinal, escola_id, id]
+       WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? AND id != ? AND mesclada_em IS NULL LIMIT 1`,
+      [nomeNormalizado, escola_id, id]
     );
     if (duplicada) {
       return res.status(409).json({
-        message: `Já existe outra disciplina "${nomeNormalizado}" para a etapa "${etapaFinal}" / turno "${turnoFinal}" nesta escola.`
+        message: `Já existe outra disciplina "${nomeNormalizado}" cadastrada nesta escola.`
       });
     }
 
