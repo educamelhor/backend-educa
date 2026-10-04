@@ -97,6 +97,8 @@ import usuariosRouter, { publicRouter as usuariosPublicRouter } from "./routes/u
 import alunosImpressaoRouter from "./routes/alunos_impressao.js";
 import codigosRouter from "./routes/codigos.js";
 import cargasHorariasRouter from "./routes/cargasHorarias.js";
+import etapasRouter from "./routes/etapas.js";
+import migracaoConflitosRouter from "./routes/migracaoConflitos.js";
 import registrosOcorrenciasRouter from "./routes/registrosOcorrencias.js";
 import conselhoRouter from "./routes/conselho.js";
 import conselhoPdfRouter from "./routes/conselho-pdf.js";
@@ -1679,6 +1681,8 @@ async function bootstrap() {
     verificarEscola,
     disciplinasRouter
   );
+  app.use("/api/etapas", autenticarToken, verificarEscola, etapasRouter);
+  app.use("/api/migracao-conflitos", autenticarToken, verificarEscola, migracaoConflitosRouter);
   app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
 
 

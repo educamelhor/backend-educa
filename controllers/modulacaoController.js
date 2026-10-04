@@ -249,7 +249,7 @@ export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
       `SELECT
          tc.turma_id,
          tc.disciplina_id,
-         IFNULL(d.carga, 1) AS carga
+         IFNULL(tc.carga, IFNULL(d.carga, 1)) AS carga
        FROM turma_cargas tc
        JOIN disciplinas d ON d.id = tc.disciplina_id
        JOIN turmas      t ON t.id  = tc.turma_id

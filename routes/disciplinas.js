@@ -33,6 +33,7 @@ router.get("/", verificarEscola, async (req, res) => {
         nome AS disciplina,
         abreviatura,
         nome_oficial,
+        tipo,
         etapa,
         turno,
         carga,
@@ -101,13 +102,13 @@ router.post("/", verificarEscola, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, abreviatura, nome_oficial, etapa, turno, carga, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [nomeNormalizado, abreviaturaFinal, nomeOficialFinal, etapaFinal, turnoFinal, carga, escola_id]
+      `INSERT INTO disciplinas (nome, abreviatura, nome_oficial, tipo, etapa, turno, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [nomeNormalizado, abreviaturaFinal, nomeOficialFinal, req.body.tipo || 'REGULAR', etapaFinal, turnoFinal, carga, escola_id]
     );
 
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, abreviatura, nome_oficial, etapa, turno, carga, escola_id
+      `SELECT id, nome AS disciplina, abreviatura, nome_oficial, tipo, etapa, turno, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -190,12 +191,13 @@ router.put("/:id", verificarEscola, async (req, res) => {
       });
     }
 
-    let updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, etapa = ?, turno = ?, carga = ?`;
-    const updateParams = [nomeNormalizado, abreviaturaFinal, etapaFinal, turnoFinal, carga];
+    const tipoFinal = req.body.tipo || 'REGULAR';
+    let updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, tipo = ?, etapa = ?, turno = ?, carga = ?`;
+    const updateParams = [nomeNormalizado, abreviaturaFinal, tipoFinal, etapaFinal, turnoFinal, carga];
 
     if (nome_oficial !== undefined) {
       const nomeOficialFinal = typeof nome_oficial === 'string' && nome_oficial.trim() ? nome_oficial.trim() : null;
-      updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, nome_oficial = ?, etapa = ?, turno = ?, carga = ?`;
+      updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, nome_oficial = ?, tipo = ?, etapa = ?, turno = ?, carga = ?`;
       updateParams.splice(2, 0, nomeOficialFinal);
     }
 

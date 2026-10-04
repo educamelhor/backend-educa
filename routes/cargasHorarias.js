@@ -111,30 +111,53 @@ router.post("/definir", verificarEscola, async (req, res) => {
     );
 
     if (itens.length > 0) {
-      const placeholders = itens.map(() => "?").join(",");
-      const params = [escola_id, ...itens];
+      // Normaliza itens: aceita array de números/strings OU objetos { disciplina_id, carga }
+      const itemMap = new Map();
+      const discIds = [];
 
-      const [disciplinas] = await conn.query(
-        `SELECT id, (carga + 0) AS carga
-           FROM disciplinas
-          WHERE escola_id = ?
-            AND id IN (${placeholders})`,
-        params
-      );
+      for (const it of itens) {
+        if (typeof it === "object" && it !== null) {
+          const id = Number(it.disciplina_id || it.id);
+          const c = Number(it.carga);
+          if (id) {
+            discIds.push(id);
+            if (!isNaN(c)) itemMap.set(id, c);
+          }
+        } else {
+          const id = Number(it);
+          if (id) discIds.push(id);
+        }
+      }
 
-      const valores = disciplinas.map((d) => [
-        escola_id,
-        turma_id,
-        d.id,
-        semestre,
-        Number(d.carga) || 0,
-      ]);
+      if (discIds.length > 0) {
+        const placeholders = discIds.map(() => "?").join(",");
+        const params = [escola_id, ...discIds];
 
-      if (valores.length > 0) {
-        await conn.query(
-          "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
-          [valores]
+        const [disciplinas] = await conn.query(
+          `SELECT id, (carga + 0) AS carga
+             FROM disciplinas
+            WHERE escola_id = ?
+              AND id IN (${placeholders})`,
+          params
         );
+
+        const valores = disciplinas.map((d) => {
+          const cPersonalizada = itemMap.has(d.id) ? itemMap.get(d.id) : (Number(d.carga) || 0);
+          return [
+            escola_id,
+            turma_id,
+            d.id,
+            semestre,
+            cPersonalizada,
+          ];
+        });
+
+        if (valores.length > 0) {
+          await conn.query(
+            "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
+            [valores]
+          );
+        }
       }
     }
 

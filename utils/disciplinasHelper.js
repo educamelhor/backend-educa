@@ -307,16 +307,28 @@ export async function reconciliarNotasComModulacao(pool, escola_id) {
           totalAtualizados++;
         } else {
           // Já existe uma nota para o ID da modulação.
-          // Se a existente estiver nula/vazia e a antiga tiver valor, mescla.
           if ((jaExiste.nota == null || jaExiste.nota === "") && (n.nota != null && n.nota !== "")) {
+            // Se a existente estiver nula e a antiga tiver valor, atualiza a existente
             await pool.query(
               `UPDATE notas SET nota = ?, faltas = COALESCE(?, faltas) WHERE id = ?`,
               [n.nota, n.faltas, jaExiste.id]
             );
+            await pool.query(`DELETE FROM notas WHERE id = ?`, [n.id]);
+            totalAtualizados++;
+          } else if (String(jaExiste.nota) === String(n.nota) && Number(jaExiste.faltas || 0) === Number(n.faltas || 0)) {
+            // Se nota e faltas forem exatamente idênticas, remove a duplicata redundante
+            await pool.query(`DELETE FROM notas WHERE id = ?`, [n.id]);
+            totalAtualizados++;
+          } else {
+            // DIVERGÊNCIA DE NOTAS: NUNCA apagar silenciosamente. Registrar na fila de conflitos!
+            await pool.query(
+              `INSERT IGNORE INTO migracao_conflitos_notas 
+               (escola_id, aluno_id, ano, bimestre, disciplina_nome, nota_id_1, nota_id_2, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'ABERTO')`,
+              [escola_id, n.aluno_id, n.ano, n.bimestre, mod.nome, jaExiste.id, n.id]
+            );
+            console.warn(`[RECONCILIAÇÃO NOTAS] Conflito retido entre nota ${jaExiste.id} e ${n.id} do aluno ${n.aluno_id} (${mod.nome}). Nenhuma nota foi apagada.`);
           }
-          // Remove a duplicata antiga
-          await pool.query(`DELETE FROM notas WHERE id = ?`, [n.id]);
-          totalAtualizados++;
         }
       }
     }
