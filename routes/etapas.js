@@ -90,21 +90,32 @@ router.put("/:id", verificarEscola, async (req, res) => {
 
 /**
  * DELETE /api/etapas/:id
- * Inativar/Remover etapa
+ * Excluir etapa
  */
 router.delete("/:id", verificarEscola, async (req, res) => {
   try {
     const { id } = req.params;
     const escola_id = req.user.escola_id;
 
-    // Verificar se a etapa está sendo utilizada em turmas
+    // 1. Verificar se a etapa está sendo utilizada em turmas
     const [[turmaUso]] = await pool.query(`SELECT COUNT(*) as c FROM turmas WHERE etapa_id = ?`, [id]);
-    if (turmaUso.c > 0) {
+    if (turmaUso && turmaUso.c > 0) {
       return res.status(400).json({ message: `Esta etapa não pode ser excluída pois está associada a ${turmaUso.c} turma(s).` });
     }
 
-    await pool.query(`UPDATE etapas SET ativa = 0 WHERE id = ? AND escola_id = ?`, [id, escola_id]);
-    res.json({ message: "Etapa desativada com sucesso." });
+    // 2. Verificar se a etapa está sendo utilizada em professor_vinculos
+    const [[vincUso]] = await pool.query(`SELECT COUNT(*) as c FROM professor_vinculos WHERE etapa_id = ?`, [id]);
+    if (vincUso && vincUso.c > 0) {
+      return res.status(400).json({ message: `Esta etapa não pode ser excluída pois está associada a ${vincUso.c} vínculo(s) de professor.` });
+    }
+
+    // 3. Excluir etapa
+    const [result] = await pool.query(`DELETE FROM etapas WHERE id = ? AND escola_id = ?`, [id, escola_id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Etapa não encontrada ou não pertence à sua escola." });
+    }
+
+    res.json({ message: "Etapa excluída com sucesso." });
   } catch (error) {
     console.error("Erro ao deletar etapa:", error);
     res.status(500).json({ message: "Erro interno ao deletar etapa." });
