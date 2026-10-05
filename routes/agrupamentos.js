@@ -176,21 +176,50 @@ router.get("/modulacao/resumo", async (req, res) => {
     const { escola_id } = req.user;
     const ano = anoDe(req);
     const semestre = toInt(req.query.semestre);
+    const turno = req.query.turno ? normTurno(req.query.turno) : null;
 
     let sql = `
       SELECT m.professor_id, p.nome AS professor_nome,
-             SUM(m.aulas) AS aulas_agrupamento,
-             COUNT(DISTINCT m.agrupamento_id) AS total_agrupamentos
+             m.disciplina_id, d.nome AS disciplina_nome,
+             g.id AS agrupamento_id, g.nome AS agrupamento_nome, g.tipo AS agrupamento_tipo, g.turno,
+             m.aulas AS aulas_agrupamento
         FROM agrupamento_modulacao m
         JOIN agrupamentos g ON g.id = m.agrupamento_id
         JOIN professores p ON p.id = m.professor_id
+        JOIN disciplinas d ON d.id = m.disciplina_id
        WHERE g.escola_id = ? AND g.ano_letivo = ? AND g.status <> 'ENCERRADO'`;
     const params = [escola_id, ano];
     if (semestre !== null) { sql += " AND (g.semestre = ? OR g.semestre = 0)"; params.push(semestre); }
-    sql += " GROUP BY m.professor_id, p.nome ORDER BY p.nome";
+    if (turno) { sql += " AND g.turno = ?"; params.push(turno); }
+    sql += " ORDER BY p.nome, d.nome, g.nome";
 
     const [rows] = await pool.query(sql, params);
-    res.json(rows);
+
+    // Índices agregados para consumo direto no frontend de modulação
+    const porProfessor = {};
+    const porProfDisc = {};
+    const porProfTurno = {};
+
+    for (const r of rows) {
+      const pid = r.professor_id;
+      const did = r.disciplina_id;
+      const tur = r.turno;
+      const aulas = Number(r.aulas_agrupamento) || 0;
+
+      porProfessor[pid] = (porProfessor[pid] || 0) + aulas;
+      const keyPd = `${pid}|${did}`;
+      porProfDisc[keyPd] = (porProfDisc[keyPd] || 0) + aulas;
+      const keyPt = `${pid}|${tur}`;
+      porProfTurno[keyPt] = (porProfTurno[keyPt] || 0) + aulas;
+    }
+
+    res.json({
+      itens: rows,
+      por_professor: porProfessor,
+      por_prof_disc: porProfDisc,
+      por_prof_turno: porProfTurno,
+      total_aulas: Object.values(porProfessor).reduce((a, b) => a + b, 0),
+    });
   } catch (err) {
     responderErro(res, err, "Não foi possível calcular a carga dos agrupamentos.");
   }
