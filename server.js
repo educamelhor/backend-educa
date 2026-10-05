@@ -84,6 +84,7 @@ import alunosRouter from "./routes/alunos.js";
 import matriculasRouter from "./routes/matriculas.js";
 import professoresRouter from "./routes/professores.js";
 import disciplinasRouter from "./routes/disciplinas.js";
+import agrupamentosRouter from "./routes/agrupamentos.js";
 import turmasRouter from "./routes/turmas.js";
 import questoesRouter from "./routes/questoes.js";
 import questoesUploadRouter from "./routes/questoesUpload.js";
@@ -1684,6 +1685,8 @@ async function bootstrap() {
   app.use("/api/etapas", autenticarToken, verificarEscola, etapasRouter);
   app.use("/api/migracao-conflitos", autenticarToken, verificarEscola, migracaoConflitosRouter);
   app.use("/api/turmas", autenticarToken, verificarEscola, turmasRouter);
+  // Turmas de Agrupamento / Enturmação Mista (IFA, eletivas, projetos, PCA em agrupamento)
+  app.use("/api/agrupamentos", autenticarToken, verificarEscola, agrupamentosRouter);
 
 
   // ⚠️ MODULAÇÃO (reativado)
