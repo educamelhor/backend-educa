@@ -36,7 +36,7 @@ router.get("/", verificarEscola, async (req, res) => {
   try {
     const userEscolaId = req.user.escola_id;
     const targetEscolaId = req.query.escola_id ? Number(req.query.escola_id) : userEscolaId;
-    const { etapa, turno } = req.query;
+    const { etapa, turno, modo_oferta, tipo, nao_tipo, apenas_regulares } = req.query;
 
     let sql = `
       SELECT 
@@ -57,13 +57,45 @@ router.get("/", verificarEscola, async (req, res) => {
     const params = [targetEscolaId];
 
     if (etapa) {
-      sql += " AND UPPER(TRIM(etapa)) = ?";
+      // Traz disciplinas da etapa correspondente + disciplinas de etapa GERAL (ex: Matemática, Português)
+      sql += " AND (UPPER(TRIM(etapa)) = ? OR UPPER(TRIM(etapa)) = 'GERAL' OR etapa IS NULL)";
       params.push(String(etapa).trim().toUpperCase());
     }
 
     if (turno) {
-      sql += " AND (UPPER(TRIM(turno)) = ? OR UPPER(TRIM(turno)) IN ('DIURNO', 'GERAL', 'INTEGRAL'))";
-      params.push(String(turno).trim().toUpperCase());
+      const tNorm = String(turno).trim().toUpperCase();
+      if (tNorm === 'MATUTINO') {
+        sql += " AND UPPER(TRIM(turno)) IN ('MATUTINO', 'INTEGRAL', 'DIURNO')";
+      } else if (tNorm === 'VESPERTINO') {
+        sql += " AND UPPER(TRIM(turno)) IN ('VESPERTINO', 'INTEGRAL', 'DIURNO')";
+      } else if (tNorm === 'NOTURNO') {
+        sql += " AND UPPER(TRIM(turno)) IN ('NOTURNO', 'INTEGRAL')";
+      } else if (tNorm === 'INTEGRAL') {
+        sql += " AND UPPER(TRIM(turno)) IN ('INTEGRAL', 'MATUTINO', 'VESPERTINO', 'DIURNO')";
+      } else {
+        sql += " AND (UPPER(TRIM(turno)) = ? OR UPPER(TRIM(turno)) = 'INTEGRAL')";
+        params.push(tNorm);
+      }
+    }
+
+    if (modo_oferta) {
+      sql += " AND UPPER(TRIM(modo_oferta)) = ?";
+      params.push(String(modo_oferta).trim().toUpperCase());
+    }
+
+    if (tipo) {
+      sql += " AND UPPER(TRIM(tipo)) = ?";
+      params.push(String(tipo).trim().toUpperCase());
+    }
+
+    if (nao_tipo) {
+      sql += " AND UPPER(TRIM(tipo)) != ?";
+      params.push(String(nao_tipo).trim().toUpperCase());
+    }
+
+    if (apenas_regulares === 'true' || apenas_regulares === true) {
+      // Exclui disciplinas nomeadas como IFA para não poluir turmas regulares
+      sql += " AND UPPER(TRIM(nome)) NOT LIKE 'IFA%' AND UPPER(TRIM(tipo)) NOT IN ('IFA', 'ELETIVA')";
     }
 
     sql += " ORDER BY nome";
