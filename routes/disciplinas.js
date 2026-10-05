@@ -17,6 +17,18 @@ function verificarEscola(req, res, next) {
 
 
 /**
+ * Modo de oferta: TURMA (turma regular) | AGRUPAMENTO (turma de agrupamento).
+ * Padrão derivado do tipo; PCA (Percurso Comum de Aprofundamento) é TURMA por padrão,
+ * mas a escola pode optar por AGRUPAMENTO.
+ */
+const MODOS_OFERTA_VALIDOS = ['TURMA', 'AGRUPAMENTO'];
+const modoPadraoDoTipo = (tipo) => (['IFA', 'ELETIVA', 'PROJETO'].includes(String(tipo || '').toUpperCase()) ? 'AGRUPAMENTO' : 'TURMA');
+const resolverModoOferta = (modo, tipo) => {
+  const m = String(modo || '').toUpperCase();
+  return MODOS_OFERTA_VALIDOS.includes(m) ? m : modoPadraoDoTipo(tipo);
+};
+
+/**
  * GET /api/disciplinas
  * Lista todas as disciplinas da escola do usuário
  */
@@ -34,6 +46,7 @@ router.get("/", verificarEscola, async (req, res) => {
         abreviatura,
         nome_oficial,
         tipo,
+        modo_oferta,
         etapa,
         turno,
         carga,
@@ -90,6 +103,7 @@ router.post("/", verificarEscola, async (req, res) => {
   try {
     // ✅ Validação de unicidade: nome normalizado + escola_id (ignora mescladas)
     const nomeNormalizado = nome.trim();
+    const tipoNovo = req.body.tipo || 'REGULAR';
     const [[existente]] = await pool.query(
        `SELECT id FROM disciplinas
         WHERE LOWER(TRIM(nome)) = LOWER(?) AND escola_id = ? AND mesclada_em IS NULL LIMIT 1`,
@@ -102,13 +116,13 @@ router.post("/", verificarEscola, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      `INSERT INTO disciplinas (nome, abreviatura, nome_oficial, tipo, etapa, turno, carga, escola_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [nomeNormalizado, abreviaturaFinal, nomeOficialFinal, req.body.tipo || 'REGULAR', etapaFinal, turnoFinal, carga, escola_id]
+      `INSERT INTO disciplinas (nome, abreviatura, nome_oficial, tipo, modo_oferta, etapa, turno, carga, escola_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [nomeNormalizado, abreviaturaFinal, nomeOficialFinal, tipoNovo, resolverModoOferta(req.body.modo_oferta, tipoNovo), etapaFinal, turnoFinal, carga, escola_id]
     );
 
     const [rows] = await pool.query(
-      `SELECT id, nome AS disciplina, abreviatura, nome_oficial, tipo, etapa, turno, carga, escola_id
+      `SELECT id, nome AS disciplina, abreviatura, nome_oficial, tipo, modo_oferta, etapa, turno, carga, escola_id
        FROM disciplinas
        WHERE id = ?`,
       [result.insertId]
@@ -199,6 +213,12 @@ router.put("/:id", verificarEscola, async (req, res) => {
       const nomeOficialFinal = typeof nome_oficial === 'string' && nome_oficial.trim() ? nome_oficial.trim() : null;
       updateSql = `UPDATE disciplinas SET nome = ?, abreviatura = ?, nome_oficial = ?, tipo = ?, etapa = ?, turno = ?, carga = ?`;
       updateParams.splice(2, 0, nomeOficialFinal);
+    }
+
+    // modo_oferta: respeita o enviado; se só o tipo veio, deriva do tipo; senão não altera
+    if (req.body.modo_oferta !== undefined || req.body.tipo !== undefined) {
+      updateSql += `, modo_oferta = ?`;
+      updateParams.push(resolverModoOferta(req.body.modo_oferta, tipoFinal));
     }
 
     updateSql += `, updated_at = NOW() WHERE id = ? AND escola_id = ?`;
