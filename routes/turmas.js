@@ -31,7 +31,6 @@ router.get("/", verificarEscola, async (req, res) => {
       SELECT
         t.id,
         t.nome AS turma,
-        t.nome AS nome,
         t.nome_oficial,
         t.etapa,
         t.ano,
