@@ -140,7 +140,6 @@ import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
 import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agente Secretaria (SEEDF PDF Parser)
 import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
 import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
-import agrupamentosRouter from "./routes/agrupamentos.js"; // ✅ Turmas de Agrupamento / Eletivas / IFAs
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -1847,9 +1846,6 @@ async function bootstrap() {
 
   // ✅ Agenda Pedagógica
   app.use("/api/agenda-pedagogica", autenticarToken, verificarEscola, agendaPedagogicaRouter);
-
-  // ✅ Turmas de Agrupamento / Enturmação Mista (IFA, eletivas, projetos)
-  app.use("/api/agrupamentos", autenticarToken, verificarEscola, agrupamentosRouter);
 
   // ✅ Cargas Horárias (CADASTRO BÁSICO) — independente de Horários/Grade (Urania)
   if (FF_CARGAS_HORARIAS) {
