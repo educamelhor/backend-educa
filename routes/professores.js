@@ -721,7 +721,10 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         t.turno,
         t.etapa,
         COALESCE(t.regime, 'anual') AS regime,
-        COALESCE(m.semestre, 0) AS semestre,
+        CASE
+          WHEN LOWER(COALESCE(t.regime, 'anual')) = 'semestral' THEN COALESCE(m.semestre, 0)
+          ELSE 0
+        END AS semestre,
         FALSE AS is_agrupamento,
         NULL AS agrupamento_tipo
       FROM turmas t
