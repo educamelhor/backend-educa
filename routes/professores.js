@@ -877,8 +877,6 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
       req.escola_id ||
       req.user?.escola_id ||
       (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : null);
-    const anoLetivo = req.query.ano ? Number(req.query.ano) : new Date().getFullYear();
-
 
     // 1) tenta cpf no token
     let cpf = req.user?.cpf;
@@ -916,26 +914,75 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
     // histórica do professor (não reflete o vínculo atual).
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
-    const [rows] = await pool.query(
-      `SELECT DISTINCT d.id AS id, d.nome AS nome
-       FROM professores p
-       JOIN modulacao m   ON m.professor_id = p.id
-       JOIN turmas t      ON t.id = m.turma_id
-       JOIN disciplinas d ON d.id = m.disciplina_id
-       WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-         AND t.escola_id = ?
-         AND t.ano = (
-           SELECT MAX(t2.ano)
-           FROM turmas t2
-           JOIN modulacao m2 ON m2.turma_id = t2.id
-           JOIN professores p2 ON p2.id = m2.professor_id
-           WHERE p2.escola_id = ?
-             AND REPLACE(REPLACE(REPLACE(REPLACE(p2.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-         )
-       ORDER BY nome ASC`,
-      [escolaId, cleanCpf, escolaId, escolaId, cleanCpf]
-    );
+    // ─── Ano letivo ──────────────────────────────────────────────────────────
+    // Considera turmas regulares e agrupamentos
+    let anoLetivo = req.query.ano ? Number(req.query.ano) : null;
+    if (!anoLetivo) {
+      const [[maxRowT]] = await pool.query(
+        `SELECT MAX(t.ano) AS max_ano
+         FROM turmas t
+         JOIN modulacao m ON m.turma_id = t.id
+         JOIN professores p ON p.id = m.professor_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+        [Number(escolaId), cleanCpf]
+      );
+      let maxAgr = null;
+      try {
+        const [[maxRowA]] = await pool.query(
+          `SELECT MAX(g.ano_letivo) AS max_ano
+           FROM agrupamentos g
+           JOIN agrupamento_modulacao am ON am.agrupamento_id = g.id
+           JOIN professores p ON p.id = am.professor_id
+           WHERE p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+          [Number(escolaId), cleanCpf]
+        );
+        maxAgr = maxRowA?.max_ano;
+      } catch (_) {}
+      anoLetivo = Math.max(Number(maxRowT?.max_ano) || 0, Number(maxAgr) || 0) || new Date().getFullYear();
+    }
+
+    const sqlRegular = `
+      SELECT DISTINCT d.id AS id, d.nome AS nome
+      FROM professores p
+      JOIN modulacao m   ON m.professor_id = p.id
+      JOIN turmas t      ON t.id = m.turma_id
+      JOIN disciplinas d ON d.id = m.disciplina_id
+      WHERE p.escola_id = ?
+        AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+        AND t.escola_id = ?
+        AND t.ano = ?
+    `;
+
+    const sqlAgrupamento = `
+      SELECT DISTINCT d.id AS id, d.nome AS nome
+      FROM professores p
+      JOIN agrupamento_modulacao am ON am.professor_id = p.id
+      JOIN agrupamentos g          ON g.id = am.agrupamento_id
+      JOIN disciplinas d           ON d.id = am.disciplina_id
+      WHERE p.escola_id = ?
+        AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+        AND g.escola_id = ?
+        AND g.ano_letivo = ?
+        AND g.status <> 'ENCERRADO'
+    `;
+
+    let rows = [];
+    try {
+      const fullSql = `(${sqlRegular}) UNION (${sqlAgrupamento}) ORDER BY nome ASC`;
+      const [allRows] = await pool.query(fullSql, [
+        Number(escolaId), cleanCpf, Number(escolaId), anoLetivo,
+        Number(escolaId), cleanCpf, Number(escolaId), anoLetivo
+      ]);
+      rows = allRows;
+    } catch (uErr) {
+      console.warn("[me/disciplinas] Fallback sem UNION agrupamentos:", uErr.message);
+      const [regRows] = await pool.query(sqlRegular + " ORDER BY nome ASC", [
+        Number(escolaId), cleanCpf, Number(escolaId), anoLetivo
+      ]);
+      rows = regRows;
+    }
 
 
 
