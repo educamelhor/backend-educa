@@ -229,35 +229,56 @@ router.post("/definir-lote", verificarEscola, async (req, res) => {
 
     // Busca disciplinas e suas cargas
     if (itens.length > 0) {
-      const phDiscs = itens.map(() => "?").join(",");
-      const [disciplinas] = await conn.query(
-        `SELECT id, (carga + 0) AS carga FROM disciplinas WHERE escola_id = ? AND id IN (${phDiscs})`,
-        [escola_id, ...itens]
-      );
+      // Normaliza itens: aceita array de números/strings OU objetos { disciplina_id, carga }
+      const itemMap = new Map();
+      const discIds = [];
 
-      for (const [sem, turmasDoSem] of Object.entries(turmasPorSemestre)) {
-        if (turmasDoSem.length === 0) continue;
-        const semNum = Number(sem);
+      for (const it of itens) {
+        if (typeof it === "object" && it !== null) {
+          const id = Number(it.disciplina_id || it.id);
+          const c = Number(it.carga);
+          if (id) {
+            discIds.push(id);
+            if (!isNaN(c)) itemMap.set(id, c);
+          }
+        } else {
+          const id = Number(it);
+          if (id) discIds.push(id);
+        }
+      }
 
-        // Remove cargas anteriores apenas do semestre selecionado
-        const phT = turmasDoSem.map(() => "?").join(",");
-        await conn.query(
-          `DELETE FROM turma_cargas WHERE turma_id IN (${phT}) AND escola_id = ? AND semestre = ?`,
-          [...turmasDoSem, escola_id, semNum]
+      if (discIds.length > 0) {
+        const phDiscs = discIds.map(() => "?").join(",");
+        const [disciplinas] = await conn.query(
+          `SELECT id, (carga + 0) AS carga FROM disciplinas WHERE escola_id = ? AND id IN (${phDiscs})`,
+          [escola_id, ...discIds]
         );
 
-        const valores = [];
-        for (const turma_id of turmasDoSem) {
-          for (const d of disciplinas) {
-            valores.push([escola_id, turma_id, d.id, semNum, Number(d.carga) || 0]);
-          }
-        }
+        for (const [sem, turmasDoSem] of Object.entries(turmasPorSemestre)) {
+          if (turmasDoSem.length === 0) continue;
+          const semNum = Number(sem);
 
-        if (valores.length > 0) {
+          // Remove cargas anteriores apenas do semestre selecionado
+          const phT = turmasDoSem.map(() => "?").join(",");
           await conn.query(
-            "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
-            [valores]
+            `DELETE FROM turma_cargas WHERE turma_id IN (${phT}) AND escola_id = ? AND semestre = ?`,
+            [...turmasDoSem, escola_id, semNum]
           );
+
+          const valores = [];
+          for (const turma_id of turmasDoSem) {
+            for (const d of disciplinas) {
+              const cPersonalizada = itemMap.has(d.id) ? itemMap.get(d.id) : (Number(d.carga) || 0);
+              valores.push([escola_id, turma_id, d.id, semNum, cPersonalizada]);
+            }
+          }
+
+          if (valores.length > 0) {
+            await conn.query(
+              "INSERT INTO turma_cargas (escola_id, turma_id, disciplina_id, semestre, carga) VALUES ?",
+              [valores]
+            );
+          }
         }
       }
     }
