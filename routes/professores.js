@@ -29,13 +29,29 @@ const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
-// Auto-migration: garante que a coluna semestre existe na tabela professor_vinculos
+// Auto-migration: garante que as colunas de semestralidade existam
 (async () => {
   try {
     await pool.query(
       "ALTER TABLE professor_vinculos ADD COLUMN IF NOT EXISTS semestre TINYINT NOT NULL DEFAULT 0 COMMENT '0=Anual, 1=1º Semestre, 2=2º Semestre'"
     );
-  } catch (err) {}
+  } catch (err) {
+    try { await pool.query("ALTER TABLE professor_vinculos ADD COLUMN semestre TINYINT NOT NULL DEFAULT 0"); } catch (e) {}
+  }
+  try {
+    await pool.query(
+      "ALTER TABLE turmas ADD COLUMN IF NOT EXISTS regime VARCHAR(20) DEFAULT 'anual' COMMENT 'anual | semestral'"
+    );
+  } catch (err) {
+    try { await pool.query("ALTER TABLE turmas ADD COLUMN regime VARCHAR(20) DEFAULT 'anual'"); } catch (e) {}
+  }
+  try {
+    await pool.query(
+      "ALTER TABLE modulacao ADD COLUMN IF NOT EXISTS semestre TINYINT DEFAULT 0 COMMENT '0=anual, 1=1º sem, 2=2º sem'"
+    );
+  } catch (err) {
+    try { await pool.query("ALTER TABLE modulacao ADD COLUMN semestre TINYINT DEFAULT 0"); } catch (e) {}
+  }
 })();
 
 // ────────────────────────────────────────────────
@@ -693,52 +709,78 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
     }
 
     // ─── Query principal ─────────────────────────────────────────────────────
-    // FONTE ÚNICA: tabela modulacao (via JOIN com professores).
-    //
-    // ⚠️ REMOVIDO (era a causa do bug de turmas erradas nos Planos):
-    //   professores.turma_id — campo legado do pré-cadastro. Estava sendo
-    //   usado como FONTE 1 via OR, fazendo o professor ver turmas do cadastro
-    //   antigo que não constavam mais na sua modulação atual.
-    //
-    // A modulacao é a única fonte de verdade para o vínculo professor↔turma.
-
-    let sql = `
+    // Unifica:
+    // 1) Turmas Regulares em que o professor está modulado
+    // 2) Turmas de Agrupamento (Eletivas / IFAs / Projetos)
+    let sqlRegular = `
       SELECT DISTINCT
         t.id,
         t.nome,
         t.ano,
         t.serie,
         t.turno,
-        t.etapa
+        t.etapa,
+        COALESCE(t.regime, 'anual') AS regime,
+        COALESCE(m.semestre, 0) AS semestre,
+        FALSE AS is_agrupamento,
+        NULL AS agrupamento_tipo
       FROM turmas t
-      WHERE t.escola_id = ?
-        AND t.ano = ?
-        AND t.id IN (
-          SELECT m.turma_id
-          FROM modulacao m
-          JOIN professores p ON p.id = m.professor_id
+      JOIN modulacao m ON m.turma_id = t.id
+      JOIN professores p ON p.id = m.professor_id
     `;
-
+    const paramsRegular = [];
     if (disciplinaFiltrada) {
-      sql += ` JOIN disciplinas d ON d.id = m.disciplina_id AND d.nome = ? `;
+      sqlRegular += ` JOIN disciplinas d ON d.id = m.disciplina_id AND d.nome = ? `;
+      paramsRegular.push(disciplinaFiltrada);
     }
-
-    sql += `
-          WHERE p.escola_id = ?
-            AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-        )
-      ORDER BY
-        t.ano  DESC,
-        t.etapa ASC,
-        t.serie ASC,
-        t.nome  ASC
+    sqlRegular += `
+      WHERE p.escola_id = ?
+        AND t.ano = ?
+        AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
     `;
+    paramsRegular.push(Number(escolaId), anoLetivo, cleanCpf);
 
-    const params = [Number(escolaId), anoLetivo];
-    if (disciplinaFiltrada) params.push(disciplinaFiltrada);
-    params.push(Number(escolaId), cleanCpf);
+    let sqlAgrupamento = `
+      SELECT DISTINCT
+        g.id,
+        g.nome,
+        g.ano_letivo AS ano,
+        NULL AS serie,
+        g.turno,
+        COALESCE(e.nome, 'MÉDIO') AS etapa,
+        'semestral' AS regime,
+        COALESCE(g.semestre, 0) AS semestre,
+        TRUE AS is_agrupamento,
+        g.tipo AS agrupamento_tipo
+      FROM agrupamentos g
+      JOIN agrupamento_modulacao am ON am.agrupamento_id = g.id
+      JOIN professores p ON p.id = am.professor_id
+      LEFT JOIN etapas e ON e.id = g.etapa_id
+    `;
+    const paramsAgrupamento = [];
+    if (disciplinaFiltrada) {
+      sqlAgrupamento += ` JOIN disciplinas d ON d.id = am.disciplina_id AND d.nome = ? `;
+      paramsAgrupamento.push(disciplinaFiltrada);
+    }
+    sqlAgrupamento += `
+      WHERE g.escola_id = ?
+        AND g.ano_letivo = ?
+        AND g.status <> 'ENCERRADO'
+        AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+    `;
+    paramsAgrupamento.push(Number(escolaId), anoLetivo, cleanCpf);
 
-    const [rows] = await pool.query(sql, params);
+    let rows = [];
+    try {
+      const fullSql = `(${sqlRegular}) UNION ALL (${sqlAgrupamento})`;
+      const fullParams = [...paramsRegular, ...paramsAgrupamento];
+      const [allRows] = await pool.query(fullSql, fullParams);
+      rows = allRows;
+    } catch (uErr) {
+      console.warn("[me/turmas] Fallback sem UNION agrupamentos:", uErr.message);
+      const [regRows] = await pool.query(sqlRegular, paramsRegular);
+      rows = regRows;
+    }
 
     const turmas = Array.isArray(rows)
       ? rows
@@ -749,9 +791,19 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
             serie: String(r?.serie || "").trim() || null,
             turno: String(r?.turno || "").trim() || null,
             etapa: String(r?.etapa || "").trim() || null,
+            regime: String(r?.regime || "anual").trim().toLowerCase(),
+            semestre: Number(r?.semestre ?? 0),
+            is_agrupamento: Boolean(r?.is_agrupamento),
+            agrupamento_tipo: r?.agrupamento_tipo || null,
           }))
           .filter((t) => Number.isFinite(t.id) && t.nome)
       : [];
+
+    turmas.sort((a, b) => {
+      if (b.ano !== a.ano) return (b.ano || 0) - (a.ano || 0);
+      if (a.is_agrupamento !== b.is_agrupamento) return a.is_agrupamento ? 1 : -1;
+      return a.nome.localeCompare(b.nome);
+    });
 
     return res.json({ ok: true, turmas });
   } catch (err) {
@@ -1061,6 +1113,34 @@ router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, 
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
+    // 1) Verifica se turmaId pertence a uma turma de agrupamento
+    try {
+      const [[agr]] = await pool.query(
+        "SELECT id, nome FROM agrupamentos WHERE id = ? AND escola_id = ?",
+        [turmaId, escolaId]
+      );
+
+      if (agr) {
+        const [rowsAgr] = await pool.query(
+          `SELECT DISTINCT d.id AS id, d.nome AS nome
+           FROM agrupamento_modulacao am
+           JOIN disciplinas d ON d.id = am.disciplina_id
+           JOIN professores p ON p.id = am.professor_id
+           WHERE am.agrupamento_id = ? AND p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+           ORDER BY d.nome ASC`,
+          [turmaId, escolaId, cleanCpf]
+        );
+        const disciplinasAgr = Array.isArray(rowsAgr)
+          ? rowsAgr.map((r) => ({ id: Number(r.id), nome: String(r.nome).trim() }))
+          : [];
+        return res.json({ ok: true, disciplinas: disciplinasAgr, is_agrupamento: true });
+      }
+    } catch (agrErr) {
+      console.warn("[me/turmas/:turmaId/disciplinas] Fallback agrupamentos:", agrErr.message);
+    }
+
+    // 2) Caso regular (modulacao)
     const [rows] = await pool.query(
       `SELECT DISTINCT d.id AS id, d.nome AS nome
        FROM professores p
@@ -1080,7 +1160,7 @@ router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, 
         }))
       : [];
 
-    return res.json({ ok: true, disciplinas });
+    return res.json({ ok: true, disciplinas, is_agrupamento: false });
   } catch (err) {
     console.error("Erro ao buscar disciplinas da turma (me/turmas/:turmaId/disciplinas):", err);
     return res.status(500).json({ ok: false, message: "Erro ao buscar disciplinas." });
@@ -1121,20 +1201,46 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
     const cleanCpf = String(cpf).replace(/\D/g, "");
 
     // 1. Validar se o professor está modulado para esta turma e disciplina
-    const [[modValidation]] = await pool.query(
-      `SELECT 1
-       FROM professores p
-       JOIN modulacao m ON m.professor_id = p.id
-       WHERE p.escola_id = ?
-         AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-         AND m.turma_id = ?
-         AND m.disciplina_id = ?
-       LIMIT 1`,
-      [escolaId, cleanCpf, turmaId, disciplinaId]
-    );
+    let isAgrupamento = false;
+    try {
+      const [[agr]] = await pool.query(
+        "SELECT id FROM agrupamentos WHERE id = ? AND escola_id = ?",
+        [turmaId, escolaId]
+      );
+      if (agr) isAgrupamento = true;
+    } catch (_) {}
 
-    if (!modValidation) {
-      return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+    if (isAgrupamento) {
+      const [[modAgrValidation]] = await pool.query(
+        `SELECT 1
+         FROM professores p
+         JOIN agrupamento_modulacao am ON am.professor_id = p.id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+           AND am.agrupamento_id = ?
+           AND am.disciplina_id = ?
+         LIMIT 1`,
+        [escolaId, cleanCpf, turmaId, disciplinaId]
+      );
+      if (!modAgrValidation) {
+        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para este agrupamento e disciplina." });
+      }
+    } else {
+      const [[modValidation]] = await pool.query(
+        `SELECT 1
+         FROM professores p
+         JOIN modulacao m ON m.professor_id = p.id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+           AND m.turma_id = ?
+           AND m.disciplina_id = ?
+         LIMIT 1`,
+        [escolaId, cleanCpf, turmaId, disciplinaId]
+      );
+
+      if (!modValidation) {
+        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+      }
     }
 
     // 2. Buscar disciplina e seus IDs equivalentes na escola para máxima tolerância
@@ -1153,30 +1259,64 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
     }
 
     // 3. Buscar alunos ativos com suas respectivas notas e faltas se existirem
-    const [rows] = await pool.query(
-      `SELECT
-        a.id AS aluno_id,
-        a.estudante AS nome,
-        a.codigo AS matricula,
-        a.foto,
-        MAX(n.nota) AS nota,
-        MAX(n.faltas) AS faltas
-      FROM matriculas m
-      INNER JOIN alunos a ON a.id = m.aluno_id
-      LEFT JOIN notas n ON n.aluno_id = a.id
-        AND n.disciplina_id IN (?)
-        AND n.bimestre = ?
-        AND n.ano = ?
-        AND n.escola_id = ?
-      WHERE m.turma_id = ?
-        AND m.escola_id = ?
-        AND m.ano_letivo = ?
-        AND m.status = 'ativo'
-        AND (a.status = 'ativo' OR a.status IS NULL)
-      GROUP BY a.id, a.estudante, a.codigo, a.foto
-      ORDER BY a.estudante ASC`,
-      [equivalentDiscIds, bimestre, ano, escolaId, turmaId, escolaId, ano]
-    );
+    let rows = [];
+    if (isAgrupamento) {
+      const [rowsAgr] = await pool.query(
+        `SELECT
+          a.id AS aluno_id,
+          a.estudante AS nome,
+          a.codigo AS matricula,
+          a.foto,
+          aa.turma_origem_id,
+          t_origem.nome AS turma_origem_nome,
+          MAX(n.nota) AS nota,
+          MAX(n.faltas) AS faltas
+        FROM agrupamento_alunos aa
+        INNER JOIN alunos a ON a.id = aa.aluno_id
+        LEFT JOIN turmas t_origem ON t_origem.id = aa.turma_origem_id
+        LEFT JOIN notas n ON n.aluno_id = a.id
+          AND n.disciplina_id IN (?)
+          AND n.bimestre = ?
+          AND n.ano = ?
+          AND n.escola_id = ?
+        WHERE aa.agrupamento_id = ?
+          AND aa.escola_id = ?
+          AND aa.status = 'ativo'
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        GROUP BY a.id, a.estudante, a.codigo, a.foto, aa.turma_origem_id, t_origem.nome
+        ORDER BY t_origem.nome ASC, a.estudante ASC`,
+        [equivalentDiscIds, bimestre, ano, escolaId, turmaId, escolaId]
+      );
+      rows = rowsAgr;
+    } else {
+      const [rowsReg] = await pool.query(
+        `SELECT
+          a.id AS aluno_id,
+          a.estudante AS nome,
+          a.codigo AS matricula,
+          a.foto,
+          NULL AS turma_origem_id,
+          NULL AS turma_origem_nome,
+          MAX(n.nota) AS nota,
+          MAX(n.faltas) AS faltas
+        FROM matriculas m
+        INNER JOIN alunos a ON a.id = m.aluno_id
+        LEFT JOIN notas n ON n.aluno_id = a.id
+          AND n.disciplina_id IN (?)
+          AND n.bimestre = ?
+          AND n.ano = ?
+          AND n.escola_id = ?
+        WHERE m.turma_id = ?
+          AND m.escola_id = ?
+          AND m.ano_letivo = ?
+          AND m.status = 'ativo'
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        GROUP BY a.id, a.estudante, a.codigo, a.foto
+        ORDER BY a.estudante ASC`,
+        [equivalentDiscIds, bimestre, ano, escolaId, turmaId, escolaId, ano]
+      );
+      rows = rowsReg;
+    }
 
     return res.json({ ok: true, alunos: rows });
   } catch (err) {
