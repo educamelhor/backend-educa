@@ -1121,11 +1121,7 @@ router.post("/:id/salvar-notas", async (req, res) => {
     for (const row of rowsExistentes) {
       const rowKey = `${row.aluno_id}_${row.item_idx}_${row.oportunidade_idx}`;
       if (!keysPresentes.has(rowKey)) {
-        // Protege apenas notas oficiais do Gabarito (fixo_direcao de alunos com resposta no gabarito)
-        const isGabaritoProtegido = fixoDirecaoItemIndices.has(row.item_idx) && alunosComGabarito.has(row.aluno_id);
-        if (!isGabaritoProtegido) {
-          idsParaDeletar.push(row.id);
-        }
+        idsParaDeletar.push(row.id);
       }
     }
 
