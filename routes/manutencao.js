@@ -144,13 +144,36 @@ router.get("/diagnostico-jenifer", async (req, res) => {
       "SELECT * FROM professores WHERE escola_id = 1 AND (nome LIKE '%Jeni%' OR cpf LIKE '%98459414191%')"
     ).catch(e => [[], e.message]);
 
+    const [detalhesPlanos] = await db.query(`
+      SELECT id, usuario_id, turmas, disciplina, bimestre, agente_ultimo_erro, agente_exportado_em, agente_exportado_resultado
+      FROM planos_avaliacao
+      WHERE id IN (1202, 1204, 1281, 1282)
+    `).catch(e => [[], e.message]);
+
+    let screenshotsList = [];
+    try {
+      const fsMod = await import('fs');
+      const pMod = await import('path');
+      const baseDir = pMod.join(process.cwd(), 'uploads', 'agente', 'screenshots', '1');
+      if (fsMod.existsSync(baseDir)) {
+        const users = fsMod.readdirSync(baseDir);
+        screenshotsList = users.map(u => ({
+          userDir: u,
+          files: fsMod.readdirSync(pMod.join(baseDir, u)).slice(-10)
+        }));
+      }
+    } catch (e) {
+      screenshotsList = [{ error: e.message }];
+    }
+
     return res.json({
       ok: true,
+      detalhesPlanos,
+      screenshotsList,
       usuarioJenifer: usuarios.find(u => u.id === 100234),
       credenciaisJenifer: credenciais,
       profJenifer,
       modulacaoCef04Ciencias,
-      planos6AnoA,
       planosComErroEscola1
     });
   } catch (err) {
