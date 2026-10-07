@@ -34,7 +34,7 @@ function getNotaColors(nota, isFlagged) {
 
 async function drawHeader(doc, escola, logos, L, PW) {
   const top = doc.y;
-  const sz = 44;
+  const sz = 46;
   if (logos.hasLeft) doc.image(logos.left, L, top, { width: sz, height: sz });
   if (logos.hasRight) doc.image(logos.right, L + PW - sz, top, { width: sz, height: sz });
 
@@ -54,9 +54,10 @@ async function drawHeader(doc, escola, logos, L, PW) {
   
   const enderecoInfo = escola?.endereco ? `${escola.endereco}  •  INEP 53006160` : "INEP 53006160";
   doc.font("Helvetica").fontSize(7).fillColor(CINZA_LABEL)
-    .text(enderecoInfo, hx, doc.y + 1, { width: hw, align: "center" });
+    .text(enderecoInfo, hx, doc.y + 1.5, { width: hw, align: "center" });
 
-  doc.y = top + sz + 4;
+  // Desloca para baixo alguns milímetros com folga garantida para não cortar o texto do cabeçalho
+  doc.y = Math.max(doc.y + 7, top + sz + 7);
   doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(DOURADO).lineWidth(2).stroke();
   doc.y += 2.5;
   doc.moveTo(L, doc.y).lineTo(L + PW, doc.y).strokeColor(AZUL_HEADER).lineWidth(0.8).stroke();
@@ -93,10 +94,10 @@ function drawLegend(doc, L, PW) {
   const legH = 13;
 
   const items = [
-    { bg: "#dcfce7", border: "#86efac", text: "#15803d", label: "Nota ≥ 7,0 (Destaque)" },
+    { bg: "#dcfce7", border: "#86efac", text: "#15803d", label: "Nota >= 7,0 (Destaque)" },
     { bg: "#fef3c7", border: "#f59e0b", text: "#92400e", label: "Sinalizado" },
     { bg: "#fee2e2", border: "#fca5a5", text: "#b91c1c", label: "Nota < 5,0 (Atenção)" },
-    { bg: "#ffffff", border: "#cbd5e1", text: "#475569", label: "5,0 ≤ Nota < 7,0" },
+    { bg: "#ffffff", border: "#cbd5e1", text: "#475569", label: "5,0 a 6,9" },
   ];
 
   let curX = L;
@@ -229,12 +230,12 @@ export async function gerarMapaNotaPdf(req, res) {
     const PAGE_W = 841.89; // Paisagem A4
     const PAGE_H = 595.28;
     const PW = PAGE_W - L - R; // 791.89 pt
-    const CONTENT_MAX_Y = PAGE_H - 26;
+    const CONTENT_MAX_Y = PAGE_H - 30;
 
     const doc = new PDFDocument({
       size: "A4",
       layout: "landscape",
-      margins: { top: 16, bottom: 16, left: L, right: R },
+      margins: { top: 16, bottom: 0, left: L, right: R },
       bufferPages: true,
       info: {
         Title: `Mapa de Nota — ${turmaInfo.nome} — ${bimestre}º Bimestre — ${ano}`,
@@ -348,7 +349,7 @@ export async function gerarMapaNotaPdf(req, res) {
         const studentBg = isDestaque ? "#f0fdf4" : rowBg;
         const studentText = isDestaque ? "#15803d" : "#0f172a";
         doc.rect(L + colNumW, currentY, colNomeW, rowH).fillAndStroke(studentBg, "#cbd5e1");
-        const displayNome = isDestaque ? `★  ${aluno.nome.toUpperCase()}` : aluno.nome.toUpperCase();
+        const displayNome = aluno.nome.toUpperCase();
         doc.font(isDestaque ? "Helvetica-Bold" : "Helvetica").fontSize(7.2).fillColor(studentText)
           .text(displayNome, L + colNumW + 5, currentY + 3.2, { width: colNomeW - 10, lineBreak: false, ellipsis: true });
 
@@ -375,7 +376,16 @@ export async function gerarMapaNotaPdf(req, res) {
         if (currentY + 16 > CONTENT_MAX_Y) {
           doc.addPage();
           await drawHeader(doc, escola, logos, L, PW);
+          const cY = doc.y;
+          doc.rect(L, cY, PW, 16).fillAndStroke("#f1f5f9", "#cbd5e1");
+          doc.font("Helvetica-Bold").fontSize(7.5).fillColor(AZUL_TABELA)
+            .text(`MAPA DE NOTA — ${turmaInfo.nome} — ${bimestre}º BIMESTRE (Continuação)`, L + 8, cY + 4, { lineBreak: false });
+          doc.font("Helvetica").fontSize(7).fillColor("#64748b")
+            .text(`TURNO: ${(turmaInfo.turno || "").toUpperCase()}   •   ANO: ${ano}`, L, cY + 4.5, { width: PW - 8, align: "right", lineBreak: false });
+          doc.y = cY + 20;
           currentY = doc.y;
+          drawTableHeader(currentY);
+          currentY += 17;
         }
 
         doc.rect(L, currentY, colNumW + colNomeW, 15).fillAndStroke("#fee2e2", "#fca5a5");
