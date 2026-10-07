@@ -94,29 +94,98 @@ router.get('/turma/:turmaId', async (req, res) => {
       [alunoIds, escola_id, anoEfetivo]
     );
 
-    // 4. Busca atestados / justificativas de faltas (frequencia_justificativas)
-    let justificativasMap = {};
+    // 4. Busca atestados / justificativas de faltas (frequencia_justificativas) com quebra bimestral
+    const justificativasMap = {};
+    for (const id of alunoIds) {
+      justificativasMap[id] = {
+        b1: 0,
+        b2: 0,
+        b3: 0,
+        b4: 0,
+        total: 0,
+        dias: 0,
+        qtd: 0,
+        detalhes: [],
+      };
+    }
+
     try {
       const [justRows] = await pool.query(
         `SELECT
+           id,
            aluno_id,
-           COALESCE(SUM(dias), 0) AS total_justificadas,
-           COUNT(id) AS qtd_atestados
+           tipo,
+           data_inicio,
+           data_fim,
+           COALESCE(dias, 1) AS dias,
+           observacao
          FROM frequencia_justificativas
          WHERE aluno_id IN (?)
            AND escola_id = ?
-           AND YEAR(data_inicio) = ?
-         GROUP BY aluno_id`,
-        [alunoIds, escola_id, anoEfetivo]
+           AND (YEAR(data_inicio) = ? OR YEAR(data_fim) = ?)
+         ORDER BY data_inicio ASC`,
+        [alunoIds, escola_id, anoEfetivo, anoEfetivo]
       );
-      for (const j of justRows) {
-        justificativasMap[j.aluno_id] = {
-          dias: Number(j.total_justificadas || 0),
-          qtd: Number(j.qtd_atestados || 0),
-        };
+
+      for (const row of justRows) {
+        const aId = row.aluno_id;
+        if (!justificativasMap[aId]) continue;
+
+        const totalDias = Math.max(1, Number(row.dias || 1));
+        justificativasMap[aId].qtd += 1;
+        justificativasMap[aId].detalhes.push({
+          id: row.id,
+          tipo: row.tipo,
+          data_inicio: row.data_inicio,
+          data_fim: row.data_fim,
+          dias: totalDias,
+          observacao: row.observacao,
+        });
+
+        // Formata data_inicio YYYY-MM-DD
+        let dtInicioStr = null;
+        if (row.data_inicio) {
+          if (row.data_inicio instanceof Date) {
+            const y = row.data_inicio.getUTCFullYear();
+            const m = String(row.data_inicio.getUTCMonth() + 1).padStart(2, '0');
+            const d = String(row.data_inicio.getUTCDate()).padStart(2, '0');
+            dtInicioStr = `${y}-${m}-${d}`;
+          } else {
+            dtInicioStr = String(row.data_inicio).slice(0, 10);
+          }
+        }
+
+        if (dtInicioStr && /^\d{4}-\d{2}-\d{2}$/.test(dtInicioStr)) {
+          const [anoPart, mesPart, diaPart] = dtInicioStr.split('-').map(Number);
+
+          // Distribui os dias no calendário bimestral escolar
+          for (let step = 0; step < totalDias; step++) {
+            const curDate = new Date(Date.UTC(anoPart, mesPart - 1, diaPart + step));
+            const cAno = curDate.getUTCFullYear();
+            const cMes = curDate.getUTCMonth() + 1; // 1-12
+
+            if (cAno === anoEfetivo) {
+              if (cMes <= 4) {
+                justificativasMap[aId].b1 += 1;
+              } else if (cMes <= 7) {
+                justificativasMap[aId].b2 += 1;
+              } else if (cMes <= 9) {
+                justificativasMap[aId].b3 += 1;
+              } else {
+                justificativasMap[aId].b4 += 1;
+              }
+              justificativasMap[aId].total += 1;
+            }
+          }
+        } else {
+          justificativasMap[aId].b1 += totalDias;
+          justificativasMap[aId].total += totalDias;
+        }
+
+        justificativasMap[aId].dias = justificativasMap[aId].total;
       }
-    } catch (_) {
-      // Ignora caso a tabela ainda não exista em algum ambiente legado
+    } catch (errJust) {
+      console.warn('[secretaria-faltas] Aviso ao consultar justificativas:', errJust.message);
     }
 
     // 5. Agrega faltas por aluno
@@ -173,7 +242,7 @@ router.get('/turma/:turmaId', async (req, res) => {
     // 6. Monta o resultado final formatado
     const estudantes = alunos.map((al) => {
       const f = faltasPorAluno[al.aluno_id] || { b1: 0, b2: 0, b3: 0, b4: 0, total: 0, disciplinas: {} };
-      const just = justificativasMap[al.aluno_id] || { dias: 0, qtd: 0 };
+      const just = justificativasMap[al.aluno_id] || { b1: 0, b2: 0, b3: 0, b4: 0, total: 0, dias: 0, qtd: 0, detalhes: [] };
       const listaDisciplinas = Object.values(f.disciplinas);
 
       return {
