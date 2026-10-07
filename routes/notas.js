@@ -12,6 +12,7 @@
 import express from "express";
 import db from "../db.js";
 import { reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import { gerarMapaNotaPdf } from "./mapa-nota-pdf.js";
 
 const router = express.Router();
 
@@ -363,6 +364,12 @@ router.get("/alunos/:alunoId/ranking-anual", async (req, res) => {
     return res.status(500).json(emptyRes);
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /turmas/:turmaId/mapa-nota/pdf?bimestre=2&ano=2026
+// Gera PDF institucional A4 Paisagem do Mapa de Nota da turma
+// ---------------------------------------------------------------------------
+router.get("/turmas/:turmaId/mapa-nota/pdf", verificarEscola, gerarMapaNotaPdf);
 
 // ---------------------------------------------------------------------------
 // GET /turmas/:turmaId/mapa-nota?bimestre=2&ano=2026
