@@ -13,6 +13,7 @@ import express from "express";
 import db from "../db.js";
 import { reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
 import { gerarMapaNotaPdf } from "./mapa-nota-pdf.js";
+import { gerarMediaAnualPdf } from "./media-anual-pdf.js";
 
 const router = express.Router();
 
@@ -487,6 +488,12 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
     return res.status(500).json({ ok: false, error: "Erro ao carregar mapa de notas." });
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /turmas/:turmaId/media-anual/pdf?ano=2026&modo=media|faltantes
+// Gera PDF institucional A4 Paisagem da Média Anual ou Pontos Faltantes
+// ---------------------------------------------------------------------------
+router.get("/turmas/:turmaId/media-anual/pdf", verificarEscola, gerarMediaAnualPdf);
 
 // ---------------------------------------------------------------------------
 // GET /turmas/:turmaId/media-anual?ano=2026
