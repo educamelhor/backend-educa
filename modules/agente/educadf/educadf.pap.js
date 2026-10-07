@@ -1739,17 +1739,36 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const mapaRegime = (regimeTurma === 'semestral') ? calendarioMap.semestral : calendarioMap.bimestral;
     const mesAlvo = mapaRegime?.[String(bimNumPAP)] || null;
 
-    if (mesAlvo) {
-      console.log(`[educadf.pap] 7.5/16 Navegando calendário para mês ${mesAlvo} (bimestre ${bimNumPAP}º)...`);
+    const MESES_CANDIDATOS_BIMESTRE = {
+      '1': [3, 2, 4],
+      '2': [5, 6, 4],
+      '3': [8, 9, 7, 10],
+      '4': [10, 11, 12, 9],
+    };
+    const MESES_CANDIDATOS_SEMESTRE = {
+      '1': [4, 3, 5, 2, 6],
+      '2': [9, 8, 10, 11],
+    };
 
-      // Descobre o mês atualmente exibido no calendário
+    const candidatosBase = (regimeTurma === 'semestral')
+      ? (MESES_CANDIDATOS_SEMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean))
+      : (MESES_CANDIDATOS_BIMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean));
+
+    const mesesParaTentar = mesAlvo
+      ? [mesAlvo, ...candidatosBase.filter(m => m !== mesAlvo)]
+      : (candidatosBase.length ? candidatosBase : [8]);
+
+    let eventoClicado = false;
+
+    for (const mesTentativa of mesesParaTentar) {
+      console.log(`[educadf.pap] 7.5/16 Navegando calendário para mês ${mesTentativa} (bimestre ${bimNumPAP}º)...`);
+
+      // Descobre o mês atualmente exibido no calendário e navega até mesTentativa
       for (let navTent = 0; navTent < 12; navTent++) {
         const mesAtualFC = await page.evaluate(() => {
-          // O FullCalendar exibe o mês no toolbar title (ex: "maio de 2026", "março de 2026")
           const titleEl = document.querySelector('.fc-toolbar-title, .fc-center h2, .fc-toolbar h2');
           if (!titleEl) return null;
           const txt = (titleEl.textContent || '').toLowerCase().trim();
-          // Extrai o mês por nome
           const meses = {
             'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
             'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8,
@@ -1761,10 +1780,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           return null;
         });
 
-        console.log(`[educadf.pap] 7.5 Mês atual no calendário: ${mesAtualFC} | Alvo: ${mesAlvo}`);
-
-        if (mesAtualFC === mesAlvo) {
-          console.log(`[educadf.pap] ✅ 7.5 Calendário já no mês correto (${mesAlvo}).`);
+        if (mesAtualFC === mesTentativa) {
+          console.log(`[educadf.pap] ✅ 7.5 Calendário no mês alvo (${mesTentativa}).`);
           break;
         }
 
@@ -1773,13 +1790,10 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           break;
         }
 
-        // Navega: se mês atual > alvo → clicar "prev"; se < → clicar "next"
-        const direction = mesAtualFC > mesAlvo ? 'prev' : 'next';
+        const direction = mesAtualFC > mesTentativa ? 'prev' : 'next';
         const btnSelector = direction === 'prev'
           ? '.fc-prev-button, .fc-toolbar button[aria-label="prev"], button.fc-prev-button'
           : '.fc-next-button, .fc-toolbar button[aria-label="next"], button.fc-next-button';
-
-        console.log(`[educadf.pap] 7.5 Clicando "${direction}" (mês ${mesAtualFC} → ${mesAlvo})...`);
 
         const navClicked = await page.evaluate((sel) => {
           const btn = document.querySelector(sel);
@@ -1788,83 +1802,71 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         }, btnSelector);
 
         if (!navClicked) {
-          console.warn(`[educadf.pap] ⚠️ 7.5 Botão "${direction}" não encontrado. Parando navegação.`);
+          console.warn(`[educadf.pap] ⚠️ 7.5 Botão "${direction}" não encontrado.`);
           break;
         }
 
-        // Aguarda o calendário re-renderizar
         await session.delay(800);
-
-        // Re-aguarda eventos no novo mês
         try {
-          await page.waitForSelector(fcEventSelector, { timeout: 10000 });
-        } catch {
-          console.warn(`[educadf.pap] ⚠️ 7.5 Nenhum evento no mês após navegação — continuando...`);
-        }
+          await page.waitForSelector(fcEventSelector, { timeout: 3000 });
+        } catch {}
       }
 
       await session.delay(500);
-      await session.screenshot('pap_07_5_calendario_bimestre_correto');
-    }
+      await removerBackdrops(page);
 
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 8: Clicar em QUALQUER evento do calendário para abrir o diário.
-    // Agora o calendário está no mês correto, então o evento clicado
-    // terá uma data do bimestre correto, ancorando o Angular no contexto certo.
-    // ══════════════════════════════════════════════════════════════════════
-    await removerBackdrops(page);
-    await session.screenshot('pap_04c_calendario');
-
-    let eventoClicado = false;
-
-    // Estratégia 1: Playwright — primeiro fc-event que não seja legenda
-    for (const sel of FC_SELETORES) {
-      if (eventoClicado) break;
-      try {
-        const loc = page.locator(sel).first();
-        if ((await loc.count().catch(() => 0)) === 0) continue;
-        await loc.scrollIntoViewIfNeeded().catch(() => {});
-        await aguardarSemOverlay(page, 'pre-click-evento');
-        await loc.click({ timeout: 10000 });
-        eventoClicado = true;
-        const txt = (await loc.textContent().catch(() => '')) || '';
-        console.log(`[educadf.pap] ✅ Evento clicado via "${sel}": "${txt.substring(0, 60)}"`);
-      } catch (err) {
-        console.warn(`[educadf.pap]   Seletor "${sel}" falhou: ${err.message?.substring(0, 60)}`);
+      // PASSO 8: Tenta clicar em QUALQUER evento do calendário no mês
+      // Estratégia 1: Playwright — primeiro fc-event que não seja legenda
+      for (const sel of FC_SELETORES) {
+        if (eventoClicado) break;
+        try {
+          const loc = page.locator(sel).first();
+          if ((await loc.count().catch(() => 0)) === 0) continue;
+          await loc.scrollIntoViewIfNeeded().catch(() => {});
+          await aguardarSemOverlay(page, 'pre-click-evento');
+          await loc.click({ timeout: 5000 });
+          eventoClicado = true;
+          const txt = (await loc.textContent().catch(() => '')) || '';
+          console.log(`[educadf.pap] ✅ Evento clicado via "${sel}" (mês ${mesTentativa}): "${txt.substring(0, 60)}"`);
+        } catch (err) {}
       }
-    }
 
-    // Estratégia 2: JS fallback — clica primeiro evento visível (exclui legenda)
-    if (!eventoClicado) {
-      console.warn('[educadf.pap] ⚠️  Playwright falhou. Tentando JS...');
-      const jsResult = await page.evaluate(() => {
-        const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
-          const cls = el.className || '';
-          return typeof cls === 'string'
-            && cls.includes('fc-event')
-            && !cls.includes('external-event')
-            && el.offsetParent !== null;
-        });
-        if (!candidatos.length) return { ok: false, motivo: 'nenhum evento real visível' };
-        const el = candidatos[0];
-        el.scrollIntoView({ block: 'center' });
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return { ok: true, txt: (el.textContent || '').trim().substring(0, 60) };
-      }).catch(e => ({ ok: false, motivo: e.message }));
+      // Estratégia 2: JS fallback — clica primeiro evento visível (exclui legenda)
+      if (!eventoClicado) {
+        const jsResult = await page.evaluate(() => {
+          const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
+            const cls = el.className || '';
+            return typeof cls === 'string'
+              && cls.includes('fc-event')
+              && !cls.includes('external-event')
+              && el.offsetParent !== null;
+          });
+          if (!candidatos.length) return { ok: false, motivo: 'nenhum evento real visível' };
+          const el = candidatos[0];
+          el.scrollIntoView({ block: 'center' });
+          el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return { ok: true, txt: (el.textContent || '').trim().substring(0, 60) };
+        }).catch(e => ({ ok: false, motivo: e.message }));
 
-      if (jsResult.ok) {
-        eventoClicado = true;
-        console.log(`[educadf.pap] ✅ Evento clicado via JS: "${jsResult.txt}"`);
-        await page.waitForTimeout(1000);
+        if (jsResult.ok) {
+          eventoClicado = true;
+          console.log(`[educadf.pap] ✅ Evento clicado via JS (mês ${mesTentativa}): "${jsResult.txt}"`);
+          await page.waitForTimeout(1000);
+        }
+      }
+
+      if (eventoClicado) {
+        await session.screenshot('pap_04c_calendario_clicado');
+        break;
       } else {
-        console.error(`[educadf.pap] ❌ JS fallback falhou: ${jsResult.motivo}`);
+        console.warn(`[educadf.pap] ⚠️ Nenhum evento clicável no mês ${mesTentativa} para "${plano.turmas}". Tentando próximo mês...`);
       }
     }
 
     if (!eventoClicado) {
       throw new Error(
         `Nao foi possivel clicar em nenhum evento do calendario para a turma "${plano.turmas}". ` +
-        `O calendário foi carregado corretamente — verifique se há aulas cadastradas para este componente. ` +
+        `O calendário foi carregado corretamente — verifique se há aulas cadastradas para este componente no ${bimNumPAP}º Bimestre. ` +
         `Se o problema persistir, o portal EDUCADF pode estar lento.`
       );
     }
@@ -2624,8 +2626,32 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     const mesAlvoN = BIM_TARGET_MONTH_N[bimNumNav] || null;
     const fcEventSelectorN = '.fc-event:not(.external-event), .fc-daygrid-event, .fc-timegrid-event';
 
-    if (mesAlvoN) {
-      console.log(`[educadf.notas] 4.5/7 Navegando calendário para mês ${mesAlvoN} (bimestre ${bimNumNav}º)...`);
+    const MESES_CANDIDATOS_BIMESTRE_N = {
+      '1': [3, 2, 4],
+      '2': [5, 6, 4],
+      '3': [8, 9, 7, 10],
+      '4': [10, 11, 12, 9],
+    };
+    const regimeTurmaN = plano.regimeTurma || 'anual';
+    const candidatosBaseN = (regimeTurmaN === 'semestral')
+      ? ({ '1': [4, 3, 5, 2, 6], '2': [9, 8, 10, 11] }[bimNumNav] || [mesAlvoN].filter(Boolean))
+      : (MESES_CANDIDATOS_BIMESTRE_N[bimNumNav] || [mesAlvoN].filter(Boolean));
+
+    const mesesParaTentarN = mesAlvoN
+      ? [mesAlvoN, ...candidatosBaseN.filter(m => m !== mesAlvoN)]
+      : (candidatosBaseN.length ? candidatosBaseN : [8]);
+
+    const compNorm  = normStr(mapearDisciplina(plano.disciplina, plano.disciplinaOficial));
+    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
+    const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
+
+    const okTurmaComp  = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c)); };
+    const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
+
+    let eventoClicado = false;
+
+    for (const mesTent of mesesParaTentarN) {
+      console.log(`[educadf.notas] 4.5/7 Navegando calendário para mês ${mesTent} (bimestre ${bimNumNav}º)...`);
 
       for (let navTent = 0; navTent < 12; navTent++) {
         const mesAtualFC = await page.evaluate(() => {
@@ -2643,10 +2669,8 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           return null;
         });
 
-        console.log(`[educadf.notas] 4.5 Mês atual: ${mesAtualFC} | Alvo: ${mesAlvoN}`);
-
-        if (mesAtualFC === mesAlvoN) {
-          console.log(`[educadf.notas] ✅ 4.5 Calendário no mês correto.`);
+        if (mesAtualFC === mesTent) {
+          console.log(`[educadf.notas] ✅ 4.5 Calendário no mês alvo (${mesTent}).`);
           break;
         }
         if (mesAtualFC === null) {
@@ -2654,7 +2678,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           break;
         }
 
-        const direction = mesAtualFC > mesAlvoN ? 'prev' : 'next';
+        const direction = mesAtualFC > mesTent ? 'prev' : 'next';
         const btnSelector = direction === 'prev'
           ? '.fc-prev-button, .fc-toolbar button[aria-label="prev"], button.fc-prev-button'
           : '.fc-next-button, .fc-toolbar button[aria-label="next"], button.fc-next-button';
@@ -2670,93 +2694,68 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
           break;
         }
 
-        await session.delay(2000);
+        await session.delay(1000);
         try {
-          await page.waitForSelector(fcEventSelectorN, { timeout: 10000 });
-        } catch {
-          console.warn(`[educadf.notas] ⚠️ 4.5 Nenhum evento no mês após navegação.`);
-        }
+          await page.waitForSelector(fcEventSelectorN, { timeout: 4000 });
+        } catch {}
       }
-      await session.delay(1000);
-      await session.screenshot('notas_04_5_calendario_bimestre_correto');
-    }
 
-    // PASSO 5: Clicar num evento do calendário
-    console.log('[educadf.notas] 5/7 Clicando num evento do calendário...');
-    await session.delay(2000);
-    await removerBackdrops(page);
+      await session.delay(800);
+      await removerBackdrops(page);
 
-    const compNorm  = normStr(mapearDisciplina(plano.disciplina, plano.disciplinaOficial));
-    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
-    const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
-    const fcEvs     = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
-    const total     = await fcEvs.count();
+      // PASSO 5: Clicar num evento do calendário
+      const fcEvs = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
+      const total = await fcEvs.count();
 
-    const okTurmaComp  = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c)); };
-    const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
-
-    // Helper: normaliza bimestre — remove ordinais especiais (º/°), acentos
-    const normBimN = (s) => String(s)
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-      .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-
-    const evtBimOk = (txt) => {
-      if (!bimNum) return true;
-      const n = normBimN(txt);
-      return n.includes(`${bimNum}O BIMESTRE`) ||
-             n.includes(`BIMESTRE ${bimNum}`) ||
-             n.includes(`${bimNum} BIMESTRE`);
-    };
-
-    let eventoClicado = false;
-
-    // ══ PASSO 5 continuação: clicar em QUALQUER evento da turma ═══════════
-    // Com o calendário já no mês do bimestre correto, o evento clicado
-    // terá data do bimestre correto, ancorando o Angular no contexto certo.
-
-    // Tentativa 1: turma + componente (qualquer bimestre)
-    for (let i = 0; i < total && !eventoClicado; i++) {
-      const ev  = fcEvs.nth(i);
-      const txt = (await ev.textContent().catch(() => '')) || '';
-      if (!okTurmaComp(txt)) continue;
-      try {
-        await ev.scrollIntoViewIfNeeded().catch(() => {});
-        await ev.click({ timeout: 10000 }); eventoClicado = true;
-        console.log(`[educadf.notas] ✅ Evento [turma+comp] clicado: "${txt.substring(0,80)}"`);
-      } catch {}
-    }
-    // Tentativa 2: só turma (componente pode ter nome diferente)
-    if (!eventoClicado) {
-      console.warn('[educadf.notas] ⚠️  Tentativa só turma...');
+      // Tentativa 1: turma + componente
       for (let i = 0; i < total && !eventoClicado; i++) {
         const ev  = fcEvs.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
-        if (!okSoTurma(txt)) continue;
+        if (!okTurmaComp(txt)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await ev.click({ timeout: 10000 }); eventoClicado = true;
-          console.log(`[educadf.notas] ✅ Evento [só turma] clicado: "${txt.substring(0,80)}"`);
+          console.log(`[educadf.notas] ✅ Evento [turma+comp] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
         } catch {}
       }
-    }
-    // Tentativa 3: primeiro evento visível (calendário já filtrado por turma)
-    if (!eventoClicado && total > 0) {
-      console.warn('[educadf.notas] ⚠️  Tentativa: primeiro evento visível...');
-      try {
-        const ev  = fcEvs.nth(0);
-        const txt = (await ev.textContent().catch(() => '')) || '';
-        await ev.scrollIntoViewIfNeeded().catch(() => {});
-        await ev.click({ timeout: 10000 }); eventoClicado = true;
-        console.log(`[educadf.notas] ✅ Evento [fallback-primeiro] clicado: "${txt.substring(0,80)}"`);
-      } catch (err) {
-        console.warn(`[educadf.notas] Clique fallback falhou: ${err.message}`);
+
+      // Tentativa 2: só turma
+      if (!eventoClicado) {
+        for (let i = 0; i < total && !eventoClicado; i++) {
+          const ev  = fcEvs.nth(i);
+          const txt = (await ev.textContent().catch(() => '')) || '';
+          if (!okSoTurma(txt)) continue;
+          try {
+            await ev.scrollIntoViewIfNeeded().catch(() => {});
+            await ev.click({ timeout: 10000 }); eventoClicado = true;
+            console.log(`[educadf.notas] ✅ Evento [só turma] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
+          } catch {}
+        }
+      }
+
+      // Tentativa 3: primeiro evento visível
+      if (!eventoClicado && total > 0) {
+        try {
+          const ev  = fcEvs.nth(0);
+          const txt = (await ev.textContent().catch(() => '')) || '';
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await ev.click({ timeout: 10000 }); eventoClicado = true;
+          console.log(`[educadf.notas] ✅ Evento [fallback-primeiro] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
+        } catch {}
+      }
+
+      if (eventoClicado) {
+        await session.screenshot('notas_04_5_calendario_bimestre_correto');
+        break;
+      } else {
+        console.warn(`[educadf.notas] ⚠️ Nenhum evento clicável no mês ${mesTent} para "${plano.turmas}". Tentando próximo mês...`);
       }
     }
+
     if (!eventoClicado) {
       throw new Error(
         `Nenhum evento encontrado no calendário EDUCADF para a turma "${plano.turmas}". ` +
-        `Verifique se o filtro foi aplicado corretamente e se existem eventos visíveis.`
+        `Verifique se o professor já realizou lançamentos de aulas para essa turma no ${bimNumNav}º Bimestre.`
       );
     }
 

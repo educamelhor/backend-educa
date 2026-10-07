@@ -75,7 +75,18 @@ async function clearLock(db, planoId) {
 }
 
 // ── Busca nome do professor dono do plano ─────────────────────────────────────
-async function buscarNomeProfessor(db, planoId, fallbackUsuarioId) {
+async function buscarNomeProfessor(db, planoId, fallbackUsuarioId, perfil = 'professor') {
+  // Se o usuário que está exportando for perfil 'professor', seu nome no EDUCADF
+  // SEMPRE é a sua própria identidade (fallbackUsuarioId), pois um professor logado
+  // no EDUCADF opera em seu próprio diário e seu nome já vem na lombada.
+  if (perfil === 'professor' && fallbackUsuarioId) {
+    try {
+      const [[u]] = await db.query('SELECT nome FROM usuarios WHERE id = ? LIMIT 1', [fallbackUsuarioId]);
+      if (u?.nome) return u.nome;
+    } catch {}
+  }
+
+  // Se for coordenador/gestor, busca o professor criador do plano
   try {
     const [[prof]] = await db.query(
       `SELECT u.nome FROM usuarios u
@@ -85,6 +96,7 @@ async function buscarNomeProfessor(db, planoId, fallbackUsuarioId) {
     );
     if (prof?.nome) return prof.nome;
   } catch {}
+
   try {
     const [[u]] = await db.query('SELECT nome FROM usuarios WHERE id = ? LIMIT 1', [fallbackUsuarioId]);
     return u?.nome || '';
@@ -288,7 +300,7 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     }
 
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
-    const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
+    const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
     // Busca o nome oficial da turma mapeado pela Secretaria
     const [[turmaDb]] = await db.query(
@@ -575,7 +587,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
     }
 
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
-    const professorNome = await buscarNomeProfessor(db, planoId, usuarioId);
+    const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
     // Busca o nome oficial da turma mapeado pela Secretaria
     const [[turmaDb]] = await db.query(
