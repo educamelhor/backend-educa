@@ -122,24 +122,36 @@ router.get("/diagnostico-jenifer", async (req, res) => {
       "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = 1 ORDER BY nome ASC"
     ).catch(e => [[], e.message]);
 
-    const [modulacaoJenifer] = await db.query(
-      "SELECT * FROM modulacao WHERE professor_id = 100234 OR usuario_id = 100234"
-    ).catch(e => [[], e.message]);
+    const [modulacaoCef04Ciencias] = await db.query(`
+      SELECT m.id, m.turma_id, t.nome as turma_nome, m.disciplina_id, d.nome as disc_nome, 
+             p.id as prof_id, p.nome as prof_nome, p.cpf as prof_cpf
+      FROM modulacao m
+      JOIN turmas t ON t.id = m.turma_id
+      JOIN disciplinas d ON d.id = m.disciplina_id
+      JOIN professores p ON p.id = m.professor_id
+      WHERE t.escola_id = 1 AND (d.nome LIKE '%Ci%nc%' OR p.nome LIKE '%Jeni%' OR p.cpf LIKE '%98459414191%')
+    `).catch(e => [[], e.message]);
 
-    const [configsCef04] = await db.query(
-      "SELECT chave, valor FROM configuracoes_escola WHERE escola_id = 1"
+    const [planos6AnoA] = await db.query(`
+      SELECT p.id, p.usuario_id, u.nome as criador_nome, p.turmas, p.disciplina, p.bimestre, p.ano, p.status,
+             p.agente_ultimo_erro, p.agente_exportado_em, p.updated_at
+      FROM planos_avaliacao p
+      LEFT JOIN usuarios u ON u.id = p.usuario_id
+      WHERE p.escola_id = 1 AND p.turmas LIKE '%6%A%'
+    `).catch(e => [[], e.message]);
+
+    const [profJenifer] = await db.query(
+      "SELECT * FROM professores WHERE escola_id = 1 AND (nome LIKE '%Jeni%' OR cpf LIKE '%98459414191%')"
     ).catch(e => [[], e.message]);
 
     return res.json({
       ok: true,
-      usuarios,
-      credenciais,
-      planosJenifer,
-      planosComErroEscola1,
-      modulacaoJenifer,
-      turmasCef04,
-      disciplinasCef04,
-      configsCef04
+      usuarioJenifer: usuarios.find(u => u.id === 100234),
+      credenciaisJenifer: credenciais,
+      profJenifer,
+      modulacaoCef04Ciencias,
+      planos6AnoA,
+      planosComErroEscola1
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
