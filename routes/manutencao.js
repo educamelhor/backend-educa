@@ -95,44 +95,51 @@ router.get("/diagnostico-jenifer", async (req, res) => {
         ).catch(() => [[]]);
       }
     }
-    const [planos] = await db.query(`
+    const [planosJenifer] = await db.query(`
       SELECT p.id, p.escola_id, p.usuario_id, p.turmas, p.disciplina, p.bimestre, p.ano, p.status,
              p.agente_exportado_em, p.agente_exportado_resultado, p.agente_executando_desde, p.agente_ultimo_erro,
              p.agente_notas_exportadas_em, p.agente_notas_resultado_json, p.updated_at
       FROM planos_avaliacao p
-      WHERE p.disciplina LIKE '%Ci%nc%' OR p.usuario_id IN (?)
+      WHERE p.usuario_id = 100234
       ORDER BY p.updated_at DESC
-      LIMIT 30
-    `, [userIds.length ? userIds : [0]]).catch(e => [[], e.message]);
+    `).catch(e => [[], e.message]);
 
-    const escolaIds = [...new Set([...usuarios.map(u => u.escola_id), ...escolas.map(e => e.id)])].filter(Boolean);
-    let configs = [];
-    let disciplinas = [];
-    let turmas = [];
-    if (escolaIds.length > 0) {
-      [configs] = await db.query(
-        "SELECT escola_id, chave, valor FROM configuracoes_escola WHERE escola_id IN (?) AND chave LIKE '%agente%'",
-        [escolaIds]
-      ).catch(() => [[]]);
-      [disciplinas] = await db.query(
-        "SELECT id, escola_id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id IN (?) AND (nome LIKE '%Ci%nc%' OR nome_oficial LIKE '%Ci%nc%')",
-        [escolaIds]
-      ).catch(() => [[]]);
-      [turmas] = await db.query(
-        "SELECT id, escola_id, nome, nome_oficial, turno, regime FROM turmas WHERE escola_id IN (?)",
-        [escolaIds]
-      ).catch(() => [[]]);
-    }
+    const [planosComErroEscola1] = await db.query(`
+      SELECT p.id, p.usuario_id, u.nome as professor_nome, p.turmas, p.disciplina, p.bimestre, p.status,
+             p.agente_ultimo_erro, p.agente_executando_desde, p.agente_exportado_em, p.updated_at
+      FROM planos_avaliacao p
+      LEFT JOIN usuarios u ON u.id = p.usuario_id
+      WHERE p.escola_id = 1 AND p.agente_ultimo_erro IS NOT NULL
+      ORDER BY p.updated_at DESC
+      LIMIT 15
+    `).catch(e => [[], e.message]);
+
+    const [turmasCef04] = await db.query(
+      "SELECT id, nome, nome_oficial, turno, regime FROM turmas WHERE escola_id = 1 ORDER BY nome ASC"
+    ).catch(e => [[], e.message]);
+
+    const [disciplinasCef04] = await db.query(
+      "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = 1 ORDER BY nome ASC"
+    ).catch(e => [[], e.message]);
+
+    const [modulacaoJenifer] = await db.query(
+      "SELECT * FROM modulacao WHERE professor_id = 100234 OR usuario_id = 100234"
+    ).catch(e => [[], e.message]);
+
+    const [configsCef04] = await db.query(
+      "SELECT chave, valor FROM configuracoes_escola WHERE escola_id = 1"
+    ).catch(e => [[], e.message]);
 
     return res.json({
       ok: true,
-      escolas,
       usuarios,
       credenciais,
-      planos,
-      configs,
-      disciplinas,
-      turmas
+      planosJenifer,
+      planosComErroEscola1,
+      modulacaoJenifer,
+      turmasCef04,
+      disciplinasCef04,
+      configsCef04
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
