@@ -41,7 +41,7 @@ const MODULOS_VALIDOS = new Set([
   'secretaria.professores', 'secretaria.boletim', 'secretaria.relatorios',
   'secretaria.horarios', 'secretaria.agente', 'secretaria.tabela_codigos',
   'secretaria.sincronizar_seedf', 'secretaria.modulacao',
-  'secretaria.etapas', 'secretaria.conflitos_notas', 'secretaria.faltas',
+  'secretaria.etapas', 'secretaria.conflitos_notas', 'secretaria.faltas', 'secretaria.liberacao',
   // Disciplinar
   'disciplinar', 'disciplinar.alunos', 'disciplinar.historico',
   'disciplinar.atas', 'disciplinar.fo_coletivo', 'disciplinar.responsaveis',
@@ -58,7 +58,7 @@ const MODULOS_VALIDOS = new Set([
   'gabarito.corrigir', 'gabarito.resultados',
   // Frequência
   'frequencia', 'frequencia.atestados', 'frequencia.relatorios',
-  'frequencia.busca_ativa', 'frequencia.conselho_tutelar',
+  'frequencia.busca_ativa', 'frequencia.conselho_tutelar', 'frequencia.liberacao',
   // Biblioteca
   'biblioteca', 'biblioteca.acervo', 'biblioteca.emprestimos',
   'biblioteca.alunos', 'biblioteca.leitor_destaque',
