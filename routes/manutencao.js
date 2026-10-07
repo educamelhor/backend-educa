@@ -73,6 +73,72 @@ router.get("/diagnostico-telemetria", async (req, res) => {
   }
 });
 
+router.get("/diagnostico-jenifer", async (req, res) => {
+  const db = pool;
+  try {
+    const [escolas] = await db.query("SELECT id, nome, apelido FROM escolas");
+    const [usuarios] = await db.query(
+      "SELECT id, nome, email, perfil, escola_id, cpf FROM usuarios WHERE nome LIKE '%Jeni%' OR nome LIKE '%Jenn%' OR email LIKE '%jeni%'"
+    );
+    const userIds = usuarios.map(u => u.id);
+    let credenciais = [];
+    if (userIds.length > 0) {
+      try {
+        [credenciais] = await db.query(
+          "SELECT id, usuario_id, escola_id, educadf_login, perfil_id, ativo, created_at, updated_at FROM agente_credenciais WHERE usuario_id IN (?)",
+          [userIds]
+        );
+      } catch {
+        [credenciais] = await db.query(
+          "SELECT id, professor_id as usuario_id, escola_id, educadf_login, perfil_id, ativo, created_at, updated_at FROM agente_credenciais WHERE professor_id IN (?)",
+          [userIds]
+        ).catch(() => [[]]);
+      }
+    }
+    const [planos] = await db.query(`
+      SELECT p.id, p.escola_id, p.usuario_id, p.turmas, p.disciplina, p.bimestre, p.ano, p.status,
+             p.agente_exportado_em, p.agente_exportado_resultado, p.agente_executando_desde, p.agente_ultimo_erro,
+             p.agente_notas_exportadas_em, p.agente_notas_resultado_json, p.updated_at
+      FROM planos_avaliacao p
+      WHERE p.disciplina LIKE '%Ci%nc%' OR p.usuario_id IN (?)
+      ORDER BY p.updated_at DESC
+      LIMIT 30
+    `, [userIds.length ? userIds : [0]]).catch(e => [[], e.message]);
+
+    const escolaIds = [...new Set([...usuarios.map(u => u.escola_id), ...escolas.map(e => e.id)])].filter(Boolean);
+    let configs = [];
+    let disciplinas = [];
+    let turmas = [];
+    if (escolaIds.length > 0) {
+      [configs] = await db.query(
+        "SELECT escola_id, chave, valor FROM configuracoes_escola WHERE escola_id IN (?) AND chave LIKE '%agente%'",
+        [escolaIds]
+      ).catch(() => [[]]);
+      [disciplinas] = await db.query(
+        "SELECT id, escola_id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id IN (?) AND (nome LIKE '%Ci%nc%' OR nome_oficial LIKE '%Ci%nc%')",
+        [escolaIds]
+      ).catch(() => [[]]);
+      [turmas] = await db.query(
+        "SELECT id, escola_id, nome, nome_oficial, turno, regime FROM turmas WHERE escola_id IN (?)",
+        [escolaIds]
+      ).catch(() => [[]]);
+    }
+
+    return res.json({
+      ok: true,
+      escolas,
+      usuarios,
+      credenciais,
+      planos,
+      configs,
+      disciplinas,
+      turmas
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/plataforma/manutencao — CEO consulta status
 // ─────────────────────────────────────────────────────────────────────────────
