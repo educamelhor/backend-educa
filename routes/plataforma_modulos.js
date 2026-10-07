@@ -41,7 +41,7 @@ const MODULOS_VALIDOS = new Set([
   'secretaria.professores', 'secretaria.boletim', 'secretaria.relatorios',
   'secretaria.horarios', 'secretaria.agente', 'secretaria.tabela_codigos',
   'secretaria.sincronizar_seedf', 'secretaria.modulacao',
-  'secretaria.etapas', 'secretaria.conflitos_notas',
+  'secretaria.etapas', 'secretaria.conflitos_notas', 'secretaria.faltas',
   // Disciplinar
   'disciplinar', 'disciplinar.alunos', 'disciplinar.historico',
   'disciplinar.atas', 'disciplinar.fo_coletivo', 'disciplinar.responsaveis',

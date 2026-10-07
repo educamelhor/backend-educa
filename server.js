@@ -138,6 +138,7 @@ import appPaisLoginRouter from "./routes/app_pais_login.js"; // ✅ Router públ
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
 import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
 import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agente Secretaria (SEEDF PDF Parser)
+import secretariaFaltasRouter from "./routes/secretaria-faltas.js"; // ✅ Submódulo FALTAS Secretaria
 import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
 import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
 
@@ -1840,6 +1841,9 @@ async function bootstrap() {
 
   // ✅ AGENTE AUTÔNOMO DA SECRETARIA (SEEDF PDF Parser real)
   app.use("/api/secretaria/agente", autenticarToken, verificarEscola, secretariaAgenteRouter);
+
+  // ✅ SUBMÓDULO FALTAS DA SECRETARIA
+  app.use("/api/secretaria/faltas", autenticarToken, verificarEscola, secretariaFaltasRouter);
 
   // ✅ Relatórios Pedagógicos (Plano de Avaliação, etc.)
   app.use("/api/pedagogico/relatorios", autenticarToken, verificarEscola, pedagogicoRelatoriosRouter);
