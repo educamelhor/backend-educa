@@ -47,7 +47,7 @@ router.post("/impressao/boletins", async (req, res) => {
 // -------------------------------------------------------------------------
 router.get("/impressao/boletins", async (req, res) => {
   try {
-    const { turma_id } = req.query;
+    const { turma_id, aluno_id } = req.query;
 
     if (!turma_id) {
       return res
@@ -74,8 +74,24 @@ router.get("/impressao/boletins", async (req, res) => {
     const escolaIdTurma = turmaInfo.escola_id;
 
     // 1) Buscar alunos via tabela MATRICULAS (igual à Fiscalização de Notas)
-    //    Garante alunos matriculados no ano letivo correto, independente do
-    //    campo legado `alunos.turma_id`.
+    //    Se aluno_id for informado, filtra especificamente por aquele aluno.
+    let alunoFilterSql = "";
+    const queryParams = [
+      turmaInfo.turma,
+      turmaInfo.turno,
+      turmaInfo.id,
+      turmaInfo.etapa,
+      turmaInfo.regime || null,
+      turma_id,
+      escolaIdTurma,
+      anoLetivo,
+    ];
+
+    if (aluno_id) {
+      alunoFilterSql = " AND (a.id = ? OR a.codigo = ?)";
+      queryParams.push(aluno_id, aluno_id);
+    }
+
     const [alunosDados] = await pool.query(
       `SELECT
          a.id,
@@ -94,17 +110,9 @@ router.get("/impressao/boletins", async (req, res) => {
          AND m.escola_id = ?
          AND m.ano_letivo = ?
          AND m.status = 'ativo'
+         ${alunoFilterSql}
        ORDER BY a.estudante`,
-      [
-        turmaInfo.turma,
-        turmaInfo.turno,
-        turmaInfo.id,
-        turmaInfo.etapa,
-        turmaInfo.regime || null,
-        turma_id,
-        escolaIdTurma,
-        anoLetivo,
-      ]
+      queryParams
     );
 
     if (alunosDados.length === 0) {
@@ -112,7 +120,6 @@ router.get("/impressao/boletins", async (req, res) => {
     }
 
     // 2) Buscar notas filtradas por escola_id — IGUAL à Fiscalização de Notas.
-    //    Não filtra por ano para retornar todos os bimestres disponíveis.
     const alunoIds = alunosDados.map((a) => a.id);
     const [notas] = await pool.query(
       `SELECT

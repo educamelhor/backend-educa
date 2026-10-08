@@ -35,7 +35,7 @@ function verificarEscola(req, res, next) {
 // -----------------------------------------------------------------------------
 
 /**
- * Lança o Chromium com flags seguras no ambiente do servidor.
+ * Lança o Chromium com flags seguras e otimizadas para memória no ambiente do servidor (Docker/DigitalOcean).
  */
 async function launchBrowser() {
   return chromium.launch({
@@ -45,6 +45,17 @@ async function launchBrowser() {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--no-zygote",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-breakpad",
+      "--disable-component-extensions-with-background-pages",
+      "--disable-ipc-flooding-protection",
+      "--disable-renderer-backgrounding",
+      "--mute-audio",
     ],
   });
 }
