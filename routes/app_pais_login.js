@@ -558,7 +558,36 @@ async function handleBoletimGovernancaConfig(req, res) {
       config[row.chave] = row.valor;
     }
 
-    return res.json({ ok: true, config });
+    // ── Override do CEO: se a data limite do bimestre já foi atingida, o
+    // boletim é liberado no app independentemente da chave do diretor.
+    // (Mesma regra de GET /api/governanca/boletim-app-config — o painel web
+    // exibe "Liberado pelo CEO" nesses casos.)
+    const datas_limite_ceo = { "1": null, "2": null, "3": null, "4": null };
+    try {
+      const [tableCheck] = await db.query("SHOW TABLES LIKE 'governanca_ceo_boletim_datas'");
+      if (tableCheck.length > 0) {
+        const [datasRows] = await db.query(
+          `SELECT bimestre, DATE_FORMAT(data_limite, '%Y-%m-%d') AS data_limite
+           FROM governanca_ceo_boletim_datas`
+        );
+        for (const dr of datasRows) {
+          if (dr.data_limite) datas_limite_ceo[String(dr.bimestre)] = dr.data_limite;
+        }
+      }
+    } catch (e) {
+      console.warn("[APP_PAIS][BOLETIM-GOVERNANCA-CONFIG] datas CEO:", e?.message);
+    }
+
+    // Data de hoje no fuso de Brasília (evita virar o dia em UTC às 21h)
+    const hojeStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+    for (let bim = 1; bim <= 4; bim++) {
+      const dLim = datas_limite_ceo[String(bim)];
+      if (dLim && hojeStr >= dLim) {
+        config[`boletim.app.liberar_${bim}bimestre`] = "1";
+      }
+    }
+
+    return res.json({ ok: true, config, datas_limite_ceo });
   } catch (err) {
     console.error("[APP_PAIS][BOLETIM-GOVERNANCA-CONFIG]", err);
     return res.status(500).json({ ok: false, message: "Erro ao buscar config do boletim." });
