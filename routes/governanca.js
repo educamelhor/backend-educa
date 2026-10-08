@@ -208,19 +208,19 @@ router.get("/boletim-app-config", async (req, res) => {
     try {
       const [tableCheck] = await db.query("SHOW TABLES LIKE 'governanca_ceo_boletim_datas'");
       if (tableCheck.length > 0) {
-        const [datasRows] = await db.query("SELECT bimestre, data_limite FROM governanca_ceo_boletim_datas");
+        const [datasRows] = await db.query(
+          `SELECT bimestre, DATE_FORMAT(data_limite, '%Y-%m-%d') AS data_limite
+           FROM governanca_ceo_boletim_datas`
+        );
         for (const dr of datasRows) {
-          if (dr.data_limite) {
-            const d = new Date(dr.data_limite);
-            datas_limite_ceo[String(dr.bimestre)] = d.toISOString().split("T")[0];
-          }
+          if (dr.data_limite) datas_limite_ceo[String(dr.bimestre)] = dr.data_limite;
         }
       }
     } catch (e) {
       console.warn("[GOVERNANCA] erro ao buscar datas limite CEO:", e?.message);
     }
 
-    const hojeStr = new Date().toISOString().split("T")[0];
+    const hojeStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
     const configFinal = { ...configDiretor };
 
     for (let bim = 1; bim <= 4; bim++) {
@@ -278,6 +278,22 @@ router.get(["/boletim-config", "/boletim-app-config"], async (req, res) => {
     const config = { ...BOLETIM_DEFAULTS };
     for (const row of rows) {
       config[row.chave] = row.valor;
+    }
+
+    // Aplica a regra do CEO se a data limite foi atingida
+    try {
+      const [datasRows] = await db.query(
+        `SELECT bimestre, DATE_FORMAT(data_limite, '%Y-%m-%d') AS data_limite
+         FROM governanca_ceo_boletim_datas`
+      );
+      const hojeStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+      for (const dr of datasRows) {
+        if (dr.data_limite && hojeStr >= dr.data_limite) {
+          config[`boletim.app.liberar_${dr.bimestre}bimestre`] = "1";
+        }
+      }
+    } catch {
+      // ignora se a tabela não existir
     }
 
     return res.json({ ok: true, config });
