@@ -273,11 +273,7 @@ router.post("/solicitar-codigo", async (req, res) => {
     // Para contas já ativas o e-mail do cadastro prevalece (troca só pelo Perfil,
     // com OTP). Isso impede que alguém com o CPF de terceiro redirecione o código.
     // IMPORTANTE: NÃO salvamos o e-mail aqui; só após confirmar o OTP (verificar-codigo).
-    const [[usoAnterior]] = await db.query(
-      `SELECT EXISTS(SELECT 1 FROM app_pais_codigos WHERE responsavel_id = ? AND usado_em IS NOT NULL) AS usado`,
-      [responsavel.id]
-    );
-    const primeiroAcesso   = !Number(usoAnterior?.usado) && !responsavel.termos_aceitos_em;
+    const primeiroAcesso   = !responsavel.termos_aceitos_em;
     const emailBancoOk     = emailValido(email) && !sugestaoEmail(email);
     const podeCorrigirEmail = primeiroAcesso || !emailBancoOk;
 
