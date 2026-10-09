@@ -183,7 +183,7 @@ router.get("/impressao/boletins", async (req, res) => {
          FROM turma_cargas tc
          JOIN disciplinas d ON d.id = tc.disciplina_id
         WHERE tc.turma_id = ?
-        ORDER BY d.nome`,
+        ORDER BY UPPER(d.nome)`,
       [turma_id]
     );
 
@@ -194,7 +194,7 @@ router.get("/impressao/boletins", async (req, res) => {
            FROM notas n
            JOIN disciplinas d ON d.id = n.disciplina_id
           WHERE n.aluno_id IN (?)
-          ORDER BY d.nome`,
+          ORDER BY UPPER(d.nome)`,
         [alunoIds]
       );
       disciplinasTurma = discNotas || [];
