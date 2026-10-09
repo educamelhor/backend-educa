@@ -80,8 +80,6 @@ router.get("/impressao/boletins", async (req, res) => {
       turmaInfo.regime || null,
       turma_id,
       turma_id,
-      escolaIdTurma,
-      escolaIdTurma,
     ];
 
     if (aluno_id) {
@@ -104,7 +102,6 @@ router.get("/impressao/boletins", async (req, res) => {
        FROM alunos a
        LEFT JOIN matriculas m ON m.aluno_id = a.id
        WHERE (a.turma_id = ? OR m.turma_id = ?)
-         AND (a.escola_id = ? OR m.escola_id = ?)
          AND (a.status IS NULL OR UPPER(a.status) NOT IN ('INATIVO', 'INATIVA', 'EXCLUIDO', 'TRANSFERIDO'))
          ${alunoFilterSql}
        ORDER BY a.estudante`,
@@ -115,7 +112,7 @@ router.get("/impressao/boletins", async (req, res) => {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    // 2) Buscar notas filtradas por escola_id — IGUAL à Fiscalização de Notas.
+    // 2) Buscar notas filtradas por aluno_id
     const alunoIds = alunosDados.map((a) => a.id);
     const [notas] = await pool.query(
       `SELECT
@@ -131,9 +128,8 @@ router.get("/impressao/boletins", async (req, res) => {
        INNER JOIN disciplinas d ON n.disciplina_id = d.id
        INNER JOIN alunos a ON n.aluno_id = a.id
        WHERE n.aluno_id IN (?)
-         AND n.escola_id = ?
        ORDER BY n.ano, n.bimestre, d.nome`,
-      [alunoIds, escolaIdTurma]
+      [alunoIds]
     );
 
     // 3) Buscar disciplinas específicas da turma (cargas horárias ou notas cadastradas)
@@ -142,9 +138,8 @@ router.get("/impressao/boletins", async (req, res) => {
          FROM turma_cargas tc
          JOIN disciplinas d ON d.id = tc.disciplina_id
         WHERE tc.turma_id = ?
-          AND tc.escola_id = ?
         ORDER BY d.nome`,
-      [turma_id, escolaIdTurma]
+      [turma_id]
     );
 
     let disciplinasTurma = cargasTurma || [];
@@ -154,9 +149,8 @@ router.get("/impressao/boletins", async (req, res) => {
            FROM notas n
            JOIN disciplinas d ON d.id = n.disciplina_id
           WHERE n.aluno_id IN (?)
-            AND n.escola_id = ?
           ORDER BY d.nome`,
-        [alunoIds, escolaIdTurma]
+        [alunoIds]
       );
       disciplinasTurma = discNotas || [];
     }
