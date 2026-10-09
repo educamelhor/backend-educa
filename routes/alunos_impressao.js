@@ -140,13 +140,38 @@ router.get("/impressao/boletins", async (req, res) => {
       [alunoIds, escolaIdTurma]
     );
 
-    // 3) Buscar ranking (escola e turma) — ano letivo atual
+    // 3) Buscar disciplinas específicas da turma (cargas horárias ou notas cadastradas)
+    const [cargasTurma] = await pool.query(
+      `SELECT DISTINCT tc.disciplina_id AS id, UPPER(d.nome) AS nome
+         FROM turma_cargas tc
+         JOIN disciplinas d ON d.id = tc.disciplina_id
+        WHERE tc.turma_id = ?
+          AND tc.escola_id = ?
+        ORDER BY d.nome`,
+      [turma_id, escolaIdTurma]
+    );
+
+    let disciplinasTurma = cargasTurma || [];
+    if (disciplinasTurma.length === 0 && alunoIds.length > 0) {
+      const [discNotas] = await pool.query(
+        `SELECT DISTINCT n.disciplina_id AS id, UPPER(d.nome) AS nome
+           FROM notas n
+           JOIN disciplinas d ON d.id = n.disciplina_id
+          WHERE n.aluno_id IN (?)
+            AND n.escola_id = ?
+          ORDER BY d.nome`,
+        [alunoIds, escolaIdTurma]
+      );
+      disciplinasTurma = discNotas || [];
+    }
+
+    // 4) Buscar ranking (escola e turma) — ano letivo atual
     const rankings = {};
     for (const aluno of alunosDados) {
       rankings[aluno.codigo] = await calculaRankings(aluno, anoLetivo);
     }
 
-    // 4) Montar estrutura final
+    // 5) Montar estrutura final
     const boletins = alunosDados.map((aluno) => {
       return {
         id: aluno.id,
@@ -160,6 +185,7 @@ router.get("/impressao/boletins", async (req, res) => {
         regime: aluno.regime,
         situacao: aluno.status,
         ranking: rankings[aluno.codigo] || null,
+        disciplinas: disciplinasTurma,
         notas: notas
           .filter((n) => Number(n.aluno_id) === Number(aluno.id))
           .map((n) => ({
