@@ -64,17 +64,6 @@ async function ensurePedagogicoTables(db) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 }
-      tipo        ENUM('boolean','select','text') NOT NULL DEFAULT 'boolean',
-      opcoes_json JSON DEFAULT NULL,
-      ordem       INT NOT NULL DEFAULT 0,
-      ativo       TINYINT(1) NOT NULL DEFAULT 1,
-      criado_em   DATETIME DEFAULT CURRENT_TIMESTAMP,
-      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_escola_chave (escola_id, chave),
-      KEY idx_escola_cat (escola_id, categoria)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-}
 
 // ── Sync completo: CEO template → configuracoes_escola ──
 // 1) Insere novos itens do CEO que ainda não existem na escola
