@@ -92,7 +92,7 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         });
         let lastY, text = "";
         for (const item of textContent.items) {
-          if (lastY === item.transform[5] || !lastY) {
+          if (!lastY || Math.abs(lastY - item.transform[5]) < 3.0) {
             text += " " + item.str;
           } else {
             text += "\n" + item.str;
