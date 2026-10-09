@@ -1782,8 +1782,8 @@ async function bootstrap() {
 
   app.use("/api/boletins", autenticarToken, verificarEscola, boletinsRouter);
 
-  // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...)
-  app.use("/api", autenticarToken, verificarEscola, alunosImpressaoRouter);
+  // ✅ Impressão de boletins (GET /api/impressao/boletins?turma_id=...) — acessível via token ou secret
+  app.use("/api", alunosImpressaoRouter);
   // ✅ Rotas públicas de usuários (cadastro) — sem token, mas exige escola
   app.use("/api/usuarios", verificarEscola, usuariosPublicRouter);
 
@@ -1933,6 +1933,9 @@ async function bootstrap() {
         // ✅ Rotas da Plataforma (CEO/Admin Global) — NÃO passam por verificarEscola
         if (p.startsWith("/plataforma")) return next();
         if (p.startsWith("/auth-plataforma")) return next();
+
+        // ✅ Rotas públicas de Impressão de Boletins
+        if (p.startsWith("/impressao")) return next();
 
         // (opcional) manter health público mesmo se algum dia mudar a ordem
         if (p === "/health" || p === "/healthz") return next();
