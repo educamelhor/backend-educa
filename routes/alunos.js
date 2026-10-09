@@ -113,6 +113,7 @@ router.get("/", verificarEscola, async (req, res) => {
       status = "",
       aee = "",
       ano_letivo,
+      contexto = "",
       limit = 100,
       offset = 0,
     } = req.query;
@@ -131,7 +132,7 @@ router.get("/", verificarEscola, async (req, res) => {
     `, [Number(escola_id)]).catch(e => console.error("Auto-sync escola_id err:", e.message));
 
     // DEBUG: o que chegou do front e do token
-    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, limit, offset });
+    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, contexto, limit, offset });
     console.log("🔎 /api/alunos → req.user:", req.user);
 
     const where = ["(a.escola_id = ? OR m.escola_id = ?)"];
@@ -223,19 +224,37 @@ router.get("/", verificarEscola, async (req, res) => {
     // anoEfetivo esta embutido como literal no SQL (JOIN ON e COALESCE) — nao usa ?
     params.push(Number(limit), Number(offset));
 
-    console.log("ðŸ”Ž /api/alunos â†’ SQL:", sql.replace(/\s+/g, " ").trim());
-    console.log("ðŸ”Ž /api/alunos â†’ params:", params);
+    console.log("🔎 /api/alunos → SQL:", sql.replace(/\s+/g, " ").trim());
+    console.log("🔎 /api/alunos → params:", params);
 
     const [rows] = await pool.query(sql, params);
 
-    // LGPD: oculta foto quando nÃ£o hÃ¡ consentimento
+    // Governança Pedagógica: se contexto === 'conselho', verifica se a direção liberou fotos
+    let fotosLiberadasConselhoDirecao = false;
+    if (contexto === "conselho") {
+      try {
+        const [[cfgPedagogico]] = await pool.query(
+          "SELECT valor FROM configuracoes_escola WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho'",
+          [escola_id]
+        );
+        fotosLiberadasConselhoDirecao = cfgPedagogico?.valor === "1";
+      } catch (errCfg) {
+        console.error("Erro ao verificar governanca pedagogica em /api/alunos:", errCfg);
+      }
+    }
+
+    // LGPD + Governança Direção (Regra de Ouro):
+    // 1) Se o responsável assinou (consentimento_imagem = 1): foto é SEMPRE VISÍVEL.
+    // 2) Se o responsável NÃO assinou: foto fica oculta, a menos que contexto === 'conselho' E direção ativou governança.
     const alunosComConsentimento = rows.map((a) => {
-      const ok = Number(a.consentimento_imagem) === 1;
+      const consentimentoResp = Number(a.consentimento_imagem) === 1;
+      const podeExibirFoto = consentimentoResp || (contexto === "conselho" && fotosLiberadasConselhoDirecao);
       return {
         ...a,
-        foto:     ok ? a.foto     : null,
-        foto_url: ok ? a.foto_url : null,
-        consentimento_imagem: ok,
+        foto: podeExibirFoto ? a.foto : null,
+        foto_url: podeExibirFoto ? a.foto_url : null,
+        consentimento_imagem: consentimentoResp,
+        foto_liberada_diretor: podeExibirFoto && !consentimentoResp,
       };
     });
 

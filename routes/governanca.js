@@ -5,10 +5,11 @@
 // SINCRONIA: só mostra itens que existem no template CEO
 // =========================================================================
 import express from "express";
+import bcrypt from "bcryptjs";
 
 const router = express.Router();
 
-// ── Helper: garante que a tabela existe ──
+// ── Helper: garante que as tabelas de governança existem ──
 async function ensureTable(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS configuracoes_escola (
@@ -18,6 +19,51 @@ async function ensureTable(db) {
       chave       VARCHAR(120) NOT NULL,
       valor       VARCHAR(500) NOT NULL DEFAULT '0',
       descricao   VARCHAR(300) DEFAULT NULL,
+      tipo        ENUM('boolean','select','text') NOT NULL DEFAULT 'boolean',
+      opcoes_json JSON DEFAULT NULL,
+      ordem       INT NOT NULL DEFAULT 0,
+      ativo       TINYINT(1) NOT NULL DEFAULT 1,
+      criado_em   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_escola_chave (escola_id, chave),
+      KEY idx_escola_cat (escola_id, categoria)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
+
+async function ensurePedagogicoTables(db) {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_pedagogico_ciclos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      chave VARCHAR(120) NOT NULL DEFAULT 'pedagogico.liberar_fotos_conselho',
+      diretor_usuario_id INT NOT NULL,
+      diretor_nome VARCHAR(200) NOT NULL,
+      diretor_cpf VARCHAR(20) NOT NULL,
+      data_inicio DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      data_fim DATETIME DEFAULT NULL,
+      ip_inicio VARCHAR(45) DEFAULT NULL,
+      ip_fim VARCHAR(45) DEFAULT NULL,
+      status ENUM('ativo', 'encerrado') NOT NULL DEFAULT 'ativo',
+      KEY idx_escola_chave (escola_id, chave)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_auditoria_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      usuario_id INT NOT NULL,
+      nome_usuario VARCHAR(200) DEFAULT NULL,
+      cpf_usuario VARCHAR(20) DEFAULT NULL,
+      acao VARCHAR(100) NOT NULL,
+      detalhe TEXT DEFAULT NULL,
+      ip_origem VARCHAR(45) DEFAULT NULL,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_escola_auditoria (escola_id, criado_em)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
       tipo        ENUM('boolean','select','text') NOT NULL DEFAULT 'boolean',
       opcoes_json JSON DEFAULT NULL,
       ordem       INT NOT NULL DEFAULT 0,
@@ -89,6 +135,7 @@ async function syncFromCeoTemplate(db, escolaId) {
       "boletim.app.liberar_2bimestre",
       "boletim.app.liberar_3bimestre",
       "boletim.app.liberar_4bimestre",
+      "pedagogico.liberar_fotos_conselho",
     ];
     const chavesValidas = [...new Set([...ceoItens.map(i => i.chave), ...CHAVES_PROTEGIDAS_APP])];
     const placeholders = chavesValidas.map(() => "?").join(",");
@@ -118,6 +165,30 @@ async function syncFromCeoTemplate(db, escolaId) {
     }
   } catch (err) {
     console.warn("[GOVERNANCA] Sync CEO template:", err?.message || err);
+  }
+}
+
+// ── Garantir chaves de liberação da categoria PEDAGÓGICO ──
+async function ensurePedagogicoConfigs(db, escolaId) {
+  try {
+    await db.query(
+      `UPDATE configuracoes_escola SET categoria = 'pedagogico' WHERE escola_id = ? AND LOWER(categoria) = 'pedagogico'`,
+      [Number(escolaId)]
+    );
+  } catch {}
+
+  const configs = [
+    { chave: "pedagogico.liberar_fotos_conselho", desc: "Liberar fotos dos estudantes no Conselho de Classe (Uso Interno)", ordem: 200 },
+  ];
+  for (const c of configs) {
+    try {
+      await db.query(
+        `INSERT IGNORE INTO configuracoes_escola 
+         (escola_id, categoria, chave, valor, descricao, tipo, ordem, ativo) 
+         VALUES (?, 'pedagogico', ?, '0', ?, 'boolean', ?, 1)`,
+        [Number(escolaId), c.chave, c.desc, c.ordem]
+      );
+    } catch {}
   }
 }
 
@@ -477,6 +548,202 @@ router.get("/plano-modo", async (req, res) => {
   }
 });
 
+// ── GET /api/governanca/pedagogico-config?escola_id=X ─────────────────────
+// Retorna a flag 'pedagogico.liberar_fotos_conselho' e o histórico de ciclos
+// ──────────────────────────────────────────────────────────────────────────
+router.get("/pedagogico-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id);
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensurePedagogicoTables(db);
+    await ensurePedagogicoConfigs(db, escolaId);
+
+    const [[row]] = await db.query(
+      `SELECT valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho' LIMIT 1`,
+      [escolaId]
+    );
+
+    const [historicoCiclos] = await db.query(
+      `SELECT id, diretor_nome, diretor_cpf,
+              DATE_FORMAT(data_inicio, '%d/%m/%Y %H:%i:%s') AS data_inicio_fmt,
+              DATE_FORMAT(data_fim, '%d/%m/%Y %H:%i:%s') AS data_fim_fmt,
+              status
+       FROM governanca_pedagogico_ciclos
+       WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho'
+       ORDER BY id DESC LIMIT 10`,
+      [escolaId]
+    );
+
+    const valor = row?.valor || "0";
+    return res.json({
+      ok: true,
+      liberar_fotos_conselho: valor === "1",
+      valor,
+      historicoCiclos,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][PEDAGOGICO-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar config pedagógica." });
+  }
+});
+
+// ── POST /api/governanca/autenticar-liberacao-fotos ─────────────────────
+// Autentica CPF + Senha do Diretor logado para alternar liberação de fotos
+// no Conselho de Classe (Uso Interno). Registra ciclo + log de auditoria.
+// ──────────────────────────────────────────────────────────────────────────
+router.post("/autenticar-liberacao-fotos", guardDiretor, async (req, res) => {
+  const db = req.db;
+  const { escola_id, cpf, senha, acao } = req.body;
+  const escolaId = Number(escola_id || req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
+
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+  if (!cpf || !senha) {
+    return res.status(400).json({ ok: false, message: "CPF e Senha são obrigatórios." });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensurePedagogicoTables(db);
+    await ensurePedagogicoConfigs(db, escolaId);
+
+    // Identifica o diretor pelo token/sessão ou busca no BD
+    const userId = Number(req.user?.id || req.user?.usuario_id || req.headers["x-user-id"]);
+    const userEmail = req.user?.email || req.headers["x-user-email"];
+
+    let userRow = null;
+
+    if (userId) {
+      const [[u]] = await db.query(
+        "SELECT id, nome, cpf, senha FROM usuarios WHERE id = ? LIMIT 1",
+        [userId]
+      );
+      userRow = u;
+    }
+
+    if (!userRow && userEmail) {
+      const [[u]] = await db.query(
+        "SELECT id, nome, cpf, senha FROM usuarios WHERE email = ? LIMIT 1",
+        [userEmail]
+      );
+      userRow = u;
+    }
+
+    if (!userRow) {
+      // Busca pelo CPF informado
+      const cleanCpfInput = String(cpf).replace(/\D/g, "");
+      const [uRows] = await db.query(
+        "SELECT id, nome, cpf, senha FROM usuarios WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') = ? LIMIT 1",
+        [cleanCpfInput]
+      );
+      if (uRows.length > 0) userRow = uRows[0];
+    }
+
+    if (!userRow) {
+      return res.status(404).json({ ok: false, message: "Usuário do Diretor não encontrado." });
+    }
+
+    // Valida se o CPF digitado confere com o cadastrado
+    const cpfDigitadoClean = String(cpf).replace(/\D/g, "");
+    const cpfCadastradoClean = String(userRow.cpf || "").replace(/\D/g, "");
+
+    if (cpfCadastradoClean && cpfDigitadoClean !== cpfCadastradoClean) {
+      return res.status(400).json({ ok: false, message: "O CPF digitado não confere com o CPF do Diretor autenticado." });
+    }
+
+    // Valida a senha usando bcrypt
+    const senhaValida = await bcrypt.compare(senha, userRow.senha);
+    if (!senhaValida) {
+      return res.status(400).json({ ok: false, message: "Senha incorreta. Confirmação não autorizada." });
+    }
+
+    const ipOrigem = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+    const novoValor = acao === "ativar" ? "1" : "0";
+
+    // 1) Atualiza a flag na governança
+    await db.query(
+      `INSERT INTO configuracoes_escola (escola_id, categoria, chave, valor, descricao, tipo, ordem, ativo)
+       VALUES (?, 'pedagogico', 'pedagogico.liberar_fotos_conselho', ?, 'Liberar fotos dos estudantes no Conselho de Classe (Uso Interno)', 'boolean', 200, 1)
+       ON DUPLICATE KEY UPDATE valor = VALUES(valor)`,
+      [escolaId, novoValor]
+    );
+
+    // 2) Gerencia o ciclo de rastreabilidade
+    if (novoValor === "1") {
+      // Encerra ciclo ativo anterior se houver (para sanidade)
+      await db.query(
+        `UPDATE governanca_pedagogico_ciclos
+         SET data_fim = NOW(), status = 'encerrado', ip_fim = ?
+         WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho' AND status = 'ativo'`,
+        [ipOrigem, escolaId]
+      );
+
+      // Inicia novo ciclo de liberação
+      await db.query(
+        `INSERT INTO governanca_pedagogico_ciclos
+         (escola_id, chave, diretor_usuario_id, diretor_nome, diretor_cpf, data_inicio, ip_inicio, status)
+         VALUES (?, 'pedagogico.liberar_fotos_conselho', ?, ?, ?, NOW(), ?, 'ativo')`,
+        [escolaId, userRow.id, userRow.nome, userRow.cpf || cpf, ipOrigem]
+      );
+
+      // Log de auditoria
+      await db.query(
+        `INSERT INTO governanca_auditoria_logs
+         (escola_id, usuario_id, nome_usuario, cpf_usuario, acao, detalhe, ip_origem)
+         VALUES (?, ?, ?, ?, 'PEDAGOGICO_LIBERAR_FOTOS', 'Diretor autorizou o uso de imagens dos estudantes no Conselho de Classe', ?)`,
+        [escolaId, userRow.id, userRow.nome, userRow.cpf || cpf, ipOrigem]
+      );
+    } else {
+      // Desativação: encerra ciclo ativo
+      await db.query(
+        `UPDATE governanca_pedagogico_ciclos
+         SET data_fim = NOW(), status = 'encerrado', ip_fim = ?
+         WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho' AND status = 'ativo'`,
+        [ipOrigem, escolaId]
+      );
+
+      // Log de auditoria
+      await db.query(
+        `INSERT INTO governanca_auditoria_logs
+         (escola_id, usuario_id, nome_usuario, cpf_usuario, acao, detalhe, ip_origem)
+         VALUES (?, ?, ?, ?, 'PEDAGOGICO_BLOQUEAR_FOTOS', 'Diretor revogou a autorização de imagens no Conselho de Classe', ?)`,
+        [escolaId, userRow.id, userRow.nome, userRow.cpf || cpf, ipOrigem]
+      );
+    }
+
+    // Busca o histórico de ciclos atualizado
+    const [historicoCiclos] = await db.query(
+      `SELECT id, diretor_nome, diretor_cpf,
+              DATE_FORMAT(data_inicio, '%d/%m/%Y %H:%i:%s') AS data_inicio_fmt,
+              DATE_FORMAT(data_fim, '%d/%m/%Y %H:%i:%s') AS data_fim_fmt,
+              status
+       FROM governanca_pedagogico_ciclos
+       WHERE escola_id = ? AND chave = 'pedagogico.liberar_fotos_conselho'
+       ORDER BY id DESC LIMIT 10`,
+      [escolaId]
+    );
+
+    return res.json({
+      ok: true,
+      valor: novoValor,
+      message: novoValor === "1"
+        ? "✅ Fotos liberadas com sucesso para o Conselho de Classe!"
+        : "🔒 Fotos bloqueadas no Conselho de Classe.",
+      historicoCiclos,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][AUTENTICAR-PEDAGOGICO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao autenticar e salvar governança." });
+  }
+});
+
 router.get("/", guardDiretor, async (req, res) => {
   const db = req.db;
   const escolaId = Number(req.query.escola_id);
@@ -485,6 +752,8 @@ router.get("/", guardDiretor, async (req, res) => {
 
   try {
     await ensureTable(db);
+    await ensurePedagogicoTables(db);
+    await ensurePedagogicoConfigs(db, escolaId);
     await ensureBoletimAppConfigs(db, escolaId);
     await syncFromCeoTemplate(db, escolaId);
 
