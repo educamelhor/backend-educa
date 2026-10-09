@@ -41,6 +41,32 @@ function mascaraEmail(email) {
   const [local, domain] = email.split("@");
   return `${local.slice(0, Math.min(2, local.length))}***@${domain}`;
 }
+// Validação estrita de formato de e-mail (um único endereço, sem espaços/vírgulas/;)
+const EMAIL_REGEX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+function emailValido(email) {
+  const e = String(email || "").trim();
+  return e.length > 0 && e.length <= 254 && EMAIL_REGEX.test(e);
+}
+class EmailOtpError extends Error {
+  constructor(tipo, detalhe) {
+    super(`${tipo}${detalhe ? ":" + detalhe : ""}`);
+    this.tipo = tipo; // DESTINO_INVALIDO | REMETENTE_NAO_VERIFICADO | LIMITE_PROVEDOR | PROVEDOR_INDISPONIVEL | NAO_CONFIGURADO
+  }
+}
+// Erros de digitação mais comuns em provedores populares (passam no formato, mas nunca entregam)
+const DOMINIOS_TYPO = {
+  "gmial.com": "gmail.com", "gmai.com": "gmail.com", "gamil.com": "gmail.com", "gmail.con": "gmail.com",
+  "gmail.co": "gmail.com", "gmail.cm": "gmail.com", "gmail.comm": "gmail.com", "gmail.com.br": "gmail.com",
+  "gmil.com": "gmail.com", "gnail.com": "gmail.com", "gmaill.com": "gmail.com", "hotmial.com": "hotmail.com",
+  "hotmail.con": "hotmail.com", "hotmai.com": "hotmail.com", "hotmal.com": "hotmail.com",
+  "outlook.con": "outlook.com", "outlok.com": "outlook.com", "yahoo.con": "yahoo.com", "yaho.com": "yahoo.com",
+  "yahoo.com.com": "yahoo.com.br", "icloud.con": "icloud.com", "iclould.com": "icloud.com",
+};
+function sugestaoEmail(email) {
+  const [local, dominio] = String(email || "").trim().toLowerCase().split("@");
+  const certo = DOMINIOS_TYPO[dominio];
+  return certo ? `${local}@${certo}` : null;
+}
 function mascaraTelefone(tel) {
   if (!tel) return null;
   const d = String(tel).replace(/\D/g, "");
@@ -74,19 +100,58 @@ async function enviarCodigoPorEmail(email, codigo) {
   const text = `Seu código de acesso é: ${codigo}\n\nEste código expira em 10 minutos.`;
 
   if (RESEND_API_KEY) {
-    const resp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: RESEND_FROM, to: [email], subject, html, text }),
-    });
-    if (!resp.ok) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+      let resp;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 12000);
+        try {
+          resp = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ from: RESEND_FROM, to: [email], subject, html, text }),
+            signal: ctrl.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (netErr) {
+        console.error(`[APP_PAIS_LOGIN][RESEND] Falha de rede/timeout (tentativa ${tentativa}):`, netErr?.message);
+        if (tentativa === 2) throw new EmailOtpError("PROVEDOR_INDISPONIVEL", netErr?.message);
+        await sleep(800);
+        continue;
+      }
+
+      if (resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        console.log("[APP_PAIS_LOGIN][RESEND] E-mail enviado:", data?.id);
+        return;
+      }
+
       const body = await resp.text().catch(() => "");
-      console.error("[APP_PAIS_LOGIN][RESEND] Erro:", resp.status, body);
-      throw new Error(`RESEND_ERROR:${resp.status}:${body}`);
+      const low = body.toLowerCase();
+      console.error(`[APP_PAIS_LOGIN][RESEND] Erro ${resp.status} (from=${RESEND_FROM}) body=${body}`);
+
+      // 429 por taxa (req/s): uma nova tentativa curta resolve. Cota diária/mensal não.
+      if (resp.status === 429 && !low.includes("quota") && tentativa === 1) {
+        await sleep(1200);
+        continue;
+      }
+      if (resp.status === 429) throw new EmailOtpError("LIMITE_PROVEDOR", body);
+      if (resp.status === 401) throw new EmailOtpError("NAO_CONFIGURADO", body);
+      if (
+        resp.status === 403 ||
+        low.includes("verify a domain") ||
+        low.includes("not verified") ||
+        low.includes("testing emails") ||
+        low.includes("`from`")
+      ) {
+        throw new EmailOtpError("REMETENTE_NAO_VERIFICADO", body);
+      }
+      if (resp.status === 400 || resp.status === 422) throw new EmailOtpError("DESTINO_INVALIDO", body);
+      throw new EmailOtpError("PROVEDOR_INDISPONIVEL", `${resp.status}:${body}`);
     }
-    const data = await resp.json();
-    console.log("[APP_PAIS_LOGIN][RESEND] E-mail enviado:", data?.id);
-    return;
   }
 
   // Fallback SMTP
@@ -155,7 +220,7 @@ router.post("/solicitar-codigo", async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT id, email, telefone_celular, status_global FROM responsaveis WHERE cpf = ? LIMIT 1`,
+      `SELECT id, email, telefone_celular, status_global, termos_aceitos_em FROM responsaveis WHERE cpf = ? LIMIT 1`,
       [cpf]
     );
     if (!rows.length) return res.status(404).json({ message: "Responsável não encontrado." });
@@ -201,19 +266,49 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
-    // Lê o e-mail enviado no body ANTES de qualquer checagem.
-    // Isso permite que o usuário novo (sem e-mail no banco) passe pelo check
-    // usando o e-mail que acabou de digitar.
-    const reqEmail  = String(req.body?.email || "").trim().toLowerCase();
-    const finalEmail = reqEmail || email;
-    // IMPORTANTE: NÃO salvamos o e-mail aqui. Ele só é persistido no banco
-    // após o usuário confirmar o código OTP (verificar-codigo).
-    // Isso garante que e-mails errados ou sem acesso nunca sejam cadastrados.
+    // ── Regra de edição de e-mail ────────────────────────────────────────────
+    // O e-mail enviado no body só substitui o cadastrado quando:
+    //   (a) é o PRIMEIRO ACESSO (nunca concluiu um OTP nem aceitou os termos), ou
+    //   (b) não há e-mail válido no cadastro (vazio/mal formatado).
+    // Para contas já ativas o e-mail do cadastro prevalece (troca só pelo Perfil,
+    // com OTP). Isso impede que alguém com o CPF de terceiro redirecione o código.
+    // IMPORTANTE: NÃO salvamos o e-mail aqui; só após confirmar o OTP (verificar-codigo).
+    const [[usoAnterior]] = await db.query(
+      `SELECT EXISTS(SELECT 1 FROM app_pais_codigos WHERE responsavel_id = ? AND usado_em IS NOT NULL) AS usado`,
+      [responsavel.id]
+    );
+    const primeiroAcesso   = !Number(usoAnterior?.usado) && !responsavel.termos_aceitos_em;
+    const emailBancoOk     = emailValido(email) && !sugestaoEmail(email);
+    const podeCorrigirEmail = primeiroAcesso || !emailBancoOk;
+
+    const reqEmail = String(req.body?.email || "").trim().toLowerCase();
+    if (reqEmail && !emailValido(reqEmail)) {
+      return res.status(422).json({
+        code: "EMAIL_INVALIDO",
+        message: "E-mail inválido. Confira se digitou corretamente (ex: nome@gmail.com).",
+        pode_corrigir_email: true,
+      });
+    }
+    if (reqEmail && podeCorrigirEmail) {
+      const sugerido = sugestaoEmail(reqEmail);
+      if (sugerido) {
+        return res.status(422).json({
+          code: "EMAIL_INVALIDO",
+          message: `Confira o e-mail digitado. Você quis dizer ${sugerido}?`,
+          sugestao: sugerido,
+          pode_corrigir_email: true,
+        });
+      }
+    }
+    const finalEmail = (podeCorrigirEmail && reqEmail) ? reqEmail : (emailBancoOk ? email.toLowerCase() : "");
 
     if (canal === "email" && !finalEmail) {
       return res.status(403).json({
         code: "PRECISA_EMAIL",
-        message: "Informe seu e-mail para receber o código de acesso.",
+        message: email
+          ? "O e-mail cadastrado na escola parece incorreto. Informe um e-mail válido para receber o código de acesso."
+          : "Informe seu e-mail para receber o código de acesso.",
+        email_invalido: !!email && !emailBancoOk,
         tem_sms: !!(telefone && process.env.TWILIO_SID),
         telefone_mascara: mascaraTelefone(telefone) || null,
       });
@@ -233,24 +328,57 @@ router.post("/solicitar-codigo", async (req, res) => {
       });
     }
 
+    // Proteção de cota do provedor de e-mail: no máximo 6 códigos / 10 min por responsável
+    const [[recentes]] = await db.query(
+      `SELECT COUNT(*) AS n FROM app_pais_codigos WHERE responsavel_id = ? AND criado_em >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+      [responsavel.id]
+    );
+    if (Number(recentes?.n) >= 6) {
+      return res.status(429).json({
+        code: "MUITAS_TENTATIVAS",
+        message: "Muitas solicitações de código. Aguarde alguns minutos e tente novamente.",
+      });
+    }
+
     const codigo  = gerarCodigo();
     const destino = canal === "sms" ? telefone : finalEmail;
 
-    await db.query(
+    const [ins] = await db.query(
       `INSERT INTO app_pais_codigos (responsavel_id, codigo, canal, destino, expiracao) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
       [responsavel.id, codigo, canal, destino]
     );
 
-    if (canal === "sms") {
-      await enviarCodigoPorSms(telefone, codigo);
-    } else {
-      await enviarCodigoPorEmail(finalEmail, codigo);
+    try {
+      if (canal === "sms") {
+        await enviarCodigoPorSms(telefone, codigo);
+      } else {
+        await enviarCodigoPorEmail(finalEmail, codigo);
+      }
+    } catch (sendErr) {
+      // Não deixa código órfão (nunca entregue) nem consome o limite de tentativas
+      await db.query("DELETE FROM app_pais_codigos WHERE id = ?", [ins.insertId]).catch(() => {});
+      const tipo = sendErr?.tipo || "PROVEDOR_INDISPONIVEL";
+      console.error(`[ALERTA][APP_PAIS_LOGIN][EMAIL-OTP] resp=${responsavel.id} tipo=${tipo} destino=${mascaraEmail(finalEmail)} err=${sendErr?.message}`);
+
+      if (tipo === "DESTINO_INVALIDO") {
+        return res.status(422).json({
+          code: "EMAIL_INVALIDO",
+          message: "Não foi possível enviar o código para este e-mail. Confira se está correto e tente novamente.",
+          pode_corrigir_email: podeCorrigirEmail,
+        });
+      }
+      // Configuração/cota/rede do provedor: problema do sistema, não do usuário
+      return res.status(503).json({
+        code: "EMAIL_INDISPONIVEL",
+        message: "Não conseguimos enviar o e-mail agora. Tente novamente em alguns minutos. Se o problema persistir, procure a secretaria da escola.",
+      });
     }
 
     return res.json({
       ok: true,
       canal,
       destino_mascara: canal === "sms" ? mascaraTelefone(telefone) : mascaraEmail(finalEmail),
+      pode_corrigir_email: canal === "email" ? podeCorrigirEmail : false,
     });
 
   } catch (error) {
