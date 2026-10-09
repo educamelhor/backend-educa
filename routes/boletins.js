@@ -235,7 +235,7 @@ router.post("/gerar", verificarEscola, async (req, res) => {
 // - Injeta token e escola_id no localStorage ANTES do front carregar
 // ============================================================================
 router.post("/gerar-turma", verificarEscola, async (req, res) => {
-  const { turma_id } = req.body;
+  const { turma_id, ano } = req.body;
   const { escola_id } = req.user;
 
   if (!turma_id) {
@@ -261,9 +261,10 @@ router.post("/gerar-turma", verificarEscola, async (req, res) => {
     // 3) URL de impressão
     const requestOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
     const finalBaseUrl = process.env.PRINT_BASE_URL || requestOrigin || BASE_URL;
+    const anoParam = ano ? `&ano=${encodeURIComponent(ano)}` : "";
     const url = `${finalBaseUrl}/print/boletins?turma_id=${encodeURIComponent(
       turma_id
-    )}&secret=${encodeURIComponent(PRINT_SECRET)}`;
+    )}&secret=${encodeURIComponent(PRINT_SECRET)}${anoParam}`;
 
     let browser;
     try {
