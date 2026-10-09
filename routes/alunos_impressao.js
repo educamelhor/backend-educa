@@ -47,7 +47,7 @@ router.post("/impressao/boletins", async (req, res) => {
 // -------------------------------------------------------------------------
 router.get("/impressao/boletins", async (req, res) => {
   try {
-    const { turma_id, aluno_id } = req.query;
+    const { turma_id, aluno_id, ano } = req.query;
 
     if (!turma_id) {
       return res
@@ -55,14 +55,11 @@ router.get("/impressao/boletins", async (req, res) => {
         .json({ error: "Parâmetro turma_id é obrigatório." });
     }
 
-    // ── Descobrir o ano letivo da turma (usa o maior ano_letivo nas matrículas) ──
+    // ── Descobrir dados da turma ──
     const [[turmaInfo]] = await pool.query(
-      `SELECT t.id, t.nome AS turma, t.turno, t.etapa, t.escola_id, t.regime,
-              MAX(m.ano_letivo) AS ano_letivo
+      `SELECT t.id, t.nome AS turma, t.turno, t.etapa, t.escola_id, t.regime
          FROM turmas t
-         LEFT JOIN matriculas m ON m.turma_id = t.id AND m.status = 'ativo'
-        WHERE t.id = ?
-        GROUP BY t.id`,
+        WHERE t.id = ?`,
       [turma_id]
     );
 
@@ -70,11 +67,10 @@ router.get("/impressao/boletins", async (req, res) => {
       return res.json({ turma_id, total: 0, alunos: [] });
     }
 
-    const anoLetivo = turmaInfo.ano_letivo || new Date().getFullYear();
+    const anoLetivo = ano ? Number(ano) : new Date().getFullYear();
     const escolaIdTurma = turmaInfo.escola_id;
 
-    // 1) Buscar alunos via tabela MATRICULAS (igual à Fiscalização de Notas)
-    //    Se aluno_id for informado, filtra especificamente por aquele aluno.
+    // 1) Buscar alunos da turma (suporta a.turma_id ou m.turma_id)
     let alunoFilterSql = "";
     const queryParams = [
       turmaInfo.turma,
@@ -83,8 +79,9 @@ router.get("/impressao/boletins", async (req, res) => {
       turmaInfo.etapa,
       turmaInfo.regime || null,
       turma_id,
+      turma_id,
       escolaIdTurma,
-      anoLetivo,
+      escolaIdTurma,
     ];
 
     if (aluno_id) {
@@ -93,7 +90,7 @@ router.get("/impressao/boletins", async (req, res) => {
     }
 
     const [alunosDados] = await pool.query(
-      `SELECT
+      `SELECT DISTINCT
          a.id,
          a.codigo,
          a.estudante AS nome,
@@ -104,12 +101,11 @@ router.get("/impressao/boletins", async (req, res) => {
          a.escola_id,
          ? AS etapa,
          ? AS regime
-       FROM matriculas m
-       INNER JOIN alunos a ON a.id = m.aluno_id
-       WHERE m.turma_id = ?
-         AND m.escola_id = ?
-         AND m.ano_letivo = ?
-         AND m.status = 'ativo'
+       FROM alunos a
+       LEFT JOIN matriculas m ON m.aluno_id = a.id
+       WHERE (a.turma_id = ? OR m.turma_id = ?)
+         AND (a.escola_id = ? OR m.escola_id = ?)
+         AND (a.status IS NULL OR UPPER(a.status) NOT IN ('INATIVO', 'INATIVA', 'EXCLUIDO', 'TRANSFERIDO'))
          ${alunoFilterSql}
        ORDER BY a.estudante`,
       queryParams
