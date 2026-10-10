@@ -109,7 +109,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
     const s = it.semestre != null ? Number(it.semestre) : null;
 
     if (s != null) {
-      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=? AND m.semestre=?)");
+      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=? AND (m.semestre=? OR m.semestre=0 OR m.semestre IS NULL))");
       params.push(p, t, d, s);
     } else {
       conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=?)");
@@ -200,7 +200,7 @@ router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
     let semClause = "";
     const extraParams = [];
     if (semestre) {
-      semClause = " AND m.semestre = ?";
+      semClause = " AND (m.semestre = ? OR m.semestre = 0 OR m.semestre IS NULL)";
       extraParams.push(semestre);
     }
 
