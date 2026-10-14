@@ -165,10 +165,43 @@ async function ensureCadastroTable(db) {
       ativo      TINYINT(1) NOT NULL DEFAULT 1,
       criado_em  DATETIME DEFAULT CURRENT_TIMESTAMP,
       atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_cpf_escola_cadastro (cpf, escola_id),
       KEY idx_escola_cadastro (escola_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  // Migração de integridade de índice:
+  // Permite que o mesmo CPF possua funções distintas na escola, mas bloqueia duplicidade na mesma função.
+  try {
+    // 1) Remove possíveis duplicatas residuais prévias na mesma função mantendo o de menor id
+    await db.query(`
+      DELETE c1 FROM cadastro_membros_escola c1
+      INNER JOIN cadastro_membros_escola c2 
+        ON c1.cpf = c2.cpf 
+       AND c1.escola_id = c2.escola_id 
+       AND c1.funcao = c2.funcao 
+       AND c1.id > c2.id
+    `).catch(() => {});
+
+    // 2) Drop do índice antigo restrito a (cpf, escola_id) se existir
+    const [idxOld] = await db.query(
+      "SHOW INDEX FROM cadastro_membros_escola WHERE Key_name = 'uq_cpf_escola_cadastro'"
+    );
+    if (idxOld && idxOld.length > 0) {
+      await db.query("ALTER TABLE cadastro_membros_escola DROP INDEX uq_cpf_escola_cadastro");
+    }
+
+    // 3) Adiciona índice único por (cpf, escola_id, funcao) se ainda não existir
+    const [idxNew] = await db.query(
+      "SHOW INDEX FROM cadastro_membros_escola WHERE Key_name = 'uq_cpf_escola_funcao'"
+    );
+    if (!idxNew || idxNew.length === 0) {
+      await db.query(
+        "ALTER TABLE cadastro_membros_escola ADD UNIQUE KEY uq_cpf_escola_funcao (cpf, escola_id, funcao)"
+      );
+    }
+  } catch (errIndex) {
+    console.error("[ensureCadastroTable] Ajuste de indice de unicidade:", errIndex.message);
+  }
 }
 
 // ── Listar membros cadastrados ──
@@ -181,15 +214,18 @@ router.get("/cadastro", async (req, res) => {
   try {
     await ensureCadastroTable(db);
 
+    // GROUP BY c.id garante que múltiplos registros em `usuarios` (ex: histórico de professor/perfis)
+    // NUNCA multipliquem as linhas de cada membro cadastrado na escola.
     const [rows] = await db.query(
       `SELECT 
         c.id, c.nome, c.cpf, c.funcao, c.ativo, c.criado_em,
-        u.email,
-        CASE WHEN u.senha_hash IS NOT NULL AND u.senha_hash != '' THEN 1 ELSE 0 END AS cadastro_completo
+        COALESCE(MAX(u.email), '') AS email,
+        MAX(CASE WHEN u.senha_hash IS NOT NULL AND u.senha_hash != '' THEN 1 ELSE 0 END) AS cadastro_completo
       FROM cadastro_membros_escola c
       LEFT JOIN usuarios u ON REPLACE(REPLACE(u.cpf, '.', ''), '-', '') = REPLACE(REPLACE(c.cpf, '.', ''), '-', '')
         AND u.escola_id = c.escola_id
       WHERE c.escola_id = ?
+      GROUP BY c.id, c.nome, c.cpf, c.funcao, c.ativo, c.criado_em
       ORDER BY c.ativo DESC, c.nome ASC`,
       [escolaId]
     );
@@ -216,50 +252,68 @@ router.post("/cadastro", async (req, res) => {
     return res.status(400).json({ ok: false, message: "CPF inválido." });
   }
 
+  const funcaoFinal = String(funcao || "coordenacao").trim();
+
   try {
     await ensureCadastroTable(db);
 
-    // Verifica duplicata
-    const [dup] = await db.query(
-      "SELECT id FROM cadastro_membros_escola WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?",
-      [cpfLimpo, Number(escola_id)]
+    // 1) Verifica duplicidade na MESMA FUNÇÃO:
+    // Permite que o membro possua múltiplas funções DIFERENTES na escola,
+    // mas bloqueia estritamente a tentativa de duplicar a MESMA FUNÇÃO.
+    const [dupMesmaFuncao] = await db.query(
+      "SELECT id, nome, funcao FROM cadastro_membros_escola WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? AND funcao = ?",
+      [cpfLimpo, Number(escola_id), funcaoFinal]
     );
-    if (dup.length) {
-      return res.status(409).json({ ok: false, message: "Este CPF já está cadastrado nesta escola." });
+    if (dupMesmaFuncao.length) {
+      return res.status(409).json({
+        ok: false,
+        codigo: "DUPLICIDADE_MESMA_FUNCAO",
+        nome: dupMesmaFuncao[0].nome,
+        funcao: dupMesmaFuncao[0].funcao,
+        message: "Este membro já está cadastrado nesta escola com a função selecionada.",
+      });
     }
 
+    // 2) Insere o membro na função desejada
     await db.query(
       "INSERT INTO cadastro_membros_escola (escola_id, nome, cpf, funcao) VALUES (?, UPPER(?), ?, ?)",
-      [Number(escola_id), nome.trim(), cpfLimpo, funcao || "coordenador"]
+      [Number(escola_id), nome.trim(), cpfLimpo, funcaoFinal]
     );
 
-    // ── Pré-cadastro em `usuarios` (permite auto-cadastro via /cadastro) ──
-    const perfilUsuario = funcao || "coordenador";
+    // 3) Pré-cadastro em `usuarios` (permite auto-cadastro via /cadastro)
     const [existeUsuario] = await db.query(
-      "SELECT id FROM usuarios WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?",
+      "SELECT id, senha_hash, email FROM usuarios WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?",
       [cpfLimpo, Number(escola_id)]
     );
+
     if (!existeUsuario.length) {
       await db.query(
         `INSERT INTO usuarios (cpf, nome, escola_id, perfil, ativo, senha_hash)
          VALUES (?, UPPER(?), ?, ?, 1, '')`,
-        [cpfLimpo, nome.trim(), Number(escola_id), perfilUsuario]
+        [cpfLimpo, nome.trim(), Number(escola_id), funcaoFinal]
       );
     } else {
-      // Re-cadastro: atualiza perfil, reativa e reseta credenciais para forçar novo auto-cadastro
-      await db.query(
-        `UPDATE usuarios
-         SET nome = UPPER(?), perfil = ?, ativo = 1, senha_hash = '', email = NULL, celular = NULL
-         WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?`,
-        [nome.trim(), perfilUsuario, cpfLimpo, Number(escola_id)]
-      );
+      // Se não possui senha ainda, atualiza perfil
+      const usuarioComSenha = existeUsuario.find(u => u.senha_hash && String(u.senha_hash).trim() !== "");
+      if (!usuarioComSenha) {
+        await db.query(
+          `UPDATE usuarios
+           SET nome = UPPER(?), perfil = ?, ativo = 1
+           WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?`,
+          [nome.trim(), funcaoFinal, cpfLimpo, Number(escola_id)]
+        );
+      }
     }
 
     return res.status(201).json({ ok: true, message: "Membro pré-cadastrado com sucesso." });
   } catch (err) {
     console.error("[DIRECAO][ADICIONAR CADASTRO]", err);
     if (err.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ ok: false, message: "CPF já cadastrado nesta escola." });
+      return res.status(409).json({
+        ok: false,
+        codigo: "DUPLICIDADE_MESMA_FUNCAO",
+        message: "Este membro já está cadastrado nesta escola com esta função.",
+      });
     }
     return res.status(500).json({ ok: false, message: "Erro ao adicionar membro." });
   }
@@ -277,28 +331,49 @@ router.put("/cadastro/:id", async (req, res) => {
     return res.status(400).json({ ok: false, message: "ID e nome são obrigatórios." });
   }
 
+  const funcaoFinal = String(funcao || "coordenacao").trim();
+
   try {
+    const [[membroAtual]] = await db.query(
+      "SELECT cpf, escola_id, funcao FROM cadastro_membros_escola WHERE id = ?",
+      [id]
+    );
+
+    if (!membroAtual) {
+      return res.status(404).json({ ok: false, message: "Membro não encontrado." });
+    }
+
+    // Se estiver alterando a função, verifica se o mesmo membro já tem outro registro nessa nova função
+    if (funcaoFinal !== membroAtual.funcao) {
+      const cpfLimpo = String(membroAtual.cpf).replace(/\D/g, "");
+      const [dup] = await db.query(
+        "SELECT id FROM cadastro_membros_escola WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ? AND funcao = ? AND id != ?",
+        [cpfLimpo, membroAtual.escola_id, funcaoFinal, id]
+      );
+      if (dup.length) {
+        return res.status(409).json({
+          ok: false,
+          codigo: "DUPLICIDADE_MESMA_FUNCAO",
+          message: "Este membro já possui outro cadastro com esta função nesta escola.",
+        });
+      }
+    }
+
     // Atualiza cadastro_membros_escola
     await db.query(
       "UPDATE cadastro_membros_escola SET nome = UPPER(?), funcao = ? WHERE id = ?",
-      [nome.trim(), funcao || "coordenador", id]
+      [nome.trim(), funcaoFinal, id]
     );
 
     // Também atualiza nome e perfil em usuarios (se existir)
-    const [[membro]] = await db.query(
-      "SELECT cpf, escola_id FROM cadastro_membros_escola WHERE id = ?",
-      [id]
+    const cpfLimpo = String(membroAtual.cpf).replace(/\D/g, "");
+    await db.query(
+      `UPDATE usuarios SET nome = UPPER(?), perfil = ?
+       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?`,
+      [nome.trim(), funcaoFinal, cpfLimpo, membroAtual.escola_id]
     );
-    if (membro) {
-      const cpfLimpo = String(membro.cpf).replace(/\D/g, "");
-      await db.query(
-        `UPDATE usuarios SET nome = UPPER(?), perfil = ?
-         WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ? AND escola_id = ?`,
-        [nome.trim(), funcao || "coordenador", cpfLimpo, membro.escola_id]
-      );
-    }
 
-    return res.json({ ok: true, message: "Membro atualizado." });
+    return res.json({ ok: true, message: "Membro atualizado com sucesso." });
   } catch (err) {
     console.error("[DIRECAO][EDITAR CADASTRO]", err);
     return res.status(500).json({ ok: false, message: "Erro ao atualizar." });
