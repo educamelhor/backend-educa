@@ -64,7 +64,7 @@ const MODULOS_VALIDOS = new Set([
   'biblioteca.alunos', 'biblioteca.leitor_destaque',
   'biblioteca.concurso', 'biblioteca.metadados',
   // Professores
-  'professores', 'professores.planos', 'professores.avaliacoes',
+  'professores', 'professores.planos', 'professores.avaliacoes', 'professores.chamada',
   'professores.conteudos', 'professores.provas', 'professores.boletim',
   'professores.conselho', 'professores.sala_recurso',
   // Monitoramento
