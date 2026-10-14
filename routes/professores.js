@@ -708,6 +708,34 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
       anoLetivo = Number(maxRow?.max_ano) || new Date().getFullYear();
     }
 
+    // ─── Regra de Anualidade vs Semestralidade por Disciplina ──────────────
+    // Em turmas com t.regime = 'semestral' (ex: Ensino Médio), a modulação salva aulas
+    // por aba (m.semestre = 1 e m.semestre = 2) mesmo para disciplinas ANUAIS.
+    // Uma disciplina modulada em (p, t, m) é ANUAL se a turma não for semestral OU
+    // se o professor tiver vínculo anual (pv.semestre = 0) para a disciplina/turno
+    // sem possuir vínculo semestral (pv.semestre IN (1, 2)) para a mesma disciplina/turno.
+    const isDiscAnualSql = `(
+      LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+      OR (
+        EXISTS (
+          SELECT 1 FROM professor_vinculos pv0
+          WHERE pv0.professor_id = p.id
+            AND pv0.disciplina_id = m.disciplina_id
+            AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+            AND pv0.escola_id = p.escola_id
+            AND pv0.semestre = 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM professor_vinculos pvs
+          WHERE pvs.professor_id = p.id
+            AND pvs.disciplina_id = m.disciplina_id
+            AND LOWER(pvs.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+            AND pvs.escola_id = p.escola_id
+            AND pvs.semestre IN (1, 2)
+        )
+      )
+    )`;
+
     // ─── Query principal ─────────────────────────────────────────────────────
     // Unifica:
     // 1) Turmas Regulares em que o professor está modulado
@@ -720,10 +748,13 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         t.serie,
         t.turno,
         t.etapa,
-        COALESCE(t.regime, 'anual') AS regime,
         CASE
-          WHEN LOWER(COALESCE(t.regime, 'anual')) = 'semestral' THEN COALESCE(m.semestre, 0)
-          ELSE 0
+          WHEN ${isDiscAnualSql} THEN 'anual'
+          ELSE 'semestral'
+        END AS regime,
+        CASE
+          WHEN ${isDiscAnualSql} THEN 0
+          ELSE COALESCE(m.semestre, 0)
         END AS semestre,
         FALSE AS is_agrupamento,
         NULL AS agrupamento_tipo
@@ -751,7 +782,7 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
         NULL AS serie,
         g.turno,
         COALESCE(e.nome, 'MÉDIO') AS etapa,
-        'semestral' AS regime,
+        CASE WHEN COALESCE(g.semestre, 0) IN (1, 2) THEN 'semestral' ELSE 'anual' END AS regime,
         COALESCE(g.semestre, 0) AS semestre,
         TRUE AS is_agrupamento,
         g.tipo AS agrupamento_tipo
@@ -805,7 +836,9 @@ router.get("/me/turmas", autenticarToken, verificarEscola, async (req, res) => {
     turmas.sort((a, b) => {
       if (b.ano !== a.ano) return (b.ano || 0) - (a.ano || 0);
       if (a.is_agrupamento !== b.is_agrupamento) return a.is_agrupamento ? 1 : -1;
-      return a.nome.localeCompare(b.nome);
+      const cmp = a.nome.localeCompare(b.nome);
+      if (cmp !== 0) return cmp;
+      return (a.semestre || 0) - (b.semestre || 0);
     });
 
     return res.json({ ok: true, turmas });
@@ -1162,46 +1195,107 @@ router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, 
     }
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
+    const regimeParam = req.query.regime ? String(req.query.regime).trim().toLowerCase() : null;
+    const semestreParam =
+      req.query.semestre !== undefined && req.query.semestre !== ""
+        ? Number(req.query.semestre)
+        : null;
+    const isAgrupamentoParam =
+      req.query.is_agrupamento !== undefined
+        ? String(req.query.is_agrupamento).trim().toLowerCase()
+        : null;
 
-    // 1) Verifica se turmaId pertence a uma turma de agrupamento
-    try {
-      const [[agr]] = await pool.query(
-        "SELECT id, nome FROM agrupamentos WHERE id = ? AND escola_id = ?",
-        [turmaId, escolaId]
-      );
-
-      if (agr) {
-        const [rowsAgr] = await pool.query(
-          `SELECT DISTINCT d.id AS id, d.nome AS nome
-           FROM agrupamento_modulacao am
-           JOIN disciplinas d ON d.id = am.disciplina_id
-           JOIN professores p ON p.id = am.professor_id
-           WHERE am.agrupamento_id = ? AND p.escola_id = ?
-             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-           ORDER BY d.nome ASC`,
-          [turmaId, escolaId, cleanCpf]
+    // 1) Verifica se turmaId pertence a uma turma de agrupamento (se não for explicitamente regular)
+    if (isAgrupamentoParam !== "0" && isAgrupamentoParam !== "false") {
+      try {
+        const [[agr]] = await pool.query(
+          "SELECT id, nome FROM agrupamentos WHERE id = ? AND escola_id = ?",
+          [turmaId, escolaId]
         );
-        const disciplinasAgr = Array.isArray(rowsAgr)
-          ? rowsAgr.map((r) => ({ id: Number(r.id), nome: String(r.nome).trim() }))
-          : [];
-        return res.json({ ok: true, disciplinas: disciplinasAgr, is_agrupamento: true });
+
+        if (agr) {
+          const [rowsAgr] = await pool.query(
+            `SELECT DISTINCT d.id AS id, d.nome AS nome
+             FROM agrupamento_modulacao am
+             JOIN disciplinas d ON d.id = am.disciplina_id
+             JOIN professores p ON p.id = am.professor_id
+             WHERE am.agrupamento_id = ? AND p.escola_id = ?
+               AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+             ORDER BY d.nome ASC`,
+            [turmaId, escolaId, cleanCpf]
+          );
+          const disciplinasAgr = Array.isArray(rowsAgr)
+            ? rowsAgr.map((r) => ({ id: Number(r.id), nome: String(r.nome).trim() }))
+            : [];
+          return res.json({ ok: true, disciplinas: disciplinasAgr, is_agrupamento: true });
+        }
+      } catch (agrErr) {
+        console.warn("[me/turmas/:turmaId/disciplinas] Fallback agrupamentos:", agrErr.message);
       }
-    } catch (agrErr) {
-      console.warn("[me/turmas/:turmaId/disciplinas] Fallback agrupamentos:", agrErr.message);
     }
 
     // 2) Caso regular (modulacao)
-    const [rows] = await pool.query(
+    const isDiscAnualSql = `(
+      LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+      OR (
+        EXISTS (
+          SELECT 1 FROM professor_vinculos pv0
+          WHERE pv0.professor_id = p.id
+            AND pv0.disciplina_id = m.disciplina_id
+            AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+            AND pv0.escola_id = p.escola_id
+            AND pv0.semestre = 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM professor_vinculos pvs
+          WHERE pvs.professor_id = p.id
+            AND pvs.disciplina_id = m.disciplina_id
+            AND LOWER(pvs.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+            AND pvs.escola_id = p.escola_id
+            AND pvs.semestre IN (1, 2)
+        )
+      )
+    )`;
+
+    let filterSql = "";
+    const filterParams = [escolaId, cleanCpf, turmaId];
+
+    if (regimeParam === "anual" || semestreParam === 0) {
+      filterSql = ` AND ${isDiscAnualSql} `;
+    } else if (regimeParam === "semestral" && (semestreParam === 1 || semestreParam === 2)) {
+      filterSql = ` AND NOT (${isDiscAnualSql}) AND COALESCE(m.semestre, 0) = ? `;
+      filterParams.push(semestreParam);
+    }
+
+    let [rows] = await pool.query(
       `SELECT DISTINCT d.id AS id, d.nome AS nome
        FROM professores p
        JOIN modulacao m   ON m.professor_id = p.id
+       JOIN turmas t      ON t.id = m.turma_id
        JOIN disciplinas d ON d.id = m.disciplina_id
        WHERE p.escola_id = ?
          AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
          AND m.turma_id = ?
+         ${filterSql}
        ORDER BY d.nome ASC`,
-      [escolaId, cleanCpf, turmaId]
+      filterParams
     );
+
+    // Fallback seguro caso o filtro opcional não retorne linhas
+    if ((!Array.isArray(rows) || rows.length === 0) && filterSql) {
+      const [fallbackRows] = await pool.query(
+        `SELECT DISTINCT d.id AS id, d.nome AS nome
+         FROM professores p
+         JOIN modulacao m   ON m.professor_id = p.id
+         JOIN disciplinas d ON d.id = m.disciplina_id
+         WHERE p.escola_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+           AND m.turma_id = ?
+         ORDER BY d.nome ASC`,
+        [escolaId, cleanCpf, turmaId]
+      );
+      rows = fallbackRows;
+    }
 
     const disciplinas = Array.isArray(rows)
       ? rows.map((r) => ({
