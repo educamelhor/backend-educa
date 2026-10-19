@@ -65,6 +65,69 @@ async function ensurePedagogicoTables(db) {
   `);
 }
 
+async function ensureAnoLetivoTables(db) {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_ano_letivo_periodos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      ano_letivo INT NOT NULL,
+      tipo ENUM('bimestre', 'semestre') NOT NULL,
+      numero TINYINT NOT NULL,
+      data_inicio DATE NOT NULL,
+      data_fim DATE NOT NULL,
+      atualizado_por_id INT DEFAULT NULL,
+      atualizado_por_nome VARCHAR(200) DEFAULT NULL,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_escola_ano_tipo_num (escola_id, ano_letivo, tipo, numero),
+      KEY idx_escola_ano (escola_id, ano_letivo)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_ano_letivo_excecoes (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      ano_letivo INT NOT NULL,
+      tipo ENUM('bimestre', 'semestre') NOT NULL,
+      numero TINYINT NOT NULL,
+      data DATE NOT NULL,
+      status_letivo TINYINT(1) NOT NULL COMMENT '1 = Sábado tornado letivo, 0 = Dia útil tornado não-letivo',
+      motivo VARCHAR(500) NOT NULL,
+      usuario_id INT DEFAULT NULL,
+      usuario_nome VARCHAR(200) DEFAULT NULL,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_periodo_data (escola_id, ano_letivo, tipo, numero, data),
+      KEY idx_escola_periodo (escola_id, ano_letivo, tipo, numero)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
+
+async function ensureAnoLetivoConfigs(db, escolaId) {
+  try {
+    await db.query(
+      `UPDATE configuracoes_escola SET categoria = 'ano_letivo' WHERE escola_id = ? AND LOWER(categoria) IN ('ano_letivo', 'ano letivo')`,
+      [Number(escolaId)]
+    );
+  } catch {}
+
+  const configs = [
+    { chave: "ano_letivo.organizacao_bimestral", desc: "Gestão de Calendário e Dias Letivos por Bimestres (1º ao 4º Bimestre)", ordem: 10 },
+    { chave: "ano_letivo.organizacao_semestral", desc: "Gestão de Calendário e Dias Letivos por Semestres (1º e 2º Semestre)", ordem: 11 },
+  ];
+  for (const c of configs) {
+    try {
+      await db.query(
+        `INSERT IGNORE INTO configuracoes_escola 
+         (escola_id, categoria, chave, valor, descricao, tipo, ordem, ativo) 
+         VALUES (?, 'ano_letivo', ?, '1', ?, 'boolean', ?, 1)`,
+        [Number(escolaId), c.chave, c.desc, c.ordem]
+      );
+    } catch {}
+  }
+}
+
 // ── Sync completo: CEO template → configuracoes_escola ──
 // 1) Insere novos itens do CEO que ainda não existem na escola
 // 2) Remove itens órfãos (que foram excluídos pelo CEO)
@@ -86,11 +149,22 @@ async function syncFromCeoTemplate(db, escolaId) {
       ORDER BY c.ordem ASC, i.ordem ASC
     `);
 
-    // Se CEO não tem itens, limpar tudo da escola
+    const CHAVES_PROTEGIDAS_APP = [
+      "boletim.app.liberar_1bimestre",
+      "boletim.app.liberar_2bimestre",
+      "boletim.app.liberar_3bimestre",
+      "boletim.app.liberar_4bimestre",
+      "pedagogico.liberar_fotos_conselho",
+      "ano_letivo.organizacao_bimestral",
+      "ano_letivo.organizacao_semestral",
+    ];
+
+    // Se CEO não tem itens, limpar tudo da escola (exceto chaves protegidas)
     if (!ceoItens.length) {
+      const pHolders = CHAVES_PROTEGIDAS_APP.map(() => "?").join(",");
       await db.query(
-        "DELETE FROM configuracoes_escola WHERE escola_id = ?",
-        [Number(escolaId)]
+        `DELETE FROM configuracoes_escola WHERE escola_id = ? AND chave NOT IN (${pHolders})`,
+        [Number(escolaId), ...CHAVES_PROTEGIDAS_APP]
       );
       return;
     }
@@ -119,13 +193,6 @@ async function syncFromCeoTemplate(db, escolaId) {
     }
 
     // ── 2) Remover itens órfãos (excluídos pelo CEO) ──
-    const CHAVES_PROTEGIDAS_APP = [
-      "boletim.app.liberar_1bimestre",
-      "boletim.app.liberar_2bimestre",
-      "boletim.app.liberar_3bimestre",
-      "boletim.app.liberar_4bimestre",
-      "pedagogico.liberar_fotos_conselho",
-    ];
     const chavesValidas = [...new Set([...ceoItens.map(i => i.chave), ...CHAVES_PROTEGIDAS_APP])];
     const placeholders = chavesValidas.map(() => "?").join(",");
     await db.query(
@@ -733,6 +800,257 @@ router.post("/autenticar-liberacao-fotos", guardDiretor, async (req, res) => {
   }
 });
 
+// ── Helper para retornar o estado completo do Ano Letivo ──
+async function getAnoLetivoState(db, escolaId, anoLetivo) {
+  const [periodos] = await db.query(
+    `SELECT id, tipo, numero,
+            DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio,
+            DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim,
+            atualizado_por_nome,
+            DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+     FROM governanca_ano_letivo_periodos
+     WHERE escola_id = ? AND ano_letivo = ?
+     ORDER BY tipo ASC, numero ASC`,
+    [escolaId, anoLetivo]
+  );
+
+  const [excecoes] = await db.query(
+    `SELECT id, tipo, numero,
+            DATE_FORMAT(data, '%Y-%m-%d') AS data,
+            status_letivo, motivo, usuario_nome,
+            DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+     FROM governanca_ano_letivo_excecoes
+     WHERE escola_id = ? AND ano_letivo = ?
+     ORDER BY data ASC`,
+    [escolaId, anoLetivo]
+  );
+
+  return { periodos, excecoes };
+}
+
+// ── GET /api/governanca/ano-letivo-config?escola_id=X&ano=2026 ──────────────
+router.get("/ano-letivo-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
+  const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
+
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensureAnoLetivoTables(db);
+    await ensureAnoLetivoConfigs(db, escolaId);
+
+    const state = await getAnoLetivoState(db, escolaId, anoLetivo);
+    return res.json({
+      ok: true,
+      ano_letivo: anoLetivo,
+      ...state,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][ANO-LETIVO-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar configurações do Ano Letivo." });
+  }
+});
+
+// ── POST /api/governanca/ano-letivo-periodo ─────────────────────────────────
+// Configura ou edita data_inicio e data_fim de um Bimestre (1..4) ou Semestre (1..2)
+router.post("/ano-letivo-periodo", guardDiretor, async (req, res) => {
+  const db = req.db;
+  const { escola_id, ano_letivo, tipo, numero, data_inicio, data_fim, usuario_nome } = req.body;
+  const escolaId = Number(escola_id || req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
+  const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
+  const num = Number(numero);
+
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+  if (!["bimestre", "semestre"].includes(tipo)) {
+    return res.status(400).json({ ok: false, message: "Tipo inválido. Use 'bimestre' ou 'semestre'." });
+  }
+  if (tipo === "bimestre" && (num < 1 || num > 4)) {
+    return res.status(400).json({ ok: false, message: "Bimestre deve ser entre 1 e 4." });
+  }
+  if (tipo === "semestre" && (num < 1 || num > 2)) {
+    return res.status(400).json({ ok: false, message: "Semestre deve ser 1 ou 2." });
+  }
+  if (!data_inicio || !data_fim || !/^\d{4}-\d{2}-\d{2}$/.test(data_inicio) || !/^\d{4}-\d{2}-\d{2}$/.test(data_fim)) {
+    return res.status(400).json({ ok: false, message: "Datas de início e término são obrigatórias no formato AAAA-MM-DD." });
+  }
+  if (data_inicio > data_fim) {
+    return res.status(400).json({ ok: false, message: "A data de início não pode ser posterior à data de término." });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensureAnoLetivoTables(db);
+    await ensureAnoLetivoConfigs(db, escolaId);
+
+    const userId = Number(req.user?.id || req.user?.usuario_id || req.headers["x-user-id"]) || 0;
+    const userNome = usuario_nome || req.user?.nome || "Direção";
+
+    await db.query(
+      `INSERT INTO governanca_ano_letivo_periodos
+       (escola_id, ano_letivo, tipo, numero, data_inicio, data_fim, atualizado_por_id, atualizado_por_nome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         data_inicio = VALUES(data_inicio),
+         data_fim = VALUES(data_fim),
+         atualizado_por_id = VALUES(atualizado_por_id),
+         atualizado_por_nome = VALUES(atualizado_por_nome)`,
+      [escolaId, anoLetivo, tipo, num, data_inicio, data_fim, userId, userNome]
+    );
+
+    // Remove eventuais exceções que ficaram fora do novo intervalo de datas deste período
+    await db.query(
+      `DELETE FROM governanca_ano_letivo_excecoes
+       WHERE escola_id = ? AND ano_letivo = ? AND tipo = ? AND numero = ?
+         AND (data < ? OR data > ?)`,
+      [escolaId, anoLetivo, tipo, num, data_inicio, data_fim]
+    );
+
+    const state = await getAnoLetivoState(db, escolaId, anoLetivo);
+    return res.json({
+      ok: true,
+      message: `✅ Período do ${num}º ${tipo === "bimestre" ? "Bimestre" : "Semestre"} salvo com sucesso!`,
+      ...state,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][ANO-LETIVO-PERIODO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar período do Ano Letivo." });
+  }
+});
+
+// ── POST /api/governanca/ano-letivo-excecao ─────────────────────────────────
+// Marca Sábado como letivo ou desmarca dia letivo (com justificativa obrigatória)
+router.post("/ano-letivo-excecao", guardDiretor, async (req, res) => {
+  const db = req.db;
+  const { escola_id, ano_letivo, tipo, numero, data, acao, motivo, usuario_nome } = req.body;
+  const escolaId = Number(escola_id || req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
+  const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
+  const num = Number(numero);
+
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+  if (!["bimestre", "semestre"].includes(tipo)) {
+    return res.status(400).json({ ok: false, message: "Tipo inválido." });
+  }
+  if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(String(data))) {
+    return res.status(400).json({ ok: false, message: "Data inválida." });
+  }
+
+  const [yy, mm, dd] = String(data).split("-").map(Number);
+  const dtObj = new Date(yy, mm - 1, dd, 12, 0, 0);
+  const dow = dtObj.getDay(); // 0 = Domingo, 1..5 = Seg..Sex, 6 = Sábado
+
+  if (dow === 0) {
+    return res.status(400).json({
+      ok: false,
+      message: "Domingos nunca podem ser marcados como dias letivos.",
+    });
+  }
+
+  const motivoClean = String(motivo || "").trim();
+  if (acao !== "restaurar_dia_util" && !motivoClean) {
+    return res.status(400).json({
+      ok: false,
+      message: "A justificativa (motivo) é obrigatória para alterar este dia no calendário.",
+    });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensureAnoLetivoTables(db);
+    await ensurePedagogicoTables(db);
+
+    const userId = Number(req.user?.id || req.user?.usuario_id || req.headers["x-user-id"]) || 0;
+    const userNome = usuario_nome || req.user?.nome || "Direção";
+    const ipOrigem = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+
+    if (acao === "marcar_sabado_letivo") {
+      if (dow !== 6) {
+        return res.status(400).json({ ok: false, message: "Apenas sábados podem receber marcação extra de sábado letivo." });
+      }
+      await db.query(
+        `INSERT INTO governanca_ano_letivo_excecoes
+         (escola_id, ano_letivo, tipo, numero, data, status_letivo, motivo, usuario_id, usuario_nome)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           status_letivo = 1,
+           motivo = VALUES(motivo),
+           usuario_id = VALUES(usuario_id),
+           usuario_nome = VALUES(usuario_nome)`,
+        [escolaId, anoLetivo, tipo, num, data, motivoClean, userId, userNome]
+      );
+
+      await db.query(
+        `INSERT INTO governanca_auditoria_logs
+         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
+         VALUES (?, ?, ?, 'ANO_LETIVO_SABADO_INCLUIDO', ?, ?)`,
+        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Sábado marcado como letivo. Motivo: ${motivoClean}`, ipOrigem]
+      );
+    } else if (acao === "desmarcar_dia_letivo") {
+      if (dow === 6) {
+        // Era um sábado que tinha sido marcado como letivo; ao desmarcar, remove a exceção de sábado letivo
+        await db.query(
+          `DELETE FROM governanca_ano_letivo_excecoes
+           WHERE escola_id = ? AND ano_letivo = ? AND tipo = ? AND numero = ? AND data = ?`,
+          [escolaId, anoLetivo, tipo, num, data]
+        );
+      } else {
+        // Dia útil (Seg-Sex) desmarcado como não-letivo
+        await db.query(
+          `INSERT INTO governanca_ano_letivo_excecoes
+           (escola_id, ano_letivo, tipo, numero, data, status_letivo, motivo, usuario_id, usuario_nome)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             status_letivo = 0,
+             motivo = VALUES(motivo),
+             usuario_id = VALUES(usuario_id),
+             usuario_nome = VALUES(usuario_nome)`,
+          [escolaId, anoLetivo, tipo, num, data, motivoClean, userId, userNome]
+        );
+      }
+
+      await db.query(
+        `INSERT INTO governanca_auditoria_logs
+         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
+         VALUES (?, ?, ?, 'ANO_LETIVO_DIA_DESMARCADO', ?, ?)`,
+        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Dia desmarcado como letivo. Motivo: ${motivoClean}`, ipOrigem]
+      );
+    } else if (acao === "restaurar_dia_util") {
+      // Restaura um dia útil (Seg-Sex) que havia sido desmarcado para voltar a ser letivo (verde)
+      await db.query(
+        `DELETE FROM governanca_ano_letivo_excecoes
+         WHERE escola_id = ? AND ano_letivo = ? AND tipo = ? AND numero = ? AND data = ?`,
+        [escolaId, anoLetivo, tipo, num, data]
+      );
+
+      await db.query(
+        `INSERT INTO governanca_auditoria_logs
+         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
+         VALUES (?, ?, ?, 'ANO_LETIVO_DIA_RESTAURADO', ?, ?)`,
+        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Dia útil restaurado como letivo.${motivoClean ? ` Motivo: ${motivoClean}` : ""}`, ipOrigem]
+      );
+    } else {
+      return res.status(400).json({ ok: false, message: "Ação inválida." });
+    }
+
+    const state = await getAnoLetivoState(db, escolaId, anoLetivo);
+    return res.json({
+      ok: true,
+      message: "✅ Calendário letivo atualizado com sucesso!",
+      ...state,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][ANO-LETIVO-EXCECAO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao registrar alteração no calendário letivo." });
+  }
+});
+
 router.get("/", guardDiretor, async (req, res) => {
   const db = req.db;
   const escolaId = Number(req.query.escola_id);
@@ -742,9 +1060,12 @@ router.get("/", guardDiretor, async (req, res) => {
   try {
     await ensureTable(db);
     await ensurePedagogicoTables(db);
+    await ensureAnoLetivoTables(db);
     await ensurePedagogicoConfigs(db, escolaId);
     await ensureBoletimAppConfigs(db, escolaId);
+    await ensureAnoLetivoConfigs(db, escolaId);
     await syncFromCeoTemplate(db, escolaId);
+    await ensureAnoLetivoConfigs(db, escolaId);
 
     const [rows] = await db.query(
       `SELECT id, categoria, chave, valor, descricao, tipo, opcoes_json, ordem, ativo
