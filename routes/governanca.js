@@ -720,7 +720,8 @@ router.post("/autenticar-liberacao-fotos", guardDiretor, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Senha incorreta. Confirmação não autorizada." });
     }
 
-    const ipOrigem = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+    const rawIp = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+    const ipOrigem = String(rawIp).split(",")[0].trim().slice(0, 45);
     const novoValor = acao === "ativar" ? "1" : "0";
 
     // 1) Atualiza a flag na governança
@@ -967,8 +968,22 @@ router.post("/ano-letivo-excecao", guardDiretor, async (req, res) => {
     await ensurePedagogicoTables(db);
 
     const userId = Number(req.user?.id || req.user?.usuario_id || req.headers["x-user-id"]) || 0;
-    const userNome = usuario_nome || req.user?.nome || "Direção";
-    const ipOrigem = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+    const userNome = String(usuario_nome || req.user?.nome || "Direção").slice(0, 190);
+    const rawIp = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+    const ipOrigem = String(rawIp).split(",")[0].trim().slice(0, 45);
+
+    const registrarAuditoriaSafe = async (acaoLog, detalheLog) => {
+      try {
+        await db.query(
+          `INSERT INTO governanca_auditoria_logs
+           (escola_id, usuario_id, nome_usuario, cpf_usuario, acao, detalhe, ip_origem)
+           VALUES (?, ?, ?, '', ?, ?, ?)`,
+          [escolaId, userId, userNome, acaoLog, detalheLog, ipOrigem]
+        );
+      } catch (auditErr) {
+        console.warn("[GOVERNANCA][AUDITORIA-WARN]", auditErr?.message);
+      }
+    };
 
     if (acao === "marcar_sabado_letivo") {
       if (dow !== 6) {
@@ -986,11 +1001,9 @@ router.post("/ano-letivo-excecao", guardDiretor, async (req, res) => {
         [escolaId, anoLetivo, tipo, num, data, motivoClean, userId, userNome]
       );
 
-      await db.query(
-        `INSERT INTO governanca_auditoria_logs
-         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
-         VALUES (?, ?, ?, 'ANO_LETIVO_SABADO_INCLUIDO', ?, ?)`,
-        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Sábado marcado como letivo. Motivo: ${motivoClean}`, ipOrigem]
+      await registrarAuditoriaSafe(
+        "ANO_LETIVO_SABADO_INCLUIDO",
+        `${num}º ${tipo} (${data}): Sábado marcado como letivo. Motivo: ${motivoClean}`
       );
     } else if (acao === "desmarcar_dia_letivo") {
       if (dow === 6) {
@@ -1015,11 +1028,9 @@ router.post("/ano-letivo-excecao", guardDiretor, async (req, res) => {
         );
       }
 
-      await db.query(
-        `INSERT INTO governanca_auditoria_logs
-         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
-         VALUES (?, ?, ?, 'ANO_LETIVO_DIA_DESMARCADO', ?, ?)`,
-        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Dia desmarcado como letivo. Motivo: ${motivoClean}`, ipOrigem]
+      await registrarAuditoriaSafe(
+        "ANO_LETIVO_DIA_DESMARCADO",
+        `${num}º ${tipo} (${data}): Dia desmarcado como letivo. Motivo: ${motivoClean}`
       );
     } else if (acao === "restaurar_dia_util") {
       // Restaura um dia útil (Seg-Sex) que havia sido desmarcado para voltar a ser letivo (verde)
@@ -1029,11 +1040,9 @@ router.post("/ano-letivo-excecao", guardDiretor, async (req, res) => {
         [escolaId, anoLetivo, tipo, num, data]
       );
 
-      await db.query(
-        `INSERT INTO governanca_auditoria_logs
-         (escola_id, usuario_id, nome_usuario, acao, detalhe, ip_origem)
-         VALUES (?, ?, ?, 'ANO_LETIVO_DIA_RESTAURADO', ?, ?)`,
-        [escolaId, userId, userNome, `${num}º ${tipo} (${data}): Dia útil restaurado como letivo.${motivoClean ? ` Motivo: ${motivoClean}` : ""}`, ipOrigem]
+      await registrarAuditoriaSafe(
+        "ANO_LETIVO_DIA_RESTAURADO",
+        `${num}º ${tipo} (${data}): Dia útil restaurado como letivo.${motivoClean ? ` Motivo: ${motivoClean}` : ""}`
       );
     } else {
       return res.status(400).json({ ok: false, message: "Ação inválida." });
