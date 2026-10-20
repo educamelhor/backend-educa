@@ -102,6 +102,23 @@ async function ensureAnoLetivoTables(db) {
       KEY idx_escola_periodo (escola_id, ano_letivo, tipo, numero)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS governanca_ano_letivo_horarios (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      ano_letivo INT NOT NULL,
+      turno VARCHAR(30) NOT NULL COMMENT 'matutino, vespertino, noturno, integral',
+      quantidade_aulas TINYINT NOT NULL DEFAULT 6,
+      aulas_json JSON NOT NULL COMMENT 'Array de { numero, inicio, fim }',
+      atualizado_por_id INT DEFAULT NULL,
+      atualizado_por_nome VARCHAR(200) DEFAULT NULL,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_escola_ano_turno (escola_id, ano_letivo, turno),
+      KEY idx_escola_ano_horario (escola_id, ano_letivo)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
 async function ensureAnoLetivoConfigs(db, escolaId) {
@@ -115,6 +132,7 @@ async function ensureAnoLetivoConfigs(db, escolaId) {
   const configs = [
     { chave: "ano_letivo.organizacao_bimestral", desc: "Gestão de Calendário e Dias Letivos por Bimestres (1º ao 4º Bimestre)", ordem: 10 },
     { chave: "ano_letivo.organizacao_semestral", desc: "Gestão de Calendário e Dias Letivos por Semestres (1º e 2º Semestre)", ordem: 11 },
+    { chave: "ano_letivo.horario_aulas", desc: "Gestão do Horário das Aulas por Turno (Matutino, Vespertino, Noturno e Integral)", ordem: 12 },
   ];
   for (const c of configs) {
     try {
@@ -157,6 +175,7 @@ async function syncFromCeoTemplate(db, escolaId) {
       "pedagogico.liberar_fotos_conselho",
       "ano_letivo.organizacao_bimestral",
       "ano_letivo.organizacao_semestral",
+      "ano_letivo.horario_aulas",
     ];
 
     // Se CEO não tem itens, limpar tudo da escola (exceto chaves protegidas)
@@ -826,7 +845,33 @@ async function getAnoLetivoState(db, escolaId, anoLetivo) {
     [escolaId, anoLetivo]
   );
 
-  return { periodos, excecoes };
+  const [horariosRows] = await db.query(
+    `SELECT id, turno, quantidade_aulas, aulas_json, atualizado_por_nome,
+            DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+     FROM governanca_ano_letivo_horarios
+     WHERE escola_id = ? AND ano_letivo = ?
+     ORDER BY turno ASC`,
+    [escolaId, anoLetivo]
+  );
+
+  const horarios = horariosRows.map((r) => {
+    let aulas = [];
+    try {
+      aulas = typeof r.aulas_json === "string" ? JSON.parse(r.aulas_json) : (r.aulas_json || []);
+    } catch {
+      aulas = [];
+    }
+    return {
+      id: r.id,
+      turno: r.turno,
+      quantidade_aulas: Number(r.quantidade_aulas) || aulas.length,
+      aulas: Array.isArray(aulas) ? aulas : [],
+      atualizado_por_nome: r.atualizado_por_nome,
+      atualizado_em_fmt: r.atualizado_em_fmt,
+    };
+  });
+
+  return { periodos, excecoes, horarios };
 }
 
 // ── GET /api/governanca/ano-letivo-config?escola_id=X&ano=2026 ──────────────
@@ -853,6 +898,100 @@ router.get("/ano-letivo-config", async (req, res) => {
   } catch (err) {
     console.error("[GOVERNANCA][ANO-LETIVO-CONFIG]", err);
     return res.status(500).json({ ok: false, message: "Erro ao buscar configurações do Ano Letivo." });
+  }
+});
+
+// ── POST /api/governanca/ano-letivo-horario ─────────────────────────────────
+// Configura ou edita os horários das aulas de um turno (matutino, vespertino, noturno, integral)
+router.post("/ano-letivo-horario", guardDiretor, async (req, res) => {
+  const db = req.db;
+  const { escola_id, ano_letivo, turno, quantidade_aulas, aulas, acao, usuario_nome } = req.body;
+  const escolaId = Number(escola_id || req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]);
+  const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
+  const turnoNorm = String(turno || "").toLowerCase().trim();
+
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+  if (!["matutino", "vespertino", "noturno", "integral"].includes(turnoNorm)) {
+    return res.status(400).json({ ok: false, message: "Turno inválido. Use matutino, vespertino, noturno ou integral." });
+  }
+
+  try {
+    await ensureTable(db);
+    await ensureAnoLetivoTables(db);
+    await ensureAnoLetivoConfigs(db, escolaId);
+
+    if (acao === "limpar") {
+      await db.query(
+        `DELETE FROM governanca_ano_letivo_horarios WHERE escola_id = ? AND ano_letivo = ? AND turno = ?`,
+        [escolaId, anoLetivo, turnoNorm]
+      );
+      const state = await getAnoLetivoState(db, escolaId, anoLetivo);
+      return res.json({
+        ok: true,
+        message: `🗑️ Horários do turno ${turnoNorm} removidos.`,
+        ...state,
+      });
+    }
+
+    const qtd = Number(quantidade_aulas);
+    if (!qtd || qtd < 1 || qtd > 15 || !Array.isArray(aulas) || aulas.length !== qtd) {
+      return res.status(400).json({
+        ok: false,
+        message: "Informe a quantidade de aulas (1 a 15) e o horário de início e término de cada aula.",
+      });
+    }
+
+    const aulasSanitizadas = [];
+    for (let i = 0; i < aulas.length; i++) {
+      const item = aulas[i] || {};
+      const ini = String(item.inicio || "").trim();
+      const fim = String(item.fim || "").trim();
+      if (!/^\d{2}:\d{2}$/.test(ini) || !/^\d{2}:\d{2}$/.test(fim)) {
+        return res.status(400).json({
+          ok: false,
+          message: `Preencha o horário de início e término da ${i + 1}ª aula no formato HH:MM.`,
+        });
+      }
+      if (ini >= fim) {
+        return res.status(400).json({
+          ok: false,
+          message: `Na ${i + 1}ª aula, o horário de início (${ini}) deve ser anterior ao término (${fim}).`,
+        });
+      }
+      aulasSanitizadas.push({
+        numero: i + 1,
+        inicio: ini,
+        fim: fim,
+      });
+    }
+
+    const userId = Number(req.user?.id || req.user?.usuario_id || req.headers["x-user-id"]) || 0;
+    const userNome = String(usuario_nome || req.user?.nome || "Direção").slice(0, 190);
+
+    await db.query(
+      `INSERT INTO governanca_ano_letivo_horarios
+       (escola_id, ano_letivo, turno, quantidade_aulas, aulas_json, atualizado_por_id, atualizado_por_nome)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         quantidade_aulas = VALUES(quantidade_aulas),
+         aulas_json = VALUES(aulas_json),
+         atualizado_por_id = VALUES(atualizado_por_id),
+         atualizado_por_nome = VALUES(atualizado_por_nome)`,
+      [escolaId, anoLetivo, turnoNorm, qtd, JSON.stringify(aulasSanitizadas), userId, userNome]
+    );
+
+    const labelTurno = turnoNorm.charAt(0).toUpperCase() + turnoNorm.slice(1);
+    const state = await getAnoLetivoState(db, escolaId, anoLetivo);
+    return res.json({
+      ok: true,
+      message: `✅ Horário das aulas do turno ${labelTurno} salvo com sucesso!`,
+      ...state,
+    });
+  } catch (err) {
+    console.error("[GOVERNANCA][ANO-LETIVO-HORARIO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar horário das aulas do turno." });
   }
 });
 
