@@ -1047,6 +1047,355 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
   }
 });
 
+// ────────────────────────────────────────────────
+// PROFESSORES + CHAMADA DIGITAL (Multi-Escola + Governança Ano Letivo)
+// Integração direta com:
+// - governanca_ano_letivo_periodos (datas de início e término de cada bimestre/semestre)
+// - governanca_ano_letivo_excecoes (feriados/recessos status_letivo=0 e sábados letivos status_letivo=1)
+// - governanca_ano_letivo_horarios (quantidade de aulas e horário início/fim por turno)
+// - professores_chamada_aulas (persistência das chamadas lançadas pelo professor)
+// ────────────────────────────────────────────────
+let _chamadaTableReady = false;
+async function ensureChamadaTable() {
+  if (_chamadaTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS professores_chamada_aulas (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      escola_id INT NOT NULL,
+      ano_letivo SMALLINT NOT NULL DEFAULT 2026,
+      bimestre VARCHAR(30) NOT NULL,
+      turma_id INT NOT NULL,
+      disciplina VARCHAR(150) NOT NULL,
+      data_aula DATE NOT NULL,
+      ordem_aula TINYINT NOT NULL DEFAULT 1,
+      horario_inicio VARCHAR(10) DEFAULT NULL,
+      horario_fim VARCHAR(10) DEFAULT NULL,
+      confirmada TINYINT(1) NOT NULL DEFAULT 1,
+      faltas_json JSON DEFAULT NULL,
+      professor_usuario_id INT DEFAULT NULL,
+      professor_nome VARCHAR(200) DEFAULT NULL,
+      atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_chamada_aula (escola_id, ano_letivo, turma_id, disciplina, data_aula, ordem_aula),
+      INDEX idx_chamada_contexto (escola_id, ano_letivo, turma_id, disciplina, bimestre)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  _chamadaTableReady = true;
+}
+
+async function carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo) {
+  let periodos = [];
+  let excecoes = [];
+  let horarios = [];
+
+  try {
+    const [pRows] = await pool.query(
+      `SELECT id, tipo, numero,
+              DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio,
+              DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim,
+              atualizado_por_nome,
+              DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+       FROM governanca_ano_letivo_periodos
+       WHERE escola_id = ? AND ano_letivo = ?
+       ORDER BY tipo ASC, numero ASC`,
+      [escolaId, anoLetivo]
+    );
+    periodos = pRows || [];
+  } catch (_) {}
+
+  try {
+    const [eRows] = await pool.query(
+      `SELECT id, tipo, numero,
+              DATE_FORMAT(data, '%Y-%m-%d') AS data,
+              status_letivo, motivo, usuario_nome,
+              DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+       FROM governanca_ano_letivo_excecoes
+       WHERE escola_id = ? AND ano_letivo = ?
+       ORDER BY data ASC`,
+      [escolaId, anoLetivo]
+    );
+    excecoes = eRows || [];
+  } catch (_) {}
+
+  try {
+    const [hRows] = await pool.query(
+      `SELECT id, turno, quantidade_aulas, aulas_json, atualizado_por_nome,
+              DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+       FROM governanca_ano_letivo_horarios
+       WHERE escola_id = ? AND ano_letivo = ?
+       ORDER BY turno ASC`,
+      [escolaId, anoLetivo]
+    );
+    horarios = (hRows || []).map((r) => {
+      let aulas = [];
+      try {
+        aulas = typeof r.aulas_json === "string" ? JSON.parse(r.aulas_json) : (r.aulas_json || []);
+      } catch {
+        aulas = [];
+      }
+      return {
+        id: r.id,
+        turno: r.turno,
+        quantidade_aulas: Number(r.quantidade_aulas) || aulas.length,
+        aulas: Array.isArray(aulas) ? aulas : [],
+        atualizado_por_nome: r.atualizado_por_nome,
+        atualizado_em_fmt: r.atualizado_em_fmt,
+      };
+    });
+  } catch (_) {}
+
+  return { periodos, excecoes, horarios };
+}
+
+function validarDataLetivaGovernanca(dataIso, bimestreStr, governanca) {
+  if (!dataIso || !/^\d{4}-\d{2}-\d{2}$/.test(dataIso)) {
+    return { valido: false, motivo: "Data inválida. Use o formato AAAA-MM-DD." };
+  }
+  const [y, m, d] = dataIso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = dt.getDay(); // 0=Dom, 1..5=Seg..Sex, 6=Sáb
+
+  if (dow === 0) {
+    return { valido: false, motivo: `Domingo (${dataIso}) não é dia letivo.` };
+  }
+
+  // Extrai o número do bimestre (1 a 4)
+  const matchBim = String(bimestreStr || "").match(/([1-4])/);
+  const numBim = matchBim ? Number(matchBim[1]) : null;
+
+  // 1) Verifica se há período configurado para o bimestre na Governança
+  if (numBim && Array.isArray(governanca?.periodos)) {
+    const per = governanca.periodos.find(
+      (p) => p.tipo === "bimestre" && Number(p.numero) === numBim && p.data_inicio && p.data_fim
+    );
+    if (per && (dataIso < per.data_inicio || dataIso > per.data_fim)) {
+      return {
+        valido: false,
+        motivo: `A data ${dataIso} está fora do período configurado pela Direção para o ${numBim}º Bimestre (${per.data_inicio} a ${per.data_fim}).`,
+      };
+    }
+  }
+
+  // 2) Verifica exceções do calendário escolar (feriados/recessos e sábados letivos)
+  const excecoesDaData = (governanca?.excecoes || []).filter((e) => e.data === dataIso);
+
+  if (dow >= 1 && dow <= 5) {
+    const excNaoLetivo = excecoesDaData.find((e) => Number(e.status_letivo) === 0);
+    if (excNaoLetivo) {
+      return {
+        valido: false,
+        motivo: `Dia Não-Letivo configurado pela Direção (${dataIso}): ${excNaoLetivo.motivo || "Feriado / Recesso"}.`,
+      };
+    }
+    return { valido: true, motivo: null };
+  }
+
+  if (dow === 6) {
+    const excSabLetivo = excecoesDaData.find((e) => Number(e.status_letivo) === 1);
+    if (!excSabLetivo) {
+      return {
+        valido: false,
+        motivo: `O sábado (${dataIso}) não está configurado como Sábado Letivo pela Direção.`,
+      };
+    }
+    return { valido: true, motivo: excSabLetivo.motivo || "Sábado Letivo" };
+  }
+
+  return { valido: true, motivo: null };
+}
+
+// GET /api/professores/me/chamada
+// Retorna a configuração do Ano Letivo da escola (períodos, exceções e horários por turno)
+// e, se turma_id + disciplina forem informados, retorna os registros de chamada salvos no banco.
+router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = Number(
+      req.escola_id ||
+        req.user?.escola_id ||
+        (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : 0)
+    );
+    if (!escolaId) {
+      return res.status(400).json({ ok: false, message: "escola_id não identificado." });
+    }
+
+    const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
+    await ensureChamadaTable();
+
+    const governanca = await carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo);
+
+    const turmaId = Number(req.query.turma_id || 0);
+    const disciplina = String(req.query.disciplina || "").trim();
+    const bimestre = String(req.query.bimestre || "").trim();
+
+    const registros = {};
+    if (turmaId > 0 && disciplina) {
+      let sql = `
+        SELECT id, bimestre, turma_id, disciplina,
+               DATE_FORMAT(data_aula, '%Y-%m-%d') AS data_aula,
+               ordem_aula, horario_inicio, horario_fim,
+               confirmada, faltas_json, professor_nome,
+               DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+        FROM professores_chamada_aulas
+        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND disciplina = ?
+      `;
+      const params = [escolaId, anoLetivo, turmaId, disciplina];
+      if (bimestre) {
+        sql += ` AND bimestre = ?`;
+        params.push(bimestre);
+      }
+      sql += ` ORDER BY data_aula ASC, ordem_aula ASC`;
+
+      const [rows] = await pool.query(sql, params);
+      for (const r of rows || []) {
+        let faltas = [];
+        try {
+          faltas =
+            typeof r.faltas_json === "string"
+              ? JSON.parse(r.faltas_json)
+              : Array.isArray(r.faltas_json)
+              ? r.faltas_json
+              : [];
+        } catch {
+          faltas = [];
+        }
+        const key = `${r.data_aula}#${Number(r.ordem_aula) || 1}`;
+        registros[key] = {
+          id: r.id,
+          data: r.data_aula,
+          ordem: Number(r.ordem_aula) || 1,
+          horario: r.horario_inicio || "07:30",
+          horario_fim: r.horario_fim || null,
+          confirmada: Boolean(Number(r.confirmada)),
+          faltas: Array.isArray(faltas) ? faltas : [],
+          bimestre: r.bimestre,
+          professor_nome: r.professor_nome,
+          atualizado_em_fmt: r.atualizado_em_fmt,
+        };
+      }
+    }
+
+    return res.json({
+      ok: true,
+      ano_letivo: anoLetivo,
+      governanca,
+      registros,
+    });
+  } catch (err) {
+    console.error("[PROFESSORES][ME/CHAMADA][GET]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao carregar dados da chamada." });
+  }
+});
+
+// POST /api/professores/me/chamada
+// Salva/atualiza uma ou mais aulas da chamada (incluindo aulas geminadas) após validar o calendário letivo da escola.
+router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = Number(
+      req.escola_id ||
+        req.user?.escola_id ||
+        (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : 0)
+    );
+    if (!escolaId) {
+      return res.status(400).json({ ok: false, message: "escola_id não identificado." });
+    }
+
+    const {
+      ano_letivo,
+      bimestre,
+      turma_id,
+      disciplina,
+      aulas,
+      ignorar_validacao_calendario,
+    } = req.body || {};
+
+    const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
+    const turmaId = Number(turma_id || 0);
+    const discNorm = String(disciplina || "").trim();
+    const bimNorm = String(bimestre || "1º Bimestre").trim();
+
+    if (!turmaId || !discNorm || !Array.isArray(aulas) || aulas.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Informe turma_id, disciplina e ao menos uma aula para registrar a chamada.",
+      });
+    }
+
+    await ensureChamadaTable();
+    const governanca = await carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo);
+
+    // Valida cada aula confirmada contra o calendário letivo da escola (Governança > Ano Letivo)
+    if (!ignorar_validacao_calendario) {
+      for (const a of aulas) {
+        if (a && a.confirmada) {
+          const check = validarDataLetivaGovernanca(a.data, bimNorm, governanca);
+          if (!check.valido) {
+            return res.status(400).json({
+              ok: false,
+              codigo: "DIA_NAO_LETIVO",
+              message: check.motivo,
+            });
+          }
+        }
+      }
+    }
+
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      null;
+    const profNome = req.user?.nome || req.body?.professor_nome || null;
+
+    for (const a of aulas) {
+      if (!a || !a.data) continue;
+      const ordem = Number(a.ordem) || 1;
+      const horarioIni = String(a.horario || "07:30").trim().slice(0, 10);
+      const horarioFim = a.horario_fim ? String(a.horario_fim).trim().slice(0, 10) : null;
+      const confirmada = a.confirmada ? 1 : 0;
+      const faltasArr = Array.isArray(a.faltas) ? a.faltas : [];
+
+      await pool.query(
+        `INSERT INTO professores_chamada_aulas
+          (escola_id, ano_letivo, bimestre, turma_id, disciplina, data_aula, ordem_aula,
+           horario_inicio, horario_fim, confirmada, faltas_json, professor_usuario_id, professor_nome)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           bimestre = VALUES(bimestre),
+           horario_inicio = VALUES(horario_inicio),
+           horario_fim = VALUES(horario_fim),
+           confirmada = VALUES(confirmada),
+           faltas_json = VALUES(faltas_json),
+           professor_usuario_id = VALUES(professor_usuario_id),
+           professor_nome = VALUES(professor_nome),
+           atualizado_em = CURRENT_TIMESTAMP`,
+        [
+          escolaId,
+          anoLetivo,
+          bimNorm,
+          turmaId,
+          discNorm,
+          a.data,
+          ordem,
+          horarioIni,
+          horarioFim,
+          confirmada,
+          JSON.stringify(faltasArr),
+          userId,
+          profNome,
+        ]
+      );
+    }
+
+    return res.json({
+      ok: true,
+      message: "Chamada sincronizada com sucesso.",
+    });
+  } catch (err) {
+    console.error("[PROFESSORES][ME/CHAMADA][POST]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar chamada no servidor." });
+  }
+});
+
 
 // ────────────────────────────────────────────────
 // GET: Foto do professor logado (para re-hidratar o header após novo login)
