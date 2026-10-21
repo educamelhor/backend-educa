@@ -302,17 +302,25 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria
+    // Busca o nome oficial da turma mapeado pela Secretaria (prioriza registro com nome_oficial preenchido e mais recente)
     const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial, regime FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      `SELECT nome_oficial, regime FROM turmas
+       WHERE nome = ? AND escola_id = ?
+       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC
+       LIMIT 1`,
       [plano.turmas, escolaId]
     );
     const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
     const regimeTurma = turmaDb?.regime || 'anual';
 
-    // Busca nome oficial da disciplina
+    // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
     const [[discDb]] = await db.query(
-      'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      `SELECT COALESCE(NULLIF(TRIM(d_ativa.nome_oficial), ''), NULLIF(TRIM(d.nome_oficial), '')) AS nome_oficial
+       FROM disciplinas d
+       LEFT JOIN disciplinas d_ativa ON d_ativa.id = d.mesclada_em
+       WHERE d.nome = ? AND d.escola_id = ?
+       ORDER BY (d.mesclada_em IS NULL) DESC, (TRIM(COALESCE(d.nome_oficial, '')) <> '') DESC, d.id DESC
+       LIMIT 1`,
       [plano.disciplina, escolaId]
     );
     const disciplinaOficial = discDb?.nome_oficial || null;
@@ -589,17 +597,25 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria
+    // Busca o nome oficial da turma mapeado pela Secretaria (prioriza registro com nome_oficial preenchido e mais recente)
     const [[turmaDb]] = await db.query(
-      'SELECT nome_oficial, regime FROM turmas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      `SELECT nome_oficial, regime FROM turmas
+       WHERE nome = ? AND escola_id = ?
+       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC
+       LIMIT 1`,
       [plano.turmas, escolaId]
     );
     const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
     const regimeTurma = turmaDb?.regime || 'anual';
 
-    // Busca nome oficial da disciplina
+    // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
     const [[discDb]] = await db.query(
-      'SELECT nome_oficial FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1',
+      `SELECT COALESCE(NULLIF(TRIM(d_ativa.nome_oficial), ''), NULLIF(TRIM(d.nome_oficial), '')) AS nome_oficial
+       FROM disciplinas d
+       LEFT JOIN disciplinas d_ativa ON d_ativa.id = d.mesclada_em
+       WHERE d.nome = ? AND d.escola_id = ?
+       ORDER BY (d.mesclada_em IS NULL) DESC, (TRIM(COALESCE(d.nome_oficial, '')) <> '') DESC, d.id DESC
+       LIMIT 1`,
       [plano.disciplina, escolaId]
     );
     const disciplinaOficial = discDb?.nome_oficial || null;

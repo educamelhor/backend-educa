@@ -171,6 +171,7 @@ router.get("/me", async (req, res) => {
     sql += ` ORDER BY disciplina, turmas`;
 
     const [planos] = await pool.query(sql, params);
+    await enriquecerPlanosComDisciplinaOficial(pool, escola_id, planos);
     return res.json({ ok: true, planos });
 
   } catch (err) {
@@ -178,6 +179,39 @@ router.get("/me", async (req, res) => {
     return res.status(500).json({ ok: false, error: "Erro interno." });
   }
 });
+
+/**
+ * Enriquecimento de planos com nome_oficial da disciplina configurado em Secretaria > Disciplinas.
+ * Prioriza disciplinas ativas (mesclada_em IS NULL) e com nome_oficial preenchido, ou herda da disciplina destino.
+ */
+async function enriquecerPlanosComDisciplinaOficial(pool, escolaId, planos) {
+  if (!Array.isArray(planos) || planos.length === 0 || !escolaId) return planos;
+  try {
+    const [discs] = await pool.query(
+      `SELECT d.nome,
+              COALESCE(NULLIF(TRIM(d_ativa.nome_oficial), ''), NULLIF(TRIM(d.nome_oficial), '')) AS nome_oficial
+       FROM disciplinas d
+       LEFT JOIN disciplinas d_ativa ON d_ativa.id = d.mesclada_em
+       WHERE d.escola_id = ?
+       ORDER BY (d.mesclada_em IS NULL) DESC, (TRIM(COALESCE(d.nome_oficial, '')) <> '') DESC, d.id DESC`,
+      [escolaId]
+    );
+    const mapOficial = new Map();
+    for (const row of discs) {
+      const key = String(row.nome || "").trim().toUpperCase();
+      if (key && !mapOficial.has(key) && row.nome_oficial) {
+        mapOficial.set(key, String(row.nome_oficial).trim());
+      }
+    }
+    for (const p of planos) {
+      const key = String(p.disciplina || "").trim().toUpperCase();
+      p.disciplina_oficial = mapOficial.get(key) || null;
+    }
+  } catch (err) {
+    console.warn("Aviso ao enriquecer disciplina_oficial nos planos:", err.message);
+  }
+  return planos;
+}
 
 /**
  * 1) GET /api/avaliacoes
@@ -211,6 +245,7 @@ router.get("/", async (req, res) => {
     }
 
     const [planos] = await pool.query(sql, params);
+    await enriquecerPlanosComDisciplinaOficial(pool, escola_id, planos);
     return res.json(planos);
   } catch (error) {
     console.error("Erro ao listar planos:", error);

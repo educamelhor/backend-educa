@@ -47,40 +47,83 @@ const DISCIPLINA_EDUCADF_MAP = {
   'PORTUGUES':                 'LÍNGUA PORTUGUESA',
   'PORTUGUÊS':                 'LÍNGUA PORTUGUESA',
   'LINGUA PORTUGUESA':         'LÍNGUA PORTUGUESA',
+  'LÍNGUA PORTUGUESA':         'LÍNGUA PORTUGUESA',
   'INGLES':                    'LEM/INGLÊS',
   'INGLÊS':                    'LEM/INGLÊS',
   'LEM INGLES':                'LEM/INGLÊS',
+  'LEM/INGLES':                'LEM/INGLÊS',
+  'LEM/INGLÊS':                'LEM/INGLÊS',
   'ESPANHOL':                  'LEM/ESPANHOL',
   'LEM ESPANHOL':              'LEM/ESPANHOL',
+  'LEM/ESPANHOL':              'LEM/ESPANHOL',
   'CIENCIAS':                  'CIÊNCIAS NATURAIS',
   'CIÊNCIAS':                  'CIÊNCIAS NATURAIS',
   'CIENCIAS NATURAIS':         'CIÊNCIAS NATURAIS',
+  'CIÊNCIAS NATURAIS':         'CIÊNCIAS NATURAIS',
   'ED FISICA':                 'EDUCAÇÃO FÍSICA',
   'ED. FISICA':                'EDUCAÇÃO FÍSICA',
   'EDUCACAO FISICA':           'EDUCAÇÃO FÍSICA',
   'EDUCAÇÃO FÍSICA':           'EDUCAÇÃO FÍSICA',
   // Parte Diversificada / Práticas Diversificadas (padrão universal SEEDF)
-  'PARTE DIVERSIFICADA I':     'PARTE DIVERSIFICADA I',
-  'PRATICA DIVERSIFICADA I':   'PARTE DIVERSIFICADA I',
-  'PRÁTICA DIVERSIFICADA I':   'PARTE DIVERSIFICADA I',
-  'PRATICAS DIVERSIFICADAS I': 'PARTE DIVERSIFICADA I',
-  'PRÁTICAS DIVERSIFICADAS I': 'PARTE DIVERSIFICADA I',
-  'PARTE DIVERSIFICADA 1':     'PARTE DIVERSIFICADA I',
-  'PARTE DIVERSIFICADA II':    'PARTE DIVERSIFICADA II',
-  'PRATICA DIVERSIFICADA II':  'PARTE DIVERSIFICADA II',
-  'PRÁTICA DIVERSIFICADA II':  'PARTE DIVERSIFICADA II',
+  'PARTE DIVERSIFICADA I':      'PARTE DIVERSIFICADA I',
+  'PRATICA DIVERSIFICADA I':    'PARTE DIVERSIFICADA I',
+  'PRÁTICA DIVERSIFICADA I':    'PARTE DIVERSIFICADA I',
+  'PRATICAS DIVERSIFICADAS I':  'PARTE DIVERSIFICADA I',
+  'PRÁTICAS DIVERSIFICADAS I':  'PARTE DIVERSIFICADA I',
+  'PARTE DIVERSIFICADA 1':      'PARTE DIVERSIFICADA I',
+  'PD1':                        'PARTE DIVERSIFICADA I',
+  'PD 1':                       'PARTE DIVERSIFICADA I',
+  'PD I':                       'PARTE DIVERSIFICADA I',
+  'PARTE DIVERSIFICADA II':     'PARTE DIVERSIFICADA II',
+  'PRATICA DIVERSIFICADA II':   'PARTE DIVERSIFICADA II',
+  'PRÁTICA DIVERSIFICADA II':   'PARTE DIVERSIFICADA II',
   'PRATICAS DIVERSIFICADAS II': 'PARTE DIVERSIFICADA II',
   'PRÁTICAS DIVERSIFICADAS II': 'PARTE DIVERSIFICADA II',
-  'PARTE DIVERSIFICADA 2':     'PARTE DIVERSIFICADA II',
-  'PARTE DIVERSIFICADA III':   'PARTE DIVERSIFICADA III',
-  'PRATICA DIVERSIFICADA III': 'PARTE DIVERSIFICADA III',
-  'PRÁTICA DIVERSIFICADA III': 'PARTE DIVERSIFICADA III',
-  'PRATICAS DIVERSIFICADAS III': 'PARTE DIVERSIFICADA III',
-  'PRÁTICAS DIVERSIFICADAS III': 'PARTE DIVERSIFICADA III',
-  'PARTE DIVERSIFICADA 3':     'PARTE DIVERSIFICADA III',
-  // Componentes com grafia idêntica mantidos iguais:
-  // ARTES, GEOGRAFIA, HISTÓRIA, MATEMÁTICA, ENSINO RELIGIOSO
+  'PARTE DIVERSIFICADA 2':      'PARTE DIVERSIFICADA II',
+  'PD2':                        'PARTE DIVERSIFICADA II',
+  'PD 2':                       'PARTE DIVERSIFICADA II',
+  'PD II':                      'PARTE DIVERSIFICADA II',
+  'PARTE DIVERSIFICADA III':    'PARTE DIVERSIFICADA III',
+  'PRATICA DIVERSIFICADA III':  'PARTE DIVERSIFICADA III',
+  'PRÁTICA DIVERSIFICADA III':  'PARTE DIVERSIFICADA III',
+  'PRATICAS DIVERSIFICADAS III':'PARTE DIVERSIFICADA III',
+  'PRÁTICAS DIVERSIFICADAS III':'PARTE DIVERSIFICADA III',
+  'PARTE DIVERSIFICADA 3':      'PARTE DIVERSIFICADA III',
+  'PD3':                        'PARTE DIVERSIFICADA III',
+  'PD 3':                       'PARTE DIVERSIFICADA III',
+  'PD III':                     'PARTE DIVERSIFICADA III',
+  // Demais componentes oficiais SEEDF (com e sem acento):
+  'MATEMATICA':                 'MATEMÁTICA',
+  'MATEMÁTICA':                 'MATEMÁTICA',
+  'HISTORIA':                   'HISTÓRIA',
+  'HISTÓRIA':                   'HISTÓRIA',
+  'GEOGRAFIA':                  'GEOGRAFIA',
+  'ARTES':                      'ARTES',
+  'ARTE':                       'ARTES',
+  'ENSINO RELIGIOSO':           'ENSINO RELIGIOSO',
+  'BIOLOGIA':                   'BIOLOGIA',
+  'FISICA':                     'FÍSICA',
+  'FÍSICA':                     'FÍSICA',
+  'QUIMICA':                    'QUÍMICA',
+  'QUÍMICA':                    'QUÍMICA',
+  'FILOSOFIA':                  'FILOSOFIA',
+  'SOCIOLOGIA':                 'SOCIOLOGIA',
 };
+
+/**
+ * Compara dois textos normalizados garantindo que algarismos romanos/ordinais
+ * (ex: PARTE DIVERSIFICADA I vs PARTE DIVERSIFICADA II vs III) não colidam por substring.
+ */
+function textosCorrespondemSeguros(aNorm, bNorm) {
+  if (!aNorm || !bNorm) return false;
+  if (aNorm.includes('NO ITEMS') || aNorm.includes('NENHUM ITEM')) return false;
+  if (aNorm === bNorm) return true;
+  const romanos = /\b(III|II|I|IV|V|1|2|3|4|5|6|7|8|9)\b/g;
+  const romA = (aNorm.match(romanos) || []).join(',');
+  const romB = (bNorm.match(romanos) || []).join(',');
+  if (romA && romB && romA !== romB) return false;
+  return aNorm.includes(bNorm) || bNorm.includes(aNorm);
+}
 
 /**
  * Converte o nome da disciplina do EDUCA.MELHOR → Componente EDUCADF.
@@ -362,10 +405,10 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
 
   const target = normalize(valor);
 
-  // Predicado de match — por padrão exato/contains, mas permite fuzzy externo
+  // Predicado de match — por padrão exato/contains seguro (protegido contra colisão I/II/III), mas permite fuzzy externo
   const isMatch = (t) => {
     const tn = normalize(t);
-    if (tn === target || tn.includes(target) || target.includes(tn)) return true;
+    if (textosCorrespondemSeguros(tn, target)) return true;
     if (fuzzyFn && fuzzyFn(t, valor)) return true;
     return false;
   };
@@ -540,7 +583,7 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
 async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyFn = null) {
   const norm = (s) => String(s || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ').toUpperCase().trim();
+    .replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').toUpperCase().trim();
   const valorNorm = norm(valor);
 
   // ── 1. Verifica se o botão da lombada existe ──────────────────────────
@@ -567,7 +610,7 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
   if (valorAtual && valorAtual !== 'Escolher') {
     const jaOk = fuzzyFn
       ? fuzzyFn(valorAtual, valor)
-      : (norm(valorAtual).includes(valorNorm) || valorNorm.includes(norm(valorAtual)));
+      : textosCorrespondemSeguros(norm(valorAtual), valorNorm);
     if (jaOk) {
       console.log(`[educadf.pap] ⚡ Lombada "${labelPart}" já pré-selecionada: "${valorAtual}"`);
       return true;
@@ -588,20 +631,39 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
   const ngSelect = await page.waitForSelector('ng-select', { timeout: 6000 }).catch(() => null);
 
   // ── 5. Função auxiliar: tenta clicar numa opção matching ─────────────
+  // Prioriza match exato antes de match parcial seguro (evitando colisão I / II / III)
   const encontrarEClicar = async () => {
     const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
+    const lidos = [];
     for (const opt of opts) {
       const txt = await opt.textContent().catch(() => '');
-      const txtNorm = norm(txt);
+      lidos.push({ opt, txt, txtNorm: norm(txt) });
+    }
+    // Passada 1: match exato
+    if (!fuzzyFn) {
+      for (const item of lidos) {
+        if (item.txtNorm === valorNorm) {
+          await item.opt.click();
+          await page.waitForTimeout(500);
+          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (exato) = "${item.txt.trim().substring(0, 60)}"`);
+          return true;
+        }
+      }
+    }
+    // Passada 2: match seguro ou fuzzyFn
+    for (const item of lidos) {
       const match = fuzzyFn
-        ? fuzzyFn(valor, txt)
-        : (txtNorm.includes(valorNorm) || valorNorm.includes(txtNorm));
+        ? fuzzyFn(valor, item.txt)
+        : textosCorrespondemSeguros(item.txtNorm, valorNorm);
       if (match) {
-        await opt.click();
+        await item.opt.click();
         await page.waitForTimeout(500);
-        console.log(`[educadf.pap] ✅ Lombada "${labelPart}" = "${txt.trim().substring(0, 60)}"`);
+        console.log(`[educadf.pap] ✅ Lombada "${labelPart}" = "${item.txt.trim().substring(0, 60)}"`);
         return true;
       }
+    }
+    if (lidos.length > 0) {
+      console.warn(`[educadf.pap]   Opções na lombada "${labelPart}": ${lidos.map(i => `"${i.txt.trim()}"`).join(' | ')}`);
     }
     return false;
   };
@@ -619,19 +681,9 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
     await page.waitForTimeout(1500);
 
     if (await encontrarEClicar()) return true;
-
-    // Fallback: primeira opção disponível
-    const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
-    if (opts.length > 0) {
-      const firstTxt = await opts[0].textContent().catch(() => '');
-      await opts[0].click();
-      console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" fallback → "${firstTxt.trim().substring(0, 50)}"`);
-      await page.waitForTimeout(500);
-      return true;
-    }
   }
 
-  // ── 8. Falhou — fecha o seletor ───────────────────────────────────────
+  // ── 8. Falhou — fecha o seletor (NÃO clica cegamente na 1ª opção para evitar disciplina/turma errada) ──
   await page.keyboard.press('Escape').catch(() => {});
   console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" = "${valor}" NÃO encontrada`);
   return false;
@@ -1815,8 +1867,67 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       await session.delay(500);
       await removerBackdrops(page);
 
-      // PASSO 8: Tenta clicar em QUALQUER evento do calendário no mês
-      // Estratégia 1: Playwright — primeiro fc-event que não seja legenda
+      // PASSO 8: Clicar em evento do calendário no mês (priorizando Turma + Componente)
+      const normCalP = s => String(s || '').toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      const turmaTknsP = normCalP(plano.turmas).split(' ').filter(t => t.length > 0);
+      const compNormP  = normCalP(componenteEducaDF);
+      const compTknsP  = compNormP.split(' ').filter(t => t.length > 1);
+      const romanosReP = /\b(III|II|I|IV|V)\b/g;
+      const romCompP   = (compNormP.match(romanosReP) || []).join(',');
+
+      const matchCompP = (txt) => {
+        const n = normCalP(txt);
+        if (!n || !compNormP) return false;
+        const romEv = (n.match(romanosReP) || []).join(',');
+        if (romCompP && romEv && romCompP !== romEv) return false;
+        if (n.includes(compNormP)) return true;
+        return compTknsP.length > 0 && compTknsP.every(c => n.includes(c));
+      };
+      const okTurmaCompP = (txt) => {
+        const n = normCalP(txt);
+        return turmaTknsP.every(t => n.includes(t)) && matchCompP(txt);
+      };
+      const okSoTurmaP = (txt) => {
+        const n = normCalP(txt);
+        return turmaTknsP.every(t => n.includes(t));
+      };
+
+      const fcEvsP = page.locator('a.fc-event:not(.external-event), .fc-event:not(.external-event) a, .fc-daygrid-event:not(.external-event)');
+      const totalEvsP = await fcEvsP.count().catch(() => 0);
+
+      // Tentativa 1A: Evento com Turma + Componente
+      for (let i = 0; i < totalEvsP && !eventoClicado; i++) {
+        const ev  = fcEvsP.nth(i);
+        const txt = (await ev.textContent().catch(() => '')) || '';
+        if (!okTurmaCompP(txt)) continue;
+        try {
+          await ev.scrollIntoViewIfNeeded().catch(() => {});
+          await aguardarSemOverlay(page, 'pre-click-evento');
+          await ev.click({ timeout: 5000 });
+          eventoClicado = true;
+          console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado (mês ${mesTentativa}): "${txt.trim().substring(0, 60)}"`);
+        } catch {}
+      }
+
+      // Tentativa 1B: Evento com Componente ou Turma
+      if (!eventoClicado) {
+        for (let i = 0; i < totalEvsP && !eventoClicado; i++) {
+          const ev  = fcEvsP.nth(i);
+          const txt = (await ev.textContent().catch(() => '')) || '';
+          if (!matchCompP(txt) && !okSoTurmaP(txt)) continue;
+          try {
+            await ev.scrollIntoViewIfNeeded().catch(() => {});
+            await aguardarSemOverlay(page, 'pre-click-evento');
+            await ev.click({ timeout: 5000 });
+            eventoClicado = true;
+            console.log(`[educadf.pap] ✅ Evento [comp/turma] clicado (mês ${mesTentativa}): "${txt.trim().substring(0, 60)}"`);
+          } catch {}
+        }
+      }
+
+      // Tentativa 2: Playwright — primeiro fc-event que não seja legenda
       for (const sel of FC_SELETORES) {
         if (eventoClicado) break;
         try {
@@ -1831,7 +1942,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         } catch (err) {}
       }
 
-      // Estratégia 2: JS fallback — clica primeiro evento visível (exclui legenda)
+      // Estratégia 3: JS fallback — clica primeiro evento visível (exclui legenda)
       if (!eventoClicado) {
         const jsResult = await page.evaluate(() => {
           const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
@@ -2642,10 +2753,19 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       : (candidatosBaseN.length ? candidatosBaseN : [8]);
 
     const compNorm  = normStr(mapearDisciplina(plano.disciplina, plano.disciplinaOficial));
-    const compTkns  = compNorm.split(' ').filter(t => t.length > 2);
+    const compTkns  = compNorm.split(' ').filter(t => t.length > 1);
+    const romanosRe = /\b(III|II|I|IV|V)\b/g;
+    const romComp   = (compNorm.match(romanosRe) || []).join(',');
     const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
 
-    const okTurmaComp  = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)) && compTkns.some(c => n.includes(c)); };
+    const okTurmaComp  = txt => {
+      const n = normStr(txt);
+      if (!turmaTkns.every(t => n.includes(t))) return false;
+      const romEv = (n.match(romanosRe) || []).join(',');
+      if (romComp && romEv && romComp !== romEv) return false;
+      if (n.includes(compNorm)) return true;
+      return compTkns.length > 0 && compTkns.every(c => n.includes(c));
+    };
     const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
 
     let eventoClicado = false;
