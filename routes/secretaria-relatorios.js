@@ -350,9 +350,10 @@ router.get('/acompanhamento-notas', async (req, res) => {
     // Dispara reconciliação de notas x modulação de forma não-bloqueante
     reconciliarNotasComModulacao(pool, escola_id).catch(() => {});
 
-    // 1. Modulação com filtros
+    // 1. Modulação com filtros (respeitando semestralidade: 1º/2º Bim -> semestre 0/1; 3º/4º Bim -> semestre 0/2)
+    const semestreAlvo = bimEfetivo <= 2 ? 1 : 2;
     let extraFilter = '';
-    const paramsMod = [escola_id, anoEfetivo];
+    const paramsMod = [escola_id, anoEfetivo, semestreAlvo];
 
     if (turno && turno !== 'todos') {
       extraFilter += ' AND UPPER(t.turno) = UPPER(?)';
@@ -368,7 +369,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
     }
 
     const sqlMod = `
-      SELECT 
+      SELECT DISTINCT
         p.id AS professor_id,
         p.nome AS professor_nome,
         t.id AS turma_id,
@@ -384,6 +385,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
       JOIN disciplinas d ON d.id = m.disciplina_id
       WHERE p.escola_id = ?
         AND t.ano = ?
+        AND (m.semestre IS NULL OR m.semestre = 0 OR m.semestre = ?)
         ${extraFilter}
       ORDER BY p.nome, t.nome, d.nome
     `;
