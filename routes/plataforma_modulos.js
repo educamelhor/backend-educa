@@ -91,6 +91,8 @@ const MODULOS_VALIDOS = new Set([
   'comunicacao', 'comunicacao.avisos', 'comunicacao.comunicados', 'comunicacao.mural',
   // Sala de Recursos (AEE)
   'sala_recurso', 'sala_recurso.alunos', 'sala_recurso.adequacoes', 'sala_recurso.impressao', 'sala_recurso.pdi', 'sala_recurso.atendimentos',
+  // Administrativo
+  'administrativo', 'administrativo.servidores', 'administrativo.frequencia', 'administrativo.ocorrencias', 'administrativo.relatorios',
 ]);
 
 /**
