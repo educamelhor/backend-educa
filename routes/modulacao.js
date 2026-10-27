@@ -109,7 +109,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
     const s = it.semestre != null ? Number(it.semestre) : null;
 
     if (s != null) {
-      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=? AND (m.semestre=? OR m.semestre=0 OR m.semestre IS NULL))");
+      conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=? AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR m.semestre=? OR m.semestre=0 OR m.semestre IS NULL))");
       params.push(p, t, d, s);
     } else {
       conds.push("(m.professor_id=? AND m.turma_id=? AND m.disciplina_id=?)");
@@ -125,6 +125,7 @@ router.post("/remover", verificarEscola, async (req, res) => {
       const selectAuditSql = `
         SELECT m.id, m.escola_id, m.professor_id, m.turma_id, m.disciplina_id, m.semestre, m.aulas
         FROM modulacao m
+        LEFT JOIN turmas t ON t.id = m.turma_id
         WHERE m.escola_id = ? AND (${condSql})
       `;
       const [paraRemover] = await pool.query(selectAuditSql, [escola_id, ...params]);
@@ -163,9 +164,11 @@ router.post("/remover", verificarEscola, async (req, res) => {
       const [result] = await pool.query(sql, [escola_id, turno, ...params]);
       return res.json({ ok: true, removidos: result.affectedRows || 0 });
     } else {
-      // Sem turno: remove direto da modulacao
+      // Sem turno: remove com LEFT JOIN em turmas para avaliar t.regime
       const sql = `
-        DELETE m FROM modulacao m
+        DELETE m
+          FROM modulacao m
+          LEFT JOIN turmas t ON t.id = m.turma_id
          WHERE m.escola_id = ?
            AND (${condSql})
       `;
@@ -200,7 +203,7 @@ router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
     let semClause = "";
     const extraParams = [];
     if (semestre) {
-      semClause = " AND (m.semestre = ? OR m.semestre = 0 OR m.semestre IS NULL)";
+      semClause = " AND (LOWER(COALESCE(t2.regime, 'anual')) <> 'semestral' OR m.semestre = ? OR m.semestre = 0 OR m.semestre IS NULL)";
       extraParams.push(semestre);
     }
 
@@ -221,9 +224,11 @@ router.delete("/:prof/:turma/:disc", verificarEscola, async (req, res) => {
       return res.status(204).end();
     }
 
-    // Sem turno: remove direto da modulacao
+    // Sem turno: remove com LEFT JOIN em turmas para avaliar t2.regime
     const sql = `
-      DELETE FROM modulacao m
+      DELETE m
+        FROM modulacao m
+        LEFT JOIN turmas t2 ON t2.id = m.turma_id
        WHERE m.escola_id = ?
          AND m.professor_id = ?
          AND m.turma_id = ?

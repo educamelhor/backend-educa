@@ -449,7 +449,7 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
          LEFT JOIN turmas t ON t.id = mo.turma_id
          WHERE u.id = ?
            AND mo.escola_id = ?
-           AND (t.regime = 'anual' OR mo.semestre = ?)`,
+           AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR mo.semestre IS NULL OR mo.semestre = 0 OR mo.semestre = ?)`,
         [turmaId, usuario_id, escola_id, semestreBim]
       );
       discsProfessor = new Set(discProfRows.map(r => r.disciplina_id));
@@ -605,7 +605,7 @@ router.post("/mapa-nota/flag", verificarEscola, async (req, res) => {
                AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
                AND mo.turma_id = ?
                AND mo.disciplina_id = ?
-               AND (t.regime = 'anual' OR mo.semestre = ?)
+               AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR mo.semestre IS NULL OR mo.semestre = 0 OR mo.semestre = ?)
              LIMIT 1`,
             [escola_id, cpfLimpo, turma_id, disciplina_id, semestreBim]
           );

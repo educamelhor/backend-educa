@@ -350,10 +350,18 @@ router.get('/acompanhamento-notas', async (req, res) => {
     // Dispara reconciliação de notas x modulação de forma não-bloqueante
     reconciliarNotasComModulacao(pool, escola_id).catch(() => {});
 
-    // 1. Modulação com filtros (respeitando semestralidade: 1º/2º Bim -> semestre 0/1; 3º/4º Bim -> semestre 0/2)
+    // 1. Modulação com filtros (respeitando regime anual/semestral: 1º/2º Bim -> semestre 1; 3º/4º Bim -> semestre 2)
     const semestreAlvo = bimEfetivo <= 2 ? 1 : 2;
     let extraFilter = '';
-    const paramsMod = [escola_id, anoEfetivo, semestreAlvo];
+    const paramsMod = [
+      escola_id,
+      escola_id,
+      anoEfetivo,
+      semestreAlvo,
+      semestreAlvo,
+      semestreAlvo,
+      semestreAlvo,
+    ];
 
     if (turno && turno !== 'todos') {
       extraFilter += ' AND UPPER(t.turno) = UPPER(?)';
@@ -383,16 +391,108 @@ router.get('/acompanhamento-notas', async (req, res) => {
       JOIN professores p ON p.id = m.professor_id
       JOIN turmas t ON t.id = m.turma_id
       JOIN disciplinas d ON d.id = m.disciplina_id
-      WHERE p.escola_id = ?
+      WHERE m.escola_id = ?
+        AND p.escola_id = ?
         AND t.ano = ?
-        AND (m.semestre IS NULL OR m.semestre = 0 OR m.semestre = ?)
+        AND (
+          LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+          OR m.semestre IS NULL
+          OR m.semestre = 0
+          OR m.semestre = ?
+          OR (
+            NOT EXISTS (
+              SELECT 1 FROM modulacao m2
+              WHERE m2.escola_id = m.escola_id
+                AND m2.turma_id = m.turma_id
+                AND m2.disciplina_id = m.disciplina_id
+                AND m2.semestre = ?
+            )
+            AND EXISTS (
+              SELECT 1 FROM professor_vinculos pv0
+              WHERE pv0.professor_id = p.id
+                AND pv0.disciplina_id = m.disciplina_id
+                AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                AND pv0.escola_id = p.escola_id
+                AND (pv0.semestre = 0 OR pv0.semestre IS NULL)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM professor_vinculos pvs
+              WHERE pvs.professor_id = p.id
+                AND pvs.disciplina_id = m.disciplina_id
+                AND LOWER(pvs.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                AND pvs.escola_id = p.escola_id
+                AND pvs.semestre IN (1, 2)
+            )
+            AND (
+              EXISTS (
+                SELECT 1 FROM turma_cargas tc
+                WHERE tc.escola_id = m.escola_id
+                  AND tc.turma_id = m.turma_id
+                  AND tc.disciplina_id = m.disciplina_id
+                  AND tc.semestre = ?
+              )
+              OR NOT EXISTS (
+                SELECT 1 FROM turma_cargas tc_any
+                WHERE tc_any.escola_id = m.escola_id
+                  AND tc_any.turma_id = m.turma_id
+                  AND tc_any.semestre = ?
+              )
+            )
+          )
+        )
         ${extraFilter}
       ORDER BY p.nome, t.nome, d.nome
     `;
 
     const [modRows] = await pool.query(sqlMod, paramsMod);
 
-    if (modRows.length === 0) {
+    // 1b. Modulação de Turmas de Agrupamento (Eletivas, Nivelamento, Agrupamentos)
+    let agrupModRows = [];
+    if (!turma_id || turma_id === 'todas') {
+      try {
+        let extraFilterAgrup = '';
+        const paramsAgrup = [escola_id, escola_id, anoEfetivo, semestreAlvo];
+        if (turno && turno !== 'todos') {
+          extraFilterAgrup += ' AND UPPER(g.turno) = UPPER(?)';
+          paramsAgrup.push(turno);
+        }
+        if (disciplina_id && disciplina_id !== 'todas') {
+          extraFilterAgrup += ' AND d.id = ?';
+          paramsAgrup.push(Number(disciplina_id));
+        }
+
+        const [agRows] = await pool.query(
+          `SELECT DISTINCT
+             p.id AS professor_id,
+             p.nome AS professor_nome,
+             g.id AS agrupamento_id,
+             g.nome AS turma_nome,
+             g.turno AS turno,
+             g.origem_disciplina_legada_id,
+             d.id AS disciplina_id,
+             d.nome AS disciplina_nome,
+             d.nome_oficial AS disciplina_nome_oficial,
+             d.abreviatura AS disciplina_abreviatura
+           FROM agrupamento_modulacao am
+           JOIN agrupamentos g ON g.id = am.agrupamento_id
+           JOIN professores p ON p.id = am.professor_id
+           JOIN disciplinas d ON d.id = am.disciplina_id
+           WHERE am.escola_id = ?
+             AND g.escola_id = ?
+             AND g.ano_letivo = ?
+             AND g.status <> 'ENCERRADO'
+             AND (g.semestre IS NULL OR g.semestre = 0 OR g.semestre = ?)
+             ${extraFilterAgrup}
+           ORDER BY p.nome, g.nome, d.nome`,
+          paramsAgrup
+        );
+        agrupModRows = agRows || [];
+      } catch (_) {
+        // Tabela agrupamento_modulacao pode não existir ainda em ambientes legados
+      }
+    }
+
+    if (modRows.length === 0 && agrupModRows.length === 0) {
       return res.json({
         ano_letivo: anoEfetivo,
         bimestre: bimEfetivo,
@@ -444,13 +544,21 @@ router.get('/acompanhamento-notas', async (req, res) => {
     );
 
     // Mapa: "turmaId_discId" -> Set de aluno_ids
+    // E mapa por disciplina: "discId" -> Set de aluno_ids (usado para agrupamentos multi-turma)
     const notasMap = new Map();
+    const notasPorDiscMap = new Map();
     for (const n of notasLancadasRows) {
       const key = `${n.turma_id}_${n.disciplina_id}`;
       if (!notasMap.has(key)) {
         notasMap.set(key, new Set());
       }
       notasMap.get(key).add(n.aluno_id);
+
+      const dId = Number(n.disciplina_id);
+      if (!notasPorDiscMap.has(dId)) {
+        notasPorDiscMap.set(dId, new Set());
+      }
+      notasPorDiscMap.get(dId).add(Number(n.aluno_id));
     }
 
     // Cache de IDs equivalentes por disciplina_id para evitar recomputar
@@ -499,6 +607,82 @@ router.get('/acompanhamento-notas', async (req, res) => {
       };
     });
 
+    // 5b. Anexar Turmas de Agrupamento (se houver)
+    if (agrupModRows.length > 0) {
+      try {
+        const [agAlunosRows] = await pool.query(
+          `SELECT aa.agrupamento_id, aa.aluno_id
+           FROM agrupamento_alunos aa
+           JOIN alunos a ON a.id = aa.aluno_id
+           WHERE aa.escola_id = ?
+             AND (aa.status = 'ATIVO' OR aa.status IS NULL)
+             AND (a.status = 'ativo' OR a.status IS NULL)`,
+          [escola_id]
+        );
+        const alunosPorAgrupMap = new Map();
+        for (const r of agAlunosRows) {
+          const agId = Number(r.agrupamento_id);
+          if (!alunosPorAgrupMap.has(agId)) {
+            alunosPorAgrupMap.set(agId, new Set());
+          }
+          alunosPorAgrupMap.get(agId).add(Number(r.aluno_id));
+        }
+
+        for (const row of agrupModRows) {
+          const agId = Number(row.agrupamento_id);
+          const discId = Number(row.disciplina_id);
+
+          if (!equivalenciasMap.has(discId)) {
+            const targetDisc = {
+              id: discId,
+              nome: row.disciplina_nome,
+              nome_oficial: row.disciplina_nome_oficial,
+              abreviatura: row.disciplina_abreviatura
+            };
+            const eqIds = resolverIdsEquivalentes(targetDisc, todasDiscs);
+            equivalenciasMap.set(discId, eqIds);
+          }
+
+          const eqIds = [...(equivalenciasMap.get(discId) || [discId])];
+          if (row.origem_disciplina_legada_id && !eqIds.includes(Number(row.origem_disciplina_legada_id))) {
+            eqIds.push(Number(row.origem_disciplina_legada_id));
+          }
+
+          const alunosDoAgrup = alunosPorAgrupMap.get(agId) || new Set();
+          const alunosComNotaSet = new Set();
+          for (const aId of alunosDoAgrup) {
+            for (const eqId of eqIds) {
+              if (notasPorDiscMap.get(Number(eqId))?.has(aId)) {
+                alunosComNotaSet.add(aId);
+                break;
+              }
+            }
+          }
+
+          dados.push({
+            professor_id: row.professor_id,
+            professor_nome: row.professor_nome,
+            turma_id: agId,
+            turma_nome: row.turma_nome,
+            turno: row.turno,
+            disciplina_id: row.disciplina_id,
+            disciplina_nome: row.disciplina_nome,
+            total_alunos: alunosDoAgrup.size,
+            alunos_com_nota: alunosComNotaSet.size,
+            is_agrupamento: true
+          });
+        }
+
+        dados.sort((a, b) =>
+          String(a.professor_nome || '').localeCompare(String(b.professor_nome || ''), 'pt-BR') ||
+          String(a.turma_nome || '').localeCompare(String(b.turma_nome || ''), 'pt-BR') ||
+          String(a.disciplina_nome || '').localeCompare(String(b.disciplina_nome || ''), 'pt-BR')
+        );
+      } catch (agErr) {
+        console.warn('[relatorios] Aviso ao processar agrupamentos no acompanhamento-notas:', agErr.message);
+      }
+    }
+
     return res.json({
       ano_letivo: anoEfetivo,
       bimestre: bimEfetivo,
@@ -516,7 +700,7 @@ router.get('/acompanhamento-notas', async (req, res) => {
 router.get('/acompanhamento-notas/alunos', async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { turma_id, disciplina_id, bimestre, ano_letivo } = req.query;
+    const { turma_id, disciplina_id, bimestre, ano_letivo, is_agrupamento } = req.query;
 
     if (!turma_id || !disciplina_id || !bimestre) {
       return res.status(400).json({ message: "turma_id, disciplina_id e bimestre são obrigatórios." });
@@ -524,6 +708,7 @@ router.get('/acompanhamento-notas/alunos', async (req, res) => {
 
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
     const bimNum = Number(bimestre);
+    const isAgrup = Number(is_agrupamento) === 1 || is_agrupamento === 'true';
 
     // 1. Resolver todos os IDs equivalentes da disciplina na escola
     const [[targetDisc]] = await pool.query(
@@ -540,7 +725,51 @@ router.get('/acompanhamento-notas/alunos', async (req, res) => {
       equivalentDiscIds = resolverIdsEquivalentes(targetDisc, allDiscs);
     }
 
-    // 2. Query dos alunos e notas com tolerância multi-ID
+    if (isAgrup) {
+      try {
+        const [[agRow]] = await pool.query(
+          "SELECT origem_disciplina_legada_id FROM agrupamentos WHERE id = ? AND escola_id = ? LIMIT 1",
+          [Number(turma_id), escola_id]
+        );
+        if (agRow?.origem_disciplina_legada_id && !equivalentDiscIds.includes(Number(agRow.origem_disciplina_legada_id))) {
+          equivalentDiscIds.push(Number(agRow.origem_disciplina_legada_id));
+        }
+      } catch (_) {}
+
+      const sqlAgrup = `
+        SELECT
+          a.id AS aluno_id,
+          a.estudante AS nome,
+          a.codigo AS matricula,
+          a.foto,
+          MAX(n.nota) AS nota,
+          MAX(n.faltas) AS faltas
+        FROM agrupamento_alunos aa
+        JOIN alunos a ON a.id = aa.aluno_id
+        LEFT JOIN notas n ON n.aluno_id = a.id
+          AND n.disciplina_id IN (?)
+          AND n.bimestre = ?
+          AND n.ano = ?
+          AND n.escola_id = ?
+        WHERE aa.agrupamento_id = ?
+          AND aa.escola_id = ?
+          AND (aa.status = 'ATIVO' OR aa.status IS NULL)
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        GROUP BY a.id, a.estudante, a.codigo, a.foto
+        ORDER BY a.estudante
+      `;
+      const [rowsAgrup] = await pool.query(sqlAgrup, [
+        equivalentDiscIds,
+        bimNum,
+        anoEfetivo,
+        escola_id,
+        Number(turma_id),
+        escola_id
+      ]);
+      return res.json(rowsAgrup);
+    }
+
+    // 2. Query dos alunos e notas com tolerância multi-ID (Turmas Regulares)
     const sql = `
       SELECT
         a.id AS aluno_id,
