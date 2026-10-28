@@ -5,7 +5,7 @@
 
 import express from 'express';
 import pool from '../db.js';
-import { resolverIdsEquivalentes, reconciliarNotasComModulacao } from '../utils/disciplinasHelper.js';
+import { resolverIdsEquivalentes, reconciliarNotasComModulacao, sincronizarDiarioParaBoletim } from '../utils/disciplinasHelper.js';
 
 const router = express.Router();
 
@@ -347,8 +347,13 @@ router.get('/acompanhamento-notas', async (req, res) => {
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
     const bimEfetivo = bimestre ? Number(bimestre) : 1;
 
-    // Dispara reconciliação de notas x modulação de forma não-bloqueante
+    // Dispara reconciliação de notas x modulação de forma não-bloqueante e sincroniza notas completas do Diário para o Boletim
     reconciliarNotasComModulacao(pool, escola_id).catch(() => {});
+    await sincronizarDiarioParaBoletim(pool, escola_id, {
+      ano: anoEfetivo,
+      turma_id: (turma_id && turma_id !== 'todas') ? Number(turma_id) : undefined,
+      bimestre: bimEfetivo,
+    }).catch(() => {});
 
     // 1. Modulação com filtros (respeitando regime anual/semestral: 1º/2º Bim -> semestre 1; 3º/4º Bim -> semestre 2)
     const semestreAlvo = bimEfetivo <= 2 ? 1 : 2;
@@ -709,6 +714,14 @@ router.get('/acompanhamento-notas/alunos', async (req, res) => {
     const anoEfetivo = ano_letivo ? Number(ano_letivo) : anoLetivoPadrao();
     const bimNum = Number(bimestre);
     const isAgrup = Number(is_agrupamento) === 1 || is_agrupamento === 'true';
+
+    if (!isAgrup) {
+      await sincronizarDiarioParaBoletim(pool, escola_id, {
+        ano: anoEfetivo,
+        turma_id: Number(turma_id),
+        bimestre: bimNum,
+      }).catch(() => {});
+    }
 
     // 1. Resolver todos os IDs equivalentes da disciplina na escola
     const [[targetDisc]] = await pool.query(

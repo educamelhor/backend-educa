@@ -6,7 +6,7 @@
 import { Router } from "express";
 import multer from "multer";
 import pool from "../db.js";
-import { resolverDisciplina, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import { resolverDisciplina, reconciliarNotasComModulacao, sincronizarDiarioParaBoletim } from "../utils/disciplinasHelper.js";
 import { extrairPaginasPdf, segmentarAlunos, extrairTabelaAluno } from "../utils/boletimEducadfParser.js";
 
 const router = Router();
@@ -28,15 +28,22 @@ function verificarEscola(req, res, next) {
  * Regras (o EDUCADF é a fonte oficial e prevalece):
  *  - Célula com nota        → UPSERT da nota (+ faltas, se "Lançar Faltas" estiver ligado;
  *                             desligado → faltas já existentes são PRESERVADAS).
- *  - Célula SEM nota        → a nota existente no sistema é APAGADA.
+ *  - Célula SEM nota        → a nota existente no sistema é APAGADA, EXCETO quando:
+ *                             (a) o aluno foi transferido para outra turma e este PDF é da turma antiga
+ *                                 (`preservarSeVazio = true`), pois no EDUCADF a turma antiga mantém as
+ *                                 colunas dos bimestres seguintes em branco.
  *                             Se "Lançar Faltas" estiver ligado e o PDF tiver faltas sem nota,
  *                             e a coluna `nota` aceitar NULL, grava nota nula + faltas.
  */
-async function gravarCelula(conn, { escola_id, alunoId, ano, bim, discId, cel, faltasActive, notaNullable }) {
+async function gravarCelula(conn, { escola_id, alunoId, ano, bim, discId, cel, faltasActive, notaNullable, preservarSeVazio }) {
   const temNota = cel.nota !== null;
   const temFaltas = cel.faltas !== null;
 
   if (!temNota) {
+    if (preservarSeVazio) {
+      return { acao: "preservado" };
+    }
+
     // Faltas sem nota (somente quando é possível guardar nota nula)
     if (notaNullable && faltasActive && temFaltas) {
       const [r] = await conn.query(
@@ -91,20 +98,6 @@ async function gravarCelula(conn, { escola_id, alunoId, ano, bim, discId, cel, f
 /**
  * POST /api/secretaria/agente/importar-boletim
  * Ingestão real e análise de múltiplos PDFs de boletins padrão SEEDF.
- *
- * Parser v3 — LEITURA POR COORDENADAS (utils/boletimEducadfParser.js):
- *   1. Cada número é atribuído ao bimestre pela sua POSIÇÃO horizontal no PDF
- *      (âncoras: cabeçalhos "M/C/N" e "Faltas"). Célula vazia fica vazia.
- *      Antes, os "pares nota/falta" eram pegos por índice e, quando o 1º
- *      bimestre estava vazio, a nota do 2º era gravada como 1º (e vice-versa).
- *   2. Estudantes são segmentados pelo cabeçalho "Nome do(a) Estudante:"
- *      (não depende de "2 páginas por aluno").
- *   3. Linhas com anomalia (valor fora de coluna, tipo incompatível, célula
- *      duplicada, nota fora de 0–10) NÃO são importadas e são avisadas no log.
- *   4. Bimestre vazio no PDF → nota existente no sistema é removida (EDUCADF prevalece).
- *   5. "Lançar Faltas" desligado → faltas já existentes são preservadas.
- *   6. Fundamental: só a tabela principal (blocos seguintes repetem "zeros").
- *      Médio: todas as tabelas (FGB + Itinerários), com conceitos EP/ES/ER/EI/SE.
  */
 router.post("/importar-boletim", verificarEscola, upload.array("files"), async (req, res) => {
   const { escola_id } = req.user;
@@ -192,6 +185,46 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
       logs.push(`🏷️ [Agente] Etapa detectada no arquivo: ${etapaArquivo === "MEDIO" ? "ENSINO MÉDIO" : "ENSINO FUNDAMENTAL"}`);
       logs.push("📐 [Agente] Leitura por posição das colunas: cada nota é atribuída ao bimestre pela coluna em que está no PDF.");
 
+      // ── Pré-resolução dos estudantes do arquivo para identificar a turma predominante do PDF ──
+      // Quando um aluno muda de turma (ex.: do Diurno para o Noturno), o PDF da turma antiga no EDUCADF
+      // continua listando o aluno com os bimestres seguintes em branco. Identificar a turma predominante
+      // do PDF impede que células vazias da turma antiga apaguem as notas já lançadas na turma atual!
+      const dbAlunoPorRe = new Map();
+      const contagemTurmasPdf = new Map();
+      for (const al of alunosPdf) {
+        if (!al.re) continue;
+        const [dbAlunos] = await conn.query(`
+          SELECT a.id, a.estudante, COALESCE(m.turma_id, a.turma_id) AS turma_id
+          FROM alunos a
+          LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'
+          WHERE a.codigo = ? AND a.escola_id = ? AND (a.status = 'ativo' OR a.status IS NULL)
+          LIMIT 1
+        `, [anoNum, escola_id, al.re, escola_id]);
+        if (dbAlunos.length > 0) {
+          const dbA = dbAlunos[0];
+          dbAlunoPorRe.set(String(al.re), dbA);
+          if (dbA.turma_id) {
+            const tId = Number(dbA.turma_id);
+            contagemTurmasPdf.set(tId, (contagemTurmasPdf.get(tId) || 0) + 1);
+          }
+        }
+      }
+
+      let turmaPredominanteId = null;
+      let maxTurmaCount = 0;
+      let totalComTurma = 0;
+      for (const [tId, cnt] of contagemTurmasPdf.entries()) {
+        totalComTurma += cnt;
+        if (cnt > maxTurmaCount) {
+          maxTurmaCount = cnt;
+          turmaPredominanteId = tId;
+        }
+      }
+      // Só considera turma predominante se houver pelo menos 3 alunos nessa turma e >= 50% do arquivo
+      if (maxTurmaCount < 3 || maxTurmaCount / Math.max(1, totalComTurma) < 0.5) {
+        turmaPredominanteId = null;
+      }
+
       for (const al of alunosPdf) {
         // Identificação do estudante
         if (!al.nome || !al.re) {
@@ -205,23 +238,22 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
         }
         totalAlunos++;
 
-        // Busca o aluno no banco pelo código (RE) com sua turma no ano letivo
-        const [dbAlunos] = await conn.query(`
-          SELECT a.id, a.estudante, COALESCE(m.turma_id, a.turma_id) AS turma_id
-          FROM alunos a
-          LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'
-          WHERE a.codigo = ? AND a.escola_id = ? AND (a.status = 'ativo' OR a.status IS NULL)
-          LIMIT 1
-        `, [anoNum, escola_id, al.re, escola_id]);
-
-        if (dbAlunos.length === 0) {
+        const dbA = dbAlunoPorRe.get(String(al.re));
+        if (!dbA) {
           logs.push(`❌ [Agente] Estudante "${al.nome}" (RE: ${al.re}) não encontrado como ativo no banco!`);
           totalFalhas++;
           continue;
         }
 
-        const dbA = dbAlunos[0];
-        logs.push(`👤 [Agente${al.etapa === "MEDIO" ? " Médio" : ""}] Importando: ${dbA.estudante} (RE: ${al.re} | ID: ${dbA.id}${dbA.turma_id ? ` | Turma: ${dbA.turma_id}` : ""})`);
+        const alunoTransferidoDeTurma = Boolean(
+          turmaPredominanteId &&
+          dbA.turma_id &&
+          Number(dbA.turma_id) !== Number(turmaPredominanteId)
+        );
+
+        logs.push(
+          `👤 [Agente${al.etapa === "MEDIO" ? " Médio" : ""}] Importando: ${dbA.estudante} (RE: ${al.re} | ID: ${dbA.id}${dbA.turma_id ? ` | Turma: ${dbA.turma_id}` : ""}${alunoTransferidoDeTurma ? ` | ⚠️ Transferido da turma ${turmaPredominanteId} → células vazias não apagarão notas da turma atual` : ""})`
+        );
 
         // Carrega disciplinas da modulação da turma do aluno, se houver
         let disciplinasTurma = [];
@@ -304,6 +336,7 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
             cel,
             faltasActive,
             notaNullable,
+            preservarSeVazio: alunoTransferidoDeTurma,
           });
 
           const notaDisplay = cel.nota === null
@@ -320,6 +353,8 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
           } else if (r.acao === "removido") {
             totalRemovidos++;
             logs.push(`  🗑️ ${rotulo} | ${bimNum}º Bim vazio no EDUCADF — nota existente removida do sistema.`);
+          } else if (r.acao === "preservado") {
+            logs.push(`  🛡️ ${rotulo} | ${bimNum}º Bim vazio no PDF da turma anterior — nota da turma atual preservada.`);
           } else {
             logs.push(`  ⏭️ ${rotulo} | ${bimNum}º bim não lançado neste PDF.`);
           }
@@ -331,14 +366,18 @@ router.post("/importar-boletim", verificarEscola, upload.array("files"), async (
       }
     }
 
-    // ── Reconciliação automática pós-importação ────────────────────────
+    // ── Reconciliação e sincronização com Diário pós-importação ────────
     try {
       const reconciliadas = await reconciliarNotasComModulacao(conn, escola_id);
       if (reconciliadas > 0) {
         logs.push(`🔄 [Agente] ${reconciliadas} nota(s) reconciliada(s) automaticamente com a modulação da turma.`);
       }
+      const syncDiario = await sincronizarDiarioParaBoletim(conn, escola_id, { ano: anoNum, bimestre: bimNum });
+      if (syncDiario.inseridas > 0 || syncDiario.atualizadas > 0) {
+        logs.push(`📒 [Agente] ${syncDiario.inseridas + syncDiario.atualizadas} nota(s) sincronizada(s)/preservada(s) a partir dos Diários dos Professores.`);
+      }
     } catch (recErr) {
-      console.error("Erro na reconciliação pós-importação:", recErr);
+      console.error("Erro na reconciliação/sincronização pós-importação:", recErr);
     }
 
     logs.push("══════════════════════════════════════════════");

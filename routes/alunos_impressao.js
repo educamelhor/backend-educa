@@ -9,6 +9,7 @@
 
 import express from "express";
 import pool from "../db.js";
+import { reconciliarNotasComModulacao, sincronizarDiarioParaBoletim } from "../utils/disciplinasHelper.js";
 
 const router = express.Router();
 
@@ -69,6 +70,14 @@ router.get("/impressao/boletins", async (req, res) => {
 
     const anoLetivo = ano ? Number(ano) : (turmaInfo.ano ? Number(turmaInfo.ano) : new Date().getFullYear());
     const escolaIdTurma = turmaInfo.escola_id;
+
+    if (escolaIdTurma) {
+      reconciliarNotasComModulacao(pool, escolaIdTurma).catch(() => {});
+      await sincronizarDiarioParaBoletim(pool, escolaIdTurma, {
+        ano: anoLetivo,
+        turma_id: Number(turma_id),
+      }).catch(() => {});
+    }
 
     // 1) Buscar alunos da turma (suporta a.turma_id ou m.turma_id)
     let alunoFilterSql = "";
@@ -275,6 +284,13 @@ async function montaBoletins(pool, { codigos }) {
   // (espelha exatamente o critério da Fiscalização de Notas)
   const alunoIds = alunosDados.map((a) => a.id);
   const escolaId = alunosDados[0]?.escola_id;
+  if (escolaId && alunoIds.length > 0) {
+    reconciliarNotasComModulacao(pool, escolaId).catch(() => {});
+    const turmaIdsUnicos = [...new Set(alunosDados.map((a) => a.turma_id).filter(Boolean))];
+    for (const tId of turmaIdsUnicos) {
+      await sincronizarDiarioParaBoletim(pool, escolaId, { turma_id: Number(tId) }).catch(() => {});
+    }
+  }
   const [notas] = await pool.query(
     `
     SELECT 

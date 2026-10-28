@@ -11,7 +11,7 @@
 
 import express from "express";
 import db from "../db.js";
-import { reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import { reconciliarNotasComModulacao, sincronizarDiarioParaBoletim } from "../utils/disciplinasHelper.js";
 import { gerarMapaNotaPdf } from "./mapa-nota-pdf.js";
 import { gerarMediaAnualPdf } from "./media-anual-pdf.js";
 
@@ -53,6 +53,14 @@ router.get("/alunos/:id/notas", verificarEscola, async (req, res) => {
   try {
     const alunoId = req.params.id;
     const { escola_id } = req.user;
+
+    const [[alRow]] = await db.query(
+      "SELECT turma_id FROM alunos WHERE id = ? AND escola_id = ? LIMIT 1",
+      [alunoId, escola_id]
+    );
+    if (alRow?.turma_id) {
+      await sincronizarDiarioParaBoletim(db, escola_id, { turma_id: Number(alRow.turma_id) }).catch(() => {});
+    }
 
     const [rows] = await db.query(
       `SELECT 
@@ -393,8 +401,9 @@ router.get("/turmas/:turmaId/mapa-nota", verificarEscola, async (req, res) => {
 
     console.log(`[mapa-nota] usuario_id=${usuario_id}, escola_id=${escola_id}, turmaId=${turmaId}, bimestre=${bimestre}, ano=${ano}`);
 
-    // Dispara reconciliação de notas x modulação de forma não-bloqueante
+    // Reconcilia notas x modulação (não-bloqueante) e sincroniza notas completas do Diário para o Boletim
     reconciliarNotasComModulacao(db, escola_id).catch(() => {});
+    await sincronizarDiarioParaBoletim(db, escola_id, { turma_id: Number(turmaId), ano, bimestre }).catch(() => {});
 
     // 1) Alunos matriculados na turma (ordenados por nome)
     const [alunos] = await db.query(
@@ -507,6 +516,9 @@ router.get("/turmas/:turmaId/media-anual", verificarEscola, async (req, res) => 
     const ano = parseInt(req.query.ano) || new Date().getFullYear();
 
     console.log(`[media-anual] escola_id=${escola_id}, turmaId=${turmaId}, ano=${ano}`);
+
+    reconciliarNotasComModulacao(db, escola_id).catch(() => {});
+    await sincronizarDiarioParaBoletim(db, escola_id, { turma_id: Number(turmaId), ano }).catch(() => {});
 
     // 1) Alunos matriculados na turma (ordenados por nome)
     const [alunos] = await db.query(

@@ -1,5 +1,6 @@
 import express from "express";
 import pool from "../db.js";
+import { resolverDisciplina, sincronizarDiarioParaBoletim } from "../utils/disciplinasHelper.js";
 
 const router = express.Router();
 
@@ -1191,6 +1192,15 @@ router.post("/:id/salvar-notas", async (req, res) => {
       }
     }
 
+    // Sincroniza automaticamente as notas completas deste plano/turma com o boletim (`notas`),
+    // garantindo que edições feitas pelo professor no diário já reflitam no Boletim sem exigir nova exportação manual.
+    await sincronizarDiarioParaBoletim(pool, escola_id, {
+      turma_id: Number(turma_id),
+      plano_id: Number(planoId),
+    }).catch((syncErr) => {
+      console.warn("[salvar-notas] Aviso ao sincronizar diário com boletim:", syncErr.message);
+    });
+
     let message = "Diário salvo com sucesso!";
     if (values.length > 0 && idsParaDeletar.length > 0) {
       message = `Diário salvo com sucesso! (${values.length} nota(s) salva(s), ${idsParaDeletar.length} apagada(s))`;
@@ -1385,31 +1395,27 @@ router.post("/:id/exportar-boletim", async (req, res) => {
     }
 
     // 3) Resolver disciplina_id priorizando a modulação da turma (evita pegar ID de outra etapa com mesmo nome)
-    const [[disc]] = await conn.query(
-      `SELECT d.id 
+    const [turmaDiscs] = await conn.query(
+      `SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
        FROM disciplinas d
        JOIN modulacao m ON m.disciplina_id = d.id
-       WHERE d.nome = ? 
-         AND d.escola_id = ? 
-         AND m.turma_id = ? 
-       LIMIT 1`,
-      [plano.disciplina, escola_id, turma_id]
+       WHERE d.escola_id = ?
+         AND m.turma_id = ?`,
+      [escola_id, turma_id]
     );
-    
-    let disciplinaId = disc?.id;
-
-    // Fallback: se não achar pela modulação, busca apenas pelo nome
-    if (!disciplinaId) {
-      const [[discFallback]] = await conn.query(
-        "SELECT id FROM disciplinas WHERE nome = ? AND escola_id = ? LIMIT 1",
-        [plano.disciplina, escola_id]
+    let discObj = resolverDisciplina(plano.disciplina, turmaDiscs);
+    if (!discObj) {
+      const [allDiscs] = await conn.query(
+        "SELECT id, nome, nome_oficial, abreviatura FROM disciplinas WHERE escola_id = ?",
+        [escola_id]
       );
-      if (!discFallback) {
-        conn.release();
-        return res.status(400).json({ error: `Disciplina '${plano.disciplina}' não encontrada.` });
-      }
-      disciplinaId = discFallback.id;
+      discObj = resolverDisciplina(plano.disciplina, allDiscs);
     }
+    if (!discObj) {
+      conn.release();
+      return res.status(400).json({ error: `Disciplina '${plano.disciplina}' não encontrada.` });
+    }
+    const disciplinaId = discObj.id;
 
     // 4) Resolver bimestre numérico
     const bimestreNum = parseBimestre(plano.bimestre);
