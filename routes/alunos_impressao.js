@@ -16,6 +16,31 @@ const router = express.Router();
 // Ano-base do ranking — usa o ano letivo atual
 const ANO_RANKING = new Date().getFullYear();
 
+const BOLETIM_CONFIG_DEFAULTS = {
+  "boletim.exibir_ano_anterior": "0",
+  "boletim.exibir_media_rodape": "1",
+  "boletim.exibir_faltas": "1",
+  "boletim.exibir_ranking": "1",
+  "boletim.exibir_media_turma": "0",
+};
+
+async function obterBoletimConfigEscola(pool, escolaId) {
+  const config = { ...BOLETIM_CONFIG_DEFAULTS };
+  if (!escolaId) return config;
+  try {
+    const [rows] = await pool.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND (chave LIKE 'boletim.%' OR chave LIKE 'boletim.app.%')`,
+      [Number(escolaId)]
+    );
+    for (const r of rows) {
+      config[r.chave] = String(r.valor);
+    }
+  } catch (err) {
+    console.warn("[impressao/boletins] Aviso ao ler configuracoes_escola:", err.message);
+  }
+  return config;
+}
 
 // -------------------------------------------------------------------------
 // POST /api/impressao/boletins
@@ -33,7 +58,7 @@ router.post("/impressao/boletins", async (req, res) => {
     const codigos = alunos.map((a) => a.codigo);
 
     const boletins = await montaBoletins(pool, { codigos });
-    res.json({ boletins });
+    res.json({ boletins, boletim_config: boletins[0]?.boletim_config || null });
   } catch (err) {
     console.error("Erro ao buscar boletins (POST):", err);
     res.status(500).json({ error: "Erro ao buscar boletins." });
@@ -209,13 +234,19 @@ router.get("/impressao/boletins", async (req, res) => {
       disciplinasTurma = discNotas || [];
     }
 
-    // 4) Buscar ranking (escola e turma) — ano letivo atual
+    // 4) Ler configurações de Governança (categoria Boletim) da escola
+    const boletimConfig = await obterBoletimConfigEscola(pool, escolaIdTurma);
+    const deveExibirRanking = String(boletimConfig["boletim.exibir_ranking"]) !== "0";
+
+    // 5) Buscar ranking (escola e turma) — somente se habilitado na Governança da escola
     const rankings = {};
-    for (const aluno of alunosDados) {
-      rankings[aluno.codigo] = await calculaRankings(aluno, anoLetivo);
+    if (deveExibirRanking) {
+      for (const aluno of alunosDados) {
+        rankings[aluno.codigo] = await calculaRankings(aluno, anoLetivo);
+      }
     }
 
-    // 5) Montar estrutura final
+    // 6) Montar estrutura final
     const boletins = alunosDados.map((aluno) => {
       return {
         id: aluno.id,
@@ -228,7 +259,8 @@ router.get("/impressao/boletins", async (req, res) => {
         turma_id: aluno.turma_id,
         regime: aluno.regime,
         situacao: aluno.status,
-        ranking: rankings[aluno.codigo] || null,
+        boletim_config: boletimConfig,
+        ranking: deveExibirRanking ? (rankings[aluno.codigo] || null) : null,
         disciplinas: disciplinasTurma,
         notas: notas
           .filter((n) => Number(n.aluno_id) === Number(aluno.id))
@@ -246,7 +278,12 @@ router.get("/impressao/boletins", async (req, res) => {
       };
     });
 
-    res.json({ turma_id, total: boletins.length, alunos: boletins });
+    res.json({
+      turma_id,
+      total: boletins.length,
+      boletim_config: boletimConfig,
+      alunos: boletins,
+    });
   } catch (err) {
     console.error("Erro ao buscar boletins (GET):", err);
     res.status(500).json({ error: "Erro ao buscar boletins da turma.", message: err.message });
@@ -272,7 +309,8 @@ async function montaBoletins(pool, { codigos }) {
       t.id AS turma_id,
       a.status,
       a.escola_id,
-      t.etapa
+      t.etapa,
+      t.regime
     FROM alunos a
     INNER JOIN turmas t ON a.turma_id = t.id
     WHERE a.codigo IN (?)
@@ -312,23 +350,32 @@ async function montaBoletins(pool, { codigos }) {
     [alunoIds, escolaId]
   );
 
-  // Buscar rankings (escola e turma) — APENAS 2025
+  const boletimConfig = await obterBoletimConfigEscola(pool, escolaId);
+  const deveExibirRanking = String(boletimConfig["boletim.exibir_ranking"]) !== "0";
+
+  // Buscar rankings (escola e turma) — somente se habilitado na Governança da escola
   const rankings = {};
-  for (const aluno of alunosDados) {
-    rankings[aluno.codigo] = await calculaRankings(aluno);
+  if (deveExibirRanking) {
+    for (const aluno of alunosDados) {
+      rankings[aluno.codigo] = await calculaRankings(aluno);
+    }
   }
 
   // Montar estrutura final de resposta
   return alunosDados.map((aluno) => {
     return {
+      id: aluno.id,
       codigo: aluno.codigo,
       escola_id: aluno.escola_id,
       etapa: aluno.etapa,
+      regime: aluno.regime,
+      turma_id: aluno.turma_id,
       nome: aluno.nome,
       turma: aluno.turma,
       turno: aluno.turno,
       situacao: aluno.status,
-      ranking: rankings[aluno.codigo] || null,
+      boletim_config: boletimConfig,
+      ranking: deveExibirRanking ? (rankings[aluno.codigo] || null) : null,
       notas: notas
         // Filtra por aluno_id (número) — garante match correto
         .filter((n) => Number(n.aluno_id) === Number(aluno.id))
