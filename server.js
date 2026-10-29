@@ -142,6 +142,7 @@ import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agent
 import secretariaFaltasRouter from "./routes/secretaria-faltas.js"; // ✅ Submódulo FALTAS Secretaria
 import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
 import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
+import administrativoRouter, { ensureAdministrativoTables } from "./routes/administrativo.js"; // ✅ Módulo ADMINISTRATIVO
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -1819,6 +1820,19 @@ async function bootstrap() {
   app.use("/api/direcao", autenticarToken, verificarEscola, direcaoRouter);
   // Governança de módulos por perfil (Camada 2: Diretor configura para cada perfil)
   app.use("/api/direcao/modulos", autenticarToken, verificarEscola, direcaoModulosRouter);
+
+  // ✅ MÓDULO ADMINISTRATIVO — Quadro de Servidores, Ocorrências, Cabeçalho SEEDF e Ponto
+  await ensureAdministrativoTables(pool);
+  app.use(
+    "/api/administrativo",
+    autenticarToken,
+    verificarEscola,
+    (req, _res, next) => {
+      req.db = pool;
+      next();
+    },
+    administrativoRouter
+  );
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
   app.use("/api/governanca", autenticarToken, verificarEscola, governancaRouter);
