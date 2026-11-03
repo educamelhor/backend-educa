@@ -396,4 +396,337 @@ router.post("/validate-slot", requireEscola, async (req, res) => {
   }
 });
 
+// ============================================================================
+// HORÁRIO MANUAL POR PROFESSOR (Aba ✍️ Horário Manual)
+//  - GET  /api/grade/manual?turno=matutino
+//  - POST /api/grade/manual/professor
+// ============================================================================
+
+const DIAS_NOMES_PT = {
+  1: "Segunda-feira",
+  2: "Terça-feira",
+  3: "Quarta-feira",
+  4: "Quinta-feira",
+  5: "Sexta-feira",
+  6: "Sábado",
+};
+
+// GET /api/grade/manual?turno=matutino
+router.get("/manual", requireEscola, async (req, res) => {
+  try {
+    const db = req.app.get("db") || req.app.locals.pool || req.pool || pool;
+    const turnoNorm = normTurno(req.query.turno || "");
+    if (!turnoNorm) {
+      return res.status(400).json({ ok: false, error: "Parâmetro turno é obrigatório." });
+    }
+
+    // Busca rascunho e publicado do turno
+    const [resultados] = await db.query(
+      `SELECT id, status, version, updated_at, published_at, created_at
+         FROM (
+           SELECT id, status, version, published_at AS updated_at, published_at, created_at
+             FROM grade_resultado
+            WHERE escola_id = ? AND turno = ? AND status IN ('rascunho', 'publicado')
+         ) r
+        ORDER BY FIELD(status, 'rascunho', 'publicado')`,
+      [req.escolaId, turnoNorm]
+    );
+
+    if (!resultados || resultados.length === 0) {
+      return res.json({ ok: true, resultado_id: null, status: null, slots: [] });
+    }
+
+    // Prioriza rascunho se tiver slots; caso contrário usa publicado se tiver slots
+    let escolhido = resultados[0];
+    const [slotsEscolhido] = await db.query(
+      `SELECT
+         gs.turma_id,
+         gs.dia_semana AS dia,
+         gs.periodo_ordem AS ordem,
+         gs.disciplina_id,
+         gs.professor_id,
+         gs.origem,
+         gs.locked,
+         t.nome AS turma_nome,
+         p.nome AS professor_nome,
+         d.nome AS disciplina_nome
+       FROM grade_slot gs
+       LEFT JOIN turmas t ON t.id = gs.turma_id
+       LEFT JOIN professores p ON p.id = gs.professor_id
+       LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+      WHERE gs.resultado_id = ?`,
+      [escolhido.id]
+    );
+
+    if (slotsEscolhido.length === 0 && resultados.length > 1) {
+      const outro = resultados[1];
+      const [slotsOutro] = await db.query(
+        `SELECT
+           gs.turma_id,
+           gs.dia_semana AS dia,
+           gs.periodo_ordem AS ordem,
+           gs.disciplina_id,
+           gs.professor_id,
+           gs.origem,
+           gs.locked,
+           t.nome AS turma_nome,
+           p.nome AS professor_nome,
+           d.nome AS disciplina_nome
+         FROM grade_slot gs
+         LEFT JOIN turmas t ON t.id = gs.turma_id
+         LEFT JOIN professores p ON p.id = gs.professor_id
+         LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+        WHERE gs.resultado_id = ?`,
+        [outro.id]
+      );
+      if (slotsOutro.length > 0) {
+        return res.json({
+          ok: true,
+          resultado_id: outro.id,
+          status: outro.status,
+          slots: slotsOutro,
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      resultado_id: escolhido.id,
+      status: escolhido.status,
+      slots: slotsEscolhido,
+    });
+  } catch (e) {
+    console.error("GET /api/grade/manual:", e);
+    return res.status(500).json({ ok: false, error: "Falha ao carregar horário manual do turno." });
+  }
+});
+
+// POST /api/grade/manual/professor
+router.post("/manual/professor", requireEscola, async (req, res) => {
+  const db = req.app.get("db") || req.app.locals.pool || req.pool || pool;
+  const conn = await db.getConnection();
+  try {
+    const {
+      turno,
+      professor_id,
+      slots = [],
+      substituir_conflitos = false,
+    } = req.body || {};
+
+    const turnoNorm = normTurno(turno);
+    const profId = Number(professor_id);
+
+    if (!turnoNorm) {
+      return res.status(400).json({ ok: false, error: "Turno é obrigatório." });
+    }
+    if (!profId) {
+      return res.status(400).json({ ok: false, error: "professor_id é obrigatório." });
+    }
+    if (!Array.isArray(slots)) {
+      return res.status(400).json({ ok: false, error: "slots deve ser uma lista." });
+    }
+
+    // Normaliza e deduplica slots por (dia, ordem)
+    const mapaSlots = new Map();
+    for (const s of slots) {
+      const dia = Number(s?.dia ?? s?.dia_semana);
+      const ordem = Number(s?.ordem ?? s?.periodo_ordem);
+      const turma_id = Number(s?.turma_id);
+      const disciplina_id = Number(s?.disciplina_id);
+      if (!dia || !ordem || !turma_id || !disciplina_id) continue;
+      mapaSlots.set(`${dia}-${ordem}`, { dia, ordem, turma_id, disciplina_id });
+    }
+    const validSlots = Array.from(mapaSlots.values());
+
+    await conn.beginTransaction();
+
+    // 1) Garante rascunho para (escolaId, turnoNorm)
+    let [[draft]] = await conn.query(
+      `SELECT id FROM grade_resultado WHERE escola_id = ? AND turno = ? AND status = 'rascunho' LIMIT 1`,
+      [req.escolaId, turnoNorm]
+    );
+    const [[pub]] = await conn.query(
+      `SELECT id FROM grade_resultado WHERE escola_id = ? AND turno = ? AND status = 'publicado' LIMIT 1`,
+      [req.escolaId, turnoNorm]
+    );
+
+    let draftId = draft?.id || null;
+    if (!draftId) {
+      const [ins] = await conn.query(
+        `INSERT INTO grade_resultado (escola_id, turno, status, version, descricao)
+         VALUES (?, ?, 'rascunho', 1, 'Horário Manual')`,
+        [req.escolaId, turnoNorm]
+      );
+      draftId = ins.insertId;
+
+      // Se já havia um publicado, clona os slots existentes para o rascunho não começar vazio
+      if (pub?.id) {
+        await conn.query(
+          `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id)
+           SELECT ?, turma_id FROM grade_resultado_turma WHERE resultado_id = ?`,
+          [draftId, pub.id]
+        );
+        await conn.query(
+          `INSERT IGNORE INTO grade_slot
+             (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
+           SELECT ?, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked
+             FROM grade_slot
+            WHERE resultado_id = ?`,
+          [draftId, pub.id]
+        );
+      }
+    } else if (pub?.id) {
+      // Se o rascunho existir mas estiver completamente vazio e o publicado tiver dados, hidrata o rascunho
+      const [[cntDraft]] = await conn.query(
+        `SELECT COUNT(*) AS total FROM grade_slot WHERE resultado_id = ?`,
+        [draftId]
+      );
+      if (Number(cntDraft?.total || 0) === 0) {
+        await conn.query(
+          `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id)
+           SELECT ?, turma_id FROM grade_resultado_turma WHERE resultado_id = ?`,
+          [draftId, pub.id]
+        );
+        await conn.query(
+          `INSERT IGNORE INTO grade_slot
+             (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
+           SELECT ?, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked
+             FROM grade_slot
+            WHERE resultado_id = ?`,
+          [draftId, pub.id]
+        );
+      }
+    }
+
+    // 2) Verifica se alguma turma escolhida já está ocupada por OUTRO professor no mesmo (dia, ordem)
+    const conflitos = [];
+    for (const s of validSlots) {
+      const [ocupados] = await conn.query(
+        `SELECT
+           gs.turma_id,
+           gs.dia_semana AS dia,
+           gs.periodo_ordem AS ordem,
+           gs.professor_id,
+           gs.disciplina_id,
+           t.nome AS turma_nome,
+           p.nome AS professor_nome,
+           d.nome AS disciplina_nome
+         FROM grade_slot gs
+         LEFT JOIN turmas t ON t.id = gs.turma_id
+         LEFT JOIN professores p ON p.id = gs.professor_id
+         LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+        WHERE gs.resultado_id = ?
+          AND gs.turma_id = ?
+          AND gs.dia_semana = ?
+          AND gs.periodo_ordem = ?
+          AND gs.professor_id <> ?
+        LIMIT 1
+        FOR UPDATE`,
+        [draftId, s.turma_id, s.dia, s.ordem, profId]
+      );
+
+      if (ocupados && ocupados.length > 0) {
+        conflitos.push(ocupados[0]);
+      }
+    }
+
+    if (conflitos.length > 0 && !substituir_conflitos) {
+      await conn.rollback();
+      const c = conflitos[0];
+      const diaLabel = DIAS_NOMES_PT[c.dia] || `Dia ${c.dia}`;
+      return res.status(409).json({
+        ok: false,
+        code: "TURMA_CONFLITO",
+        error: `Conflito em ${diaLabel} (${c.ordem}º horário): a turma ${c.turma_nome || c.turma_id} já está ocupada por ${c.professor_nome || "outro professor"}${c.disciplina_nome ? ` (${c.disciplina_nome})` : ""}.`,
+        conflicts: conflitos,
+      });
+    }
+
+    // Se substituir_conflitos=true, remove os slots conflitantes de outros professores naquelas turmas/horários
+    if (conflitos.length > 0 && substituir_conflitos) {
+      for (const c of conflitos) {
+        await conn.query(
+          `DELETE FROM grade_slot
+            WHERE resultado_id = ?
+              AND turma_id = ?
+              AND dia_semana = ?
+              AND periodo_ordem = ?`,
+          [draftId, c.turma_id, c.dia, c.ordem]
+        );
+      }
+    }
+
+    // 3) Remove os slots anteriores deste professor no rascunho e insere os novos
+    await conn.query(
+      `DELETE FROM grade_slot WHERE resultado_id = ? AND professor_id = ?`,
+      [draftId, profId]
+    );
+
+    for (const s of validSlots) {
+      await conn.query(
+        `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id) VALUES (?, ?)`,
+        [draftId, s.turma_id]
+      );
+      await conn.query(
+        `INSERT INTO grade_slot
+           (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
+         VALUES (?, ?, ?, ?, ?, ?, 'manual', 1)`,
+        [draftId, s.turma_id, s.dia, s.ordem, s.disciplina_id, profId]
+      );
+    }
+
+    // 4) Sincroniza também o registro 'publicado' do turno para que toda a escola já enxergue o horário atualizado
+    let pubId = pub?.id || null;
+    if (!pubId) {
+      const [insPub] = await conn.query(
+        `INSERT INTO grade_resultado (escola_id, turno, status, version, descricao, published_at)
+         VALUES (?, ?, 'publicado', 1, 'Horário Manual', NOW())`,
+        [req.escolaId, turnoNorm]
+      );
+      pubId = insPub.insertId;
+    } else {
+      await conn.query(
+        `UPDATE grade_resultado SET published_at = NOW(), version = IFNULL(version, 0) + 1 WHERE id = ?`,
+        [pubId]
+      );
+    }
+
+    // Espelha rascunho -> publicado de forma atômica
+    await conn.query(`DELETE FROM grade_slot WHERE resultado_id = ?`, [pubId]);
+    await conn.query(`DELETE FROM grade_resultado_turma WHERE resultado_id = ?`, [pubId]);
+    await conn.query(
+      `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id)
+       SELECT ?, turma_id FROM grade_resultado_turma WHERE resultado_id = ?`,
+      [pubId, draftId]
+    );
+    await conn.query(
+      `INSERT INTO grade_slot
+         (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
+       SELECT ?, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked
+         FROM grade_slot
+        WHERE resultado_id = ?`,
+      [pubId, draftId]
+    );
+
+    await conn.commit();
+
+    return res.json({
+      ok: true,
+      resultado_id: draftId,
+      publicado_id: pubId,
+      professor_id: profId,
+      saved_count: validSlots.length,
+    });
+  } catch (e) {
+    await conn.rollback();
+    console.error("POST /api/grade/manual/professor:", e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || "Falha ao salvar o horário do professor.",
+    });
+  } finally {
+    conn.release();
+  }
+});
+
 export default router;
