@@ -112,6 +112,45 @@ export async function ensureAdministrativoTables(dbConn = pool) {
         COMMENT='Registros de frequência e ponto diário de servidores'
     `);
 
+    await dbConn.query(`
+      CREATE TABLE IF NOT EXISTS administrativo_memorandos (
+        id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        escola_id     INT NOT NULL,
+        memorando_uid VARCHAR(100) NOT NULL,
+        tipo_memo     VARCHAR(60) NOT NULL DEFAULT 'devolucao',
+        numero_memo   VARCHAR(80) DEFAULT NULL,
+        servidor_id   VARCHAR(100) DEFAULT NULL,
+        servidor_nome VARCHAR(255) DEFAULT NULL,
+        data_emissao  DATE NOT NULL,
+        dados_json    LONGTEXT NOT NULL,
+        criado_por    VARCHAR(200) DEFAULT NULL,
+        criado_em     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uq_adm_memo_escola_uid (escola_id, memorando_uid),
+        INDEX idx_adm_memo_escola_data (escola_id, data_emissao)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Memorandos administrativos emitidos pela escola (ex: Memorando de Devolução SEEDF)'
+    `);
+
+    // Auto-habilita administrativo.memorando para escolas e perfis que já possuem administrativo ativo
+    try {
+      await dbConn.query(`
+        INSERT IGNORE INTO escola_modulos (escola_id, modulo, ativo)
+        SELECT escola_id, 'administrativo.memorando', ativo
+        FROM escola_modulos
+        WHERE modulo = 'administrativo' AND ativo = 1
+      `);
+      await dbConn.query(`
+        INSERT IGNORE INTO escola_perfil_modulos (escola_id, perfil, modulo, ativo)
+        SELECT escola_id, perfil, 'administrativo.memorando', ativo
+        FROM escola_perfil_modulos
+        WHERE modulo = 'administrativo' AND ativo = 1
+      `);
+    } catch {
+      // ignora caso as tabelas de módulos ainda não existam neste banco
+    }
+
     tablesEnsured = true;
   } catch (err) {
     console.error("[ADMINISTRATIVO][ENSURE_TABLES] Erro:", err?.message || err);
@@ -166,6 +205,7 @@ router.get("/bootstrap", async (req, res) => {
       [srvRows],
       [occRows],
       [pontoRows],
+      [memoRows],
     ] = await Promise.all([
       db.query(
         "SELECT config_json, atualizado_em FROM administrativo_config_unidade WHERE escola_id = ? LIMIT 1",
@@ -181,6 +221,10 @@ router.get("/bootstrap", async (req, res) => {
       ),
       db.query(
         "SELECT DATE_FORMAT(data_iso, '%Y-%m-%d') AS data_iso, servidor_id, dados_json FROM administrativo_ponto_diario WHERE escola_id = ?",
+        [escolaId]
+      ),
+      db.query(
+        "SELECT memorando_uid, dados_json FROM administrativo_memorandos WHERE escola_id = ? ORDER BY data_emissao DESC, id DESC",
         [escolaId]
       ),
     ]);
@@ -240,6 +284,19 @@ router.get("/bootstrap", async (req, res) => {
       }
     }
 
+    const memorandos = [];
+    for (const row of memoRows) {
+      const uid = String(row.memorando_uid || "");
+      if (!uid) continue;
+      const parsed = safeJsonParse(row.dados_json, null);
+      if (parsed && typeof parsed === "object") {
+        memorandos.push({
+          ...parsed,
+          id: uid,
+        });
+      }
+    }
+
     return res.json({
       ok: true,
       escola_id: escolaId,
@@ -248,6 +305,7 @@ router.get("/bootstrap", async (req, res) => {
       overrides,
       ocorrencias,
       pontoDiario,
+      memorandos,
     });
   } catch (err) {
     console.error("[ADMINISTRATIVO][BOOTSTRAP]", err);
@@ -810,4 +868,79 @@ router.post("/sync-local", async (req, res) => {
   }
 });
 
+// ── POST /api/administrativo/memorandos ──────────────────────────────────────
+// Cria ou atualiza um memorando administrativo (ex: Memorando de Devolução SEEDF)
+router.post("/memorandos", async (req, res) => {
+  const db = req.db || pool;
+  const escolaId = getEscolaId(req);
+  if (!escolaId) {
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+  }
+
+  const { memorando } = req.body || {};
+  if (!memorando || typeof memorando !== "object") {
+    return res.status(400).json({ ok: false, message: "Dados do memorando são obrigatórios." });
+  }
+
+  const uid = String(
+    memorando.id || `memo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  ).trim();
+  const payload = { ...memorando, id: uid };
+  const dataEmissao = normalizarDataIso(memorando.data_emissao || memorando.ultimo_dia_frequencia);
+
+  try {
+    await ensureAdministrativoTables(db);
+    await db.query(
+      `INSERT INTO administrativo_memorandos
+        (escola_id, memorando_uid, tipo_memo, numero_memo, servidor_id, servidor_nome, data_emissao, dados_json, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+        tipo_memo     = VALUES(tipo_memo),
+        numero_memo   = VALUES(numero_memo),
+        servidor_id   = VALUES(servidor_id),
+        servidor_nome = VALUES(servidor_nome),
+        data_emissao  = VALUES(data_emissao),
+        dados_json    = VALUES(dados_json)`,
+      [
+        escolaId,
+        uid,
+        String(memorando.tipo_memo || "devolucao").slice(0, 60),
+        memorando.numero_memo ? String(memorando.numero_memo).slice(0, 80) : "SN/2026",
+        memorando.servidor_id ? String(memorando.servidor_id).slice(0, 100) : null,
+        memorando.servidor_nome ? String(memorando.servidor_nome).slice(0, 255) : null,
+        dataEmissao,
+        JSON.stringify(payload),
+        memorando.criado_por || req.user?.nome || "Gestão Administrativa",
+      ]
+    );
+    return res.json({ ok: true, id: uid, memorando: payload });
+  } catch (err) {
+    console.error("[ADMINISTRATIVO][SAVE_MEMORANDO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao salvar memorando." });
+  }
+});
+
+// ── DELETE /api/administrativo/memorandos/:uid ───────────────────────────────
+router.delete("/memorandos/:uid", async (req, res) => {
+  const db = req.db || pool;
+  const escolaId = getEscolaId(req);
+  const uid = String(req.params.uid || "").trim();
+  if (!escolaId || !uid) {
+    return res.status(400).json({ ok: false, message: "escola_id e uid são obrigatórios." });
+  }
+
+  try {
+    await ensureAdministrativoTables(db);
+    await db.query(
+      "DELETE FROM administrativo_memorandos WHERE escola_id = ? AND memorando_uid = ?",
+      [escolaId, uid]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[ADMINISTRATIVO][DELETE_MEMORANDO]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao excluir memorando." });
+  }
+});
+
 export default router;
+
