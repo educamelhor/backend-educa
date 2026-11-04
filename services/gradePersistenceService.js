@@ -87,39 +87,53 @@ export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, sl
     await conn.beginTransaction();
     const turnoNorm = normTurno(turno);
 
-    // Remove rascunho anterior (se existir) para este turno
+    // Reutiliza cabeçalho de rascunho existente (ou cria se não existir),
+    // preservando horários manuais (locked=1) de outras turmas que não estejam no escopo atual
     const [olds] = await conn.query(
       `SELECT id FROM grade_resultado WHERE escola_id=? AND turno=? AND status='rascunho' LIMIT 1`,
       [escolaId, turnoNorm]
     );
+
+    let resultadoId;
+    const turmaIdsNum = Array.isArray(turmas) ? turmas.map(Number).filter(n => n > 0) : [];
+
     if (olds?.[0]?.id) {
-      await conn.query(`DELETE FROM grade_resultado WHERE id=?`, [olds[0].id]);
+      resultadoId = olds[0].id;
+      if (turmaIdsNum.length > 0) {
+        const ph = turmaIdsNum.map(() => "?").join(",");
+        // Limpa slots das turmas que estão sendo salvas agora, e limpa slots não-fixos de outras turmas
+        await conn.query(
+          `DELETE FROM grade_slot WHERE resultado_id=? AND (turma_id IN (${ph}) OR locked = 0)`,
+          [resultadoId, ...turmaIdsNum]
+        );
+      } else {
+        await conn.query(`DELETE FROM grade_slot WHERE resultado_id=?`, [resultadoId]);
+      }
+    } else {
+      const [ins] = await conn.query(
+        `INSERT INTO grade_resultado (escola_id, turno, status, version) VALUES (?, ?, 'rascunho', 1)`,
+        [escolaId, turnoNorm]
+      );
+      resultadoId = ins.insertId;
     }
 
-    // Cria cabeçalho rascunho
-    const [ins] = await conn.query(
-      `INSERT INTO grade_resultado (escola_id, turno, status, version) VALUES (?, ?, 'rascunho', 1)`,
-      [escolaId, turnoNorm]
-    );
-    const resultadoId = ins.insertId;
-
     // Escopo de turmas
-    if (Array.isArray(turmas) && turmas.length) {
-      const values = turmas.map((tid) => [resultadoId, Number(tid)]);
+    if (turmaIdsNum.length) {
+      const values = turmaIdsNum.map((tid) => [resultadoId, tid]);
       await conn.query(
-        `INSERT INTO grade_resultado_turma (resultado_id, turma_id) VALUES ?`,
+        `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id) VALUES ?`,
         [values]
       );
     }
 
-    // Slots (espera: { turma_id, dia, ordem, disciplina_id, professor_id, origem?, locked? })
+    // Slots (aceita tanto { dia, ordem } quanto { dia_semana, periodo_ordem })
     for (const s of slots || []) {
       const turma_id = Number(s.turma_id);
-      const dia = Number(s.dia);
-      const ordem = Number(s.ordem);
+      const dia = Number(s.dia ?? s.dia_semana);
+      const ordem = Number(s.ordem ?? s.periodo_ordem);
       const disciplina_id = Number(s.disciplina_id);
       const professor_id = Number(s.professor_id);
-      const origem = String(s.origem || "manual").toLowerCase();
+      const origem = String(s.origem || "solver").toLowerCase();
       const locked = s.locked ? 1 : 0;
 
       if (!turma_id || !dia || !ordem || !disciplina_id || !professor_id) {
@@ -127,7 +141,6 @@ export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, sl
       }
 
       // PASSO 3.2.6 — H2 no rascunho completo também (mesma regra)
-      // (mantido; aqui já estamos na transação do rascunho completo)
       const [conf] = await conn.query(
         `
         SELECT turma_id
@@ -148,7 +161,12 @@ export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, sl
       await conn.query(
         `INSERT INTO grade_slot
            (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           disciplina_id = VALUES(disciplina_id),
+           professor_id  = VALUES(professor_id),
+           origem        = VALUES(origem),
+           locked        = VALUES(locked)`,
         [resultadoId, turma_id, dia, ordem, disciplina_id, professor_id, origem, locked]
       );
     }

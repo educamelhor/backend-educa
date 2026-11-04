@@ -189,17 +189,206 @@ async function loadConfigPedagogica({ escolaId, turno, anoRef, nivel }) {
 }
 
 /**
+ * Monta e enriquece o payload completo do solver (usado tanto por /solver-payload
+ * para execução via Web Worker no navegador quanto por /run-mock no servidor).
+ */
+async function assembleEnrichedSolverPayload({
+  escolaId,
+  turnoNorm,
+  ids,
+  anoRef,
+  nivel,
+  semestre = 1,
+  respeitarHorarioManual = true,
+}) {
+  const payload = await buildSolverPayload({
+    escolaId,
+    turno: turnoNorm,
+    turmaIds: ids,
+    anoRef,
+    semestre,
+    respeitarHorarioManual,
+  });
+
+  payload.ano_ref = anoRef;
+
+  const configPersistida = await loadConfigPedagogica({
+    escolaId,
+    turno: turnoNorm,
+    anoRef,
+    nivel,
+  });
+
+  if (configPersistida) {
+    payload.config_pedagogica = {
+      ...configPersistida,
+      regras_gerais: payload.config_pedagogica?.regras_gerais || configPersistida.regras_gerais || null,
+    };
+  } else if (!payload.config_pedagogica) {
+    payload.config_pedagogica = { regras: {} };
+  }
+
+  if (!payload.config_pedagogica.regras) payload.config_pedagogica.regras = {};
+
+  // Injeta regras_gerais (globais da escola) no payload caso ainda não estejam presentes
+  try {
+    const [[escolaCfg]] = await pool.query(
+      "SELECT periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1",
+      [escolaId]
+    );
+    if (escolaCfg && escolaCfg.periodos) {
+      let parsedPeriodos =
+        typeof escolaCfg.periodos === "string" ? JSON.parse(escolaCfg.periodos) : escolaCfg.periodos;
+      if (Buffer.isBuffer(escolaCfg.periodos)) {
+        parsedPeriodos = JSON.parse(escolaCfg.periodos.toString("utf8"));
+      }
+
+      if (parsedPeriodos && parsedPeriodos._regras_gerais) {
+        payload.config_pedagogica.regras_gerais = parsedPeriodos._regras_gerais;
+
+        if (parsedPeriodos._regras_gerais.preferencia_aulas_duplas) {
+          payload.config_pedagogica.regras.rc01_distribuicao_disciplina = {
+            modo: "hard",
+            max_consecutivas: 2,
+          };
+        }
+        if (parsedPeriodos._regras_gerais.max_aulas_mesmo_dia) {
+          payload.config_pedagogica.regras.rc02_max_por_dia_disciplina = {
+            modo: "hard",
+            max_por_dia_padrao: parsedPeriodos._regras_gerais.max_aulas_mesmo_dia,
+            bloqueio_hard: true,
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[grade/run-mock] Falha ao injetar regras_gerais:", err.message);
+  }
+
+  // Analisa utilização dos professores usando dias_semana e periodos_por_dia reais da escola
+  const periodosPorDia = Number(payload.periodos_por_dia) || 6;
+  const diasSemana = Array.isArray(payload.dias_semana) && payload.dias_semana.length
+    ? payload.dias_semana.length
+    : 5;
+  const maxSlotsProf = periodosPorDia * diasSemana;
+
+  const dem = Array.isArray(payload.demanda) ? payload.demanda : [];
+  const mod = Array.isArray(payload.modulacao) ? payload.modulacao : [];
+  const profIndex = new Map();
+  for (const m of mod) {
+    const k = `${m.turma_id}|${m.disciplina_id}`;
+    if (!profIndex.has(k)) profIndex.set(k, { id: m.professor_id, nome: m.professor_nome });
+  }
+  const profCarga = new Map();
+  for (const d of dem) {
+    const prof = profIndex.get(`${d.turma_id}|${d.disciplina_id}`);
+    if (!prof) continue;
+    const prev = profCarga.get(prof.id) || { id: prof.id, nome: prof.nome, aulas: 0 };
+    prev.aulas += Number(d.carga || 0);
+    profCarga.set(prof.id, prev);
+  }
+  const warnings_payload = Array.from(profCarga.values())
+    .filter((p) => p.aulas >= maxSlotsProf - 2)
+    .map((p) => ({
+      professor_id: p.id,
+      professor_nome: p.nome,
+      aulas_demanda: p.aulas,
+      slots_disponiveis: maxSlotsProf,
+      utilization_pct: Math.round((p.aulas / maxSlotsProf) * 100),
+      is_100_percent: p.aulas >= maxSlotsProf,
+    }));
+
+  const slotsFixosNoEscopo = Array.isArray(payload.slots_fixos)
+    ? payload.slots_fixos.filter((s) => s.in_scope !== false).length
+    : 0;
+
+  const payload_summary = {
+    escola_id: payload.escola_id || escolaId,
+    turno: payload.turno || turnoNorm,
+    ano_ref: payload.ano_ref ?? null,
+    semestre: payload.semestre || 1,
+    nivel: payload.config_pedagogica?.nivel || nivel,
+    dias_semana: payload.dias_semana || [1, 2, 3, 4, 5],
+    periodos_por_dia: periodosPorDia,
+    turmas: Array.isArray(payload.turmas) ? payload.turmas.length : 0,
+    demanda: Array.isArray(payload.demanda) ? payload.demanda.length : 0,
+    professores: Array.isArray(payload.modulacao)
+      ? new Set(payload.modulacao.map((m) => m.professor_id)).size
+      : 0,
+    slots_fixos_count: slotsFixosNoEscopo,
+  };
+
+  return { payload, warnings_payload, payload_summary };
+}
+
+/**
+ * POST /api/grade/solver-payload
+ * Retorna o payload enriquecido completo em < 200ms para o motor Solver 2.0
+ * rodar em um Web Worker dedicado no navegador do cliente (sem timeout HTTP).
+ */
+router.post("/solver-payload", requireEscola, async (req, res) => {
+  try {
+    const turnoNorm = normalizeTurno(req.body?.turno);
+    if (!turnoNorm) {
+      return res.status(400).json({ error: "turno inválido (ex: 'matutino')." });
+    }
+
+    const ids = parseTurmaIds(req.body?.turma_ids);
+    if (!ids.length) {
+      return res.status(400).json({ error: "turma_ids inválido (ex: '147,148' ou [147,148])." });
+    }
+
+    const anoRef =
+      req.body?.ano_ref === null || req.body?.ano_ref === undefined || req.body?.ano_ref === ""
+        ? null
+        : Number(req.body?.ano_ref);
+
+    const nivel =
+      typeof req.body?.nivel === "string" && req.body.nivel.trim()
+        ? req.body.nivel.trim()
+        : "fundamental_II";
+
+    const semestre = Number(req.body?.semestre) === 2 ? 2 : 1;
+    const respeitarHorarioManual = req.body?.respeitar_horario_manual !== false;
+
+    const { payload, warnings_payload, payload_summary } = await assembleEnrichedSolverPayload({
+      escolaId: req.escolaId,
+      turnoNorm,
+      ids,
+      anoRef,
+      nivel,
+      semestre,
+      respeitarHorarioManual,
+    });
+
+    return res.json({
+      ok: true,
+      payload,
+      warnings_payload,
+      payload_summary,
+    });
+  } catch (e) {
+    console.error("POST /api/grade/solver-payload", e);
+    return res.status(500).json({
+      error: "Falha ao montar payload do solver.",
+      details: !isProd() ? e?.message : undefined,
+    });
+  }
+});
+
+/**
  * POST /api/grade/run-mock
  * Body (mínimo):
  * - turno: "matutino"
  * - turma_ids: "147,148" (ou [147,148])
  *
- * Campos opcionais (para casar com Configurações Pedagógicas):
- * - ano_ref: 2025
+ * Campos opcionais:
+ * - ano_ref: 2026
  * - nivel: "fundamental_II"
+ * - semestre: 1 | 2
+ * - respeitar_horario_manual: true | false
  */
 router.post("/run-mock", requireEscola, async (req, res) => {
-  // Trace ID para correlacionar com logs do backend
   const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
@@ -213,225 +402,98 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       return res.status(400).json({ error: "turma_ids inválido (ex: '147,148' ou [147,148])." });
     }
 
-    // Para manter o comportamento correto do vínculo com Configurações Pedagógicas:
-    // - ano_ref deve ser propagado, para carregar a configuração correta.
-    const anoRef = req.body?.ano_ref === null || req.body?.ano_ref === undefined || req.body?.ano_ref === ""
-      ? null
-      : Number(req.body?.ano_ref);
+    const anoRef =
+      req.body?.ano_ref === null || req.body?.ano_ref === undefined || req.body?.ano_ref === ""
+        ? null
+        : Number(req.body?.ano_ref);
 
     if (anoRef !== null && !Number.isFinite(anoRef)) {
-      return res.status(400).json({ error: "ano_ref inválido (ex: 2025)." });
+      return res.status(400).json({ error: "ano_ref inválido (ex: 2026)." });
     }
 
-    // nível é parte da chave de configuração pedagógica (como no route config_pedagogica.js)
-    const nivel = typeof req.body?.nivel === "string" && req.body.nivel.trim()
-      ? req.body.nivel.trim()
-      : "fundamental_II";
+    const nivel =
+      typeof req.body?.nivel === "string" && req.body.nivel.trim()
+        ? req.body.nivel.trim()
+        : "fundamental_II";
 
-    // ------------------------- DIAGNÓSTICO (entrada) -------------------------
-    if (!isProd()) {
-      console.log("[grade/run-mock] traceId=", traceId);
-      console.log("[grade/run-mock] escolaId=", req.escolaId, "turno=", turnoNorm, "ano_ref=", anoRef, "nivel=", nivel);
-      console.log("[grade/run-mock] turmaIds=", ids);
-      console.log("[grade/run-mock] bodyPreview=", safePreview(req.body || {}));
-    }
+    const semestre = Number(req.body?.semestre) === 2 ? 2 : 1;
+    const respeitarHorarioManual = req.body?.respeitar_horario_manual !== false;
 
-    // 1) Monta o payload-base pelo serviço padrão (já validado no fluxo)
-    if (!isProd()) console.log("[grade/run-mock] (1) buildSolverPayload: INÍCIO", "traceId=", traceId);
-
-    const payload = await buildSolverPayload({
+    const { payload, warnings_payload, payload_summary } = await assembleEnrichedSolverPayload({
       escolaId: req.escolaId,
-      turno: turnoNorm,
-      turmaIds: ids,
-    });
-
-    if (!isProd()) {
-      console.log("[grade/run-mock] (1) buildSolverPayload: OK", "traceId=", traceId);
-      console.log("[grade/run-mock] payloadStats=", pickPayloadStats(payload));
-    }
-
-    // 2) Injeta ano_ref no payload (para rastreio/diagnóstico e compatibilidade do solver)
-    payload.ano_ref = anoRef;
-
-    // 3) Força o payload usar a Configuração Pedagógica persistida (se existir),
-    // garantindo que RC-01/RC-02 cheguem com "Hard/Soft" e limites corretos no solver.
-    if (!isProd()) console.log("[grade/run-mock] (3) loadConfigPedagogica: INÍCIO", "traceId=", traceId);
-
-    const configPersistida = await loadConfigPedagogica({
-      escolaId: req.escolaId,
-      turno: turnoNorm,
+      turnoNorm,
+      ids,
       anoRef,
       nivel,
+      semestre,
+      respeitarHorarioManual,
     });
 
-    if (!isProd()) {
-      console.log(
-        "[grade/run-mock] (3) loadConfigPedagogica:",
-        configPersistida ? "ENCONTRADA" : "NÃO ENCONTRADA",
-        "traceId=",
-        traceId
-      );
-      if (configPersistida) console.log("[grade/run-mock] configPedagogicaPreview=", safePreview(configPersistida));
-    }
-
-    if (configPersistida) {
-      payload.config_pedagogica = configPersistida;
-    } else {
-      // fallback defensivo: garante estrutura mínima esperada pelo solver
-      payload.config_pedagogica = { regras: {} };
-    }
-    
-    if (!payload.config_pedagogica.regras) payload.config_pedagogica.regras = {};
-
-    // 3.5) Injeta regras_gerais (globais da escola) no payload
-    try {
-      const [[escolaCfg]] = await pool.query(
-        'SELECT periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1',
-        [req.escolaId]
-      );
-      if (escolaCfg && escolaCfg.periodos) {
-        let parsedPeriodos = typeof escolaCfg.periodos === 'string' ? JSON.parse(escolaCfg.periodos) : escolaCfg.periodos;
-        if (Buffer.isBuffer(escolaCfg.periodos)) parsedPeriodos = JSON.parse(escolaCfg.periodos.toString('utf8'));
-        
-        if (parsedPeriodos && parsedPeriodos._regras_gerais) {
-          payload.config_pedagogica.regras_gerais = parsedPeriodos._regras_gerais;
-          
-          // Compatibilidade RC01 e RC02 forçada pelas regras gerais
-          if (parsedPeriodos._regras_gerais.preferencia_aulas_duplas) {
-             payload.config_pedagogica.regras.rc01_distribuicao_disciplina = {
-               modo: 'hard', max_consecutivas: 2
-             };
-          }
-          if (parsedPeriodos._regras_gerais.max_aulas_mesmo_dia) {
-             payload.config_pedagogica.regras.rc02_max_por_dia_disciplina = {
-               modo: 'hard', max_por_dia_padrao: parsedPeriodos._regras_gerais.max_aulas_mesmo_dia, bloqueio_hard: true
-             };
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("[grade/run-mock] Falha ao injetar regras_gerais:", err.message);
-    }
-
-    // 4) Executa o solver mock (greedy) com Multi-Start (Monte Carlo)
-    if (!isProd()) console.log("[grade/run-mock] (4) runGreedySolver: INÍCIO", "traceId=", traceId);
-
+    // Executa o Solver 2.0 (DSATUR + Kempe Chains + Tabu Ejection Search)
     let bestResult = null;
     let maxAulas = -1;
-    
-    // O usuário permitiu que leve mais tempo para atingir 100%. 
-    // Vamos rodar o Monte Carlo intensamente por até 15 segundos ou até achar 100%.
-    const MAX_TIME_MS = 8000; 
+
+    const MAX_TIME_MS = 8500;
     const startTime = Date.now();
     let iter = 0;
     let perfectFound = false;
 
+    const strategies = [
+      "dsatur_slack",
+      "group_turma",
+      "scarce_first",
+      "dsatur_slack",
+      "weight_desc",
+      "reverse_weight",
+      "random",
+    ];
+
     while (Date.now() - startTime < MAX_TIME_MS) {
-      // Determina estratégia de ordenação e jitter ciclicamente
-      let strategy = "default";
-      let isRandomized = iter > 0;
-      
-      const cycle = iter % 120;
-      // 0-19:   scarce_first (default, best for 100% load)
-      // 20-39:  group_turma (agrupa prof+turma juntos - ideal para germinação e profs lotados)
-      // 40-59:  weight_desc (classic greedy)
-      // 60-79:  reverse_weight
-      // 80-99:  random
-      // 100-119: group_turma again (muito eficaz para profs 100%)
-      
-      if (cycle >= 20 && cycle < 40) strategy = "group_turma";
-      else if (cycle >= 40 && cycle < 60) strategy = "weight_desc";
-      else if (cycle >= 60 && cycle < 80) strategy = "reverse_weight";
-      else if (cycle >= 80 && cycle < 100) strategy = "random";
-      else if (cycle >= 100 && cycle < 120) strategy = "group_turma";
-      else strategy = "default"; // scarce_first
+      const strategy = strategies[iter % strategies.length];
+      const isRandomized = iter > 0;
 
       const result = runGreedySolver(payload, isRandomized, strategy);
-      
+
       const alocadas = result.metrics.aulas_alocadas || 0;
       const demanda = result.metrics.aulas_demanda || 1;
-      
+
       if (alocadas > maxAulas) {
         maxAulas = alocadas;
         bestResult = result;
       }
-      
-      // Se alcançou 100% perfeito, para imediatamente
-      if (alocadas === demanda) {
+
+      if (alocadas >= demanda) {
         perfectFound = true;
-        if (!isProd()) console.log(`[grade/run-mock] Achou grade perfeita na iteração ${iter} com estratégia '${strategy}'! Tempo: ${Date.now() - startTime}ms`);
+        if (!isProd()) {
+          console.log(
+            `[grade/run-mock] Achou grade 100% na iteração ${iter} com estratégia '${strategy}'! Tempo: ${Date.now() - startTime}ms`
+          );
+        }
         break;
       }
       iter++;
     }
 
-    if (!perfectFound && !isProd()) {
-      console.log(`[grade/run-mock] Fim do tempo (${MAX_TIME_MS}ms). Total de iterações: ${iter}. Melhor alocação: ${maxAulas}`);
-    }
-
-    const result = bestResult;
-
-    if (!isProd()) {
-      console.log("[grade/run-mock] (4) runGreedySolver: OK", "traceId=", traceId);
-      console.log("[grade/run-mock] resultPreview=", safePreview(result));
-    }
-
-
-    // 5) Analisa utilização dos professores para avisos na UI
-    const periodosPorDia = 6;
-    const diasSemana = 5;
-    const maxSlotsProf = periodosPorDia * diasSemana;
-    const dem = Array.isArray(payload.demanda) ? payload.demanda : [];
-    const mod = Array.isArray(payload.modulacao) ? payload.modulacao : [];
-    const profIndex = new Map();
-    for (const m of mod) {
-      const k = `${m.turma_id}|${m.disciplina_id}`;
-      if (!profIndex.has(k)) profIndex.set(k, { id: m.professor_id, nome: m.professor_nome });
-    }
-    const profCarga = new Map();
-    for (const d of dem) {
-      const prof = profIndex.get(`${d.turma_id}|${d.disciplina_id}`);
-      if (!prof) continue;
-      const prev = profCarga.get(prof.id) || { id: prof.id, nome: prof.nome, aulas: 0 };
-      prev.aulas += Number(d.carga || 0);
-      profCarga.set(prof.id, prev);
-    }
-    const warnings_payload = Array.from(profCarga.values())
-      .filter(p => p.aulas >= maxSlotsProf - 2)
-      .map(p => ({
-        professor_id: p.id,
-        professor_nome: p.nome,
-        aulas_demanda: p.aulas,
-        slots_disponiveis: maxSlotsProf,
-        utilization_pct: Math.round((p.aulas / maxSlotsProf) * 100),
-        is_100_percent: p.aulas >= maxSlotsProf
-      }));
+    const result = bestResult || runGreedySolver(payload, false, "dsatur_slack");
 
     return res.json({
       ok: true,
       traceId,
       warnings_payload,
-      payload_summary: {
-        escola_id: payload.escola_id || req.escolaId,
-        turno: payload.turno || turnoNorm,
-        ano_ref: payload.ano_ref ?? null,
-        nivel: payload.config_pedagogica?.nivel || nivel,
-        turmas: Array.isArray(payload.turmas) ? payload.turmas.length : 0,
-        demanda: Array.isArray(payload.demanda) ? payload.demanda.length : 0,
-        professores: Array.isArray(payload.modulacao)
-          ? new Set(payload.modulacao.map((m) => m.professor_id)).size
-          : 0,
+      payload_summary,
+      solver_telemetry: {
+        iteracoes: iter + 1,
+        tempo_ms: Date.now() - startTime,
+        perfeito: perfectFound,
       },
       ...result,
     });
   } catch (e) {
-    // ------------------------- DIAGNÓSTICO (erro) ----------------------------
     console.error("POST /api/grade/run-mock", e);
 
-    // Em DEV: devolve detalhes (message/stack) para localizar o ponto exato do 500
     if (!isProd()) {
       return res.status(500).json({
-        error: "Falha ao executar mock.",
+        error: "Falha ao executar solver.",
         traceId,
         details: {
           message: e?.message || String(e),
@@ -442,8 +504,7 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       });
     }
 
-    // Em PROD: mantém resposta enxuta
-    return res.status(500).json({ error: "Falha ao executar mock." });
+    return res.status(500).json({ error: "Falha ao executar solver." });
   }
 });
 

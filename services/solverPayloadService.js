@@ -59,9 +59,9 @@ async function fetchTurmas(escolaId, turno, turmaIds) {
 
   const placeholders = ids.map(() => "?").join(",");
   const [rows] = await pool.query(
-    `SELECT id, nome, etapa, serie, turno
+    `SELECT id, nome, etapa, serie, turno, regime
        FROM turmas
-      WHERE escola_id=? AND turno=? AND id IN (${placeholders})
+      WHERE escola_id=? AND LOWER(turno)=LOWER(?) AND id IN (${placeholders})
       ORDER BY serie, nome`,
     [escolaId, turno, ...ids]
   );
@@ -72,25 +72,31 @@ async function fetchTurmas(escolaId, turno, turmaIds) {
     etapa: r.etapa,
     serie: r.serie,
     turno: r.turno,
+    regime: r.regime || "anual",
   }));
 }
 
 // ---------------------- demanda (turma_cargas) -------
-async function fetchDemanda(escolaId, turno, turmaIds) {
+async function fetchDemanda(escolaId, turno, turmaIds, semestre = 1) {
   const ids = (turmaIds || [])
     .map(Number)
     .filter((n) => Number.isFinite(n) && n > 0);
   if (!ids.length) return [];
 
+  const semNum = toInt(semestre, 1) || 1;
   const placeholders = ids.map(() => "?").join(",");
   const [rows] = await pool.query(
-    `SELECT tc.turma_id, tc.disciplina_id, d.nome AS disciplina_nome, (tc.carga+0) AS carga
+    `SELECT tc.turma_id, tc.disciplina_id, d.nome AS disciplina_nome, SUM(tc.carga+0) AS carga
        FROM turma_cargas tc
        JOIN turmas t ON t.id = tc.turma_id
        JOIN disciplinas d ON d.id = tc.disciplina_id
-      WHERE tc.escola_id=? AND t.turno=? AND tc.turma_id IN (${placeholders})
+      WHERE tc.escola_id=?
+        AND LOWER(t.turno)=LOWER(?)
+        AND tc.turma_id IN (${placeholders})
+        AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR tc.semestre IS NULL OR tc.semestre = 0 OR tc.semestre = ?)
+      GROUP BY tc.turma_id, tc.disciplina_id, d.nome
       ORDER BY t.nome, d.nome`,
-    [escolaId, turno, ...ids]
+    [escolaId, turno, ...ids, semNum]
   );
 
   return rows.map((r) => ({
@@ -102,25 +108,30 @@ async function fetchDemanda(escolaId, turno, turmaIds) {
 }
 
 // ---------------------- modulação --------------------
-async function fetchModulacao(escolaId, turmaIds) {
+async function fetchModulacao(escolaId, turmaIds, semestre = 1) {
   const ids = (turmaIds || [])
     .map(Number)
     .filter((n) => Number.isFinite(n) && n > 0);
   if (!ids.length) return [];
 
+  const semNum = toInt(semestre, 1) || 1;
   const placeholders = ids.map(() => "?").join(",");
   const [rows] = await pool.query(
-    `SELECT m.professor_id, m.turma_id, m.disciplina_id, p.nome AS professor_nome
+    `SELECT m.professor_id, m.turma_id, m.disciplina_id, m.aulas, m.semestre, p.nome AS professor_nome
        FROM modulacao m
        JOIN professores p ON p.id = m.professor_id
-      WHERE m.escola_id=? AND m.turma_id IN (${placeholders})`,
-    [escolaId, ...ids]
+       LEFT JOIN turmas t ON t.id = m.turma_id
+      WHERE m.escola_id=?
+        AND m.turma_id IN (${placeholders})
+        AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR m.semestre IS NULL OR m.semestre = 0 OR m.semestre = ?)`,
+    [escolaId, ...ids, semNum]
   );
 
   return rows.map((r) => ({
     professor_id: toInt(r.professor_id),
     turma_id: toInt(r.turma_id),
     disciplina_id: toInt(r.disciplina_id),
+    aulas: toInt(r.aulas, 0),
     professor_nome: r.professor_nome,
   }));
 }
@@ -133,7 +144,7 @@ async function fetchDisponibilidades(escolaId, turno, profIdsOpt = []) {
            COALESCE(status,'livre') AS status_padrao,
            periodos AS periodos_json
       FROM grade_disponibilidades
-     WHERE escola_id=? AND turno=?`;
+     WHERE escola_id=? AND LOWER(turno)=LOWER(?)`;
   const params = [escolaId, turno];
 
   if (Array.isArray(profIdsOpt) && profIdsOpt.length) {
@@ -168,11 +179,12 @@ async function fetchDisponibilidades(escolaId, turno, profIdsOpt = []) {
         professor_id: toInt(r.professor_id),
         dia: toInt(r.dia),
         ordem: ordemNum,
-        status: String(it?.status || r.status_padrao || "livre"),
+        periodo: ordemNum,
+        status: String(it?.status || r.status_padrao || "livre").toLowerCase(),
       });
     }
   }
-  return out; // [{professor_id,dia,ordem,status}]
+  return out; // [{professor_id,dia,ordem,periodo,status}]
 }
 
 // ---------------------- preferencias -----------------
@@ -183,7 +195,7 @@ async function fetchPreferencias(escolaId, turno, profIdsOpt = []) {
            evitar_janela_interna,
            COALESCE(JSON_EXTRACT(regras_json,'$'), JSON_OBJECT()) AS regras_json
       FROM grade_preferencias_professor
-     WHERE turno=?`;
+     WHERE LOWER(turno)=LOWER(?)`;
   const params = [turno];
 
   if (Array.isArray(profIdsOpt) && profIdsOpt.length) {
@@ -214,6 +226,103 @@ async function fetchPreferencias(escolaId, turno, profIdsOpt = []) {
     map.set(toInt(r.professor_id), obj);
   }
   return map; // Map<prof_id, regras_json>
+}
+
+// ---------------------- config da escola (turnos, dias, periodos, regras_gerais) -----
+async function fetchEscolaConfigGrade(escolaId, turnoNorm) {
+  try {
+    const [[row]] = await pool.query(
+      `SELECT turnos, dias_semana, periodos
+         FROM escola_configuracao_grade
+        WHERE escola_id = ?
+        LIMIT 1`,
+      [escolaId]
+    );
+    if (!row) {
+      return {
+        dias_semana: [1, 2, 3, 4, 5],
+        periodos_por_dia: 6,
+        regras_gerais: null,
+      };
+    }
+
+    const parseSafe = (raw, fb) => {
+      try {
+        if (typeof raw === "string") return JSON.parse(raw);
+        if (Buffer.isBuffer(raw)) return JSON.parse(raw.toString("utf8"));
+        if (raw && typeof raw === "object") return raw;
+      } catch {}
+      return fb;
+    };
+
+    const diasSemana = parseSafe(row.dias_semana, [1, 2, 3, 4, 5]);
+    const periodosObj = parseSafe(row.periodos, {});
+    const regrasGerais = periodosObj?._regras_gerais || null;
+    const periodosPorDia = toInt(periodosObj?.[turnoNorm], 0) || 6;
+
+    return {
+      dias_semana: Array.isArray(diasSemana) && diasSemana.length ? diasSemana.map(Number) : [1, 2, 3, 4, 5],
+      periodos_por_dia: periodosPorDia,
+      regras_gerais: regrasGerais,
+    };
+  } catch {
+    return {
+      dias_semana: [1, 2, 3, 4, 5],
+      periodos_por_dia: 6,
+      regras_gerais: null,
+    };
+  }
+}
+
+// ---------------------- slots fixos (Horário Manual / locked=1) -------------
+async function fetchSlotsFixos(escolaId, turnoNorm, turmaIds) {
+  try {
+    const [resultados] = await pool.query(
+      `SELECT id, status
+         FROM grade_resultado
+        WHERE escola_id = ? AND turno = ? AND status IN ('rascunho', 'publicado')
+        ORDER BY FIELD(status, 'rascunho', 'publicado')`,
+      [escolaId, turnoNorm]
+    );
+    if (!resultados || resultados.length === 0) return [];
+
+    const idsSet = new Set((turmaIds || []).map(Number).filter(n => Number.isFinite(n) && n > 0));
+
+    for (const res of resultados) {
+      const [slots] = await pool.query(
+        `SELECT
+           gs.turma_id,
+           gs.dia_semana AS dia,
+           gs.periodo_ordem AS ordem,
+           gs.disciplina_id,
+           gs.professor_id,
+           gs.origem,
+           gs.locked
+         FROM grade_slot gs
+        WHERE gs.resultado_id = ?
+          AND (gs.locked = 1 OR gs.origem = 'manual')`,
+        [res.id]
+      );
+      if (slots && slots.length > 0) {
+        return slots.map(s => {
+          const tid = toInt(s.turma_id);
+          return {
+            turma_id: tid,
+            dia: toInt(s.dia),
+            ordem: toInt(s.ordem),
+            disciplina_id: toInt(s.disciplina_id),
+            professor_id: toInt(s.professor_id),
+            origem: s.origem || "manual",
+            locked: true,
+            in_scope: idsSet.size === 0 || idsSet.has(tid),
+          };
+        });
+      }
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------- config pedagógica (novo) -----
@@ -274,43 +383,81 @@ async function fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, nivel = "f
 }
 
 // ---------------------- builder público --------------
-export async function buildSolverPayload({ escolaId, turno, turmaIds, anoRef, ano_ref }) {
+export async function buildSolverPayload({
+  escolaId,
+  turno,
+  turmaIds,
+  anoRef,
+  ano_ref,
+  semestre = 1,
+  respeitarHorarioManual = true,
+}) {
   const turnoNorm = normTurno(turno);
 
   // aceitamos anoRef (camel) e ano_ref (snake) para robustez
   const anoRefNorm = normAnoRef(anoRef ?? ano_ref);
 
-  const grade_base = await fetchGradeBase(escolaId, turnoNorm);
-  const turmas = await fetchTurmas(escolaId, turnoNorm, turmaIds);
-  const demanda = await fetchDemanda(escolaId, turnoNorm, turmaIds);
-  const modulacao = await fetchModulacao(escolaId, turmaIds);
+  const [
+    grade_base,
+    turmas,
+    demanda,
+    modulacao,
+    escolaCfg,
+    config_pedagogica,
+    slots_fixos,
+  ] = await Promise.all([
+    fetchGradeBase(escolaId, turnoNorm),
+    fetchTurmas(escolaId, turnoNorm, turmaIds),
+    fetchDemanda(escolaId, turnoNorm, turmaIds, semestre),
+    fetchModulacao(escolaId, turmaIds, semestre),
+    fetchEscolaConfigGrade(escolaId, turnoNorm),
+    fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, "fundamental_II"),
+    respeitarHorarioManual ? fetchSlotsFixos(escolaId, turnoNorm, turmaIds) : Promise.resolve([]),
+  ]);
 
   const profIds = Array.from(new Set(modulacao.map((m) => m.professor_id)));
-  const disponibilidades = await fetchDisponibilidades(escolaId, turnoNorm, profIds);
-  const preferenciasMap = await fetchPreferencias(escolaId, turnoNorm, profIds);
+  const [disponibilidades, preferenciasMap] = await Promise.all([
+    fetchDisponibilidades(escolaId, turnoNorm, profIds),
+    fetchPreferencias(escolaId, turnoNorm, profIds),
+  ]);
 
-  // ✅ novo: contrato/config pedagógica (regras RC-01/RC-02 etc.)
-  const config_pedagogica = await fetchConfigPedagogica(
-    escolaId,
-    turnoNorm,
-    anoRefNorm,
-    "fundamental_II"
-  );
+  // Se escola_configuracao_grade possui regras_gerais, aplica sobre config_pedagogica
+  if (escolaCfg.regras_gerais) {
+    config_pedagogica.regras_gerais = escolaCfg.regras_gerais;
+    if (!config_pedagogica.regras) config_pedagogica.regras = {};
+    if (escolaCfg.regras_gerais.preferencia_aulas_duplas) {
+      config_pedagogica.regras.rc01_distribuicao_disciplina = {
+        modo: "hard",
+        max_consecutivas: 2,
+      };
+    }
+    if (escolaCfg.regras_gerais.max_aulas_mesmo_dia) {
+      config_pedagogica.regras.rc02_max_por_dia_disciplina = {
+        modo: "hard",
+        max_por_dia_padrao: escolaCfg.regras_gerais.max_aulas_mesmo_dia,
+        bloqueio_hard: true,
+      };
+    }
+  }
 
   return {
     escola_id: escolaId,
     turno: turnoNorm,
     ano_ref: anoRefNorm || null,
+    semestre: toInt(semestre, 1) || 1,
+    dias_semana: escolaCfg.dias_semana,
+    periodos_por_dia: escolaCfg.periodos_por_dia,
 
     // ✅ regras pedagógicas consolidadas para o solver
-    config_pedagogica, // { nivel, regras }
+    config_pedagogica, // { nivel, regras, regras_gerais }
 
     grade_base, // { dia: [{ordem,inicio,fim}, ...], ... }
-    turmas, // [{ id,nome,etapa,serie,turno }]
+    turmas, // [{ id,nome,etapa,serie,turno,regime }]
     demanda, // [{ turma_id,disciplina_id,disciplina_nome,carga }]
-    modulacao, // [{ professor_id,turma_id,disciplina_id,professor_nome }]
-    disponibilidades, // [{ professor_id,dia,ordem,status }]
+    modulacao, // [{ professor_id,turma_id,disciplina_id,aulas,professor_nome }]
+    disponibilidades, // [{ professor_id,dia,ordem,periodo,status }]
     preferencias: Object.fromEntries(preferenciasMap), // { [profId]: regras_json }
+    slots_fixos, // [{ turma_id,dia,ordem,disciplina_id,professor_id,origem,locked }]
   };
 }
 
