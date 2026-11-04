@@ -41,18 +41,30 @@ async function dismissCookieBanner(session, page) {
     // EDUCADF migrou o banner de cookies para ngb-offcanvas (Angular Bootstrap).
     // O seletor agora deve incluir a tag do backdrop do offcanvas.
     const BANNER_SELECTOR = [
+      'app-aviso-cookies',
+      'button.aceitar',
       'ngb-offcanvas-backdrop',
       '.offcanvas-backdrop',
       '.cookies-banner',
       '[class*="cookie"]',
       '[class*="lgpd"]',
       '[class*="consent"]',
+      '.aviso',
     ].join(', ');
 
     const bannerEl = await page.$(BANNER_SELECTOR).catch(() => null);
 
     if (!bannerEl) {
       console.log('[educadf.login] Nenhum banner/overlay detectado — pulando dismiss (early exit).');
+      return;
+    }
+
+    // ─ Novo componente Angular app-aviso-cookies ───────────────────────
+    const aceitarBtnNovo = await page.$('app-aviso-cookies button.aceitar, button.aceitar').catch(() => null);
+    if (aceitarBtnNovo) {
+      console.log('[educadf.login] app-aviso-cookies detectado — clicando "Aceitar"...');
+      await aceitarBtnNovo.click().catch(() => {});
+      await session.delay(400);
       return;
     }
 
@@ -302,7 +314,7 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     try {
       await session.safeClick(LOGIN.form.submitButton, { delay: 500 });
       submitClicked = true;
-      console.log('[educadf.login] Submit via seletor principal (login-lam-btn-acessar).');
+      console.log('[educadf.login] Submit via seletor principal (button.tf__botao / login-lam-btn-acessar).');
     } catch {
       try {
         await session.safeClick(LOGIN.form.submitButtonAlt, { delay: 300 });
@@ -319,16 +331,17 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
 
     if (!submitClicked) {
       // JS click direto: bypassa QUALQUER interceptação de pointer events
-      console.log('[educadf.login] safeClick falhou — usando JS click direto no botão Acessar...');
+      console.log('[educadf.login] safeClick falhou — usando JS click direto no botão Entrar/Acessar...');
       submitClicked = await page.evaluate(() => {
-        // Tenta botão pela classe nova (mapeada 26/04/2026)
         const btn =
-          document.querySelector('button.login-lam-btn-acessar') ||
+          document.querySelector('button.tf__botao') ||
           document.querySelector('button[type="submit"]') ||
+          document.querySelector('button.login-lam-btn-acessar') ||
           document.querySelector('button.btn-success') ||
-          [...document.querySelectorAll('button')].find(b =>
-            b.textContent.trim().toLowerCase().includes('acessar')
-          );
+          [...document.querySelectorAll('button')].find(b => {
+            const t = b.textContent.trim().toLowerCase();
+            return t.includes('entrar') || t.includes('acessar');
+          });
         if (btn) { btn.click(); return true; }
         return false;
       });

@@ -16,34 +16,28 @@ export const LOGIN = {
   // URL da página de autenticação
   url: `${EDUCADF_URL}/auth`,
 
-  // Banner de cookies "Bem-vindo!" (precisa aceitar antes de interagir)
-  // O banner fica fixo no rodapé e pode esconder parte da tela
+  // Banner de cookies (precisa aceitar antes de interagir)
   cookieBanner: {
-    // Contêiner do banner (para saber se está visível)
-    container: '.cookies-banner, [class*="cookie"], [class*="lgpd"], [class*="consent"]',
-    // Botão "Aceitar" — múltiplos seletores para robustez
+    container: 'app-aviso-cookies, .cookies-banner, [class*="cookie"], [class*="lgpd"], [class*="consent"], .aviso, [aria-label*="cookie" i]',
     acceptButton: [
-      'button:has-text("Aceitar")',              // texto exato
-      'button.btn-primary:has-text("Aceitar")',  // com classe
-      'a:has-text("Aceitar")',                   // pode ser <a>
-      '.btn:has-text("Aceitar")',                // genérico Bootstrap
+      'app-aviso-cookies button.aceitar',
+      'button.aceitar',
+      'button:has-text("Aceitar")',
+      'button.btn-primary:has-text("Aceitar")',
+      'a:has-text("Aceitar")',
+      '.btn:has-text("Aceitar")',
     ],
   },
 
   // Seleção de perfil (tela inicial /auth)
-  // IMPORTANTE: Cada perfil tem href próprio — mais robusto que texto
-  // Professor  = /auth/login?id=1
-  // Servidor   = /auth/login?id=2 (ou similar)
-  // Gestão    = /auth/login?id=3 (ou similar)
   profileSelector: {
-    professor: 'a.profile-card-hit-area[href*="id=1"]',
-    servidor:  'a.profile-card-hit-area[href*="id=2"]',
-    estudante: 'a.profile-card-hit-area[href*="id=3"]',
-    gestao:    'a.profile-card-hit-area[href*="id=3"]',
+    professor: 'a.profile-card-hit-area[href*="id=1"], a[href*="id=1"]',
+    servidor:  'a.profile-card-hit-area[href*="id=2"], a[href*="id=2"]',
+    estudante: 'a.profile-card-hit-area[href*="id=3"], a[href*="id=3"]',
+    gestao:    'a.profile-card-hit-area[href*="id=3"], a[href*="id=3"]',
   },
 
   // URLs DIRETAS de login por perfil (bypass da tela de seleção)
-  // Mais confiável: pula o click no card que pode ser bloqueado por overlays
   loginUrl: {
     professor: `${EDUCADF_URL}/auth/login?id=1`,
     servidor:  `${EDUCADF_URL}/auth/login?id=2`,
@@ -52,24 +46,18 @@ export const LOGIN = {
 
   // Formulário de login (após selecionar perfil)
   form: {
-    usernameInput:    '#username',
-    passwordInput:    '#password-input',
-    rememberCheck:    '#auth-remember-check',
-    // Botão principal atualizado (mapeado em 26/04/2026)
-    submitButton:     'button.login-lam-btn-acessar',
-    // Fallbacks em ordem de preferência
+    usernameInput:    '#login-identificador, input[autocomplete="username"], input[formcontrolname="name"], #username',
+    passwordInput:    '#login-senha, input[autocomplete="current-password"], input[formcontrolname="password"], #password-input',
+    rememberCheck:    'input[formcontrolname="lembrar"], #auth-remember-check',
+    submitButton:     'button.tf__botao, button[type="submit"], button:has-text("Entrar"), button.login-lam-btn-acessar',
     submitButtonAlt:  'button[type="submit"]',
     submitButtonAlt2: 'button.btn-success',
   },
 
   // Indicadores de estado
   state: {
-    // Mensagem de erro de login (se senha errada)
-    errorMessage:    '.alert-danger, .text-danger, .error-message, [class*="error"]',
-    // Indicador de loading
-    spinner:         '.spinner-border, .loading',
-    // Sucesso: qualquer elemento significativo que apareça após login bem-sucedido.
-    // Cobre o portal do Professor (Angular/app-sidebar) E o portal de Gestão/Servidor (Bootstrap/page-content).
+    errorMessage:    '.tf__falha, [role="alert"], app-aviso-de-erro, .alert-danger, .text-danger, .error-message, [class*="error"]',
+    spinner:         '.spinner-border, .loading, [aria-busy="true"]',
     dashboardLoaded: [
       '.page-content',
       '.vertical-menu',
