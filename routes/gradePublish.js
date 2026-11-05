@@ -729,4 +729,341 @@ router.post("/manual/professor", requireEscola, async (req, res) => {
   }
 });
 
+// ============================================================================
+// PASSO 4 (Entrega 4) — Portal do Professor: Meu Horário de Aulas
+// GET /api/grade/meu-horario
+//  - Resolve automaticamente o professor logado via CPF do token/usuário
+//  - Permite ?professor_id=X para Direção / Coordenação / Secretaria consultar
+//  - Retorna os horários publicados (com fallback inteligente para rascunho)
+//    em todos os turnos em que o professor leciona na escola
+// ============================================================================
+router.get("/meu-horario", requireEscola, async (req, res) => {
+  try {
+    const db = req.app.get("db") || req.app.locals.pool || req.pool || pool;
+    const escolaId = Number(req.escolaId);
+
+    const userPerfil = String(req.user?.perfil || "").toLowerCase().trim();
+    const isGestao = [
+      "diretor",
+      "vice_diretor",
+      "coordenador",
+      "supervisor",
+      "secretario",
+      "secretaria",
+      "super_admin",
+      "admin_global",
+    ].includes(userPerfil);
+
+    // 1) Resolve CPF do usuário logado
+    let cpf = req.user?.cpf || null;
+    const userId =
+      req.user?.id ||
+      req.user?.usuario_id ||
+      req.user?.userId ||
+      req.user?.usuarioId ||
+      req.user?.user_id ||
+      req.user?.id_usuario ||
+      req.user?.sub ||
+      null;
+
+    if (!cpf && userId) {
+      const [urows] = await db.query("SELECT cpf, nome FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      if (urows?.[0]?.cpf) cpf = String(urows[0].cpf);
+    }
+
+    const cleanCpf = String(cpf || "").replace(/\D/g, "");
+    const queryProfId = Number(req.query.professor_id || 0);
+
+    // 2) Se for perfil de gestão, carrega lista de professores da escola para permitir troca rápida
+    let professoresEscola = [];
+    if (isGestao) {
+      const [allProfs] = await db.query(
+        `SELECT MIN(id) AS id, nome, REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') AS cpf_limpo
+           FROM professores
+          WHERE escola_id = ? AND COALESCE(status, 'ativo') <> 'inativo'
+          GROUP BY cpf_limpo, nome
+          ORDER BY nome ASC`,
+        [escolaId]
+      );
+      professoresEscola = allProfs || [];
+    }
+
+    // 3) Localiza o(s) ID(s) do professor alvo (um mesmo CPF pode ter mais de 1 id legado)
+    let profRows = [];
+    if (queryProfId > 0) {
+      const [[targetProf]] = await db.query(
+        `SELECT id, nome, cpf, foto FROM professores WHERE id = ? AND escola_id = ? LIMIT 1`,
+        [queryProfId, escolaId]
+      );
+      if (targetProf) {
+        const targetCpfClean = String(targetProf.cpf || "").replace(/\D/g, "");
+        if (targetCpfClean) {
+          const [siblings] = await db.query(
+            `SELECT id, nome, cpf, foto FROM professores
+              WHERE escola_id = ?
+                AND REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+            [escolaId, targetCpfClean]
+          );
+          profRows = siblings?.length ? siblings : [targetProf];
+        } else {
+          profRows = [targetProf];
+        }
+      }
+    }
+
+    if (profRows.length === 0 && cleanCpf) {
+      const [byCpf] = await db.query(
+        `SELECT id, nome, cpf, foto FROM professores
+          WHERE escola_id = ?
+            AND REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+        [escolaId, cleanCpf]
+      );
+      if (byCpf?.length) profRows = byCpf;
+    }
+
+    // Se for gestor e o próprio CPF não for de professor, seleciona o primeiro professor com horário (ou da lista)
+    if (profRows.length === 0 && isGestao && professoresEscola.length > 0) {
+      const [[profComSlot]] = await db.query(
+        `SELECT p.id, p.nome, p.cpf, p.foto
+           FROM grade_slot gs
+           JOIN grade_resultado gr ON gr.id = gs.resultado_id
+           JOIN professores p ON p.id = gs.professor_id
+          WHERE gr.escola_id = ? AND p.escola_id = ?
+          ORDER BY FIELD(gr.status, 'publicado', 'rascunho'), p.nome ASC
+          LIMIT 1`,
+        [escolaId, escolaId]
+      );
+      const firstId = profComSlot?.id || professoresEscola[0].id;
+      const [[fallbackProf]] = await db.query(
+        `SELECT id, nome, cpf, foto FROM professores WHERE id = ? AND escola_id = ? LIMIT 1`,
+        [firstId, escolaId]
+      );
+      if (fallbackProf) {
+        const fbCpf = String(fallbackProf.cpf || "").replace(/\D/g, "");
+        if (fbCpf) {
+          const [siblings] = await db.query(
+            `SELECT id, nome, cpf, foto FROM professores
+              WHERE escola_id = ?
+                AND REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+            [escolaId, fbCpf]
+          );
+          profRows = siblings?.length ? siblings : [fallbackProf];
+        } else {
+          profRows = [fallbackProf];
+        }
+      }
+    }
+
+    if (profRows.length === 0) {
+      return res.json({
+        ok: true,
+        professor: null,
+        professores_escola: professoresEscola,
+        is_gestao: isGestao,
+        turnos: {},
+        slots: [],
+      });
+    }
+
+    const profIds = Array.from(new Set(profRows.map((p) => Number(p.id)).filter(Boolean)));
+    const professorPrincipal = {
+      id: profRows[0].id,
+      ids: profIds,
+      nome: profRows[0].nome,
+      cpf: profRows[0].cpf,
+      foto: profRows[0].foto || null,
+    };
+
+    // 4) Busca dados da escola e configuração de grade
+    const [[[escolaRow]], [[cfgRow]], [gradeBaseRows], [resultadosRows]] = await Promise.all([
+      db.query(`SELECT id, nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escolaId]),
+      db.query(
+        `SELECT turnos, dias_semana, periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1`,
+        [escolaId]
+      ).catch(() => [[null]]),
+      db.query(
+        `SELECT LOWER(turno) AS turno, dia_semana AS dia, periodo_ordem AS ordem,
+                TIME_FORMAT(hora_inicio, '%H:%i') AS inicio,
+                TIME_FORMAT(hora_fim, '%H:%i') AS fim
+           FROM grade_base
+          WHERE escola_id = ?
+          ORDER BY turno, dia_semana, periodo_ordem`,
+        [escolaId]
+      ).catch(() => [[]]),
+      db.query(
+        `SELECT id, LOWER(turno) AS turno, status, version, descricao,
+                DATE_FORMAT(published_at, '%d/%m/%Y %H:%i') AS publicado_em,
+                DATE_FORMAT(updated_at, '%d/%m/%Y %H:%i') AS atualizado_em
+           FROM grade_resultado
+          WHERE escola_id = ? AND status IN ('publicado', 'rascunho')
+          ORDER BY turno, FIELD(status, 'publicado', 'rascunho'), id DESC`,
+        [escolaId]
+      ),
+    ]);
+
+    const diasSemana = (() => {
+      const parsed = parseJsonColumn(cfgRow?.dias_semana);
+      return Array.isArray(parsed) && parsed.length ? parsed.map(Number) : [1, 2, 3, 4, 5];
+    })();
+    const periodosCfg = (() => {
+      try {
+        if (!cfgRow?.periodos) return {};
+        return typeof cfgRow.periodos === "string" ? JSON.parse(cfgRow.periodos) : cfgRow.periodos;
+      } catch {
+        return {};
+      }
+    })();
+
+    // Mapa de horários por turno e ordem
+    const horariosBasePorTurno = {};
+    for (const gb of gradeBaseRows || []) {
+      const t = String(gb.turno || "").toLowerCase();
+      if (!horariosBasePorTurno[t]) horariosBasePorTurno[t] = {};
+      if (!horariosBasePorTurno[t][gb.ordem]) {
+        horariosBasePorTurno[t][gb.ordem] = {
+          ordem: Number(gb.ordem),
+          inicio: gb.inicio,
+          fim: gb.fim,
+        };
+      }
+    }
+
+    // 5) Seleciona o melhor resultado por turno para este professor:
+    // Prioriza 'publicado' se contiver aulas do professor; caso contrário, usa 'rascunho' se existir
+    const resIds = (resultadosRows || []).map((r) => Number(r.id)).filter(Boolean);
+    let allProfSlots = [];
+    if (resIds.length > 0 && profIds.length > 0) {
+      const phRes = resIds.map(() => "?").join(",");
+      const phProf = profIds.map(() => "?").join(",");
+      const [slotRows] = await db.query(
+        `SELECT
+           gs.resultado_id,
+           gs.turma_id,
+           t.nome AS turma_nome,
+           t.serie AS turma_serie,
+           t.etapa AS turma_etapa,
+           t.turno AS turma_turno,
+           gs.dia_semana AS dia,
+           gs.periodo_ordem AS ordem,
+           gs.disciplina_id,
+           d.nome AS disciplina_nome,
+           d.abreviatura AS disciplina_sigla,
+           gs.professor_id,
+           gs.origem,
+           gs.locked
+         FROM grade_slot gs
+         LEFT JOIN turmas t ON t.id = gs.turma_id
+         LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+        WHERE gs.resultado_id IN (${phRes})
+          AND gs.professor_id IN (${phProf})
+        ORDER BY gs.dia_semana ASC, gs.periodo_ordem ASC`,
+        [...resIds, ...profIds]
+      );
+      allProfSlots = slotRows || [];
+    }
+
+    const slotsByResultado = new Map();
+    for (const s of allProfSlots) {
+      const rid = Number(s.resultado_id);
+      if (!slotsByResultado.has(rid)) slotsByResultado.set(rid, []);
+      slotsByResultado.get(rid).push(s);
+    }
+
+    // Agrupa resultados por turno e escolhe o ativo para o professor
+    const resultadosPorTurno = new Map();
+    for (const r of resultadosRows || []) {
+      const t = String(r.turno || "").toLowerCase();
+      if (!resultadosPorTurno.has(t)) resultadosPorTurno.set(t, []);
+      resultadosPorTurno.get(t).push(r);
+    }
+
+    const turnosOut = {};
+    const flatSlotsOut = [];
+
+    for (const [turnoKey, candList] of resultadosPorTurno.entries()) {
+      const pubRes = candList.find((c) => c.status === "publicado");
+      const draftRes = candList.find((c) => c.status === "rascunho");
+
+      const pubSlots = pubRes ? slotsByResultado.get(Number(pubRes.id)) || [] : [];
+      const draftSlots = draftRes ? slotsByResultado.get(Number(draftRes.id)) || [] : [];
+
+      let chosenRes = null;
+      let chosenSlots = [];
+      if (pubRes && pubSlots.length > 0) {
+        chosenRes = pubRes;
+        chosenSlots = pubSlots;
+      } else if (draftRes && draftSlots.length > 0) {
+        chosenRes = draftRes;
+        chosenSlots = draftSlots;
+      } else if (pubRes) {
+        chosenRes = pubRes;
+        chosenSlots = [];
+      } else if (draftRes) {
+        chosenRes = draftRes;
+        chosenSlots = [];
+      }
+
+      if (!chosenRes) continue;
+
+      const periodosPorDia = Number(periodosCfg?.[turnoKey]) || (turnoKey === "noturno" ? 5 : 6);
+      const enrichedSlots = chosenSlots.map((s) => {
+        const hInfo = horariosBasePorTurno[turnoKey]?.[s.ordem] || null;
+        return {
+          turno: turnoKey,
+          status_grade: chosenRes.status,
+          turma_id: Number(s.turma_id),
+          turma_nome: s.turma_nome || `Turma ${s.turma_id}`,
+          turma_serie: s.turma_serie || "",
+          turma_etapa: s.turma_etapa || "",
+          dia: Number(s.dia),
+          ordem: Number(s.ordem),
+          disciplina_id: Number(s.disciplina_id),
+          disciplina_nome: s.disciplina_nome || `Disc. ${s.disciplina_id}`,
+          disciplina_sigla: s.disciplina_sigla || "",
+          professor_id: Number(s.professor_id),
+          hora_inicio: hInfo?.inicio || null,
+          hora_fim: hInfo?.fim || null,
+          locked: Boolean(s.locked),
+          origem: s.origem || "solver",
+        };
+      });
+
+      if (enrichedSlots.length > 0) {
+        turnosOut[turnoKey] = {
+          turno: turnoKey,
+          resultado_id: chosenRes.id,
+          status: chosenRes.status,
+          version: chosenRes.version || 1,
+          publicado_em: chosenRes.publicado_em || chosenRes.atualizado_em || null,
+          periodos_por_dia: periodosPorDia,
+          horarios_periodos: horariosBasePorTurno[turnoKey] || {},
+          slots: enrichedSlots,
+        };
+        flatSlotsOut.push(...enrichedSlots);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      escola: {
+        id: escolaId,
+        nome: escolaRow?.nome || "Unidade Escolar",
+        apelido: escolaRow?.apelido || "",
+      },
+      professor: professorPrincipal,
+      professores_escola: professoresEscola,
+      is_gestao: isGestao,
+      dias_semana: diasSemana,
+      turnos: turnosOut,
+      slots: flatSlotsOut,
+    });
+  } catch (e) {
+    console.error("GET /api/grade/meu-horario:", e);
+    return res.status(500).json({
+      ok: false,
+      error: "Não foi possível carregar o horário do professor.",
+    });
+  }
+});
+
 export default router;

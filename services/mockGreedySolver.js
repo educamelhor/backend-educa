@@ -414,40 +414,86 @@ function normalizeDemandas(payload) {
   const dem = Array.isArray(payload?.demanda) ? payload.demanda : [];
   const mod = Array.isArray(payload?.modulacao) ? payload.modulacao : [];
 
-  const profIndex = new Map();
+  // Agrupa todos os professores modulados para cada (turma_id, disciplina_id)
+  const modListMap = new Map();
   for (const m of mod) {
     const turmaId = toInt(m.turma_id ?? m.turmaId, 0);
     const discId = toInt(m.disciplina_id ?? m.disciplinaId, 0);
     const profId = toInt(m.professor_id ?? m.professorId, 0);
+    const aulas = clamp(toInt(m.aulas_semanais ?? m.aulas ?? m.carga ?? 0, 0), 0, 60);
     if (turmaId > 0 && discId > 0 && profId > 0) {
       const k = `${turmaId}|${discId}`;
-      if (!profIndex.has(k)) profIndex.set(k, profId);
+      if (!modListMap.has(k)) modListMap.set(k, []);
+      const list = modListMap.get(k);
+      if (!list.some((it) => it.professor_id === profId)) {
+        list.push({ professor_id: profId, aulas });
+      }
     }
   }
 
   if (dem.length) {
-    return dem
-      .map((x) => {
-        const turma_id = toInt(x.turma_id ?? x.turmaId, 0);
-        const disciplina_id = toInt(x.disciplina_id ?? x.disciplinaId, 0);
-        const professor_id =
-          toInt(x.professor_id ?? x.professorId, 0) ||
-          profIndex.get(`${turma_id}|${disciplina_id}`) ||
-          0;
-        const aulas_semanais = clamp(
-          toInt(x.aulas_semanais ?? x.aulasSemanais ?? x.qtd ?? x.carga ?? 0, 0),
-          0,
-          60
-        );
-        return { turma_id, disciplina_id, professor_id, aulas_semanais };
-      })
-      .filter(
-        (x) =>
-          x.turma_id > 0 &&
-          x.disciplina_id > 0 &&
-          x.professor_id > 0 &&
-          x.aulas_semanais > 0
+    const out = [];
+    for (const x of dem) {
+      const turma_id = toInt(x.turma_id ?? x.turmaId, 0);
+      const disciplina_id = toInt(x.disciplina_id ?? x.disciplinaId, 0);
+      const carga = clamp(
+        toInt(x.aulas_semanais ?? x.aulasSemanais ?? x.qtd ?? x.carga ?? 0, 0),
+        0,
+        60
       );
+      if (turma_id <= 0 || disciplina_id <= 0 || carga <= 0) continue;
+
+      const explicitProf = toInt(x.professor_id ?? x.professorId, 0);
+      if (explicitProf > 0) {
+        out.push({ turma_id, disciplina_id, professor_id: explicitProf, aulas_semanais: carga, co_professores: [] });
+        continue;
+      }
+
+      const mods = modListMap.get(`${turma_id}|${disciplina_id}`) || [];
+      if (mods.length === 0) continue;
+
+      if (mods.length === 1) {
+        out.push({
+          turma_id,
+          disciplina_id,
+          professor_id: mods[0].professor_id,
+          aulas_semanais: carga,
+          co_professores: [],
+        });
+      } else {
+        // Múltiplos professores modulados na mesma (turma, disciplina)
+        const sumAulas = mods.reduce((acc, m) => acc + (m.aulas || 0), 0);
+        if (sumAulas > 0 && sumAulas <= carga) {
+          // Caso 1: Divisão de Carga (ex.: 4 aulas na turma -> 2 prof A + 2 prof B)
+          let allocated = 0;
+          mods.forEach((m, idx) => {
+            const qtd = idx === mods.length - 1 ? Math.max(0, carga - allocated) : Math.min(m.aulas || 1, carga - allocated);
+            if (qtd > 0) {
+              out.push({
+                turma_id,
+                disciplina_id,
+                professor_id: m.professor_id,
+                aulas_semanais: qtd,
+                co_professores: [],
+              });
+              allocated += qtd;
+            }
+          });
+        } else {
+          // Caso 2: Docência Compartilhada / Agrupamento / IFA / PD Simultâneo no mesmo horário da turma
+          const primaryProf = mods[0].professor_id;
+          const coProfs = mods.slice(1).map((m) => m.professor_id);
+          out.push({
+            turma_id,
+            disciplina_id,
+            professor_id: primaryProf,
+            aulas_semanais: carga,
+            co_professores: coProfs,
+          });
+        }
+      }
+    }
+    return out;
   }
 
   return mod
@@ -460,6 +506,7 @@ function normalizeDemandas(payload) {
         0,
         60
       ),
+      co_professores: [],
     }))
     .filter(
       (x) =>
@@ -481,11 +528,13 @@ function expandDemandasToLessons(
   const lessons = [];
   for (const d of demandas) {
     const qtd = toInt(d.aulas_restantes ?? d.aulas_semanais, 0);
+    const coProfs = Array.isArray(d.co_professores) ? d.co_professores : [];
     for (let i = 0; i < qtd; i++) {
       lessons.push({
         turma_id: d.turma_id,
         disciplina_id: d.disciplina_id,
         professor_id: d.professor_id,
+        co_professores: coProfs,
         seq: i + 1,
         __jitter: randomize ? Math.random() : 0,
         __strongJitter: Math.random(),
@@ -502,6 +551,9 @@ function expandDemandasToLessons(
     const gk = `${d.professor_id}|${d.turma_id}`;
     countKey.set(k, qtd);
     profTotalLoad.set(d.professor_id, (profTotalLoad.get(d.professor_id) || 0) + qtd);
+    for (const cp of d.co_professores || []) {
+      profTotalLoad.set(cp, (profTotalLoad.get(cp) || 0) + qtd);
+    }
     if (!groupJitter.has(gk)) groupJitter.set(gk, Math.random());
   }
 
@@ -515,14 +567,22 @@ function expandDemandasToLessons(
   }
 
   return lessons
-    .map((l, idx) => ({
-      ...l,
-      __idx: idx,
-      __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0,
-      __profLoad: profTotalLoad.get(l.professor_id) || 0,
-      __profSlack: profSlack.get(l.professor_id) ?? 99,
-      __groupJitter: groupJitter.get(`${l.professor_id}|${l.turma_id}`) || 0,
-    }))
+    .map((l, idx) => {
+      const baseSlack = profSlack.get(l.professor_id) ?? 99;
+      // Se for aula de agrupamento/co-docência, é mais restrita (desconta 8 da folga para alocar primeiro)
+      const effectiveSlack =
+        Array.isArray(l.co_professores) && l.co_professores.length > 0
+          ? Math.min(baseSlack, ...l.co_professores.map((cp) => profSlack.get(cp) ?? 99)) - 8
+          : baseSlack;
+      return {
+        ...l,
+        __idx: idx,
+        __peso: countKey.get(`${l.turma_id}|${l.disciplina_id}|${l.professor_id}`) || 0,
+        __profLoad: profTotalLoad.get(l.professor_id) || 0,
+        __profSlack: effectiveSlack,
+        __groupJitter: groupJitter.get(`${l.professor_id}|${l.turma_id}`) || 0,
+      };
+    })
     .sort((a, b) => {
       if (strategy === "random") {
         return a.__strongJitter - b.__strongJitter;
@@ -574,7 +634,7 @@ function expandDemandasToLessons(
 }
 
 // --------------------------------------------------------------------------------------
-// Manipulação básica de células (respeitando células locked)
+// Manipulação básica de células (respeitando células locked e co_professores)
 // --------------------------------------------------------------------------------------
 
 function isCellLocked(gradePorTurma, gradePorProfessor, turmaId, profId, d, p) {
@@ -584,11 +644,17 @@ function isCellLocked(gradePorTurma, gradePorProfessor, turmaId, profId, d, p) {
 }
 
 function clearSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p) {
+  const cellT = gradePorTurma?.[turmaId]?.[d]?.[p];
+  if (Array.isArray(cellT?.co_professores)) {
+    for (const cp of cellT.co_professores) {
+      if (gradePorProfessor[cp]?.[d]) gradePorProfessor[cp][d][p] = null;
+    }
+  }
   if (gradePorTurma[turmaId]?.[d]) gradePorTurma[turmaId][d][p] = null;
   if (gradePorProfessor[profId]?.[d]) gradePorProfessor[profId][d][p] = null;
 }
 
-function setSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p, discId, locked = false) {
+function setSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p, discId, locked = false, coProfessores = []) {
   ensurePath(gradePorTurma, turmaId, d);
   ensurePath(gradePorProfessor, profId, d);
   const cellT = { disciplina_id: discId, professor_id: profId };
@@ -596,6 +662,18 @@ function setSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p, discId
   if (locked) {
     cellT.locked = true;
     cellP.locked = true;
+  }
+  if (Array.isArray(coProfessores) && coProfessores.length > 0) {
+    cellT.co_professores = coProfessores;
+    for (const cp of coProfessores) {
+      ensurePath(gradePorProfessor, cp, d);
+      gradePorProfessor[cp][d][p] = {
+        turma_id: turmaId,
+        disciplina_id: discId,
+        co_docencia: true,
+        ...(locked ? { locked: true } : {}),
+      };
+    }
   }
   gradePorTurma[turmaId][d][p] = cellT;
   gradePorProfessor[profId][d][p] = cellP;
@@ -614,6 +692,7 @@ function findBestFreeSlot({
   turmaId,
   professorId,
   disciplinaId,
+  coProfessores = [],
   rc01MaxConsecutivas,
   rc02Cfg,
   regrasGerais,
@@ -629,6 +708,18 @@ function findBestFreeSlot({
       if (turmaGrade?.[dia]?.[periodo]) continue;
       if (profGrade?.[dia]?.[periodo]) continue;
       if (!professorPode(dispoIdx, professorId, dia, periodo)) continue;
+
+      // Se houver co-professores (Agrupamento / IFA / PD simultâneo), todos devem estar livres e disponíveis
+      if (Array.isArray(coProfessores) && coProfessores.length > 0) {
+        let coOk = true;
+        for (const cp of coProfessores) {
+          if (gradePorProfessor?.[cp]?.[dia]?.[periodo] || !professorPode(dispoIdx, cp, dia, periodo)) {
+            coOk = false;
+            break;
+          }
+        }
+        if (!coOk) continue;
+      }
 
       const score = computeSlotScore({
         turmaGrade,
@@ -1016,6 +1107,7 @@ function tryPlaceWithAllOperators({
   turmaId,
   professorId,
   disciplinaId,
+  coProfessores = [],
   rc01MaxConsecutivas,
   rc02Cfg,
   regrasGerais,
@@ -1031,6 +1123,7 @@ function tryPlaceWithAllOperators({
     turmaId,
     professorId,
     disciplinaId,
+    coProfessores,
     rc01MaxConsecutivas,
     rc02Cfg,
     regrasGerais,
@@ -1039,8 +1132,13 @@ function tryPlaceWithAllOperators({
   });
 
   if (best) {
-    setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, best.dia, best.periodo, disciplinaId);
+    setSlot(gradePorTurma, gradePorProfessor, turmaId, professorId, best.dia, best.periodo, disciplinaId, false, coProfessores);
     return true;
+  }
+
+  // Se houver co-professores simultâneos, evitamos swaps simples que não verificam coProfessores
+  if (Array.isArray(coProfessores) && coProfessores.length > 0) {
+    return false;
   }
 
   if (
@@ -1138,7 +1236,7 @@ function runTabuEjectionRepair({
   for (let step = 1; step <= maxSteps && queue.length > 0; step++) {
     // Escolhe a primeira aula pendente (ou rotaciona)
     const target = queue.shift();
-    const { turma_id: tId, disciplina_id: dId, professor_id: pId } = target;
+    const { turma_id: tId, disciplina_id: dId, professor_id: pId, co_professores: coProfs = [] } = target;
 
     // 1) Tenta encaixar com operadores normais primeiro
     const placedDirect = tryPlaceWithAllOperators({
@@ -1150,6 +1248,7 @@ function runTabuEjectionRepair({
       turmaId: tId,
       professorId: pId,
       disciplinaId: dId,
+      coProfessores: coProfs,
       rc01MaxConsecutivas,
       rc02Cfg,
       regrasGerais,
@@ -1171,6 +1270,16 @@ function runTabuEjectionRepair({
     for (const d of diasList) {
       for (let p = 1; p <= periodosPorDia; p++) {
         if (!professorPode(dispoIdx, pId, d, p)) continue;
+        if (Array.isArray(coProfs) && coProfs.length > 0) {
+          let coAvail = true;
+          for (const cp of coProfs) {
+            if (!professorPode(dispoIdx, cp, d, p) || gradePorProfessor[cp]?.[d]?.[p]) {
+              coAvail = false;
+              break;
+            }
+          }
+          if (!coAvail) continue;
+        }
 
         const cellT = gradePorTurma[tId]?.[d]?.[p];
         const cellP = gradePorProfessor[pId]?.[d]?.[p];
@@ -1205,23 +1314,26 @@ function runTabuEjectionRepair({
     if (cellT) {
       const oldProf = cellT.professor_id;
       const oldDisc = cellT.disciplina_id;
+      const oldCoProfs = cellT.co_professores || [];
       clearSlot(gradePorTurma, gradePorProfessor, tId, oldProf, d, p);
       tabuMap.set(`${tId}|${oldProf}|${d}|${p}`, step + TABU_TENURE);
-      ejected.push({ turma_id: tId, disciplina_id: oldDisc, professor_id: oldProf });
+      ejected.push({ turma_id: tId, disciplina_id: oldDisc, professor_id: oldProf, co_professores: oldCoProfs });
     }
     if (cellP && Number(cellP.turma_id) !== Number(tId)) {
       const oldTurma = cellP.turma_id;
       const oldDisc = cellP.disciplina_id;
       // Verifica se ainda está lá
-      if (gradePorTurma[oldTurma]?.[d]?.[p]) {
+      const oldCellT = gradePorTurma[oldTurma]?.[d]?.[p];
+      if (oldCellT) {
+        const oldCoProfs = oldCellT.co_professores || [];
         clearSlot(gradePorTurma, gradePorProfessor, oldTurma, pId, d, p);
         tabuMap.set(`${oldTurma}|${pId}|${d}|${p}`, step + TABU_TENURE);
-        ejected.push({ turma_id: oldTurma, disciplina_id: oldDisc, professor_id: pId });
+        ejected.push({ turma_id: oldTurma, disciplina_id: oldDisc, professor_id: pId, co_professores: oldCoProfs });
       }
     }
 
     // Aloca a aula target no slot (d, p)
-    setSlot(gradePorTurma, gradePorProfessor, tId, pId, d, p, dId);
+    setSlot(gradePorTurma, gradePorProfessor, tId, pId, d, p, dId, false, coProfs);
     tabuMap.set(`${tId}|${pId}|${d}|${p}`, step + TABU_TENURE);
 
     // Tenta realocar imediatamente as aulas ejetadas
@@ -1235,6 +1347,7 @@ function runTabuEjectionRepair({
         turmaId: ej.turma_id,
         professorId: ej.professor_id,
         disciplinaId: ej.disciplina_id,
+        coProfessores: ej.co_professores || [],
         rc01MaxConsecutivas,
         rc02Cfg,
         regrasGerais,
@@ -1339,6 +1452,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
 
   const allProfIds = uniq([
     ...demandasNorm.map(d => d.professor_id),
+    ...demandasNorm.flatMap(d => d.co_professores || []),
     ...validFixos.map(f => f.professor_id),
     ...externalProfFixos.map(f => f.professor_id),
   ]);
@@ -1377,13 +1491,18 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
   // 2) Fase Construtiva + Operadores de Swap / Kempe Chain
   let unplaced = [];
   for (const lesson of lessons) {
-    const { turma_id: turmaId, disciplina_id: disciplinaId, professor_id: professorId } = lesson;
+    const { turma_id: turmaId, disciplina_id: disciplinaId, professor_id: professorId, co_professores: coProfessores = [] } = lesson;
 
     if (!gradePorTurma[turmaId]) {
       gradePorTurma[turmaId] = initEmptyGridForEntity(diasList, periodosPorDia);
     }
     if (!gradePorProfessor[professorId]) {
       gradePorProfessor[professorId] = initEmptyGridForEntity(diasList, periodosPorDia);
+    }
+    for (const cp of coProfessores) {
+      if (!gradePorProfessor[cp]) {
+        gradePorProfessor[cp] = initEmptyGridForEntity(diasList, periodosPorDia);
+      }
     }
 
     const ok = tryPlaceWithAllOperators({
@@ -1395,6 +1514,7 @@ export function runGreedySolver(payload, randomize = false, strategy = "default"
       turmaId,
       professorId,
       disciplinaId,
+      coProfessores,
       rc01MaxConsecutivas,
       rc02Cfg,
       regrasGerais,

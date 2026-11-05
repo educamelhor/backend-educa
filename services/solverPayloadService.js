@@ -382,6 +382,97 @@ async function fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, nivel = "f
   };
 }
 
+// ---------------------- agrupamentos (IFA / PCA / Eletiva / PD) ------------
+async function fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semestre = 1) {
+  try {
+    const semNum = toInt(semestre, 1) || 1;
+    const anoAtual = new Date().getMonth() === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+
+    const [agrRows] = await pool.query(
+      `SELECT id, nome, tipo, turno, semestre, etapa_id, origem_disciplina_legada_id, status
+         FROM agrupamentos
+        WHERE escola_id = ?
+          AND ano_letivo = ?
+          AND status <> 'ENCERRADO'
+          AND (LOWER(turno) = LOWER(?) OR LOWER(turno) = 'integral')
+          AND (semestre = 0 OR semestre = ?)`,
+      [escolaId, anoAtual, turnoNorm, semNum]
+    );
+
+    if (!agrRows || agrRows.length === 0) return [];
+
+    const agrIds = agrRows.map((a) => toInt(a.id)).filter(Boolean);
+    const ph = agrIds.map(() => "?").join(",");
+
+    const [modRows, alunoTurmasRows] = await Promise.all([
+      pool
+        .query(
+          `SELECT am.agrupamento_id, am.professor_id, am.disciplina_id, am.aulas,
+                  p.nome AS professor_nome, d.nome AS disciplina_nome
+             FROM agrupamento_modulacao am
+             JOIN professores p ON p.id = am.professor_id
+             LEFT JOIN disciplinas d ON d.id = am.disciplina_id
+            WHERE am.agrupamento_id IN (${ph}) AND am.escola_id = ?`,
+          [...agrIds, escolaId]
+        )
+        .then(([r]) => r)
+        .catch(() => []),
+      pool
+        .query(
+          `SELECT DISTINCT agrupamento_id, turma_origem_id
+             FROM agrupamento_alunos
+            WHERE agrupamento_id IN (${ph}) AND escola_id = ? AND status = 'ativo' AND turma_origem_id IS NOT NULL`,
+          [...agrIds, escolaId]
+        )
+        .then(([r]) => r)
+        .catch(() => []),
+    ]);
+
+    const modByAgr = new Map();
+    for (const m of modRows) {
+      const aid = toInt(m.agrupamento_id);
+      if (!modByAgr.has(aid)) modByAgr.set(aid, []);
+      modByAgr.get(aid).push({
+        professor_id: toInt(m.professor_id),
+        disciplina_id: toInt(m.disciplina_id),
+        aulas: toInt(m.aulas, 0),
+        professor_nome: m.professor_nome,
+        disciplina_nome: m.disciplina_nome,
+      });
+    }
+
+    const turmasByAgr = new Map();
+    for (const at of alunoTurmasRows) {
+      const aid = toInt(at.agrupamento_id);
+      const tid = toInt(at.turma_origem_id);
+      if (!aid || !tid) continue;
+      if (!turmasByAgr.has(aid)) turmasByAgr.set(aid, new Set());
+      turmasByAgr.get(aid).add(tid);
+    }
+
+    const scopeSet = new Set((turmaIds || []).map(Number).filter(Boolean));
+
+    return agrRows.map((a) => {
+      const aid = toInt(a.id);
+      const origSet = turmasByAgr.get(aid) || new Set();
+      const turmasOrigem = Array.from(origSet).filter((t) => scopeSet.size === 0 || scopeSet.has(t));
+      return {
+        id: aid,
+        nome: a.nome,
+        tipo: a.tipo || "IFA",
+        turno: a.turno,
+        semestre: toInt(a.semestre, 0),
+        etapa_id: toInt(a.etapa_id, 0) || null,
+        origem_disciplina_legada_id: toInt(a.origem_disciplina_legada_id, 0) || null,
+        modulacao: modByAgr.get(aid) || [],
+        turmas_origem: turmasOrigem,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------- builder público --------------
 export async function buildSolverPayload({
   escolaId,
@@ -401,10 +492,11 @@ export async function buildSolverPayload({
     grade_base,
     turmas,
     demanda,
-    modulacao,
+    modulacaoRaw,
     escolaCfg,
     config_pedagogica,
     slots_fixos,
+    agrupamentos,
   ] = await Promise.all([
     fetchGradeBase(escolaId, turnoNorm),
     fetchTurmas(escolaId, turnoNorm, turmaIds),
@@ -413,9 +505,53 @@ export async function buildSolverPayload({
     fetchEscolaConfigGrade(escolaId, turnoNorm),
     fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, "fundamental_II"),
     respeitarHorarioManual ? fetchSlotsFixos(escolaId, turnoNorm, turmaIds) : Promise.resolve([]),
+    fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semestre),
   ]);
 
-  const profIds = Array.from(new Set(modulacao.map((m) => m.professor_id)));
+  // Mescla modulação regular com modulação de Agrupamentos (IFA / PCA / Eletiva / PD)
+  // quando a turma possui a disciplina na demanda mas o professor foi modulado via agrupamento_modulacao
+  const modulacao = [...modulacaoRaw];
+  const modKeySet = new Set(modulacao.map((m) => `${m.turma_id}|${m.disciplina_id}|${m.professor_id}`));
+
+  if (Array.isArray(agrupamentos) && agrupamentos.length > 0) {
+    for (const agr of agrupamentos) {
+      const modsAgr = Array.isArray(agr.modulacao) ? agr.modulacao : [];
+      if (modsAgr.length === 0) continue;
+
+      for (const mAgr of modsAgr) {
+        const candidateDiscIds = new Set(
+          [mAgr.disciplina_id, agr.origem_disciplina_legada_id].filter((x) => Number(x) > 0)
+        );
+        // Verifica quais turmas do escopo possuem essa disciplina na demanda
+        for (const d of demanda) {
+          if (!candidateDiscIds.has(Number(d.disciplina_id))) continue;
+          if (agr.turmas_origem.length > 0 && !agr.turmas_origem.includes(Number(d.turma_id))) continue;
+
+          const mk = `${d.turma_id}|${d.disciplina_id}|${mAgr.professor_id}`;
+          if (!modKeySet.has(mk)) {
+            modKeySet.add(mk);
+            modulacao.push({
+              professor_id: mAgr.professor_id,
+              turma_id: d.turma_id,
+              disciplina_id: d.disciplina_id,
+              aulas: mAgr.aulas || d.carga,
+              professor_nome: mAgr.professor_nome,
+              agrupamento_id: agr.id,
+              agrupamento_nome: agr.nome,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const profIds = Array.from(
+    new Set([
+      ...modulacao.map((m) => m.professor_id),
+      ...(agrupamentos || []).flatMap((a) => (a.modulacao || []).map((m) => m.professor_id)),
+    ])
+  ).filter(Boolean);
+
   const [disponibilidades, preferenciasMap] = await Promise.all([
     fetchDisponibilidades(escolaId, turnoNorm, profIds),
     fetchPreferencias(escolaId, turnoNorm, profIds),
@@ -455,6 +591,7 @@ export async function buildSolverPayload({
     turmas, // [{ id,nome,etapa,serie,turno,regime }]
     demanda, // [{ turma_id,disciplina_id,disciplina_nome,carga }]
     modulacao, // [{ professor_id,turma_id,disciplina_id,aulas,professor_nome }]
+    agrupamentos, // [{ id,nome,tipo,modulacao,turmas_origem }]
     disponibilidades, // [{ professor_id,dia,ordem,periodo,status }]
     preferencias: Object.fromEntries(preferenciasMap), // { [profId]: regras_json }
     slots_fixos, // [{ turma_id,dia,ordem,disciplina_id,professor_id,origem,locked }]
