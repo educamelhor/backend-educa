@@ -172,6 +172,46 @@ function countDiscInDay(gradeTurma, dia, disciplinaId) {
   return c;
 }
 
+function canPlaceDiscInTurmaSlot({
+  turmaGrade,
+  dia,
+  periodo,
+  disciplinaId,
+  periodosPorDia = 6,
+  rc01MaxConsecutivas = 2,
+  rc02Cfg = null,
+  regrasGerais = null,
+}) {
+  const row = turmaGrade?.[dia] || {};
+  let countExisting = 0;
+  let minP = periodo;
+  let maxP = periodo;
+
+  for (let p = 1; p <= periodosPorDia; p++) {
+    if (p === periodo) continue;
+    const cell = row[p];
+    if (cell && Number(cell.disciplina_id) === Number(disciplinaId)) {
+      countExisting++;
+      if (p < minP) minP = p;
+      if (p > maxP) maxP = p;
+    }
+  }
+
+  if (countExisting === 0) return true;
+
+  const totalAfter = countExisting + 1;
+  const maxDia = getRc02MaxForDisc(rc02Cfg, disciplinaId);
+  const proibirSeparadas = regrasGerais ? regrasGerais.proibir_aulas_separadas_mesmo_dia !== false : true;
+
+  if (proibirSeparadas && maxP - minP + 1 !== totalAfter) {
+    return false;
+  }
+  if (totalAfter > maxDia || totalAfter > rc01MaxConsecutivas) {
+    return false;
+  }
+  return true;
+}
+
 // --------------------------------------------------------------------------------------
 // Índice Real de Disponibilidades do Professor
 // Suporta tanto formato:
@@ -708,6 +748,21 @@ function findBestFreeSlot({
       if (turmaGrade?.[dia]?.[periodo]) continue;
       if (profGrade?.[dia]?.[periodo]) continue;
       if (!professorPode(dispoIdx, professorId, dia, periodo)) continue;
+
+      if (
+        !canPlaceDiscInTurmaSlot({
+          turmaGrade,
+          dia,
+          periodo,
+          disciplinaId,
+          periodosPorDia,
+          rc01MaxConsecutivas,
+          rc02Cfg,
+          regrasGerais,
+        })
+      ) {
+        continue;
+      }
 
       // Se houver co-professores (Agrupamento / IFA / PD simultâneo), todos devem estar livres e disponíveis
       if (Array.isArray(coProfessores) && coProfessores.length > 0) {
