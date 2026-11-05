@@ -171,10 +171,135 @@ function solverWorkerBootstrap(workerScope) {
   }
 
   /**
+   * Constrói o índice de Governança Multi-Escola de Pares de Aulas Duplas
+   * (Ordem de prioridade #1-#2, #4-#5, etc., modos: obrigatorio | prioritario | permitido | bloqueado,
+   * e bloqueio de pares que cortam o recreio/intervalo).
+   */
+  function buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia) {
+    if (
+      regrasGerais &&
+      regrasGerais._pairGov &&
+      regrasGerais._pairGov.periodosPorDia === periodosPorDia
+    ) {
+      return regrasGerais._pairGov;
+    }
+
+    const isNoturno = String(turno || regrasGerais?._turno || "").toLowerCase().includes("noturno");
+    const turnoKey = String(turno || regrasGerais?._turno || "matutino").toLowerCase();
+    const intAfter =
+      regrasGerais?.recreio_apos_periodo?.[turnoKey] !== undefined
+        ? Number(regrasGerais.recreio_apos_periodo[turnoKey])
+        : isNoturno
+        ? 2
+        : 3;
+
+    const bloquearRecreio =
+      regrasGerais?.bloquear_duplas_no_recreio !== undefined
+        ? Boolean(regrasGerais.bloquear_duplas_no_recreio)
+        : regrasGerais?.aulas_duplas_separar_recreio !== undefined
+        ? !regrasGerais.aulas_duplas_separar_recreio
+        : true;
+
+    const rawList = Array.isArray(regrasGerais?.pares_duplas_governanca)
+      ? regrasGerais.pares_duplas_governanca
+      : [];
+
+    const defaultOrder = [];
+    if (periodosPorDia >= 2) defaultOrder.push(1);
+    if (intAfter > 0 && intAfter + 1 < periodosPorDia && !defaultOrder.includes(intAfter + 1)) {
+      defaultOrder.push(intAfter + 1);
+    }
+    for (let p = 1; p < periodosPorDia; p++) {
+      if (p === intAfter) continue;
+      if (!defaultOrder.includes(p)) defaultOrder.push(p);
+    }
+    if (intAfter > 0 && intAfter < periodosPorDia && !defaultOrder.includes(intAfter)) {
+      defaultOrder.push(intAfter);
+    }
+
+    const byStart = new Map();
+    const orderedStarts = [];
+
+    for (const item of rawList) {
+      const ini = Number(item?.inicio ?? item?.p1 ?? 0);
+      if (ini >= 1 && ini < periodosPorDia && !byStart.has(ini)) {
+        let modo = String(item?.modo || "prioritario").toLowerCase();
+        if (!["obrigatorio", "prioritario", "permitido", "bloqueado"].includes(modo)) {
+          modo = "prioritario";
+        }
+        if (bloquearRecreio && intAfter > 0 && ini === intAfter) {
+          modo = "bloqueado";
+        }
+        byStart.set(ini, { inicio: ini, fim: ini + 1, modo });
+        orderedStarts.push(ini);
+      }
+    }
+
+    for (const ini of defaultOrder) {
+      if (!byStart.has(ini)) {
+        const isRecreioPair = intAfter > 0 && ini === intAfter;
+        const modo =
+          isRecreioPair && bloquearRecreio
+            ? "bloqueado"
+            : orderedStarts.length < 2
+            ? "prioritario"
+            : "permitido";
+        byStart.set(ini, { inicio: ini, fim: ini + 1, modo });
+        orderedStarts.push(ini);
+      }
+    }
+
+    const totalPairs = Math.max(1, orderedStarts.length);
+    orderedStarts.forEach((ini, idx) => {
+      const info = byStart.get(ini);
+      info.rank = idx;
+      info.cortaRecreio = intAfter > 0 && ini === intAfter;
+      const rankFactor = Math.max(1, totalPairs - idx);
+
+      if (info.modo === "bloqueado") {
+        info.pairScoreBonus = 85000;
+        info.seedScoreBonus = 750;
+        info.qualityWeight = -8000;
+      } else if (info.modo === "obrigatorio") {
+        info.pairScoreBonus = -(7500 + rankFactor * 500);
+        info.seedScoreBonus = -(980 + rankFactor * 95);
+        info.qualityWeight = 260 + rankFactor * 50;
+      } else if (info.modo === "prioritario") {
+        info.pairScoreBonus = -(5200 + rankFactor * 380);
+        info.seedScoreBonus = -(680 + rankFactor * 70);
+        info.qualityWeight = 120 + rankFactor * 32;
+      } else {
+        info.pairScoreBonus = -(3500 + rankFactor * 180);
+        info.seedScoreBonus = -(400 + rankFactor * 35);
+        info.qualityWeight = 50 + rankFactor * 14;
+      }
+    });
+
+    return {
+      periodosPorDia,
+      intAfter,
+      bloquearRecreio,
+      orderedStarts,
+      getPairInfo(pStart) {
+        return byStart.get(Number(pStart)) || null;
+      },
+      isPairBlocked(pStart) {
+        const info = byStart.get(Number(pStart));
+        return info ? info.modo === "bloqueado" : false;
+      },
+      isPairMandatory(pStart) {
+        const info = byStart.get(Number(pStart));
+        return info ? info.modo === "obrigatorio" : false;
+      },
+    };
+  }
+
+  /**
    * Valida se alocar `disciplinaId` em `(dia, periodo)` da `turmaGrade` respeita:
    * 1. Proibição de aulas separadas da mesma disciplina no mesmo dia (ex.: 1º e 6º horário)
    * 2. Limite máximo de aulas da mesma disciplina no mesmo dia (RC-02 / max_aulas_mesmo_dia)
    * 3. Limite máximo de aulas consecutivas (RC-01)
+   * 4. Bloqueio de pares geminados proibidos pela escola ou que cortam o recreio/intervalo (ex.: #3-#4)
    */
   function canPlaceDiscInTurmaSlot({
     turmaGrade,
@@ -213,10 +338,17 @@ function solverWorkerBootstrap(workerScope) {
       return false;
     }
 
-    // Regra 2: Respeitar máximo de aulas por dia e máximo de consecutivas
+    // Regra 2: Respeitar máximo de aulas por dia, máximo de consecutivas e bloqueio de recreio/pares bloqueados
     if (strictPedagogical) {
       if (totalAfter > maxDia) return false;
       if (totalAfter > rc01MaxConsecutivas) return false;
+
+      const pairGov = buildPairGovernanceIndex(regrasGerais, regrasGerais?._turno, periodosPorDia);
+      for (let p = minP; p < maxP; p++) {
+        if (pairGov.isPairBlocked(p)) {
+          return false;
+        }
+      }
     }
 
     return true;
@@ -254,6 +386,7 @@ function solverWorkerBootstrap(workerScope) {
     }
 
     const proibirSeparadas = regrasGerais ? regrasGerais.proibir_aulas_separadas_mesmo_dia !== false : true;
+    const pairGov = buildPairGovernanceIndex(regrasGerais, regrasGerais?._turno, periodosPorDia);
 
     for (const [dId, st] of byDisc.entries()) {
       if (st.count <= 1 || st.allLocked) continue;
@@ -266,6 +399,12 @@ function solverWorkerBootstrap(workerScope) {
         const maxDia = getRc02MaxForDisc(rc02Cfg, dId);
         if (st.count > maxDia) return false;
         if (st.count > rc01MaxConsecutivas) return false;
+
+        for (let p = st.minP; p < st.maxP; p++) {
+          if (pairGov.isPairBlocked(p)) {
+            return false;
+          }
+        }
       }
     }
 
@@ -316,15 +455,9 @@ function solverWorkerBootstrap(workerScope) {
     const inDay = countDiscInDay(turmaGrade, dia, disciplinaId);
     const strictCap = !!rc02Cfg?.strictCapMock;
 
-    const isNoturno = String(turno || "").toLowerCase().includes("noturno");
-    const turnoKey = String(turno || "matutino").toLowerCase();
-    const intAfter =
-      regrasGerais?.recreio_apos_periodo?.[turnoKey] !== undefined
-        ? Number(regrasGerais.recreio_apos_periodo[turnoKey])
-        : isNoturno
-        ? 2
-        : 3;
-    const evitaSepararRecreio = regrasGerais ? !regrasGerais.aulas_duplas_separar_recreio : true;
+    const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
+    const intAfter = pairGov.intAfter;
+    const evitaSepararRecreio = pairGov.bloquearRecreio;
 
     if (inDay >= 1 && !leftSame && !rightSame) {
       // Penalidade severíssima para aulas separadas da mesma disciplina no mesmo dia (ex.: 1º e 6º horário)
@@ -335,28 +468,49 @@ function solverWorkerBootstrap(workerScope) {
       if (leftSame || rightSame) score += 2000;
     } else {
       if (leftSame || rightSame) {
-        if (consec <= rc01MaxConsecutivas && inDay < maxDia) {
-          score -= 4500;
+        const pStart = leftSame ? periodo - 1 : periodo;
+        const pInfo = pairGov.getPairInfo(pStart);
+        if (pInfo?.modo === "bloqueado") {
+          score += 85000;
+        } else if (consec <= rc01MaxConsecutivas && inDay < maxDia) {
+          score += pInfo ? pInfo.pairScoreBonus : -4800;
         }
       } else if (inDay === 0) {
-        // Verifica se este slot possui vizinho imediato livre (na turma e no professor) para formar aula dupla depois
+        // Verifica se este slot possui vizinho imediato livre e permitido pela governança da escola para formar aula dupla depois
+        const leftInfo = periodo > 1 ? pairGov.getPairInfo(periodo - 1) : null;
+        const rightInfo = periodo < periodosPorDia ? pairGov.getPairInfo(periodo) : null;
+
         const canPairLeft =
           periodo > 1 &&
+          leftInfo &&
+          leftInfo.modo !== "bloqueado" &&
           !turmaGrade?.[dia]?.[periodo - 1] &&
           !profGrade?.[dia]?.[periodo - 1] &&
-          professorPode(dispoIdx, professorId, dia, periodo - 1) &&
-          (!evitaSepararRecreio || periodo - 1 !== intAfter);
+          professorPode(dispoIdx, professorId, dia, periodo - 1);
+
         const canPairRight =
           periodo < periodosPorDia &&
+          rightInfo &&
+          rightInfo.modo !== "bloqueado" &&
           !turmaGrade?.[dia]?.[periodo + 1] &&
           !profGrade?.[dia]?.[periodo + 1] &&
-          professorPode(dispoIdx, professorId, dia, periodo + 1) &&
-          (!evitaSepararRecreio || periodo !== intAfter);
+          professorPode(dispoIdx, professorId, dia, periodo + 1);
 
         if (canPairLeft || canPairRight) {
-          score -= 600;
+          const bonusLeft = canPairLeft ? leftInfo.seedScoreBonus : 0;
+          const bonusRight = canPairRight ? rightInfo.seedScoreBonus : 0;
+          score += Math.min(bonusLeft, bonusRight);
         } else {
           score += 650;
+        }
+
+        // Se este horário faz parte de um bloco OBRIGATÓRIO cujo par vizinho já está ocupado por OUTRA disciplina,
+        // penaliza quebrar o bloco obrigatório com duas disciplinas avulsas
+        if (leftInfo?.modo === "obrigatorio" && leftCell && !leftSame) {
+          score += 1400;
+        }
+        if (rightInfo?.modo === "obrigatorio" && rightCell && !rightSame) {
+          score += 1400;
         }
       }
     }
@@ -402,7 +556,7 @@ function solverWorkerBootstrap(workerScope) {
           (periodo === intAfter && rightSame) ||
           (periodo === intAfter + 1 && leftSame)
         ) {
-          score += 5500;
+          score += 85000;
         }
       }
       if (regrasGerais.limite_aulas_seguidas_prof) {
@@ -1758,13 +1912,14 @@ function solverWorkerBootstrap(workerScope) {
     regrasGerais,
   }) {
     const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
+    const pairGov = buildPairGovernanceIndex(regrasGerais, regrasGerais?._turno, periodosPorDia);
 
     for (const [tIdStr, turmaGrade] of Object.entries(gradePorTurma)) {
       const tId = toInt(tIdStr, 0);
       if (!tId || !turmaGrade) continue;
 
       // 1) Compactação intra-dia: se por qualquer motivo houver 2 aulas da mesma disciplina no mesmo dia separadas,
-      // tenta permutar dentro do próprio dia para colá-las como aula dupla
+      // tenta permutar dentro do próprio dia para colá-las como aula dupla (respeitando bloqueio de recreio/pares)
       for (const d of diasList) {
         const row = turmaGrade[d] || {};
         for (let p1 = 1; p1 <= periodosPorDia; p1++) {
@@ -1775,11 +1930,11 @@ function solverWorkerBootstrap(workerScope) {
             if (!c2 || c2.locked || c2.co_professores?.length) continue;
             if (Number(c1.disciplina_id) !== Number(c2.disciplina_id)) continue;
 
-            // Tenta trocar p2 com p1 + 1 (ou p1 com p2 - 1)
             const targets = [
-              { moveFrom: p2, swapWith: p1 + 1 },
-              { moveFrom: p1, swapWith: p2 - 1 },
-            ];
+              { moveFrom: p2, swapWith: p1 + 1, pairStart: p1 },
+              { moveFrom: p1, swapWith: p2 - 1, pairStart: p2 - 1 },
+            ].filter(t => !pairGov.isPairBlocked(t.pairStart));
+
             for (const { moveFrom, swapWith } of targets) {
               const cellMove = row[moveFrom];
               const cellNeighbor = row[swapWith];
@@ -1813,7 +1968,6 @@ function solverWorkerBootstrap(workerScope) {
                 if (okIntra) {
                   break;
                 }
-                // Reverte caso tenha separado outra disciplina no mesmo dia
                 clearSlot(gradePorTurma, gradePorProfessor, tId, profM, d, swapWith);
                 clearSlot(gradePorTurma, gradePorProfessor, tId, profN, d, moveFrom);
                 setSlot(gradePorTurma, gradePorProfessor, tId, profM, d, moveFrom, discM);
@@ -1825,20 +1979,40 @@ function solverWorkerBootstrap(workerScope) {
       }
 
       // 2) Polimento de Geminação entre dias: se preferencia_aulas_duplas estiver ativa,
-      // procura disciplinas com aulas isoladas em 2 dias diferentes e tenta juntá-las num par geminado
+      // percorre os pares na ORDEM DE PRIORIDADE da escola (#1-#2, #4-#5, etc.) para formar duplas nos blocos preferidos
       if (prefDuplas) {
+        const candidatePeriodsOrder = [];
+        for (const ini of pairGov.orderedStarts) {
+          if (pairGov.isPairBlocked(ini)) continue;
+          if (!candidatePeriodsOrder.includes(ini)) candidatePeriodsOrder.push(ini);
+          if (!candidatePeriodsOrder.includes(ini + 1)) candidatePeriodsOrder.push(ini + 1);
+        }
+        for (let p = 1; p <= periodosPorDia; p++) {
+          if (!candidatePeriodsOrder.includes(p)) candidatePeriodsOrder.push(p);
+        }
+
         for (const d1 of diasList) {
-          for (let p1 = 1; p1 <= periodosPorDia; p1++) {
+          for (const p1 of candidatePeriodsOrder) {
             const c1 = turmaGrade[d1]?.[p1];
             if (!c1 || c1.locked || c1.co_professores?.length) continue;
             if (countDiscInDay(turmaGrade, d1, c1.disciplina_id) !== 1) continue;
 
-            const adjPeriods = [p1 - 1, p1 + 1].filter(p => p >= 1 && p <= periodosPorDia);
-            for (const pAdj of adjPeriods) {
+            const adjCandidates = [p1 - 1, p1 + 1]
+              .filter(pAdj => {
+                if (pAdj < 1 || pAdj > periodosPorDia) return false;
+                const pStart = Math.min(p1, pAdj);
+                return !pairGov.isPairBlocked(pStart);
+              })
+              .sort((a, b) => {
+                const infoA = pairGov.getPairInfo(Math.min(p1, a));
+                const infoB = pairGov.getPairInfo(Math.min(p1, b));
+                return (infoB?.qualityWeight || 0) - (infoA?.qualityWeight || 0);
+              });
+
+            for (const pAdj of adjCandidates) {
               const cAdj = turmaGrade[d1]?.[pAdj];
               if (!cAdj || cAdj.locked || cAdj.co_professores?.length) continue;
               if (Number(cAdj.disciplina_id) === Number(c1.disciplina_id)) continue;
-              // Não quebra uma aula que já faz parte de uma dupla!
               if (countDiscInDay(turmaGrade, d1, cAdj.disciplina_id) > 1) continue;
 
               let paired = false;
@@ -1891,7 +2065,6 @@ function solverWorkerBootstrap(workerScope) {
                       break;
                     }
 
-                    // Reverte se violar
                     clearSlot(gradePorTurma, gradePorProfessor, tId, prof1, d1, pAdj);
                     clearSlot(gradePorTurma, gradePorProfessor, tId, profAdj, d2, p2);
                     setSlot(gradePorTurma, gradePorProfessor, tId, profAdj, d1, pAdj, discAdj);
@@ -1901,6 +2074,177 @@ function solverWorkerBootstrap(workerScope) {
                 if (paired) break;
               }
               if (paired) break;
+            }
+          }
+        }
+
+        // 3) Alinhamento Intra-Dia de Prioridade e Obrigatoriedade de Blocos (Ex.: deslizar #2-#3 para #1-#2, ou #5-#6 para #4-#5)
+        for (let pass = 0; pass < 2; pass++) {
+          for (const d of diasList) {
+            const row = turmaGrade[d] || {};
+
+            // 3A) Deslizamento em janela de 3 aulas consecutivas (pA, pA+1, pA+2) trocando apenas as pontas (pA <-> pA+2)
+            for (let pA = 1; pA <= periodosPorDia - 2; pA++) {
+              const infoLeft = pairGov.getPairInfo(pA);
+              const infoRight = pairGov.getPairInfo(pA + 1);
+              if (!infoLeft || !infoRight) continue;
+              if (infoLeft.modo === "bloqueado" || infoRight.modo === "bloqueado") continue;
+
+              const c1 = row[pA];
+              const c2 = row[pA + 1];
+              const c3 = row[pA + 2];
+              if (!c1 || !c2 || !c3) continue;
+              if (c1.locked || c2.locked || c3.locked) continue;
+              if (c1.co_professores?.length || c2.co_professores?.length || c3.co_professores?.length) continue;
+
+              const rightIsPair =
+                Number(c2.disciplina_id) === Number(c3.disciplina_id) &&
+                Number(c1.disciplina_id) !== Number(c2.disciplina_id);
+              const leftIsPair =
+                Number(c1.disciplina_id) === Number(c2.disciplina_id) &&
+                Number(c3.disciplina_id) !== Number(c2.disciplina_id);
+
+              const shouldSlideLeft = rightIsPair && infoLeft.qualityWeight > infoRight.qualityWeight;
+              const shouldSlideRight = leftIsPair && infoRight.qualityWeight > infoLeft.qualityWeight;
+
+              if (shouldSlideLeft || shouldSlideRight) {
+                const prof1 = c1.professor_id;
+                const disc1 = c1.disciplina_id;
+                const prof3 = c3.professor_id;
+                const disc3 = c3.disciplina_id;
+
+                if (
+                  !gradePorProfessor[prof1]?.[d]?.[pA + 2] &&
+                  professorPode(dispoIdx, prof1, d, pA + 2) &&
+                  !gradePorProfessor[prof3]?.[d]?.[pA] &&
+                  professorPode(dispoIdx, prof3, d, pA)
+                ) {
+                  clearSlot(gradePorTurma, gradePorProfessor, tId, prof1, d, pA);
+                  clearSlot(gradePorTurma, gradePorProfessor, tId, prof3, d, pA + 2);
+                  setSlot(gradePorTurma, gradePorProfessor, tId, prof3, d, pA, disc3);
+                  setSlot(gradePorTurma, gradePorProfessor, tId, prof1, d, pA + 2, disc1);
+
+                  if (
+                    !isTurmaDayPedagogicallyValid({
+                      turmaGrade,
+                      dia: d,
+                      periodosPorDia,
+                      rc01MaxConsecutivas,
+                      rc02Cfg,
+                      regrasGerais,
+                      strictPedagogical: true,
+                    })
+                  ) {
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, prof3, d, pA);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, prof1, d, pA + 2);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, prof1, d, pA, disc1);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, prof3, d, pA + 2, disc3);
+                  }
+                }
+              }
+            }
+
+            // 3B) Permutação de bloco inteiro de 2 aulas: se um par prioritário/obrigatório (pHigh, pHigh+1)
+            // está ocupado por 2 aulas simples diferentes, e outro par de menor prioridade (pLow, pLow+1)
+            // no mesmo dia tem uma aula dupla geminada, tenta trocar os dois blocos!
+            for (const pHigh of pairGov.orderedStarts) {
+              const infoHigh = pairGov.getPairInfo(pHigh);
+              if (!infoHigh || infoHigh.modo === "bloqueado") continue;
+
+              const cH1 = row[pHigh];
+              const cH2 = row[pHigh + 1];
+              if (!cH1 || !cH2 || cH1.locked || cH2.locked) continue;
+              if (cH1.co_professores?.length || cH2.co_professores?.length) continue;
+              if (Number(cH1.disciplina_id) === Number(cH2.disciplina_id)) continue;
+              if (
+                countDiscInDay(turmaGrade, d, cH1.disciplina_id) > 1 ||
+                countDiscInDay(turmaGrade, d, cH2.disciplina_id) > 1
+              ) {
+                continue;
+              }
+
+              for (const pLow of [...pairGov.orderedStarts].reverse()) {
+                if (Math.abs(pLow - pHigh) < 2) continue;
+                const infoLow = pairGov.getPairInfo(pLow);
+                if (!infoLow || infoLow.modo === "bloqueado") continue;
+                if (infoHigh.qualityWeight <= infoLow.qualityWeight) continue;
+
+                const cL1 = row[pLow];
+                const cL2 = row[pLow + 1];
+                if (!cL1 || !cL2 || cL1.locked || cL2.locked) continue;
+                if (cL1.co_professores?.length || cL2.co_professores?.length) continue;
+                if (Number(cL1.disciplina_id) !== Number(cL2.disciplina_id)) continue;
+                if (Number(cL1.professor_id) !== Number(cL2.professor_id)) continue;
+
+                const profD = cL1.professor_id;
+                const discD = cL1.disciplina_id;
+                const profS1 = cH1.professor_id;
+                const discS1 = cH1.disciplina_id;
+                const profS2 = cH2.professor_id;
+                const discS2 = cH2.disciplina_id;
+
+                const profDCanHigh =
+                  !gradePorProfessor[profD]?.[d]?.[pHigh] &&
+                  !gradePorProfessor[profD]?.[d]?.[pHigh + 1] &&
+                  professorPode(dispoIdx, profD, d, pHigh) &&
+                  professorPode(dispoIdx, profD, d, pHigh + 1);
+
+                if (!profDCanHigh) continue;
+
+                const arrangements = [
+                  { pForS1: pLow, pForS2: pLow + 1 },
+                  { pForS1: pLow + 1, pForS2: pLow },
+                ];
+
+                let swappedBlock = false;
+                for (const { pForS1, pForS2 } of arrangements) {
+                  if (Number(profS1) === Number(profS2)) continue;
+                  const s1Ok =
+                    !gradePorProfessor[profS1]?.[d]?.[pForS1] &&
+                    professorPode(dispoIdx, profS1, d, pForS1);
+                  const s2Ok =
+                    !gradePorProfessor[profS2]?.[d]?.[pForS2] &&
+                    professorPode(dispoIdx, profS2, d, pForS2);
+
+                  if (s1Ok && s2Ok) {
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profS1, d, pHigh);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profS2, d, pHigh + 1);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pLow);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pLow + 1);
+
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh, discD);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh + 1, discD);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profS1, d, pForS1, discS1);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profS2, d, pForS2, discS2);
+
+                    if (
+                      isTurmaDayPedagogicallyValid({
+                        turmaGrade,
+                        dia: d,
+                        periodosPorDia,
+                        rc01MaxConsecutivas,
+                        rc02Cfg,
+                        regrasGerais,
+                        strictPedagogical: true,
+                      })
+                    ) {
+                      swappedBlock = true;
+                      break;
+                    }
+
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh + 1);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profS1, d, pForS1);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, profS2, d, pForS2);
+
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profS1, d, pHigh, discS1);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profS2, d, pHigh + 1, discS2);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pLow, discD);
+                    setSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pLow + 1, discD);
+                  }
+                }
+                if (swappedBlock) break;
+              }
             }
           }
         }
@@ -1922,6 +2266,7 @@ function solverWorkerBootstrap(workerScope) {
     unplaced,
   }) {
     const proibirSeparadas = regrasGerais ? regrasGerais.proibir_aulas_separadas_mesmo_dia !== false : true;
+    const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const evicted = [];
 
     for (const [tIdStr, turmaGrade] of Object.entries(gradePorTurma)) {
@@ -1958,11 +2303,21 @@ function solverWorkerBootstrap(workerScope) {
             });
           }
 
-          // 2) Se restarem 2+ aulas separadas no mesmo dia (ex: 1º e 5º horário), remove a última não-travada para realocar
-          if (proibirSeparadas && list.length >= 2) {
+          // 2) Se restarem 2+ aulas separadas no mesmo dia OU em um par bloqueado (ex.: #3-#4 cortando o recreio),
+          // remove a última não-travada para realocar
+          if (list.length >= 2) {
             const minP = list[0].p;
             const maxP = list[list.length - 1].p;
-            if (maxP - minP + 1 !== list.length) {
+            const isSeparated = proibirSeparadas && maxP - minP + 1 !== list.length;
+            let crossesBlockedPair = false;
+            for (let p = minP; p < maxP; p++) {
+              if (pairGov.isPairBlocked(p)) {
+                crossesBlockedPair = true;
+                break;
+              }
+            }
+
+            if (isSeparated || crossesBlockedPair) {
               const idx = list.findLastIndex(x => !x.cell.locked);
               if (idx !== -1) {
                 const [rem] = list.splice(idx, 1);
@@ -2002,12 +2357,38 @@ function solverWorkerBootstrap(workerScope) {
         unplaced.push(ev);
       }
     }
+
+    if (evicted.length > 0) {
+      polishGradePedagogica({
+        gradePorTurma,
+        gradePorProfessor,
+        dispoIdx,
+        diasList,
+        periodosPorDia,
+        rc01MaxConsecutivas,
+        rc02Cfg,
+        regrasGerais,
+      });
+    }
   }
 
-  function evaluateGradePedagogicalQuality(gradePorTurma, diasList, periodosPorDia, rc01MaxConsecutivas, rc02Cfg) {
+  function evaluateGradePedagogicalQuality(
+    gradePorTurma,
+    diasList,
+    periodosPorDia,
+    rc01MaxConsecutivas,
+    rc02Cfg,
+    regrasGerais = null,
+    turno = "matutino"
+  ) {
     let violacoesSeparadasMesmoDia = 0;
     let violacoesMaxDia = 0;
+    let violacoesParesBloqueados = 0;
     let paresGeminados = 0;
+    let scorePrioridadePares = 0;
+    let paresObrigatoriosAtendidos = 0;
+
+    const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
 
     for (const turmaGrade of Object.values(gradePorTurma)) {
       if (!turmaGrade) continue;
@@ -2024,6 +2405,16 @@ function solverWorkerBootstrap(workerScope) {
             const nextCell = row[p + 1];
             if (nextCell && Number(nextCell.disciplina_id) === dId) {
               paresGeminados++;
+              const pInfo = pairGov.getPairInfo(p);
+              if (pInfo) {
+                scorePrioridadePares += pInfo.qualityWeight || 0;
+                if (pInfo.modo === "bloqueado" && (!cell.locked || !nextCell.locked)) {
+                  violacoesParesBloqueados++;
+                }
+                if (pInfo.modo === "obrigatorio") {
+                  paresObrigatoriosAtendidos++;
+                }
+              }
             }
           }
 
@@ -2054,7 +2445,10 @@ function solverWorkerBootstrap(workerScope) {
     return {
       violacoesSeparadasMesmoDia,
       violacoesMaxDia,
+      violacoesParesBloqueados,
       paresGeminados,
+      scorePrioridadePares,
+      paresObrigatoriosAtendidos,
     };
   }
 
@@ -2069,8 +2463,12 @@ function solverWorkerBootstrap(workerScope) {
 
     const rc01MaxConsecutivas = readRc01MaxConsecutivas(configPedagogica);
     const rc02Cfg = readRc02Config(configPedagogica);
-    const regrasGerais = configPedagogica?.regras_gerais || null;
     const turno = payload?.turno || "matutino";
+    const rawRegrasGerais = configPedagogica?.regras_gerais || null;
+    const pairGov = buildPairGovernanceIndex(rawRegrasGerais, turno, periodosPorDia);
+    const regrasGerais = rawRegrasGerais
+      ? { ...rawRegrasGerais, _turno: turno, _pairGov: pairGov }
+      : { _turno: turno, _pairGov: pairGov };
 
     const turmaIds = normalizeTurmaIds(payload);
     const demandasNorm = normalizeDemandas(payload);
@@ -2205,7 +2603,7 @@ function solverWorkerBootstrap(workerScope) {
       });
     }
 
-    // Polimento pós-alocação para maximizar aulas duplas geminadas e blindar contra aulas separadas
+    // Polimento pós-alocação para maximizar aulas duplas geminadas na ordem de prioridade da escola
     polishGradePedagogica({
       gradePorTurma,
       gradePorProfessor,
@@ -2217,7 +2615,7 @@ function solverWorkerBootstrap(workerScope) {
       regrasGerais,
     });
 
-    // Blindagem final inviolável: garante zero aulas separadas no mesmo dia e zero dias acima do limite
+    // Blindagem final inviolável: garante zero aulas separadas no mesmo dia, zero dias acima do limite e zero pares bloqueados (recreio)
     sanitizePedagogicalViolations({
       gradePorTurma,
       gradePorProfessor,
@@ -2281,13 +2679,17 @@ function solverWorkerBootstrap(workerScope) {
       diasList,
       periodosPorDia,
       rc01MaxConsecutivas,
-      rc02Cfg
+      rc02Cfg,
+      regrasGerais,
+      turno
     );
     const qualidadeScore =
       totalAlocadasReal * 1000000 -
       qual.violacoesSeparadasMesmoDia * 5000000 -
-      qual.violacoesMaxDia * 5000000 +
-      qual.paresGeminados * 50;
+      qual.violacoesMaxDia * 5000000 -
+      qual.violacoesParesBloqueados * 4000000 +
+      qual.paresGeminados * 60 +
+      qual.scorePrioridadePares;
 
     return {
       status: unplaced.length === 0 ? "MOCK_FEASIBLE" : "MOCK_PARTIAL",
@@ -2305,7 +2707,10 @@ function solverWorkerBootstrap(workerScope) {
         rc02_strict_cap_mock: !!rc02Cfg.strictCapMock,
         violacoes_separadas_mesmo_dia: qual.violacoesSeparadasMesmoDia,
         violacoes_max_dia: qual.violacoesMaxDia,
+        violacoes_pares_bloqueados: qual.violacoesParesBloqueados,
         pares_geminados: qual.paresGeminados,
+        pares_obrigatorios_atendidos: qual.paresObrigatoriosAtendidos,
+        score_prioridade_pares: qual.scorePrioridadePares,
         qualidade_score: qualidadeScore,
       },
       grade_por_turma: gradePorTurma,
@@ -2392,7 +2797,8 @@ function solverWorkerBootstrap(workerScope) {
             if (
               alocadas >= demanda &&
               (res.metrics.violacoes_separadas_mesmo_dia || 0) === 0 &&
-              (res.metrics.violacoes_max_dia || 0) === 0
+              (res.metrics.violacoes_max_dia || 0) === 0 &&
+              (res.metrics.violacoes_pares_bloqueados || 0) === 0
             ) {
               cleanPerfectFoundCount++;
               if (cleanPerfectFoundCount >= 15) {
