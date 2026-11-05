@@ -429,9 +429,8 @@ router.post("/run-mock", requireEscola, async (req, res) => {
       respeitarHorarioManual,
     });
 
-    // Executa o Solver 2.0 (DSATUR + Kempe Chains + Tabu Ejection Search)
     let bestResult = null;
-    let maxAulas = -1;
+    let maxQualidade = -Infinity;
 
     const MAX_TIME_MS = 8500;
     const startTime = Date.now();
@@ -456,13 +455,18 @@ router.post("/run-mock", requireEscola, async (req, res) => {
 
       const alocadas = result.metrics.aulas_alocadas || 0;
       const demanda = result.metrics.aulas_demanda || 1;
+      const qScore = result.metrics.qualidade_score ?? alocadas * 1000000;
 
-      if (alocadas > maxAulas) {
-        maxAulas = alocadas;
+      if (qScore > maxQualidade) {
+        maxQualidade = qScore;
         bestResult = result;
       }
 
-      if (alocadas >= demanda) {
+      if (
+        alocadas >= demanda &&
+        (result.metrics.violacoes_separadas_mesmo_dia || 0) === 0 &&
+        (result.metrics.violacoes_max_dia || 0) === 0
+      ) {
         perfectFound = true;
         if (!isProd()) {
           console.log(
