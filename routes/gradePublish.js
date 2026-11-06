@@ -511,7 +511,11 @@ router.post("/manual/professor", requireEscola, async (req, res) => {
       professor_id,
       slots = [],
       substituir_conflitos = false,
+      locked = true,
     } = req.body || {};
+
+    const isLockedFlag = locked !== false ? 1 : 0;
+    const origemVal = isLockedFlag ? "manual" : "solver";
 
     const turnoNorm = normTurno(turno);
     const profId = Number(professor_id);
@@ -670,8 +674,8 @@ router.post("/manual/professor", requireEscola, async (req, res) => {
       await conn.query(
         `INSERT INTO grade_slot
            (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
-         VALUES (?, ?, ?, ?, ?, ?, 'manual', 1)`,
-        [draftId, s.turma_id, s.dia, s.ordem, s.disciplina_id, profId]
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [draftId, s.turma_id, s.dia, s.ordem, s.disciplina_id, profId, origemVal, isLockedFlag]
       );
     }
 
