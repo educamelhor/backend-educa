@@ -302,15 +302,20 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria (prioriza registro com nome_oficial preenchido e mais recente)
-    const [[turmaDb]] = await db.query(
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (suporta múltiplos turnos/regimes, ex: Matutino EMI_2_I_1_B e Noturno EM_2_N_1_B)
+    const [turmasRows] = await db.query(
       `SELECT nome_oficial, regime FROM turmas
        WHERE nome = ? AND escola_id = ?
-       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC
-       LIMIT 1`,
+       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC`,
       [plano.turmas, escolaId]
     );
-    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    const turmasOficiais = [...new Set(
+      (turmasRows || [])
+        .map(r => (r.nome_oficial || '').trim())
+        .filter(Boolean)
+    )];
+    const turmaDb = turmasRows?.[0] || null;
+    const turmaOficial = turmasOficiais[0] || plano.turmas;
     const regimeTurma = turmaDb?.regime || 'anual';
 
     // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
@@ -330,6 +335,7 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const dadosPlano = {
       turmas:            plano.turmas,
       turmaOficial:      turmaOficial,
+      turmasOficiais:    turmasOficiais,
       disciplina:        plano.disciplina,
       disciplinaOficial: disciplinaOficial,
       bimestre:          plano.bimestre,
@@ -597,15 +603,20 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca o nome oficial da turma mapeado pela Secretaria (prioriza registro com nome_oficial preenchido e mais recente)
-    const [[turmaDb]] = await db.query(
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (suporta múltiplos turnos/regimes, ex: Matutino EMI_2_I_1_B e Noturno EM_2_N_1_B)
+    const [turmasRows] = await db.query(
       `SELECT nome_oficial, regime FROM turmas
        WHERE nome = ? AND escola_id = ?
-       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC
-       LIMIT 1`,
+       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC`,
       [plano.turmas, escolaId]
     );
-    const turmaOficial = turmaDb?.nome_oficial || plano.turmas;
+    const turmasOficiais = [...new Set(
+      (turmasRows || [])
+        .map(r => (r.nome_oficial || '').trim())
+        .filter(Boolean)
+    )];
+    const turmaDb = turmasRows?.[0] || null;
+    const turmaOficial = turmasOficiais[0] || plano.turmas;
     const regimeTurma = turmaDb?.regime || 'anual';
 
     // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
@@ -625,6 +636,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const dadosPlano = {
       turmas:            plano.turmas,
       turmaOficial:      turmaOficial,
+      turmasOficiais:    turmasOficiais,
       disciplina:        plano.disciplina,
       disciplinaOficial: disciplinaOficial,
       bimestre:          plano.bimestre,

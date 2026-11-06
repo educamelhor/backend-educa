@@ -158,14 +158,105 @@ function mapearDisciplina(disciplina, disciplinaOficial) {
  */
 function mapearTurma(turma) {
   if (!turma) return turma;
-  // Padrão: 'Nº ANO L' ou 'N ANO L' (onde N = número, L = letra)
-  // Converte para: 'Nº Ano - L'
-  const match = String(turma).trim().match(/^(\d+)[°º]?\s*ANO\s+([A-Z])$/i);
-  if (match) {
-    return `${match[1]}º Ano - ${match[2].toUpperCase()}`;
+  const matchAno = String(turma).trim().match(/^(\d+)[°ºª]?\s*ANO\s*[-–]?\s*([A-Z0-9]+)$/i);
+  if (matchAno) {
+    return `${matchAno[1]}º Ano - ${matchAno[2].toUpperCase()}`;
   }
-  // Se não bater no padrão, devolve o original (ng-select tem fuzzy interno)
+  const matchSerie = String(turma).trim().match(/^(\d+)[°ºª]?\s*S[EÉ]RIE\s*[-–]?\s*([A-Z0-9]+)$/i);
+  if (matchSerie) {
+    return `${matchSerie[1]}ª Série - ${matchSerie[2].toUpperCase()}`;
+  }
   return turma;
+}
+
+/**
+ * Gera lista priorizada e sem duplicatas de candidatos de nomes de turma para buscar no EDUCADF.
+ * Resolve casos onde:
+ *  - A escola tem múltiplos turnos para o mesmo nome de turma (ex: Matutino EMI_2_I_1_B e Noturno EM_2_N_1_B)
+ *  - O regime é semestral e o código no EDUCADF muda de _1_ (1º sem) para _2_ (2º sem, 3º/4º bimestres)
+ *  - O Ensino Médio usa "2ª Série - B" no EDUCADF e "2º ANO B" no EDUCA.MELHOR
+ */
+function gerarCandidatosTurma(plano) {
+  const candidatos = [];
+  const add = (v) => {
+    const s = String(v || '').trim();
+    if (s && !candidatos.includes(s)) candidatos.push(s);
+  };
+
+  const bimNum = parseInt(String(plano?.bimestre || '').replace(/\D/g, ''), 10) || 0;
+  const isSegundoSemestre = bimNum >= 3;
+
+  const oficiais = [
+    ...(Array.isArray(plano?.turmasOficiais) ? plano.turmasOficiais : []),
+    plano?.turmaOficial,
+  ].map(s => String(s || '').trim()).filter(Boolean);
+
+  // 1. Para códigos semestrais SEEDF (ex: EMI_2_I_1_B, EM_2_N_1_B), inclui variante do semestre atual primeiro se for 2º semestre
+  for (const ofi of oficiais) {
+    const mSem = ofi.match(/^(EM[I]?_\d+_[A-Z]+_)([12])(_[A-Z0-9]+)$/i);
+    if (mSem) {
+      const semAlvo = isSegundoSemestre ? '2' : '1';
+      const semOutro = isSegundoSemestre ? '1' : '2';
+      add(`${mSem[1]}${semAlvo}${mSem[3]}`);
+      add(`${mSem[1]}${semOutro}${mSem[3]}`);
+    }
+    add(ofi);
+  }
+
+  // 2. Formato padrão EDUCADF ("8º Ano - A" / "2º Ano - B") e nome original ("8º ANO A")
+  if (plano?.turmas) {
+    add(mapearTurma(plano.turmas));
+    add(plano.turmas);
+
+    // 3. Equivalentes de Ensino Médio (1º/2º/3º ANO <-> 1ª/2ª/3ª Série)
+    const mEM = String(plano.turmas).trim().match(/^([123])[°ºª]?\s*(?:ANO|S[EÉ]RIE)\s*[-–]?\s*([A-Z0-9]+)$/i);
+    if (mEM) {
+      const num = mEM[1];
+      const letra = mEM[2].toUpperCase();
+      add(`${num}ª Série - ${letra}`);
+      add(`${num}ª SÉRIE - ${letra}`);
+      add(`${num}ª Série ${letra}`);
+      add(`${num}º Ano - ${letra}`);
+    }
+  }
+
+  return candidatos;
+}
+
+/**
+ * Compara um valor candidato de turma com o texto de uma opção do EDUCADF de forma segura,
+ * garantindo que número da série/ano e letra da turma coincidam exatamente.
+ */
+function turmasCorrespondemEducaDF(candidato, opcaoTexto) {
+  const norm = (s) => String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[°ºª]/g, '')
+    .replace(/\s*-\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toUpperCase().trim();
+
+  const cNorm = norm(candidato);
+  const oNorm = norm(opcaoTexto);
+  if (!cNorm || !oNorm) return false;
+  if (oNorm.includes('NO ITEMS') || oNorm.includes('NENHUM ITEM')) return false;
+  if (cNorm === oNorm) return true;
+
+  // Extrai (numero, letra) de padrões como "2 ANO B", "2 SERIE B", "8 ANO A", ou códigos SEEDF "EMI_2_I_1_B" / "EM_3_N_2_A"
+  const extrairNumLetra = (str) => {
+    const mPadrao = str.match(/^(\d+)\s*(?:ANO|SERIE)\s+([A-Z0-9]+)$/);
+    if (mPadrao) return { num: mPadrao[1], letra: mPadrao[2], tipo: 'padrao' };
+    const mCodigo = str.match(/^EM[I]?_(\d+)_[A-Z]+_[12]_([A-Z0-9]+)$/);
+    if (mCodigo) return { num: mCodigo[1], letra: mCodigo[2], tipo: 'codigo' };
+    return null;
+  };
+
+  const infoC = extrairNumLetra(cNorm);
+  const infoO = extrairNumLetra(oNorm);
+  if (infoC && infoO) {
+    return infoC.num === infoO.num && infoC.letra === infoO.letra;
+  }
+
+  return textosCorrespondemSeguros(oNorm, cNorm);
 }
 
 /**
@@ -580,58 +671,87 @@ async function selecionarNgSelect(page, placeholder, valor, timeout = 8000, fuzz
 //
 // Retorna true se selecionou com sucesso, false caso contrário.
 // ============================================================================
-async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyFn = null) {
+async function selecionarLombada(page, labelPart, valorOuCandidatos, timeout = 10000, fuzzyFn = null) {
   const norm = (s) => String(s || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').toUpperCase().trim();
-  const valorNorm = norm(valor);
+    .replace(/[°ºª]/g, '').replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').toUpperCase().trim();
 
-  // ── 1. Verifica se o botão da lombada existe ──────────────────────────
+  const candidatos = [...new Set(
+    (Array.isArray(valorOuCandidatos) ? valorOuCandidatos : [valorOuCandidatos])
+      .map(v => String(v || '').trim())
+      .filter(Boolean)
+  )];
+  if (candidatos.length === 0) return false;
+
+  // ── 1. Verifica se o botão da lombada existe (ou se já virou ng-select) ──
   const btnInfo = await page.evaluate((lbl) => {
+    const lblLow = lbl.toLowerCase();
     const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
-    const found = btns.find(b =>
-      (b.getAttribute('aria-label') || '').toLowerCase().includes(lbl.toLowerCase())
-    );
-    if (!found) return null;
+    const found = btns.find(b => {
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      const tit = (b.querySelector('.dc-lombada-titulo')?.textContent || '').toLowerCase();
+      return aria.includes(lblLow) || tit.includes(lblLow);
+    });
+    if (!found) {
+      const openNg = document.querySelector('app-lombada ng-select, .dc-lombada ng-select, ng-select');
+      return { foundButton: false, hasOpenNgSelect: !!openNg };
+    }
     const valorEl = found.querySelector('.dc-lombada-valor');
     return {
-      ariaLabel:  found.getAttribute('aria-label'),
-      valorAtual: valorEl?.textContent?.trim() || '',
+      foundButton: true,
+      ariaLabel:   found.getAttribute('aria-label'),
+      valorAtual:  valorEl?.textContent?.trim() || '',
     };
   }, labelPart);
 
-  if (!btnInfo) {
+  if (!btnInfo?.foundButton && !btnInfo?.hasOpenNgSelect) {
     console.warn(`[educadf.pap] Lombada "${labelPart}" não encontrada (novo design não ativo ou label diferente)`);
     return false;
   }
 
-  // ── 2. Já está preenchido com o valor correto? ────────────────────────
-  const { valorAtual } = btnInfo;
-  if (valorAtual && valorAtual !== 'Escolher') {
-    const jaOk = fuzzyFn
-      ? fuzzyFn(valorAtual, valor)
-      : textosCorrespondemSeguros(norm(valorAtual), valorNorm);
-    if (jaOk) {
-      console.log(`[educadf.pap] ⚡ Lombada "${labelPart}" já pré-selecionada: "${valorAtual}"`);
-      return true;
+  // ── 2. Já está preenchido com algum dos candidatos? ────────────────────
+  if (btnInfo.foundButton) {
+    const { valorAtual } = btnInfo;
+    if (valorAtual && valorAtual !== 'Escolher') {
+      for (const cand of candidatos) {
+        const jaOk = fuzzyFn
+          ? fuzzyFn(cand, valorAtual)
+          : textosCorrespondemSeguros(norm(valorAtual), norm(cand));
+        if (jaOk) {
+          console.log(`[educadf.pap] ⚡ Lombada "${labelPart}" já pré-selecionada: "${valorAtual}"`);
+          return true;
+        }
+      }
     }
+
+    // ── 3. Clica no botão para abrir o seletor ───────────────────────────
+    await page.evaluate((lbl) => {
+      const lblLow = lbl.toLowerCase();
+      const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
+      const found = btns.find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const tit = (b.querySelector('.dc-lombada-titulo')?.textContent || '').toLowerCase();
+        return aria.includes(lblLow) || tit.includes(lblLow);
+      });
+      if (found) { found.scrollIntoViewIfNeeded?.(); found.click(); }
+    }, labelPart);
+  } else {
+    // Se a lombada já estava em modo ng-select (ex: retry), garante que o dropdown esteja aberto
+    await page.evaluate(() => {
+      const ng = document.querySelector('app-lombada ng-select, .dc-lombada ng-select, ng-select');
+      const container = ng?.querySelector('.ng-select-container');
+      if (container && !document.querySelector('.ng-dropdown-panel')) {
+        container.click();
+      }
+    }).catch(() => {});
   }
 
-  // ── 3. Clica no botão para abrir o seletor ───────────────────────────
-  await page.evaluate((lbl) => {
-    const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
-    const found = btns.find(b =>
-      (b.getAttribute('aria-label') || '').toLowerCase().includes(lbl.toLowerCase())
-    );
-    if (found) { found.scrollIntoViewIfNeeded?.(); found.click(); }
-  }, labelPart);
-  await page.waitForTimeout(1500);
+  // ── 4. Aguarda ng-select e o carregamento das opções (.ng-option) ──────
+  const ngSelect = await page.waitForSelector('app-lombada ng-select, .dc-lombada ng-select, ng-select', { timeout: 6000 }).catch(() => null);
+  await page.waitForSelector('.ng-option:not(.ng-option-disabled)', { timeout: Math.min(timeout, 8000) }).catch(() => null);
+  await page.waitForTimeout(400);
 
-  // ── 4. Aguarda ng-select aparecer ────────────────────────────────────
-  const ngSelect = await page.waitForSelector('ng-select', { timeout: 6000 }).catch(() => null);
-
-  // ── 5. Função auxiliar: tenta clicar numa opção matching ─────────────
-  // Prioriza match exato antes de match parcial seguro (evitando colisão I / II / III)
+  // ── 5. Função auxiliar: tenta clicar numa opção matching para qualquer candidato ──
   const encontrarEClicar = async () => {
     const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
     const lidos = [];
@@ -639,29 +759,43 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
       const txt = await opt.textContent().catch(() => '');
       lidos.push({ opt, txt, txtNorm: norm(txt) });
     }
-    // Passada 1: match exato
-    if (!fuzzyFn) {
+
+    if (lidos.length > 0) {
+      await page.evaluate(({ lbl, opcoes }) => {
+        window.__ultimasOpcoesLombada = window.__ultimasOpcoesLombada || {};
+        window.__ultimasOpcoesLombada[lbl] = opcoes;
+      }, { lbl: labelPart, opcoes: lidos.map(i => i.txt.trim()) }).catch(() => {});
+    }
+
+    // Passada 1: match exato (em ordem de prioridade dos candidatos)
+    for (const cand of candidatos) {
+      const candNorm = norm(cand);
       for (const item of lidos) {
-        if (item.txtNorm === valorNorm) {
+        if (item.txtNorm === candNorm) {
           await item.opt.click();
-          await page.waitForTimeout(500);
-          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (exato) = "${item.txt.trim().substring(0, 60)}"`);
+          await page.waitForTimeout(600);
+          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (exato: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
           return true;
         }
       }
     }
-    // Passada 2: match seguro ou fuzzyFn
-    for (const item of lidos) {
-      const match = fuzzyFn
-        ? fuzzyFn(valor, item.txt)
-        : textosCorrespondemSeguros(item.txtNorm, valorNorm);
-      if (match) {
-        await item.opt.click();
-        await page.waitForTimeout(500);
-        console.log(`[educadf.pap] ✅ Lombada "${labelPart}" = "${item.txt.trim().substring(0, 60)}"`);
-        return true;
+
+    // Passada 2: match seguro ou fuzzyFn (em ordem de prioridade dos candidatos)
+    for (const cand of candidatos) {
+      const candNorm = norm(cand);
+      for (const item of lidos) {
+        const match = fuzzyFn
+          ? fuzzyFn(cand, item.txt)
+          : textosCorrespondemSeguros(item.txtNorm, candNorm);
+        if (match) {
+          await item.opt.click();
+          await page.waitForTimeout(600);
+          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (match: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
+          return true;
+        }
       }
     }
+
     if (lidos.length > 0) {
       console.warn(`[educadf.pap]   Opções na lombada "${labelPart}": ${lidos.map(i => `"${i.txt.trim()}"`).join(' | ')}`);
     }
@@ -671,21 +805,28 @@ async function selecionarLombada(page, labelPart, valor, timeout = 10000, fuzzyF
   // ── 6. Tenta opções já visíveis (sem digitar) ─────────────────────────
   if (await encontrarEClicar()) return true;
 
-  // ── 7. Digita para filtrar as opções ─────────────────────────────────
+  // ── 7. Digita para filtrar as opções (preservando números e letras de turma!) ──
   const inp = ngSelect ? await ngSelect.$('input').catch(() => null) : null;
   if (inp) {
-    // Usa tokens do valor para pesquisa (remove ordinais, pontuação)
-    const tokens = valor.replace(/[°º]/g, '').replace(/\s*-\s*/g, ' ')
-      .trim().split(' ').filter(t => t.length > 1).slice(0, 2).join(' ');
-    await inp.fill(tokens);
-    await page.waitForTimeout(1500);
+    const termosBusca = [...new Set(candidatos.flatMap(cand => {
+      const limpo = cand.replace(/[°ºª]/g, '').replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim();
+      const partes = limpo.split(' ').filter(Boolean);
+      const curto = partes.length > 2 ? partes.slice(0, 3).join(' ') : limpo;
+      return [cand, limpo, curto].filter(Boolean);
+    }))];
 
-    if (await encontrarEClicar()) return true;
+    for (const termo of termosBusca) {
+      await inp.fill('').catch(() => {});
+      await inp.fill(termo).catch(() => {});
+      await page.waitForTimeout(1000);
+      if (await encontrarEClicar()) return true;
+    }
+    await inp.fill('').catch(() => {});
   }
 
   // ── 8. Falhou — fecha o seletor (NÃO clica cegamente na 1ª opção para evitar disciplina/turma errada) ──
   await page.keyboard.press('Escape').catch(() => {});
-  console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" = "${valor}" NÃO encontrada`);
+  console.warn(`[educadf.pap] ⚠️  Lombada "${labelPart}" = [${candidatos.map(c => `"${c}"`).join(', ')}] NÃO encontrada`);
   return false;
 }
 
@@ -1313,14 +1454,16 @@ async function selecionarTipoNoModal(page, valor) {
   if (!valor) return false;
   console.log(`[educadf.pap] Tipo: "${valor}"`);
 
-  // O campo Tipo do modal é um ng-select sem placeholder fixo conhecido.
-  // Tenta identificar pelo contexto: é o primeiro ng-select visível no modal.
+  const normTipo = (s) => String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().trim();
+  const valorNorm = normTipo(valor);
+
   try {
-    // Localiza ng-select dentro do modal
-    const modalNgSelect = page.locator('.modal ng-select, [role="dialog"] ng-select').first();
+    // Localiza ng-select especificamente dentro de ngb-modal-window (evitando colidir com ngb-offcanvas-panel[role="dialog"])
+    const modalNgSelect = page.locator('ngb-modal-window ng-select, .modal.show ng-select').first();
     if ((await modalNgSelect.count()) === 0) {
-      // Fallback: pode ser um <select> nativo
-      const nativeSelect = page.locator('.modal select, [role="dialog"] select').first();
+      const nativeSelect = page.locator('ngb-modal-window select, .modal.show select').first();
       if ((await nativeSelect.count()) > 0) {
         await nativeSelect.selectOption({ label: valor });
         return true;
@@ -1329,40 +1472,49 @@ async function selecionarTipoNoModal(page, valor) {
     }
 
     await modalNgSelect.click();
-    await page.waitForTimeout(500);
+    await page.waitForSelector('.ng-dropdown-panel .ng-option:not(.ng-option-disabled)', { timeout: 5000 }).catch(() => null);
+    await page.waitForTimeout(400);
 
-    // Digita para filtrar
-    const inp = modalNgSelect.locator("input[type='text']").first();
-    if ((await inp.count()) > 0) {
-      await inp.fill(valor.substring(0, 20));
-    } else {
-      await page.keyboard.type(valor.substring(0, 20), { delay: 40 });
-    }
-    await page.waitForTimeout(1200);
-
-    // Clica na primeira opção que contenha o texto
-    const opts = page.locator('.ng-dropdown-panel .ng-option');
-    const n = await opts.count();
-    for (let i = 0; i < n; i++) {
-      const t = (await opts.nth(i).textContent()) || '';
-      if (t.trim().toUpperCase().includes(valor.trim().toUpperCase())) {
-        await opts.nth(i).click();
-        await page.waitForTimeout(600);
-        console.log(`[educadf.pap] ✅ Tipo "${valor}" selecionado`);
-        return true;
+    const tentarClicarOpcao = async () => {
+      const opts = page.locator('.ng-dropdown-panel .ng-option:not(.ng-option-disabled)');
+      const n = await opts.count();
+      for (let i = 0; i < n; i++) {
+        const t = (await opts.nth(i).textContent()) || '';
+        const tNorm = normTipo(t);
+        if (tNorm === valorNorm || tNorm.includes(valorNorm) || valorNorm.includes(tNorm)) {
+          await opts.nth(i).click();
+          await page.waitForTimeout(500);
+          console.log(`[educadf.pap] ✅ Tipo "${valor}" -> "${t.trim()}" selecionado`);
+          return true;
+        }
       }
+      return false;
+    };
+
+    // 1. Tenta nas opções já abertas ANTES de digitar (evita esvaziar o dropdown se o nome for diferente)
+    if (await tentarClicarOpcao()) return true;
+
+    // 2. Digita para filtrar
+    const inp = modalNgSelect.locator('input').first();
+    if ((await inp.count()) > 0) {
+      await inp.fill(valor.substring(0, 20)).catch(() => {});
+      await page.waitForTimeout(800);
+      if (await tentarClicarOpcao()) return true;
+      // Limpa o filtro para restaurar todas as opções antes do fallback
+      await inp.fill('').catch(() => {});
+      await page.waitForTimeout(500);
     }
 
-    // Se não achou, clica na primeira opção disponível (menos ruim do que deixar vazio)
-    if (n > 0) {
-      const firstText = (await opts.first().textContent()) || '';
-      await opts.first().click();
+    // 3. Fallback seguro: clica na primeira opção válida para NUNCA deixar o campo obrigatório Tipo vazio (drop-is-invalid)
+    const optsFallback = page.locator('.ng-dropdown-panel .ng-option:not(.ng-option-disabled)');
+    if ((await optsFallback.count()) > 0) {
+      const firstText = (await optsFallback.first().textContent()) || '';
+      await optsFallback.first().click();
       await page.waitForTimeout(500);
-      console.warn(`[educadf.pap] Tipo não encontrado exato, selecionou: "${firstText.trim()}"`);
+      console.warn(`[educadf.pap] Tipo "${valor}" não encontrado exato, selecionou fallback: "${firstText.trim()}"`);
       return true;
     }
 
-    await page.keyboard.press('Escape');
     return false;
   } catch (err) {
     console.warn(`[educadf.pap] Tipo seleção falhou: ${err.message}`);
@@ -1445,7 +1597,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     const componenteEducaDF = mapearDisciplina(plano.disciplina, plano.disciplinaOficial);
     const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
-    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → "${turmaEducaDF}" | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
+    const candidatosTurma   = gerarCandidatosTurma(plano);
+    console.log(`[educadf.pap] 4/7 Aplicando filtros — Turma: ${plano.turmas} → candidatos=${JSON.stringify(candidatosTurma)} | Componente: ${plano.disciplina} → "${componenteEducaDF}"`);
 
     // ── Detecta qual design de filtro está ativo ────────────────────────
     const isLombada = await page.waitForSelector('button.dc-lombada-botao', { timeout: 12000 })
@@ -1455,27 +1608,35 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     if (isLombada) {
       // ══════════════════════════════════════════════════════════════════
       // NOVO DESIGN (2026): barra de filtros horizontal com lombada
-      // Unidade Escolar é AUTO-PREENCHIDA pelo login do professor.
-      // Apenas Turma, Professor e Componente precisam de seleção.
       // ══════════════════════════════════════════════════════════════════
       console.log('[educadf.pap] ✅ Nova barra de filtros (dc-lombada) detectada');
 
-      // ── Turma (OBRIGATÓRIO) ──────────────────────────────────────────
-      let turmaOk = await selecionarLombada(page, 'Turma', turmaEducaDF);
-      if (!turmaOk && plano.turmas !== turmaEducaDF) {
-        console.warn(`[educadf.pap] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
-        turmaOk = await selecionarLombada(page, 'Turma', plano.turmas);
+      // ── Unidade Escolar (se o professor atuar em mais de uma escola ou estiver "Escolher") ──
+      const candidatosEscola = [plano.escola?.nomeOficial, plano.escola?.nomeBusca].map(s => String(s || '').trim()).filter(Boolean);
+      if (candidatosEscola.length > 0) {
+        await selecionarLombada(page, 'Unidade escolar', candidatosEscola, 8000).catch(() => {});
+        await page.waitForTimeout(500);
       }
+
+      // ── Turma (OBRIGATÓRIO — testa todos os candidatos em uma única sessão) ──
+      const turmaOk = await selecionarLombada(page, 'Turma', candidatosTurma, 10000, turmasCorrespondemEducaDF);
       if (!turmaOk) {
-        const semDadosPortal = await page.evaluate(() => !!window.__educaDFSemDados).catch(() => false);
-        if (erroPortalDetectado?.erro || semDadosPortal) {
+        const diagLombada = await page.evaluate(() => ({
+          semDados: !!window.__educaDFSemDados,
+          opcoes: window.__ultimasOpcoesLombada?.['Turma'] || [],
+        })).catch(() => ({ semDados: false, opcoes: [] }));
+
+        if (erroPortalDetectado?.erro || diagLombada.semDados) {
           const detalhe = erroPortalDetectado?.mensagem || 'dropdown retornou sem dados';
           throw Object.assign(
             new Error(`EDUCADF não carregou as turmas disponíveis (${detalhe}). O portal está com instabilidade. Tente novamente em alguns minutos.`),
             { errorCode: 'PORTAL_INDISPONIVEL' }
           );
         }
-        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
+        const sufixoOpcoes = diagLombada.opcoes.length > 0
+          ? ` (Turmas visíveis no EDUCADF: ${diagLombada.opcoes.slice(0, 15).join(', ')})`
+          : '';
+        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}"${sufixoOpcoes}. Verifique se a turma está cadastrada no EDUCADF para este bimestre.`);
       }
       await page.waitForTimeout(800);
 
@@ -1646,14 +1807,16 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     console.log('[educadf.pap] 7/16 Clicando em Filtrar...');
     try {
-      // NOVO DESIGN: botão dentro de <app-button-filtrar>; fallback para seletor antigo
-      await page.locator("app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first().click({ timeout: 8000 });
+      // NOVO DESIGN: botão dentro de <app-button-filtrar> ou button.dc-lombada-filtrar; fallback para seletor antigo
+      await page.locator("button.dc-lombada-filtrar, app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first().click({ timeout: 8000 });
       await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() =>
         console.warn('[educadf.pap] domcontentloaded timeout após Filtrar — continuando...')
       );
     } catch (filtrarErr) {
       console.warn(`[educadf.pap] Botão Filtrar não encontrado ou falhou: ${filtrarErr.message}`);
     }
+    await page.waitForTimeout(1000);
+    await removerBackdrops(page);
 
     // ══════════════════════════════════════════════════════════════════════
     // Após Filtrar, aguarda os eventos do calendário renderizarem.
@@ -1761,22 +1924,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 7.5: NAVEGAR O CALENDÁRIO PARA UM MÊS DO BIMESTRE CORRETO
-    //
-    // CAUSA RAIZ (confirmada 07/05/2026): O EDUCADF Angular usa a DATA do
-    // evento clicado para determinar em qual bimestre o procedimento será
-    // criado. A aba visual "1º Bimestre" é apenas filtro, não contexto de
-    // criação. Se o calendário mostra maio (2º bim) e clicamos num evento
-    // de maio, o procedimento vai para o 2º bimestre — MESMO com "1º Bim"
-    // selecionado na aba.
-    //
-    // Solução: navegar o FullCalendar para um mês do bimestre correto
-    // ANTES de clicar no evento, usando o botão "prev" (<) do FullCalendar.
-    //
-    // Mapeamento bimestre → mês-alvo:
-    //   1º Bim = março (mês 3)
-    //   2º Bim = maio  (mês 5)
-    //   3º Bim = agosto (mês 8)
-    //   4º Bim = outubro (mês 10)
     // ══════════════════════════════════════════════════════════════════════
     const bimNumPAP = String(plano.bimestre || '').replace(/\D/g, '');
     if (!bimNumPAP) {
@@ -1789,7 +1936,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     };
     const regimeTurma = plano.regimeTurma || 'anual';
     const mapaRegime = (regimeTurma === 'semestral') ? calendarioMap.semestral : calendarioMap.bimestral;
-    const mesAlvo = mapaRegime?.[String(bimNumPAP)] || null;
+    const mesAlvo = mapaRegime?.[String(bimNumPAP)] || calendarioMap.bimestral?.[String(bimNumPAP)] || null;
 
     const MESES_CANDIDATOS_BIMESTRE = {
       '1': [3, 2, 4],
@@ -1800,6 +1947,8 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const MESES_CANDIDATOS_SEMESTRE = {
       '1': [4, 3, 5, 2, 6],
       '2': [9, 8, 10, 11],
+      '3': [8, 9, 10, 7],
+      '4': [10, 11, 12, 9],
     };
 
     const candidatosBase = (regimeTurma === 'semestral')
@@ -1871,7 +2020,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       const normCalP = s => String(s || '').toUpperCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      const turmaTknsP = normCalP(plano.turmas).split(' ').filter(t => t.length > 0);
+      const turmaTknsListP = candidatosTurma.map(c => normCalP(c).split(' ').filter(t => t.length > 0)).filter(arr => arr.length > 0);
       const compNormP  = normCalP(componenteEducaDF);
       const compTknsP  = compNormP.split(' ').filter(t => t.length > 1);
       const romanosReP = /\b(III|II|I|IV|V)\b/g;
@@ -1885,13 +2034,12 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         if (n.includes(compNormP)) return true;
         return compTknsP.length > 0 && compTknsP.every(c => n.includes(c));
       };
-      const okTurmaCompP = (txt) => {
-        const n = normCalP(txt);
-        return turmaTknsP.every(t => n.includes(t)) && matchCompP(txt);
-      };
       const okSoTurmaP = (txt) => {
         const n = normCalP(txt);
-        return turmaTknsP.every(t => n.includes(t));
+        return turmaTknsListP.some(tkns => tkns.every(t => n.includes(t)));
+      };
+      const okTurmaCompP = (txt) => {
+        return okSoTurmaP(txt) && matchCompP(txt);
       };
 
       const fcEvsP = page.locator('a.fc-event:not(.external-event), .fc-event:not(.external-event) a, .fc-daygrid-event:not(.external-event)');
@@ -2021,7 +2169,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 10: Selecionar o bimestre correto (dentro de Procedimentos)
     // ══════════════════════════════════════════════════════════════════════
-    // bimNumPAP já declarado no Step 7.5 (antes do clique no evento)
     console.log(`[educadf.pap] 10/16 Selecionando ${bimNumPAP}º Bimestre...`);
 
     const bimSelector = `button:has-text("Bimestre"), a:has-text("Bimestre"), [role="tab"]:has-text("Bimestre")`;
@@ -2031,6 +2178,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     await session.delay(800);
 
     let botaoBimestreClicado = false;
+    let bimNumEfetivoPAP = bimNumPAP;
     for (let tentativa = 1; tentativa <= 3 && !botaoBimestreClicado; tentativa++) {
       console.log(`[educadf.pap] 10a Tentativa ${tentativa}/3...`);
 
@@ -2038,38 +2186,44 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
         const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const alvo = `${num}O BIMESTRE`;
         const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
           .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
         if (!tabs.length) return null;
-        const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+        let numUsado = String(num);
+        let tabAlvo = tabs.find(el => norm(el.textContent || '').includes(`${numUsado}O BIMESTRE`));
+        // Em turmas semestrais no 2º semestre, o EDUCADF pode exibir apenas [1º Bimestre, 2º Bimestre]
+        if (!tabAlvo && tabs.length === 2 && (numUsado === '3' || numUsado === '4')) {
+          numUsado = numUsado === '3' ? '1' : '2';
+          tabAlvo = tabs.find(el => norm(el.textContent || '').includes(`${numUsado}O BIMESTRE`));
+        }
         if (!tabAlvo) return { error: 'não encontrado' };
         tabAlvo.scrollIntoView({ block: 'center' });
         const rect = tabAlvo.getBoundingClientRect();
-        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim(), numUsado };
       }, bimNumPAP);
 
       if (!tabInfo || tabInfo.error) { await session.delay(3000); continue; }
+      bimNumEfetivoPAP = tabInfo.numUsado || bimNumPAP;
 
       console.log(`[educadf.pap] 10a Tab "${tabInfo.txt}" em (${tabInfo.x.toFixed(0)}, ${tabInfo.y.toFixed(0)})`);
       await page.mouse.click(tabInfo.x, tabInfo.y);
       await session.delay(1200);
 
       // Verifica se mudou
-      const check = await page.evaluate((num) => {
+      const check = await page.evaluate(() => {
         const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
         const tabs = [...document.querySelectorAll('.nav-link')]
           .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
         return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
-      }, bimNumPAP);
+      });
       console.log(`[educadf.pap] 10a PÓS-clique: ${JSON.stringify(check)}`);
 
-      const alvoOk = check.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
-      const outroOk = check.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
+      const alvoOk = check.find(t => t.txt.includes(`${bimNumEfetivoPAP}º`) && t.active);
+      const outroOk = check.find(t => !t.txt.includes(`${bimNumEfetivoPAP}º`) && t.active);
       if (alvoOk && !outroOk) {
         botaoBimestreClicado = true;
-        console.log(`[educadf.pap] ✅ ${bimNumPAP}º Bimestre CONFIRMADO`);
+        console.log(`[educadf.pap] ✅ ${bimNumEfetivoPAP}º Bimestre CONFIRMADO`);
       }
     }
 
@@ -2078,128 +2232,88 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PASSO 10c: Re-clicar "Procedimentos Avaliativos" via mouse.click(x,y)
-    //
-    // MOTIVO: Ao trocar bimestre, o EDUCADF recarrega o diário e sai da aba
-    // Procedimentos. Precisamos re-entrar usando mouse.click (que funciona).
-    //
-    // ⚠️ PROBLEMA IDENTIFICADO (07/05/2026): O re-clique na aba RESETA o
-    // bimestre Angular para o bimestre do evento do calendário (que é sempre
-    // o do mês atual). Solução: re-selecionar o bimestre APÓS o re-clique.
+    // PASSO 10c: Verifica se a aba "Procedimentos Avaliativos" continua ativa.
+    // No novo design offcanvas (2026), trocar o bimestre NÃO sai da aba
+    // "Procedimentos Avaliativos". Só re-clicamos se a aba tiver deixado de estar ativa!
     // ══════════════════════════════════════════════════════════════════════
-    console.log('[educadf.pap] 10c Re-clicando "Procedimentos Avaliativos" via mouse.click...');
     await session.delay(800);
-
-    const reClickCoords = await page.evaluate(() => {
+    const abaProcStatus = await page.evaluate(() => {
       const el = [...document.querySelectorAll('a, [role="tab"]')].find(l => {
         const t = (l.textContent || '').toLowerCase();
         return t.includes('procedimento') && t.includes('avaliativo');
       });
-      if (!el) return null;
+      if (!el) return { found: false, active: false };
+      const active = el.classList.contains('active') || el.getAttribute('aria-selected') === 'true';
       el.scrollIntoView({ block: 'center' });
       const rect = el.getBoundingClientRect();
-      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      return { found: true, active, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     });
 
-    if (reClickCoords) {
-      await page.mouse.click(reClickCoords.x, reClickCoords.y);
-      console.log(`[educadf.pap] ✅ 10c Aba re-clicada via mouse.click`);
-    } else {
-      console.warn('[educadf.pap] ⚠️ 10c Aba Procedimentos não encontrada');
-    }
+    if (abaProcStatus.found && !abaProcStatus.active) {
+      console.log('[educadf.pap] 10c Aba Procedimentos saiu de foco após trocar bimestre — re-clicando...');
+      await page.mouse.click(abaProcStatus.x, abaProcStatus.y);
+      await session.delay(1000);
+      await session.screenshot('pap_06c_procedimentos_reaberta');
+      await removerBackdrops(page);
 
-    await session.delay(1000);
-    await session.screenshot('pap_06c_procedimentos_reaberta');
-    await removerBackdrops(page);
+      // PASSO 10d: Re-selecionar o bimestre caso o re-clique tenha resetado
+      console.log(`[educadf.pap] 10d Verificando ${bimNumEfetivoPAP}º Bimestre pós re-clique...`);
+      await page.waitForSelector(bimSelector, { timeout: 15000 }).catch(() => {});
+      await removerBackdrops(page);
+      await session.delay(800);
 
-    // ══════════════════════════════════════════════════════════════════════
-    // PASSO 10d: RE-SELECIONAR o bimestre APÓS o re-clique na aba.
-    //
-    // CAUSA RAIZ: O re-clique em "Procedimentos Avaliativos" (10c) faz o
-    // Angular recarregar o componente e RESETAR o bimestre para o contexto
-    // original do evento do calendário clicado (passo 8). Como o calendário
-    // mostra o mês atual (maio = 2º bimestre), o bimestre é resetado para
-    // o 2º bimestre, MESMO QUE o passo 10a tenha confirmado o 1º bimestre.
-    //
-    // Solução: re-selecionar o bimestre AQUI, DEPOIS do re-clique.
-    // ══════════════════════════════════════════════════════════════════════
-    console.log(`[educadf.pap] 10d RE-SELECIONANDO ${bimNumPAP}º Bimestre (pós re-clique na aba)...`);
+      const checkPosReclick = await page.evaluate(() => {
+        const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+        const tabs = [...document.querySelectorAll('.nav-link')]
+          .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+        return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+      });
+      const bimAindaCorreto = checkPosReclick.find(t => t.txt.includes(`${bimNumEfetivoPAP}º`) && t.active);
+      const outroBimAtivo = checkPosReclick.find(t => !t.txt.includes(`${bimNumEfetivoPAP}º`) && t.active);
 
-    // Aguarda as tabs de bimestre aparecerem novamente após o re-clique
-    await page.waitForSelector(bimSelector, { timeout: 15000 })
-      .catch(() => console.warn('[educadf.pap] ⚠️ 10d Timeout aguardando tabs de bimestre pós re-clique'));
-    await removerBackdrops(page);
-    await session.delay(800);
+      if (!bimAindaCorreto || outroBimAtivo) {
+        let bimReselected = false;
+        for (let tentRe = 1; tentRe <= 3 && !bimReselected; tentRe++) {
+          const tabInfoRe = await page.evaluate((num) => {
+            const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
+              .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+            const alvo = `${num}O BIMESTRE`;
+            const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
+              .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
+            const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+            if (!tabAlvo) return null;
+            tabAlvo.scrollIntoView({ block: 'center' });
+            const rect = tabAlvo.getBoundingClientRect();
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
+          }, bimNumEfetivoPAP);
 
-    // Verifica se o bimestre AINDA está correto após o re-clique
-    const checkPosReclick = await page.evaluate((num) => {
-      const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
-      const tabs = [...document.querySelectorAll('.nav-link')]
-        .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
-      return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
-    }, bimNumPAP);
-    console.log(`[educadf.pap] 10d Check pós re-clique: ${JSON.stringify(checkPosReclick)}`);
+          if (!tabInfoRe) { await session.delay(1200); continue; }
+          await page.mouse.click(tabInfoRe.x, tabInfoRe.y);
+          await session.delay(1200);
 
-    const bimAindaCorreto = checkPosReclick.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
-    const outroBimAtivo = checkPosReclick.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
-
-    if (!bimAindaCorreto || outroBimAtivo) {
-      console.warn(`[educadf.pap] ⚠️ 10d Bimestre RESETOU após re-clique! Re-selecionando...`);
-
-      // Re-seleciona o bimestre (mesma lógica do passo 10a)
-      let bimReselected = false;
-      for (let tentRe = 1; tentRe <= 3 && !bimReselected; tentRe++) {
-        const tabInfoRe = await page.evaluate((num) => {
-          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
-            .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-          const alvo = `${num}O BIMESTRE`;
-          const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
-            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
-          if (!tabs.length) return null;
-          const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
-          if (!tabAlvo) return { error: 'não encontrado' };
-          tabAlvo.scrollIntoView({ block: 'center' });
-          const rect = tabAlvo.getBoundingClientRect();
-          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
-        }, bimNumPAP);
-
-        if (!tabInfoRe || tabInfoRe.error) { await session.delay(1200); continue; }
-
-        console.log(`[educadf.pap] 10d Re-click bimestre "${tabInfoRe.txt}" em (${tabInfoRe.x.toFixed(0)}, ${tabInfoRe.y.toFixed(0)})`);
-        await page.mouse.click(tabInfoRe.x, tabInfoRe.y);
-        await session.delay(1200);
-
-        // Verifica novamente
-        const checkFinal = await page.evaluate((num) => {
-          const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
-          const tabs = [...document.querySelectorAll('.nav-link')]
-            .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
-          return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
-        }, bimNumPAP);
-        console.log(`[educadf.pap] 10d Check final (tentativa ${tentRe}): ${JSON.stringify(checkFinal)}`);
-
-        const alvoFinal = checkFinal.find(t => t.txt.includes(`${bimNumPAP}º`) && t.active);
-        const outroFinal = checkFinal.find(t => !t.txt.includes(`${bimNumPAP}º`) && t.active);
-        if (alvoFinal && !outroFinal) {
-          bimReselected = true;
-          console.log(`[educadf.pap] ✅ 10d ${bimNumPAP}º Bimestre RE-CONFIRMADO (tentativa ${tentRe})`);
+          const checkFinal = await page.evaluate(() => {
+            const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
+            const tabs = [...document.querySelectorAll('.nav-link')]
+              .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
+            return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
+          });
+          if (checkFinal.find(t => t.txt.includes(`${bimNumEfetivoPAP}º`) && t.active)) {
+            bimReselected = true;
+          }
+        }
+        if (!bimReselected) {
+          return {
+            ok: false,
+            message: `Não foi possível confirmar o ${bimNumPAP}º Bimestre após re-clique na aba Procedimentos.`,
+            durationMs: Date.now() - startedAt,
+          };
         }
       }
-
-      if (!bimReselected) {
-        console.error(`[educadf.pap] ❌ 10d Falha ao re-selecionar ${bimNumPAP}º Bimestre após 3 tentativas.`);
-        await session.screenshot('pap_10d_bimestre_falha');
-        return {
-          ok: false,
-          message: `Não foi possível confirmar o ${bimNumPAP}º Bimestre após re-clique na aba Procedimentos. O bimestre resetou para o 2º. Abortando para evitar exportação no bimestre errado.`,
-          durationMs: Date.now() - startedAt,
-        };
-      }
     } else {
-      console.log(`[educadf.pap] ✅ 10d Bimestre ${bimNumPAP}º permaneceu correto após re-clique.`);
+      console.log(`[educadf.pap] ⚡ 10c Aba "Procedimentos Avaliativos" e ${bimNumEfetivoPAP}º Bimestre já estão ativos!`);
     }
 
     await session.delay(800);
@@ -2534,7 +2648,8 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // PASSO 3: Filtros — detecta novo design (lombada) ou fallback para ng-select
     const componenteEducaDF = mapearDisciplina(plano.disciplina, plano.disciplinaOficial);
     const turmaEducaDF      = plano.turmaOficial || mapearTurma(plano.turmas);
-    console.log(`[educadf.notas] 3/7 Aplicando filtros — Turma: "${plano.turmas}" ("${turmaEducaDF}") | Componente: ${componenteEducaDF}`);
+    const candidatosTurmaN  = gerarCandidatosTurma(plano);
+    console.log(`[educadf.notas] 3/7 Aplicando filtros — Turma: "${plano.turmas}" → candidatos=${JSON.stringify(candidatosTurmaN)} | Componente: ${componenteEducaDF}`);
 
     // ── Detecta qual design de filtro está ativo ────────────────────────
     const isLombadaN = await page.waitForSelector('button.dc-lombada-botao', { timeout: 12000 })
@@ -2547,13 +2662,19 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       // ══════════════════════════════════════════════════════════════════
       console.log('[educadf.notas] ✅ Nova barra de filtros (dc-lombada) detectada');
 
-      let turmaOk = await selecionarLombada(page, 'Turma', turmaEducaDF);
-      if (!turmaOk && plano.turmas !== turmaEducaDF) {
-        console.warn(`[educadf.notas] Formato EDUCADF "${turmaEducaDF}" não encontrado — tentando original "${plano.turmas}"`);
-        turmaOk = await selecionarLombada(page, 'Turma', plano.turmas);
+      const candidatosEscolaN = [plano.escola?.nomeOficial, plano.escola?.nomeBusca].map(s => String(s || '').trim()).filter(Boolean);
+      if (candidatosEscolaN.length > 0) {
+        await selecionarLombada(page, 'Unidade escolar', candidatosEscolaN, 8000).catch(() => {});
+        await page.waitForTimeout(500);
       }
+
+      const turmaOk = await selecionarLombada(page, 'Turma', candidatosTurmaN, 10000, turmasCorrespondemEducaDF);
       if (!turmaOk) {
-        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}". Verifique se a turma está cadastrada no EDUCADF.`);
+        const opcoesVisiveisN = await page.evaluate(() => window.__ultimasOpcoesLombada?.['Turma'] || []).catch(() => []);
+        const sufixoOpcoesN = opcoesVisiveisN.length > 0
+          ? ` (Turmas visíveis no EDUCADF: ${opcoesVisiveisN.slice(0, 15).join(', ')})`
+          : '';
+        throw new Error(`Filtro Turma não encontrado para "${plano.turmas}"${sufixoOpcoesN}. Verifique se a turma está cadastrada no EDUCADF.`);
       }
       await page.waitForTimeout(800);
 
@@ -2636,10 +2757,9 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         const exists = (await page.locator(`ng-select[placeholder="${ph}"]`).count()) > 0;
         if (exists) {
           console.log(`[educadf.notas] Filtro Turma encontrado com placeholder: "${ph}"`);
-          turmaOk = await selecionarNgSelect(page, ph, turmaEducaDF);
-          if (!turmaOk) {
-            console.warn(`[educadf.notas] Formato EDUCADF "${turmaEducaDF}" não encontrado - tentando original "${plano.turmas}"`);
-            turmaOk = await selecionarNgSelect(page, ph, plano.turmas);
+          for (const cand of candidatosTurmaN) {
+            turmaOk = await selecionarNgSelect(page, ph, cand, 10000, turmasCorrespondemEducaDF);
+            if (turmaOk) break;
           }
           if (turmaOk) break;
         }
@@ -2682,12 +2802,9 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     await session.screenshot('notas_03_filtros');
 
     // PASSO 4: Clicar Filtrar
-    // NOVO DESIGN: botão dentro de <app-button-filtrar>
-    // ANTIGO: button:has-text('Filtrar')
     console.log('[educadf.notas] 4/7 Clicando em Filtrar...');
     try {
-      // Tenta novo seletor primeiro (app-button-filtrar), depois fallback
-      const filtrarLoc = page.locator("app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first();
+      const filtrarLoc = page.locator("button.dc-lombada-filtrar, app-button-filtrar button, button.btn-primary:has-text('Filtrar'), button:has-text('Filtrar')").first();
       await filtrarLoc.click({ timeout: 8000 });
 
       await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() =>
@@ -2697,22 +2814,26 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       console.warn(`[educadf.notas] Botão Filtrar não encontrado ou falhou: ${filtrarErr.message}`);
     }
     await session.delay(3000);
+    await removerBackdrops(page);
     await session.screenshot('notas_04_filtrado');
 
     // Valida turma no calendário
     const normStr = s => String(s).toUpperCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-    const turmaTkns = normStr(plano.turmas).split(' ').filter(t => t.length > 0);
+    const turmaTknsListN = candidatosTurmaN.map(c => normStr(c).split(' ').filter(t => t.length > 0)).filter(arr => arr.length > 0);
 
-    const calConf = await page.evaluate(tkns => {
+    const calConf = await page.evaluate(tknsList => {
       const evs = [...document.querySelectorAll('a.fc-event, .fc-event a, .fc-daygrid-event')];
       if (!evs.length) return { ok: false, motivo: 'nenhum-evento', total: 0 };
       const norm = s => String(s).toUpperCase().normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      const ok = evs.some(ev => tkns.every(t => norm(ev.textContent || '').includes(t)));
+      const ok = evs.some(ev => {
+        const txtNorm = norm(ev.textContent || '');
+        return tknsList.some(tkns => tkns.every(t => txtNorm.includes(t)));
+      });
       return { ok, total: evs.length, motivo: ok ? 'ok' : 'turma-nao-encontrada' };
-    }, turmaTkns);
+    }, turmaTknsListN);
 
     if (!calConf.ok) {
       console.warn(
@@ -2725,12 +2846,6 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 4.5: NAVEGAR O CALENDÁRIO PARA O MÊS DO BIMESTRE CORRETO
-    //
-    // CAUSA RAIZ (confirmada 07/05/2026 via sub-agente): O EDUCADF usa a
-    // DATA do evento clicado para determinar o bimestre de criação/edição.
-    // A aba "1º Bimestre" é apenas filtro visual, não contexto Angular.
-    // Devemos navegar o calendário para um mês do bimestre correto ANTES
-    // de clicar num evento.
     // ══════════════════════════════════════════════════════════════════════
     const BIM_TARGET_MONTH_N = { '1': 3, '2': 5, '3': 8, '4': 10 };
     const bimNumNav = String(plano.bimestre || '').replace(/\D/g, '');
@@ -2743,9 +2858,15 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       '3': [8, 9, 7, 10],
       '4': [10, 11, 12, 9],
     };
+    const MESES_CANDIDATOS_SEMESTRE_N = {
+      '1': [4, 3, 5, 2, 6],
+      '2': [9, 8, 10, 11],
+      '3': [8, 9, 10, 7],
+      '4': [10, 11, 12, 9],
+    };
     const regimeTurmaN = plano.regimeTurma || 'anual';
     const candidatosBaseN = (regimeTurmaN === 'semestral')
-      ? ({ '1': [4, 3, 5, 2, 6], '2': [9, 8, 10, 11] }[bimNumNav] || [mesAlvoN].filter(Boolean))
+      ? (MESES_CANDIDATOS_SEMESTRE_N[bimNumNav] || [mesAlvoN].filter(Boolean))
       : (MESES_CANDIDATOS_BIMESTRE_N[bimNumNav] || [mesAlvoN].filter(Boolean));
 
     const mesesParaTentarN = mesAlvoN
@@ -2758,15 +2879,18 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     const romComp   = (compNorm.match(romanosRe) || []).join(',');
     const bimNum    = String(plano.bimestre || '').replace(/\D/g, '');
 
-    const okTurmaComp  = txt => {
+    const okSoTurma = txt => {
       const n = normStr(txt);
-      if (!turmaTkns.every(t => n.includes(t))) return false;
+      return turmaTknsListN.some(tkns => tkns.every(t => n.includes(t)));
+    };
+    const okTurmaComp  = txt => {
+      if (!okSoTurma(txt)) return false;
+      const n = normStr(txt);
       const romEv = (n.match(romanosRe) || []).join(',');
       if (romComp && romEv && romComp !== romEv) return false;
       if (n.includes(compNorm)) return true;
       return compTkns.length > 0 && compTkns.every(c => n.includes(c));
     };
-    const okSoTurma    = txt => { const n = normStr(txt); return turmaTkns.every(t => n.includes(t)); };
 
     let eventoClicado = false;
 
@@ -2824,7 +2948,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       await removerBackdrops(page);
 
       // PASSO 5: Clicar num evento do calendário
-      const fcEvs = page.locator('a.fc-event, .fc-event a, .fc-daygrid-event');
+      const fcEvs = page.locator('a.fc-event:not(.external-event), .fc-event:not(.external-event) a, .fc-daygrid-event:not(.external-event)');
       const total = await fcEvs.count();
 
       // Tentativa 1: turma + componente
@@ -2917,8 +3041,6 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 6b: Clicar no botão do bimestre correto (com retry)
-    // Botões: [1º Bimestre] [2º Bimestre] [3º Bimestre] [4º Bimestre]
-    // OBRIGATÓRIO: falha explícita se não encontrar — nunca continua com bimestre errado.
     // ══════════════════════════════════════════════════════════════════════
     const bimNumNotas = String(plano.bimestre || '').replace(/\D/g, '');
     if (!bimNumNotas) {
@@ -2927,21 +3049,25 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
     console.log(`[educadf.notas] 6b/7 Selecionando ${bimNumNotas}º Bimestre na aba (até 3 tentativas)...`);
     let btnBimClicadoN = false;
+    let bimNumEfetivoN = bimNumNotas;
     for (let _t = 1; _t <= 3 && !btnBimClicadoN; _t++) {
-      // Usa mouse.click com coordenadas (como no PAP) para garantir que Angular processe
       const tabInfoN = await page.evaluate((num) => {
         const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o')
           .toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const alvo = `${num}O BIMESTRE`;
         const tabs = [...document.querySelectorAll('.nav-link, .nav-item a, [role="tab"]')]
           .filter(el => norm(el.textContent || '').includes('BIMESTRE') && (el.textContent || '').trim().length < 30);
         if (!tabs.length) return null;
-        const tabAlvo = tabs.find(el => norm(el.textContent || '').includes(alvo));
+        let numUsado = String(num);
+        let tabAlvo = tabs.find(el => norm(el.textContent || '').includes(`${numUsado}O BIMESTRE`));
+        if (!tabAlvo && tabs.length === 2 && (numUsado === '3' || numUsado === '4')) {
+          numUsado = numUsado === '3' ? '1' : '2';
+          tabAlvo = tabs.find(el => norm(el.textContent || '').includes(`${numUsado}O BIMESTRE`));
+        }
         if (!tabAlvo) return { error: 'não encontrado' };
         tabAlvo.scrollIntoView({ block: 'center' });
         const rect = tabAlvo.getBoundingClientRect();
-        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim() };
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, txt: tabAlvo.textContent?.trim(), numUsado };
       }, bimNumNotas);
 
       if (!tabInfoN || tabInfoN.error) {
@@ -2949,26 +3075,27 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         await session.delay(2000);
         continue;
       }
+      bimNumEfetivoN = tabInfoN.numUsado || bimNumNotas;
 
       console.log(`[educadf.notas] 6b Tab "${tabInfoN.txt}" em (${tabInfoN.x.toFixed(0)}, ${tabInfoN.y.toFixed(0)})`);
       await page.mouse.click(tabInfoN.x, tabInfoN.y);
       await session.delay(3000);
 
       // Verifica se o bimestre correto ficou ativo
-      const checkN = await page.evaluate((num) => {
+      const checkN = await page.evaluate(() => {
         const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
           .replace(/\u00ba/g, 'o').replace(/\u00b0/g, 'o').toUpperCase();
         const tabs = [...document.querySelectorAll('.nav-link')]
           .filter(el => norm(el.textContent || '').includes('BIMESTRE') && el.textContent.trim().length < 30);
         return tabs.map(t => ({ txt: t.textContent.trim(), active: t.classList.contains('active') }));
-      }, bimNumNotas);
+      });
       console.log(`[educadf.notas] 6b PÓS-clique: ${JSON.stringify(checkN)}`);
 
-      const alvoOkN = checkN.find(t => t.txt.includes(`${bimNumNotas}º`) && t.active);
-      const outroOkN = checkN.find(t => !t.txt.includes(`${bimNumNotas}º`) && t.active);
+      const alvoOkN = checkN.find(t => t.txt.includes(`${bimNumEfetivoN}º`) && t.active);
+      const outroOkN = checkN.find(t => !t.txt.includes(`${bimNumEfetivoN}º`) && t.active);
       if (alvoOkN && !outroOkN) {
         btnBimClicadoN = true;
-        console.log(`[educadf.notas] ✅ ${bimNumNotas}º Bimestre CONFIRMADO`);
+        console.log(`[educadf.notas] ✅ ${bimNumEfetivoN}º Bimestre CONFIRMADO`);
       }
     }
 
@@ -2976,7 +3103,6 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       await session.delay(2000);
       await session.screenshot('notas_06b_bimestre_selecionado');
     } else {
-      // FALHA CRÍTICA — nunca continua com bimestre errado
       console.error(`[educadf.notas] ❌ FALHA CRÍTICA: botão "${bimNumNotas}º Bimestre" não encontrado/confirmado após 3 tentativas.`);
       await session.screenshot('notas_06b_bimestre_FALHA');
       return {
