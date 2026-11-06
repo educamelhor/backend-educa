@@ -289,6 +289,13 @@ async function fetchSlotsFixos(escolaId, turnoNorm, turmaIds) {
     const idsSet = new Set((turmaIds || []).map(Number).filter(n => Number.isFinite(n) && n > 0));
 
     for (const res of resultados) {
+      const [[cntRow]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM grade_slot WHERE resultado_id = ?`,
+        [res.id]
+      );
+      const totalSlots = Number(cntRow?.total || 0);
+      if (totalSlots === 0) continue;
+
       const [slots] = await pool.query(
         `SELECT
            gs.turma_id,
@@ -300,24 +307,25 @@ async function fetchSlotsFixos(escolaId, turnoNorm, turmaIds) {
            gs.locked
          FROM grade_slot gs
         WHERE gs.resultado_id = ?
-          AND (gs.locked = 1 OR gs.origem = 'manual')`,
+          AND gs.locked = 1`,
         [res.id]
       );
-      if (slots && slots.length > 0) {
-        return slots.map(s => {
-          const tid = toInt(s.turma_id);
-          return {
-            turma_id: tid,
-            dia: toInt(s.dia),
-            ordem: toInt(s.ordem),
-            disciplina_id: toInt(s.disciplina_id),
-            professor_id: toInt(s.professor_id),
-            origem: s.origem || "manual",
-            locked: true,
-            in_scope: idsSet.size === 0 || idsSet.has(tid),
-          };
-        });
-      }
+
+      // Se a grade ativa possui slots (mesmo que 0 estejam fixados com locked=1),
+      // respeita o estado atual dela sem cair para registros anteriores.
+      return (slots || []).map(s => {
+        const tid = toInt(s.turma_id);
+        return {
+          turma_id: tid,
+          dia: toInt(s.dia),
+          ordem: toInt(s.ordem),
+          disciplina_id: toInt(s.disciplina_id),
+          professor_id: toInt(s.professor_id),
+          origem: s.origem || "manual",
+          locked: true,
+          in_scope: idsSet.size === 0 || idsSet.has(tid),
+        };
+      });
     }
     return [];
   } catch {
