@@ -892,13 +892,19 @@ function solverWorkerBootstrap(workerScope) {
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const mandatoryStarts = pairGov.orderedStarts.filter(p => pairGov.isPairMandatory(p));
-    if (mandatoryStarts.length === 0) return;
+    const totalGridSlots = diasList.length * periodosPorDia;
 
     const profTotalPairs = new Map();
+    const profExcludedSlots = new Map();
     for (const d of demandasAjustadas) {
+      const pId = d.professor_id;
       const pCount = Math.floor((d.aulas_restantes || 0) / 2);
       if (pCount > 0) {
-        profTotalPairs.set(d.professor_id, (profTotalPairs.get(d.professor_id) || 0) + pCount);
+        profTotalPairs.set(pId, (profTotalPairs.get(pId) || 0) + pCount);
+      }
+      if (!profExcludedSlots.has(pId)) {
+        const avail = countProfessorAvailableSlots(dispoIdx, pId, diasList, periodosPorDia);
+        profExcludedSlots.set(pId, Math.max(0, totalGridSlots - avail));
       }
     }
 
@@ -965,6 +971,12 @@ function solverWorkerBootstrap(workerScope) {
           const candidates = (byTurma.get(tId) || [])
             .filter(d => canDemandTakeMandatorySlot(tId, d))
             .sort((a, b) => {
+              if (strategy === "scarce_first" || strategy === "dsatur_slack") {
+                const excA = (profExcludedSlots.get(a.professor_id) || 0) >= 4 ? 1 : 0;
+                const excB = (profExcludedSlots.get(b.professor_id) || 0) >= 4 ? 1 : 0;
+                if (excA !== excB) return excB - excA;
+              }
+
               const pa = Math.floor((a.aulas_restantes || 0) / 2);
               const pb = Math.floor((b.aulas_restantes || 0) / 2);
               if (strategy === "scarce_first" || strategy === "reverse_weight") {
@@ -2596,6 +2608,17 @@ function solverWorkerBootstrap(workerScope) {
         for (let p = 1; p <= periodosPorDia; p++) {
           const cell = row[p];
           if (!cell || !cell.disciplina_id) continue;
+          // REGRA INVIOLÁVEL: Jamais permitir aula em horário marcado como EXCLUIR (indisponivel) na disponibilidade do professor
+          if (!professorPode(dispoIdx, cell.professor_id, d, p)) {
+            clearSlot(gradePorTurma, gradePorProfessor, tId, cell.professor_id, d, p);
+            evicted.push({
+              turma_id: tId,
+              disciplina_id: Number(cell.disciplina_id),
+              professor_id: cell.professor_id,
+              co_professores: cell.co_professores || null,
+            });
+            continue;
+          }
           const dId = Number(cell.disciplina_id);
           if (!byDisc.has(dId)) byDisc.set(dId, []);
           byDisc.get(dId).push({ p, cell });
@@ -2695,11 +2718,13 @@ function solverWorkerBootstrap(workerScope) {
     rc01MaxConsecutivas,
     rc02Cfg,
     regrasGerais = null,
-    turno = "matutino"
+    turno = "matutino",
+    dispoIdx = null
   ) {
     let violacoesSeparadasMesmoDia = 0;
     let violacoesMaxDia = 0;
     let violacoesParesBloqueados = 0;
+    let violacoesIndisponibilidade = 0;
     let paresGeminados = 0;
     let scorePrioridadePares = 0;
     let paresObrigatoriosAtendidos = 0;
@@ -2743,6 +2768,10 @@ function solverWorkerBootstrap(workerScope) {
           const cell = row[p];
           if (!cell || !cell.disciplina_id) continue;
           const dId = Number(cell.disciplina_id);
+
+          if (dispoIdx && !professorPode(dispoIdx, cell.professor_id, d, p)) {
+            violacoesIndisponibilidade++;
+          }
 
           if (p < periodosPorDia) {
             const nextCell = row[p + 1];
@@ -2791,6 +2820,7 @@ function solverWorkerBootstrap(workerScope) {
       violacoesSeparadasMesmoDia,
       violacoesMaxDia,
       violacoesParesBloqueados,
+      violacoesIndisponibilidade,
       paresGeminados,
       scorePrioridadePares,
       paresObrigatoriosMeta,
@@ -2837,6 +2867,9 @@ function solverWorkerBootstrap(workerScope) {
       const dia = toInt(sf.dia ?? sf.dia_semana, 0);
       const ord = toInt(sf.ordem ?? sf.periodo_ordem, 0);
       if (!tId || !dId || !pId || !diasSet.has(dia) || ord < 1 || ord > periodosPorDia) continue;
+      // REGRA INVIOLÁVEL: Se o horário está marcado como EXCLUIR (indisponivel) na disponibilidade do professor,
+      // jamais mantém este slot fixo — libera para ser realocado nos dias/horários disponíveis!
+      if (!professorPode(dispoIdx, pId, dia, ord)) continue;
 
       if (turmaIdsSet.size === 0 || turmaIdsSet.has(tId)) {
         validFixos.push({ turma_id: tId, disciplina_id: dId, professor_id: pId, dia, ordem: ord });
@@ -3046,10 +3079,12 @@ function solverWorkerBootstrap(workerScope) {
       rc01MaxConsecutivas,
       rc02Cfg,
       regrasGerais,
-      turno
+      turno,
+      dispoIdx
     );
     const qualidadeScore =
       totalAlocadasReal * 1000000 -
+      qual.violacoesIndisponibilidade * 10000000 -
       qual.violacoesSeparadasMesmoDia * 5000000 -
       qual.violacoesMaxDia * 5000000 -
       qual.violacoesParesBloqueados * 4000000 +
@@ -3071,6 +3106,7 @@ function solverWorkerBootstrap(workerScope) {
         rc02_bloqueio_hard: rc02Cfg.bloqueioHard,
         rc02_max_hard_padrao: rc02Cfg.maxHardPadrao,
         rc02_strict_cap_mock: !!rc02Cfg.strictCapMock,
+        violacoes_indisponibilidade: qual.violacoesIndisponibilidade,
         violacoes_separadas_mesmo_dia: qual.violacoesSeparadasMesmoDia,
         violacoes_max_dia: qual.violacoesMaxDia,
         violacoes_pares_bloqueados: qual.violacoesParesBloqueados,
@@ -3165,6 +3201,7 @@ function solverWorkerBootstrap(workerScope) {
             // Roda até 15 variações rápidas (~80ms) para escolher a grade com mais aulas duplas geminadas
             if (
               alocadas >= demanda &&
+              (res.metrics.violacoes_indisponibilidade || 0) === 0 &&
               (res.metrics.violacoes_separadas_mesmo_dia || 0) === 0 &&
               (res.metrics.violacoes_max_dia || 0) === 0 &&
               (res.metrics.violacoes_pares_bloqueados || 0) === 0 &&
