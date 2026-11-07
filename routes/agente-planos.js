@@ -123,7 +123,7 @@ async function lerConfigAgente(db, escolaId) {
     escolaNomeOficial: cfg['agente.educadf.escola_nome_oficial'] || '',
     calendarioMap:     cfg['agente.educadf.calendario_map'] ? JSON.parse(cfg['agente.educadf.calendario_map']) : {
       bimestral: { '1': 3, '2': 5, '3': 8, '4': 10 },
-      semestral: { '1': 4, '2': 9 }
+      semestral: { '1': 4, '2': 6, '3': 9, '4': 11 }
     },
   };
 }
@@ -302,12 +302,14 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (suporta múltiplos turnos/regimes, ex: Matutino EMI_2_I_1_B e Noturno EM_2_N_1_B)
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (prioriza o mesmo turno do plano, ex: Noturno EM_3_N_1_B antes de Matutino EM_3_M_1_B)
     const [turmasRows] = await db.query(
-      `SELECT nome_oficial, regime FROM turmas
+      `SELECT nome_oficial, regime, turno FROM turmas
        WHERE nome = ? AND escola_id = ?
-       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC`,
-      [plano.turmas, escolaId]
+       ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
+                (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
+                ano DESC, id DESC`,
+      [plano.turmas, escolaId, plano.turno || '']
     );
     const turmasOficiais = [...new Set(
       (turmasRows || [])
@@ -334,6 +336,7 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
 
     const dadosPlano = {
       turmas:            plano.turmas,
+      turno:             plano.turno,
       turmaOficial:      turmaOficial,
       turmasOficiais:    turmasOficiais,
       disciplina:        plano.disciplina,
@@ -603,12 +606,14 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (suporta múltiplos turnos/regimes, ex: Matutino EMI_2_I_1_B e Noturno EM_2_N_1_B)
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (prioriza o mesmo turno do plano, ex: Noturno EM_3_N_1_B antes de Matutino EM_3_M_1_B)
     const [turmasRows] = await db.query(
-      `SELECT nome_oficial, regime FROM turmas
+      `SELECT nome_oficial, regime, turno FROM turmas
        WHERE nome = ? AND escola_id = ?
-       ORDER BY (TRIM(COALESCE(nome_oficial, '')) <> '') DESC, ano DESC, id DESC`,
-      [plano.turmas, escolaId]
+       ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
+                (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
+                ano DESC, id DESC`,
+      [plano.turmas, escolaId, plano.turno || '']
     );
     const turmasOficiais = [...new Set(
       (turmasRows || [])
@@ -635,6 +640,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
 
     const dadosPlano = {
       turmas:            plano.turmas,
+      turno:             plano.turno,
       turmaOficial:      turmaOficial,
       turmasOficiais:    turmasOficiais,
       disciplina:        plano.disciplina,

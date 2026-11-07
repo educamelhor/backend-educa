@@ -253,6 +253,11 @@ function turmasCorrespondemEducaDF(candidato, opcaoTexto) {
   const infoC = extrairNumLetra(cNorm);
   const infoO = extrairNumLetra(oNorm);
   if (infoC && infoO) {
+    // Se ambos forem códigos SEEDF (ex: EM_3_N_1_B vs EM_3_M_1_B ou EM_3_N_2_B), exige igualdade exata
+    // para que gerarCandidatosTurma teste primeiro o turno e semestre exatos antes do fallback genérico!
+    if (infoC.tipo === 'codigo' && infoO.tipo === 'codigo') {
+      return cNorm === oNorm;
+    }
     return infoC.num === infoO.num && infoC.letra === infoO.letra;
   }
 
@@ -1842,31 +1847,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     // Seletor para waitForSelector — exclui external-event da legenda
     const fcEventSelector = '.fc-event:not(.external-event), .fc-daygrid-event, .fc-timegrid-event';
 
-    console.log('[educadf.pap] Aguardando eventos renderizarem no calendário (até 25s)...');
+    console.log('[educadf.pap] Aguardando eventos renderizarem no mês inicial do calendário (até 8s)...');
 
-    // Aguarda qualquer seletor fc aparecer
-    let eventosDetectados = false;
-    for (let tentFc = 1; tentFc <= 3 && !eventosDetectados; tentFc++) {
-      try {
-        await page.waitForSelector(fcEventSelector, { timeout: 10000 });
-        eventosDetectados = true;
-        console.log('[educadf.pap] ✅ Eventos detectados no calendário.');
-      } catch {
-        if (tentFc === 1) {
-          // Na 1ª falha: tenta clicar "Hoje" para forçar renderização do mês atual
-          console.warn('[educadf.pap] ⚠️  Nenhum evento após 10s. Clicando em "Hoje"...');
-          try {
-            await page.locator("button:has-text('Hoje'), button:has-text('Today')").first()
-              .click({ timeout: 4000 });
-            await page.waitForTimeout(2000);
-          } catch {}
-        } else if (tentFc === 2) {
-          // Na 2ª falha: scroll para cima (eventos podem estar fora do viewport)
-          console.warn('[educadf.pap] ⚠️  Ainda sem eventos. Tentando scroll...');
-          await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-          await page.waitForTimeout(2000);
-        }
-      }
+    try {
+      await page.waitForSelector(fcEventSelector, { timeout: 8000 });
+      console.log('[educadf.pap] ✅ Eventos detectados no mês inicial do calendário.');
+    } catch {
+      console.warn('[educadf.pap] ⚠️  Nenhum evento visível no mês inicial após 8s (normal para turmas de outro semestre/bimestre).');
     }
 
     // Diagnóstico amplo via JS: conta TODOS os elementos com classe fc-event*
@@ -1880,13 +1867,11 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
           totalGlobal += els.length;
         } catch { resultados[sel] = -1; }
       }
-      // Fallback: busca qualquer elemento com class contendo "fc-event"
       const byClass = [...document.querySelectorAll('*')].filter(el => {
         const cls = el.className || '';
-        return typeof cls === 'string' && cls.includes('fc-event');
+        return typeof cls === 'string' && cls.includes('fc-event') && !cls.includes('external-event');
       });
       resultados['byClass[fc-event]'] = byClass.length;
-      // Amostras de texto dos primeiros elementos encontrados
       const amostras = byClass.slice(0, 4).map(el => ({
         tag: el.tagName,
         cls: el.className.substring(0, 60),
@@ -1895,31 +1880,21 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       return { totalGlobal, resultados, amostras };
     }, FC_SELETORES);
 
-    console.log(`[educadf.pap] Diagnóstico FC: total=${diagFC.totalGlobal} | por selector: ${JSON.stringify(diagFC.resultados)}`);
+    console.log(`[educadf.pap] Diagnóstico FC (mês inicial): total=${diagFC.totalGlobal} | por selector: ${JSON.stringify(diagFC.resultados)}`);
     if (diagFC.amostras.length) {
       console.log(`[educadf.pap] Amostras: ${JSON.stringify(diagFC.amostras)}`);
     }
 
     await session.screenshot('pap_04b_pos_filtrar');
 
-    // Total real de eventos encontrados (usando abordagem mais ampla)
-    const totalEventosReais = diagFC.totalGlobal > 0
-      ? diagFC.totalGlobal
-      : (await page.evaluate(() =>
-          [...document.querySelectorAll('*')].filter(el =>
-            typeof el.className === 'string' && el.className.includes('fc-event')
-          ).length
-        ).catch(() => 0));
-
-    if (totalEventosReais === 0) {
-      throw new Error(
-        `Nenhum evento encontrado no calendário EDUCADF após aplicar os filtros para a turma "${plano.turmas}". ` +
-        `Turma filtrada corretamente, mas o calendário não retornou aulas. ` +
-        `Verifique se existem aulas cadastradas para essa turma no EDUCADF.`
+    if (diagFC.totalGlobal === 0) {
+      console.warn(
+        `[educadf.pap] ⚠️ Nenhum evento no mês atual do calendário para "${plano.turmas}" — ` +
+        `prosseguindo para PASSO 7.5 (navegação para os meses do bimestre/plano)...`
       );
+    } else {
+      console.log(`[educadf.pap] ✅ ${diagFC.totalGlobal} evento(s) no mês inicial. Prosseguindo para PASSO 7.5...`);
     }
-
-    console.log(`[educadf.pap] ✅ ${totalEventosReais} evento(s) no calendário. Prosseguindo para clique...`);
 
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1932,22 +1907,36 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
 
     const calendarioMap = plano.calendarioMap || {
       bimestral: { '1': 3, '2': 5, '3': 8, '4': 10 },
-      semestral: { '1': 4, '2': 9 }
+      semestral: { '1': 4, '2': 6, '3': 9, '4': 11 }
     };
     const regimeTurma = plano.regimeTurma || 'anual';
     const mapaRegime = (regimeTurma === 'semestral') ? calendarioMap.semestral : calendarioMap.bimestral;
     const mesAlvo = mapaRegime?.[String(bimNumPAP)] || calendarioMap.bimestral?.[String(bimNumPAP)] || null;
 
+    // Extrai os meses reais das avaliações cadastradas em plano.itens (ex: 2026-07-03 -> 7, 2026-06-12 -> 6)
+    const mesesItens = [...new Set(
+      (Array.isArray(plano.itens) ? plano.itens : [])
+        .map(it => {
+          const raw = it?.data_inicio || it?.data_final || it?.data;
+          if (!raw) return null;
+          const dt = new Date(raw);
+          if (isNaN(dt.getTime())) return null;
+          const m = dt.getUTCMonth() + 1;
+          return (m >= 1 && m <= 12) ? m : null;
+        })
+        .filter(Boolean)
+    )];
+
     const MESES_CANDIDATOS_BIMESTRE = {
       '1': [3, 2, 4],
-      '2': [5, 6, 4],
+      '2': [5, 6, 7, 4],
       '3': [8, 9, 7, 10],
       '4': [10, 11, 12, 9],
     };
     const MESES_CANDIDATOS_SEMESTRE = {
       '1': [4, 3, 5, 2, 6],
-      '2': [9, 8, 10, 11],
-      '3': [8, 9, 10, 7],
+      '2': [6, 5, 7, 4, 9, 8, 10, 11],
+      '3': [9, 8, 10, 7, 11],
       '4': [10, 11, 12, 9],
     };
 
@@ -1955,9 +1944,13 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       ? (MESES_CANDIDATOS_SEMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean))
       : (MESES_CANDIDATOS_BIMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean));
 
-    const mesesParaTentar = mesAlvo
-      ? [mesAlvo, ...candidatosBase.filter(m => m !== mesAlvo)]
-      : (candidatosBase.length ? candidatosBase : [8]);
+    const mesesParaTentar = [...new Set([
+      ...mesesItens,
+      ...(mesAlvo ? [mesAlvo] : []),
+      ...candidatosBase,
+    ])];
+    if (mesesParaTentar.length === 0) mesesParaTentar.push(8);
+    console.log(`[educadf.pap] 7.5 Meses candidatos para "${plano.turmas}" (${plano.bimestre}, regime=${regimeTurma}): ${JSON.stringify(mesesParaTentar)} (itens=${JSON.stringify(mesesItens)})`);
 
     let eventoClicado = false;
 
@@ -2847,21 +2840,21 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     // ══════════════════════════════════════════════════════════════════════
     // PASSO 4.5: NAVEGAR O CALENDÁRIO PARA O MÊS DO BIMESTRE CORRETO
     // ══════════════════════════════════════════════════════════════════════
-    const BIM_TARGET_MONTH_N = { '1': 3, '2': 5, '3': 8, '4': 10 };
+    const BIM_TARGET_MONTH_N = { '1': 3, '2': 6, '3': 8, '4': 10 };
     const bimNumNav = String(plano.bimestre || '').replace(/\D/g, '');
     const mesAlvoN = BIM_TARGET_MONTH_N[bimNumNav] || null;
     const fcEventSelectorN = '.fc-event:not(.external-event), .fc-daygrid-event, .fc-timegrid-event';
 
     const MESES_CANDIDATOS_BIMESTRE_N = {
       '1': [3, 2, 4],
-      '2': [5, 6, 4],
+      '2': [5, 6, 7, 4],
       '3': [8, 9, 7, 10],
       '4': [10, 11, 12, 9],
     };
     const MESES_CANDIDATOS_SEMESTRE_N = {
       '1': [4, 3, 5, 2, 6],
-      '2': [9, 8, 10, 11],
-      '3': [8, 9, 10, 7],
+      '2': [6, 5, 7, 4, 9, 8, 10, 11],
+      '3': [9, 8, 10, 7, 11],
       '4': [10, 11, 12, 9],
     };
     const regimeTurmaN = plano.regimeTurma || 'anual';
