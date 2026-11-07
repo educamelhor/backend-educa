@@ -184,7 +184,8 @@ function gerarCandidatosTurma(plano) {
   };
 
   const bimNum = parseInt(String(plano?.bimestre || '').replace(/\D/g, ''), 10) || 0;
-  const isSegundoSemestre = bimNum >= 3;
+  const semGov = Number(plano?.governanca?.semestreNumero);
+  const isSegundoSemestre = (semGov === 1 || semGov === 2) ? (semGov === 2) : (bimNum >= 3);
 
   const oficiais = [
     ...(Array.isArray(plano?.turmasOficiais) ? plano.turmasOficiais : []),
@@ -221,6 +222,134 @@ function gerarCandidatosTurma(plano) {
   }
 
   return candidatos;
+}
+
+/**
+ * Calcula a ordem ideal de meses (1..12) para navegar no FullCalendar do EDUCADF,
+ * utilizando os períodos de início/fim do bimestre configurados pelo Diretor na Governança.
+ * Prioriza meses centrais do bimestre (>= 10 dias dentro do bimestre) antes de meses de fronteira
+ * compartilhados com outro bimestre (ex: 30/04 no 2º Bim, ou 01/10..05/10 no 3º Bim).
+ */
+function calcularMesesGovernancaParaCalendario(plano, mesAlvoFallback, candidatosFallback = []) {
+  const mesesItens = [...new Set(
+    (Array.isArray(plano?.itens) ? plano.itens : [])
+      .map(it => {
+        const raw = it?.data_inicio || it?.data_final || it?.data;
+        if (!raw) return null;
+        const dt = new Date(raw);
+        if (isNaN(dt.getTime())) return null;
+        const m = dt.getUTCMonth() + 1;
+        return (m >= 1 && m <= 12) ? m : null;
+      })
+      .filter(Boolean)
+  )];
+
+  const periodoBim = plano?.governanca?.periodoBimestre;
+  if (!periodoBim?.dataInicio || !periodoBim?.dataFim) {
+    const lista = [...new Set([
+      ...mesesItens,
+      ...(mesAlvoFallback ? [mesAlvoFallback] : []),
+      ...candidatosFallback,
+    ])];
+    return lista.length ? lista : [8];
+  }
+
+  // Conta quantos dias de cada mês caem dentro de [periodoBim.dataInicio, periodoBim.dataFim]
+  const diasPorMes = new Map();
+  const dtIni = new Date(`${periodoBim.dataInicio}T12:00:00Z`);
+  const dtFim = new Date(`${periodoBim.dataFim}T12:00:00Z`);
+  if (!isNaN(dtIni.getTime()) && !isNaN(dtFim.getTime()) && dtFim >= dtIni) {
+    for (let t = dtIni.getTime(); t <= dtFim.getTime(); t += 86400000) {
+      const m = new Date(t).getUTCMonth() + 1;
+      diasPorMes.set(m, (diasPorMes.get(m) || 0) + 1);
+    }
+  }
+
+  const mesesGovOrdenados = [...diasPorMes.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([m]) => m);
+
+  // Meses centrais (>= 10 dias no bimestre) vs meses de fronteira curta (< 10 dias no bimestre)
+  const mesesCentraisGov = mesesGovOrdenados.filter(m => (diasPorMes.get(m) || 0) >= 10);
+  const mesesFronteiraGov = mesesGovOrdenados.filter(m => (diasPorMes.get(m) || 0) < 10);
+
+  // Itens cujo mês é central no bimestre vêm primeiro; depois todos os meses centrais; depois fronteira; depois fallbacks
+  const itensCentrais = mesesItens.filter(m => mesesCentraisGov.includes(m));
+  const itensFronteira = mesesItens.filter(m => mesesFronteiraGov.includes(m));
+  const itensFora = mesesItens.filter(m => !diasPorMes.has(m));
+
+  const resultado = [...new Set([
+    ...itensCentrais,
+    ...mesesCentraisGov,
+    ...itensFronteira,
+    ...mesesFronteiraGov,
+    ...itensFora,
+    ...(mesAlvoFallback ? [mesAlvoFallback] : []),
+    ...candidatosFallback,
+  ])];
+
+  return resultado.length ? resultado : [8];
+}
+
+/**
+ * Verifica se a data de um evento do FullCalendar (data-date="YYYY-MM-DD") pertence
+ * ao período do bimestre configurado na Governança quando estamos navegando em um mês
+ * que faz parte do bimestre (evitando clicar em aula do 3º Bim em 02/10 ao exportar 4º Bim, etc.).
+ */
+function verificarDataEventoNoBimestre(evDateIso, plano, mesTentativa) {
+  if (!evDateIso || !/^\d{4}-\d{2}-\d{2}$/.test(evDateIso)) return true;
+  const periodoBim = plano?.governanca?.periodoBimestre;
+  if (!periodoBim?.dataInicio || !periodoBim?.dataFim) return true;
+
+  const mesIni = parseInt(periodoBim.dataInicio.slice(5, 7), 10);
+  const mesFim = parseInt(periodoBim.dataFim.slice(5, 7), 10);
+
+  // Se o mês atual do calendário faz parte do bimestre da Governança, exige que a data exata da aula
+  // esteja dentro de [dataInicio, dataFim] para nunca abrir o bimestre vizinho em meses compartilhados
+  if (mesTentativa >= mesIni && mesTentativa <= mesFim) {
+    return evDateIso >= periodoBim.dataInicio && evDateIso <= periodoBim.dataFim;
+  }
+
+  return true;
+}
+
+/**
+ * Garante que a data do item avaliativo respeite os limites [dataInicio, dataFim]
+ * do bimestre definidos na Governança antes de preencher o datepicker do modal EDUCADF.
+ */
+function ajustarDataItemGovernanca(dataStr, plano) {
+  if (!dataStr) return '';
+  let iso = String(dataStr).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const dt = new Date(dataStr);
+    if (!isNaN(dt.getTime())) iso = dt.toISOString().slice(0, 10);
+    else return String(dataStr);
+  }
+
+  const periodoBim = plano?.governanca?.periodoBimestre;
+  if (!periodoBim?.dataInicio || !periodoBim?.dataFim) return iso;
+
+  if (iso >= periodoBim.dataInicio && iso <= periodoBim.dataFim) {
+    return iso;
+  }
+
+  // Em turmas semestrais, se a data estiver em outro mês distante (ex: turma de 1º semestre exportando
+  // com datas de junho/julho), preserva a data original e deixa o Flatpickr limitar por minDate/maxDate se necessário
+  if (plano?.regimeTurma === 'semestral') {
+    const mesIso = parseInt(iso.slice(5, 7), 10);
+    const mesIni = parseInt(periodoBim.dataInicio.slice(5, 7), 10);
+    const mesFim = parseInt(periodoBim.dataFim.slice(5, 7), 10);
+    if (mesIso < mesIni || mesIso > mesFim) {
+      return iso;
+    }
+  }
+
+  const ajustada = iso < periodoBim.dataInicio ? periodoBim.dataInicio : periodoBim.dataFim;
+  console.log(
+    `[educadf.pap] 📅 Data do item ajustada pelos limites da Governança (${plano.bimestre}: ` +
+    `${periodoBim.dataInicio} a ${periodoBim.dataFim}): "${iso}" -> "${ajustada}"`
+  );
+  return ajustada;
 }
 
 /**
@@ -1240,12 +1369,22 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
     const valorAntigo = inp.value;
 
     // ── Estratégia 1: API Flatpickr direta ─────────────────────────────────
+    const clampFpIso = (fpInstance, rawIso) => {
+      let target = rawIso;
+      try {
+        const minD = fpInstance?.config?.minDate instanceof Date ? fpInstance.config.minDate.toISOString().slice(0, 10) : null;
+        const maxD = fpInstance?.config?.maxDate instanceof Date ? fpInstance.config.maxDate.toISOString().slice(0, 10) : null;
+        if (minD && target < minD) target = minD;
+        if (maxD && target > maxD) target = maxD;
+      } catch {}
+      return target;
+    };
+
     const fp = inp._flatpickr;
     if (fp && typeof fp.setDate === 'function') {
-      // setDate(date, triggerChange, dateFormat)
-      // Usa a data ISO para parsing confiável
-      fp.setDate(isoDate, true);
-      return 'flatpickr-setDate:' + valorAntigo + ' -> ' + inp.value;
+      const targetIso = clampFpIso(fp, isoDate);
+      fp.setDate(targetIso, true);
+      return 'flatpickr-setDate:' + valorAntigo + ' -> ' + inp.value + (targetIso !== isoDate ? ` (clamped:${targetIso})` : '');
     }
 
     // ── Estratégia 2: Procura Flatpickr em inputs vizinhos ─────────────────
@@ -1254,8 +1393,9 @@ async function navegarCalendarioEClicarDia(page, dataStr) {
     for (const fpi of allFpInputs) {
       const fp2 = fpi._flatpickr;
       if (fp2 && typeof fp2.setDate === 'function') {
-        fp2.setDate(isoDate, true);
-        return 'flatpickr-setDate-alt:' + valorAntigo + ' -> ' + fpi.value;
+        const targetIso = clampFpIso(fp2, isoDate);
+        fp2.setDate(targetIso, true);
+        return 'flatpickr-setDate-alt:' + valorAntigo + ' -> ' + fpi.value + (targetIso !== isoDate ? ` (clamped:${targetIso})` : '');
       }
     }
 
@@ -1913,20 +2053,6 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     const mapaRegime = (regimeTurma === 'semestral') ? calendarioMap.semestral : calendarioMap.bimestral;
     const mesAlvo = mapaRegime?.[String(bimNumPAP)] || calendarioMap.bimestral?.[String(bimNumPAP)] || null;
 
-    // Extrai os meses reais das avaliações cadastradas em plano.itens (ex: 2026-07-03 -> 7, 2026-06-12 -> 6)
-    const mesesItens = [...new Set(
-      (Array.isArray(plano.itens) ? plano.itens : [])
-        .map(it => {
-          const raw = it?.data_inicio || it?.data_final || it?.data;
-          if (!raw) return null;
-          const dt = new Date(raw);
-          if (isNaN(dt.getTime())) return null;
-          const m = dt.getUTCMonth() + 1;
-          return (m >= 1 && m <= 12) ? m : null;
-        })
-        .filter(Boolean)
-    )];
-
     const MESES_CANDIDATOS_BIMESTRE = {
       '1': [3, 2, 4],
       '2': [5, 6, 7, 4],
@@ -1944,13 +2070,14 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       ? (MESES_CANDIDATOS_SEMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean))
       : (MESES_CANDIDATOS_BIMESTRE[bimNumPAP] || [mesAlvo].filter(Boolean));
 
-    const mesesParaTentar = [...new Set([
-      ...mesesItens,
-      ...(mesAlvo ? [mesAlvo] : []),
-      ...candidatosBase,
-    ])];
-    if (mesesParaTentar.length === 0) mesesParaTentar.push(8);
-    console.log(`[educadf.pap] 7.5 Meses candidatos para "${plano.turmas}" (${plano.bimestre}, regime=${regimeTurma}): ${JSON.stringify(mesesParaTentar)} (itens=${JSON.stringify(mesesItens)})`);
+    const mesesParaTentar = calcularMesesGovernancaParaCalendario(plano, mesAlvo, candidatosBase);
+    const govBimLog = plano?.governanca?.periodoBimestre
+      ? `${plano.governanca.periodoBimestre.dataInicio}..${plano.governanca.periodoBimestre.dataFim}`
+      : 'sem-governanca';
+    console.log(
+      `[educadf.pap] 7.5 Meses candidatos para "${plano.turmas}" (${plano.bimestre}, regime=${regimeTurma}, ` +
+      `gov=${govBimLog}): ${JSON.stringify(mesesParaTentar)}`
+    );
 
     let eventoClicado = false;
 
@@ -2009,7 +2136,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       await session.delay(500);
       await removerBackdrops(page);
 
-      // PASSO 8: Clicar em evento do calendário no mês (priorizando Turma + Componente)
+      // PASSO 8: Clicar em evento do calendário no mês (priorizando Turma + Componente + Data dentro do Bimestre na Governança)
       const normCalP = s => String(s || '').toUpperCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -2038,71 +2165,92 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
       const fcEvsP = page.locator('a.fc-event:not(.external-event), .fc-event:not(.external-event) a, .fc-daygrid-event:not(.external-event)');
       const totalEvsP = await fcEvsP.count().catch(() => 0);
 
-      // Tentativa 1A: Evento com Turma + Componente
+      // Tentativa 1A: Evento com Turma + Componente (e data dentro do bimestre da Governança)
       for (let i = 0; i < totalEvsP && !eventoClicado; i++) {
         const ev  = fcEvsP.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
         if (!okTurmaCompP(txt)) continue;
+        const evDate = await ev.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+        if (!verificarDataEventoNoBimestre(evDate, plano, mesTentativa)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await aguardarSemOverlay(page, 'pre-click-evento');
           await ev.click({ timeout: 5000 });
           eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado (mês ${mesTentativa}): "${txt.trim().substring(0, 60)}"`);
+          console.log(`[educadf.pap] ✅ Evento [turma+comp] clicado (mês ${mesTentativa}, data=${evDate || 'n/a'}): "${txt.trim().substring(0, 60)}"`);
         } catch {}
       }
 
-      // Tentativa 1B: Evento com Componente ou Turma
+      // Tentativa 1B: Evento com Componente ou Turma (e data dentro do bimestre da Governança)
       if (!eventoClicado) {
         for (let i = 0; i < totalEvsP && !eventoClicado; i++) {
           const ev  = fcEvsP.nth(i);
           const txt = (await ev.textContent().catch(() => '')) || '';
           if (!matchCompP(txt) && !okSoTurmaP(txt)) continue;
+          const evDate = await ev.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+          if (!verificarDataEventoNoBimestre(evDate, plano, mesTentativa)) continue;
           try {
             await ev.scrollIntoViewIfNeeded().catch(() => {});
             await aguardarSemOverlay(page, 'pre-click-evento');
             await ev.click({ timeout: 5000 });
             eventoClicado = true;
-            console.log(`[educadf.pap] ✅ Evento [comp/turma] clicado (mês ${mesTentativa}): "${txt.trim().substring(0, 60)}"`);
+            console.log(`[educadf.pap] ✅ Evento [comp/turma] clicado (mês ${mesTentativa}, data=${evDate || 'n/a'}): "${txt.trim().substring(0, 60)}"`);
           } catch {}
         }
       }
 
-      // Tentativa 2: Playwright — primeiro fc-event que não seja legenda
+      // Tentativa 2: Playwright — primeiro fc-event que não seja legenda e respeite a janela do bimestre
       for (const sel of FC_SELETORES) {
         if (eventoClicado) break;
         try {
-          const loc = page.locator(sel).first();
-          if ((await loc.count().catch(() => 0)) === 0) continue;
-          await loc.scrollIntoViewIfNeeded().catch(() => {});
-          await aguardarSemOverlay(page, 'pre-click-evento');
-          await loc.click({ timeout: 5000 });
-          eventoClicado = true;
-          const txt = (await loc.textContent().catch(() => '')) || '';
-          console.log(`[educadf.pap] ✅ Evento clicado via "${sel}" (mês ${mesTentativa}): "${txt.substring(0, 60)}"`);
+          const locAll = page.locator(sel);
+          const countSel = await locAll.count().catch(() => 0);
+          for (let k = 0; k < countSel && !eventoClicado; k++) {
+            const loc = locAll.nth(k);
+            const evDate = await loc.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+            if (!verificarDataEventoNoBimestre(evDate, plano, mesTentativa)) continue;
+            await loc.scrollIntoViewIfNeeded().catch(() => {});
+            await aguardarSemOverlay(page, 'pre-click-evento');
+            await loc.click({ timeout: 5000 });
+            eventoClicado = true;
+            const txt = (await loc.textContent().catch(() => '')) || '';
+            console.log(`[educadf.pap] ✅ Evento clicado via "${sel}" (mês ${mesTentativa}, data=${evDate || 'n/a'}): "${txt.substring(0, 60)}"`);
+          }
         } catch (err) {}
       }
 
-      // Estratégia 3: JS fallback — clica primeiro evento visível (exclui legenda)
+      // Estratégia 3: JS fallback — clica primeiro evento visível dentro da janela do bimestre (exclui legenda)
       if (!eventoClicado) {
-        const jsResult = await page.evaluate(() => {
+        const periodoBimGov = plano?.governanca?.periodoBimestre || null;
+        const jsResult = await page.evaluate(({ periodoBim, mesAtual }) => {
+          const mesIni = periodoBim?.dataInicio ? parseInt(periodoBim.dataInicio.slice(5, 7), 10) : 0;
+          const mesFim = periodoBim?.dataFim ? parseInt(periodoBim.dataFim.slice(5, 7), 10) : 0;
+          const filtrarData = !!(periodoBim?.dataInicio && periodoBim?.dataFim && mesAtual >= mesIni && mesAtual <= mesFim);
+
           const candidatos = [...document.querySelectorAll('[class*="fc-event"]')].filter(el => {
             const cls = el.className || '';
-            return typeof cls === 'string'
-              && cls.includes('fc-event')
-              && !cls.includes('external-event')
-              && el.offsetParent !== null;
+            if (typeof cls !== 'string' || !cls.includes('fc-event') || cls.includes('external-event') || el.offsetParent === null) {
+              return false;
+            }
+            if (filtrarData) {
+              const dt = el.closest('[data-date]')?.getAttribute('data-date') || '';
+              if (/^\d{4}-\d{2}-\d{2}$/.test(dt) && (dt < periodoBim.dataInicio || dt > periodoBim.dataFim)) {
+                return false;
+              }
+            }
+            return true;
           });
-          if (!candidatos.length) return { ok: false, motivo: 'nenhum evento real visível' };
+          if (!candidatos.length) return { ok: false, motivo: 'nenhum evento real visível no período' };
           const el = candidatos[0];
+          const dt = el.closest('[data-date]')?.getAttribute('data-date') || '';
           el.scrollIntoView({ block: 'center' });
           el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          return { ok: true, txt: (el.textContent || '').trim().substring(0, 60) };
-        }).catch(e => ({ ok: false, motivo: e.message }));
+          return { ok: true, txt: (el.textContent || '').trim().substring(0, 60), dt };
+        }, { periodoBim: periodoBimGov, mesAtual: mesTentativa }).catch(e => ({ ok: false, motivo: e.message }));
 
         if (jsResult.ok) {
           eventoClicado = true;
-          console.log(`[educadf.pap] ✅ Evento clicado via JS (mês ${mesTentativa}): "${jsResult.txt}"`);
+          console.log(`[educadf.pap] ✅ Evento clicado via JS (mês ${mesTentativa}, data=${jsResult.dt || 'n/a'}): "${jsResult.txt}"`);
           await page.waitForTimeout(1000);
         }
       }
@@ -2332,7 +2480,7 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     for (let iIdx = 0; iIdx < itensParaExportar.length; iIdx++) {
       const itemAtual = itensParaExportar[iIdx];
       const nomeAtividade = itemAtual.atividade || 'Avaliação Bimestral';
-      const dataStr = itemAtual.data_inicio || itemAtual.data || '';
+      const dataStr = ajustarDataItemGovernanca(itemAtual.data_inicio || itemAtual.data || '', plano);
       const dataFormatadaWk = formatarDataEducaDF(dataStr);
 
       console.log(`\n[educadf.pap] ▶ ITEM ${iIdx + 1}/${itensParaExportar.length}: "${nomeAtividade}" | data: "${dataStr}"`);
@@ -2862,9 +3010,14 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       ? (MESES_CANDIDATOS_SEMESTRE_N[bimNumNav] || [mesAlvoN].filter(Boolean))
       : (MESES_CANDIDATOS_BIMESTRE_N[bimNumNav] || [mesAlvoN].filter(Boolean));
 
-    const mesesParaTentarN = mesAlvoN
-      ? [mesAlvoN, ...candidatosBaseN.filter(m => m !== mesAlvoN)]
-      : (candidatosBaseN.length ? candidatosBaseN : [8]);
+    const mesesParaTentarN = calcularMesesGovernancaParaCalendario(plano, mesAlvoN, candidatosBaseN);
+    const govBimLogN = plano?.governanca?.periodoBimestre
+      ? `${plano.governanca.periodoBimestre.dataInicio}..${plano.governanca.periodoBimestre.dataFim}`
+      : 'sem-governanca';
+    console.log(
+      `[educadf.notas] 4.5 Meses candidatos para "${plano.turmas}" (${plano.bimestre}, regime=${regimeTurmaN}, ` +
+      `gov=${govBimLogN}): ${JSON.stringify(mesesParaTentarN)}`
+    );
 
     const compNorm  = normStr(mapearDisciplina(plano.disciplina, plano.disciplinaOficial));
     const compTkns  = compNorm.split(' ').filter(t => t.length > 1);
@@ -2940,45 +3093,53 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       await session.delay(800);
       await removerBackdrops(page);
 
-      // PASSO 5: Clicar num evento do calendário
+      // PASSO 5: Clicar num evento do calendário (respeitando a janela de datas do bimestre na Governança)
       const fcEvs = page.locator('a.fc-event:not(.external-event), .fc-event:not(.external-event) a, .fc-daygrid-event:not(.external-event)');
       const total = await fcEvs.count();
 
-      // Tentativa 1: turma + componente
+      // Tentativa 1: turma + componente + data dentro do bimestre
       for (let i = 0; i < total && !eventoClicado; i++) {
         const ev  = fcEvs.nth(i);
         const txt = (await ev.textContent().catch(() => '')) || '';
         if (!okTurmaComp(txt)) continue;
+        const evDate = await ev.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+        if (!verificarDataEventoNoBimestre(evDate, plano, mesTent)) continue;
         try {
           await ev.scrollIntoViewIfNeeded().catch(() => {});
           await ev.click({ timeout: 10000 }); eventoClicado = true;
-          console.log(`[educadf.notas] ✅ Evento [turma+comp] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
+          console.log(`[educadf.notas] ✅ Evento [turma+comp] clicado (mês ${mesTent}, data=${evDate || 'n/a'}): "${txt.substring(0,80)}"`);
         } catch {}
       }
 
-      // Tentativa 2: só turma
+      // Tentativa 2: só turma + data dentro do bimestre
       if (!eventoClicado) {
         for (let i = 0; i < total && !eventoClicado; i++) {
           const ev  = fcEvs.nth(i);
           const txt = (await ev.textContent().catch(() => '')) || '';
           if (!okSoTurma(txt)) continue;
+          const evDate = await ev.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+          if (!verificarDataEventoNoBimestre(evDate, plano, mesTent)) continue;
           try {
             await ev.scrollIntoViewIfNeeded().catch(() => {});
             await ev.click({ timeout: 10000 }); eventoClicado = true;
-            console.log(`[educadf.notas] ✅ Evento [só turma] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
+            console.log(`[educadf.notas] ✅ Evento [só turma] clicado (mês ${mesTent}, data=${evDate || 'n/a'}): "${txt.substring(0,80)}"`);
           } catch {}
         }
       }
 
-      // Tentativa 3: primeiro evento visível
+      // Tentativa 3: primeiro evento visível dentro da janela do bimestre
       if (!eventoClicado && total > 0) {
-        try {
-          const ev  = fcEvs.nth(0);
-          const txt = (await ev.textContent().catch(() => '')) || '';
-          await ev.scrollIntoViewIfNeeded().catch(() => {});
-          await ev.click({ timeout: 10000 }); eventoClicado = true;
-          console.log(`[educadf.notas] ✅ Evento [fallback-primeiro] clicado (mês ${mesTent}): "${txt.substring(0,80)}"`);
-        } catch {}
+        for (let i = 0; i < total && !eventoClicado; i++) {
+          const ev  = fcEvs.nth(i);
+          const evDate = await ev.evaluate(el => el.closest('[data-date]')?.getAttribute('data-date') || '').catch(() => '');
+          if (!verificarDataEventoNoBimestre(evDate, plano, mesTent)) continue;
+          try {
+            const txt = (await ev.textContent().catch(() => '')) || '';
+            await ev.scrollIntoViewIfNeeded().catch(() => {});
+            await ev.click({ timeout: 10000 }); eventoClicado = true;
+            console.log(`[educadf.notas] ✅ Evento [fallback-primeiro] clicado (mês ${mesTent}, data=${evDate || 'n/a'}): "${txt.substring(0,80)}"`);
+          } catch {}
+        }
       }
 
       if (eventoClicado) {

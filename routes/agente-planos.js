@@ -128,6 +128,109 @@ async function lerConfigAgente(db, escolaId) {
   };
 }
 
+function toIsoDateOnly(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  const dt = new Date(s);
+  if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  return null;
+}
+
+function calcularDataMediaIso(dataInicioIso, dataFimIso) {
+  if (!dataInicioIso || !dataFimIso) return null;
+  const t1 = new Date(`${dataInicioIso}T12:00:00Z`).getTime();
+  const t2 = new Date(`${dataFimIso}T12:00:00Z`).getTime();
+  if (isNaN(t1) || isNaN(t2) || t2 < t1) return dataInicioIso;
+  const mid = new Date(Math.round((t1 + t2) / 2));
+  return mid.toISOString().slice(0, 10);
+}
+
+/**
+ * Lê os períodos de Bimestres (1..4) e Semestres (1..2) definidos pelo Diretor
+ * no módulo Direção > Governança (tabela governanca_ano_letivo_periodos).
+ */
+async function lerPeriodosGovernanca(db, escolaId, anoLetivo, bimestreStr) {
+  const ano = Number(anoLetivo) || new Date().getFullYear();
+  const bimNum = parseInt(String(bimestreStr || '').replace(/\D/g, ''), 10) || 0;
+  const fallbackSemestre = bimNum >= 3 ? 2 : 1;
+
+  try {
+    const [rows] = await db.query(
+      `SELECT tipo, numero, data_inicio, data_fim
+       FROM governanca_ano_letivo_periodos
+       WHERE escola_id = ? AND ano_letivo = ?
+       ORDER BY tipo ASC, numero ASC`,
+      [escolaId, ano]
+    );
+
+    const bimestres = [];
+    const semestres = [];
+    for (const r of rows || []) {
+      const dataInicio = toIsoDateOnly(r.data_inicio);
+      const dataFim = toIsoDateOnly(r.data_fim);
+      if (!dataInicio || !dataFim) continue;
+      const item = {
+        tipo: r.tipo,
+        numero: Number(r.numero),
+        dataInicio,
+        dataFim,
+        dataMedia: calcularDataMediaIso(dataInicio, dataFim),
+      };
+      if (r.tipo === 'bimestre') bimestres.push(item);
+      else if (r.tipo === 'semestre') semestres.push(item);
+    }
+
+    const periodoBimestre = bimestres.find(b => b.numero === bimNum) || null;
+
+    // Determina a qual semestre o bimestre pertence pelas datas da Governança (maior interseção de dias)
+    let semestreNumero = fallbackSemestre;
+    if (periodoBimestre && semestres.length > 0) {
+      const bIni = new Date(`${periodoBimestre.dataInicio}T00:00:00Z`).getTime();
+      const bFim = new Date(`${periodoBimestre.dataFim}T00:00:00Z`).getTime();
+      let melhorOverlap = -1;
+      for (const s of semestres) {
+        const sIni = new Date(`${s.dataInicio}T00:00:00Z`).getTime();
+        const sFim = new Date(`${s.dataFim}T00:00:00Z`).getTime();
+        const iniMax = Math.max(bIni, sIni);
+        const fimMin = Math.min(bFim, sFim);
+        const overlap = fimMin >= iniMax ? (fimMin - iniMax) : -1;
+        if (overlap > melhorOverlap) {
+          melhorOverlap = overlap;
+          semestreNumero = s.numero;
+        }
+      }
+    }
+
+    const periodoSemestre = semestres.find(s => s.numero === semestreNumero) || null;
+
+    return {
+      anoLetivo: ano,
+      bimestreNumero: bimNum,
+      semestreNumero,
+      periodoBimestre,
+      periodoSemestre,
+      bimestres,
+      semestres,
+    };
+  } catch (err) {
+    console.warn(`[agente-planos] Falha ao consultar governanca_ano_letivo_periodos: ${err.message}`);
+    return {
+      anoLetivo: ano,
+      bimestreNumero: bimNum,
+      semestreNumero: fallbackSemestre,
+      periodoBimestre: null,
+      periodoSemestre: null,
+      bimestres: [],
+      semestres: [],
+    };
+  }
+}
+
 const MAX_TENTATIVAS_PORTAL = 3;
 const DELAY_RETRY_PORTAL_MS = [15_000, 30_000, 60_000];
 
@@ -199,13 +302,14 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       });
     }
 
-    // Fallback de data por bimestre: dia 15 do mês de referência
-    // 1º Bim → 15/mar, 2º Bim → 15/mai, 3º Bim → 15/ago, 4º Bim → 15/nov
+    // Fallback de data por bimestre: prioriza a data média do período configurado na Governança,
+    // ou dia 15 do mês de referência (1º Bim → 15/mar, 2º Bim → 15/mai, 3º Bim → 15/ago, 4º Bim → 15/nov)
     const bimN = String(plano.bimestre || '').replace(/\D/g, '');
     const anoPlano = plano.ano || new Date().getFullYear();
+    const governanca = await lerPeriodosGovernanca(db, escolaId, anoPlano, plano.bimestre);
     const BIM_MONTH_MAP = { '1': '03', '2': '05', '3': '08', '4': '11' };
     const mesFallback = BIM_MONTH_MAP[bimN] || '03';
-    const dataFallback = `${anoPlano}-${mesFallback}-15`;
+    const dataFallback = governanca.periodoBimestre?.dataMedia || `${anoPlano}-${mesFallback}-15`;
 
     // ── 3.5. Buscar Gabarito para Fallback Secundário ─────────────────────────────────────────
     // Caso algum item fixo_direcao (Prova Bimestral) não tenha data_inicio no banco,
@@ -347,7 +451,8 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
       itens:             itensComData,
       escola:            { nomeBusca: configAgente.escolaNomeBusca, nomeOficial: configAgente.escolaNomeOficial },
       calendarioMap:     configAgente.calendarioMap,
-      regimeTurma:       regimeTurma
+      regimeTurma:       regimeTurma,
+      governanca:        governanca,
     };
 
     // ── 5. SET lock + resposta imediata 202 ──────────────────────────────────
@@ -637,6 +742,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const disciplinaOficial = discDb?.nome_oficial || null;
 
     const configAgente = await lerConfigAgente(db, escolaId);
+    const governanca = await lerPeriodosGovernanca(db, escolaId, plano.ano || new Date().getFullYear(), plano.bimestre);
 
     const dadosPlano = {
       turmas:            plano.turmas,
@@ -651,7 +757,8 @@ router.post('/:id/exportar-notas', async (req, res) => {
       colunas:           colunas,
       escola:            { nomeBusca: configAgente.escolaNomeBusca, nomeOficial: configAgente.escolaNomeOficial },
       calendarioMap:     configAgente.calendarioMap,
-      regimeTurma:       regimeTurma
+      regimeTurma:       regimeTurma,
+      governanca:        governanca,
     };
 
     // ── 6. SET lock + resposta imediata 202 ──────────────────────────────────
