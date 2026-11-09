@@ -6,20 +6,24 @@
 // ============================================================
 import express from 'express';
 import pool from '../db.js';
+import { resolverVigenciaLetiva } from '../utils/vigenciaHorariosHelper.js';
 
 const router = express.Router();
 
 // GET /api/escola/configuracao-grade
-// Retorna a configuracao atual da escola do usuario logado
+// Retorna a configuracao atual da escola do usuario logado + vigencia academica atual
 router.get('/', async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const [[row]] = await pool.query(
-      `SELECT id, turnos, dias_semana, periodos, criado_em, atualizado_em
-       FROM escola_configuracao_grade
-       WHERE escola_id = ? LIMIT 1`,
-      [escola_id]
-    );
+    const [[[row]], vigencia] = await Promise.all([
+      pool.query(
+        `SELECT id, turnos, dias_semana, periodos, criado_em, atualizado_em
+         FROM escola_configuracao_grade
+         WHERE escola_id = ? LIMIT 1`,
+        [escola_id]
+      ),
+      resolverVigenciaLetiva(escola_id),
+    ]);
     if (!row) return res.json(null);
     
     const parsedPeriodos = parseJson(row.periodos, {});
@@ -32,6 +36,9 @@ router.get('/', async (req, res) => {
       dias_semana:  parseJson(row.dias_semana, [1, 2, 3, 4, 5]),
       periodos:     parsedPeriodos,
       regras_gerais,
+      vigencia,
+      semestre_atual: vigencia.semestre_atual,
+      ano_letivo:     vigencia.ano_letivo,
       criado_em:    row.criado_em,
       atualizado_em: row.atualizado_em,
     });

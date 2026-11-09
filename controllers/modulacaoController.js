@@ -11,6 +11,7 @@
 // =============================================================================
 
 import pool from "../db.js";
+import { resolverVigenciaLetiva } from "../utils/vigenciaHorariosHelper.js";
 
 // ============================================================================
 // Auto-migration idempotente:
@@ -162,20 +163,21 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
     return res.status(400).json({ erro: "Turno é obrigatório" });
   }
 
-  const semFiltro = semestre ? Number(semestre) : 1;
-
   try {
+    const vigencia = await resolverVigenciaLetiva(escola_id, semestre);
+    const semFiltro = vigencia.semestre_referencia;
+
     // 1) Turmas do turno do ano letivo vigente (apenas da escola do usuário)
     const [turmas] = await pool.query(
       `SELECT id, nome, turno, ano, regime
         FROM turmas
-       WHERE turno = ? AND escola_id = ? AND ano = YEAR(CURDATE())
+       WHERE turno = ? AND escola_id = ? AND ano = ?
        ORDER BY nome`,
-      [turno, escola_id]
+      [turno, escola_id, vigencia.ano_letivo]
     );
 
     if (!turmas.length) {
-      return res.json({ turmas: [], alocacoes: [] });
+      return res.json({ turmas: [], alocacoes: [], semestre: semFiltro, vigencia });
     }
 
     // 2) Alocações com turma_id (somente turmas do turno)
@@ -287,7 +289,7 @@ export const listarModulacaoPorTurno = async (req, res, escolaIdFromRoute) => {
       alocacoes = [...resultComTurma, ...resultSemTurma];
     }
 
-    return res.json({ turmas, alocacoes });
+    return res.json({ turmas, alocacoes, semestre: semFiltro, vigencia });
   } catch (err) {
     console.error("Erro ao buscar horários:", err);
     return res.status(500).json({ erro: "Erro ao buscar horários" });
@@ -405,9 +407,10 @@ export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
   if (!escola_id) return res.status(403).json({ erro: "Acesso negado: escola não definida." });
   if (!turno)     return res.status(400).json({ erro: "turno é obrigatório." });
 
-  const semFiltro = semestre ? Number(semestre) : 1;
-
   try {
+    const vigencia = await resolverVigenciaLetiva(escola_id, semestre);
+    const semFiltro = vigencia.semestre_referencia;
+
     const [rows] = await pool.query(
       `SELECT
          tc.turma_id,
@@ -420,12 +423,14 @@ export const getCargaPorTurma = async (req, res, escolaIdFromRoute) => {
        JOIN turmas      t ON t.id  = tc.turma_id
        WHERE tc.escola_id = ?
          AND t.turno      = ?
-         AND t.ano        = YEAR(CURDATE())
+         AND t.ano        = ?
          AND (
-           t.regime = 'anual'
+           LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+           OR tc.semestre IS NULL
+           OR tc.semestre = 0
            OR tc.semestre = ?
          )`,
-      [escola_id, turno, semFiltro]
+      [escola_id, turno, vigencia.ano_letivo, semFiltro]
     );
 
     // Monta mapa { turma_id: { disciplina_id: carga } }

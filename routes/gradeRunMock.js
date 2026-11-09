@@ -198,7 +198,7 @@ async function assembleEnrichedSolverPayload({
   ids,
   anoRef,
   nivel,
-  semestre = 1,
+  semestre = null,
   respeitarHorarioManual = true,
 }) {
   const payload = await buildSolverPayload({
@@ -307,6 +307,7 @@ async function assembleEnrichedSolverPayload({
     turno: payload.turno || turnoNorm,
     ano_ref: payload.ano_ref ?? null,
     semestre: payload.semestre || 1,
+    vigencia: payload.vigencia || null,
     nivel: payload.config_pedagogica?.nivel || nivel,
     dias_semana: payload.dias_semana || [1, 2, 3, 4, 5],
     periodos_por_dia: periodosPorDia,
@@ -348,7 +349,7 @@ router.post("/solver-payload", requireEscola, async (req, res) => {
         ? req.body.nivel.trim()
         : "fundamental_II";
 
-    const semestre = Number(req.body?.semestre) === 2 ? 2 : 1;
+    const semestre = req.body?.semestre ? Number(req.body.semestre) : null;
     const respeitarHorarioManual = req.body?.respeitar_horario_manual !== false;
 
     const { payload, warnings_payload, payload_summary } = await assembleEnrichedSolverPayload({
@@ -416,7 +417,7 @@ router.post("/run-mock", requireEscola, async (req, res) => {
         ? req.body.nivel.trim()
         : "fundamental_II";
 
-    const semestre = Number(req.body?.semestre) === 2 ? 2 : 1;
+    const semestre = req.body?.semestre ? Number(req.body.semestre) : null;
     const respeitarHorarioManual = req.body?.respeitar_horario_manual !== false;
 
     const { payload, warnings_payload, payload_summary } = await assembleEnrichedSolverPayload({

@@ -11,6 +11,7 @@
 // =====================================================
 
 import pool from "../db.js";
+import { resolverVigenciaLetiva } from "../utils/vigenciaHorariosHelper.js";
 
 function toInt(v, def = 0) {
   const n = Number(v);
@@ -123,8 +124,38 @@ async function fetchModulacao(escolaId, turmaIds, semestre = 1) {
        LEFT JOIN turmas t ON t.id = m.turma_id
       WHERE m.escola_id=?
         AND m.turma_id IN (${placeholders})
-        AND (LOWER(COALESCE(t.regime, 'anual')) <> 'semestral' OR m.semestre IS NULL OR m.semestre = 0 OR m.semestre = ?)`,
-    [escolaId, ...ids, semNum]
+        AND (
+          LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+          OR m.semestre IS NULL
+          OR m.semestre = 0
+          OR m.semestre = ?
+          OR (
+            NOT EXISTS (
+              SELECT 1 FROM modulacao m2
+              WHERE m2.escola_id = m.escola_id
+                AND m2.turma_id = m.turma_id
+                AND m2.disciplina_id = m.disciplina_id
+                AND m2.semestre = ?
+            )
+            AND EXISTS (
+              SELECT 1 FROM professor_vinculos pv0
+              WHERE pv0.professor_id = p.id
+                AND pv0.disciplina_id = m.disciplina_id
+                AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                AND pv0.escola_id = p.escola_id
+                AND (pv0.semestre = 0 OR pv0.semestre IS NULL)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM professor_vinculos pvs
+              WHERE pvs.professor_id = p.id
+                AND pvs.disciplina_id = m.disciplina_id
+                AND LOWER(pvs.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                AND pvs.escola_id = p.escola_id
+                AND pvs.semestre IN (1, 2)
+            )
+          )
+        )`,
+    [escolaId, ...ids, semNum, semNum]
   );
 
   return rows.map((r) => ({
@@ -488,13 +519,15 @@ export async function buildSolverPayload({
   turmaIds,
   anoRef,
   ano_ref,
-  semestre = 1,
+  semestre = null,
   respeitarHorarioManual = true,
 }) {
   const turnoNorm = normTurno(turno);
 
   // aceitamos anoRef (camel) e ano_ref (snake) para robustez
   const anoRefNorm = normAnoRef(anoRef ?? ano_ref);
+  const vigencia = await resolverVigenciaLetiva(escolaId, semestre);
+  const semEfetivo = vigencia.semestre_referencia;
 
   const [
     grade_base,
@@ -508,12 +541,12 @@ export async function buildSolverPayload({
   ] = await Promise.all([
     fetchGradeBase(escolaId, turnoNorm),
     fetchTurmas(escolaId, turnoNorm, turmaIds),
-    fetchDemanda(escolaId, turnoNorm, turmaIds, semestre),
-    fetchModulacao(escolaId, turmaIds, semestre),
+    fetchDemanda(escolaId, turnoNorm, turmaIds, semEfetivo),
+    fetchModulacao(escolaId, turmaIds, semEfetivo),
     fetchEscolaConfigGrade(escolaId, turnoNorm),
     fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, "fundamental_II"),
     respeitarHorarioManual ? fetchSlotsFixos(escolaId, turnoNorm, turmaIds) : Promise.resolve([]),
-    fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semestre),
+    fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semEfetivo),
   ]);
 
   // Mescla modulação regular com modulação de Agrupamentos (IFA / PCA / Eletiva / PD)
@@ -587,8 +620,9 @@ export async function buildSolverPayload({
   return {
     escola_id: escolaId,
     turno: turnoNorm,
-    ano_ref: anoRefNorm || null,
-    semestre: toInt(semestre, 1) || 1,
+    ano_ref: anoRefNorm || vigencia.ano_letivo,
+    semestre: semEfetivo,
+    vigencia,
     dias_semana: escolaCfg.dias_semana,
     periodos_por_dia: escolaCfg.periodos_por_dia,
 

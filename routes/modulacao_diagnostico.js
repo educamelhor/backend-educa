@@ -1,15 +1,14 @@
 // api/routes/horarios_diagnostico.js
 // ============================================================================
-// Diagnóstico de Insumos para Geração de Horários (por Turno)
+// Diagnóstico de Insumos para Geração de Horários (por Turno e Semestre Vigente)
 // - Consolida DEMANDA (turmas + turma_cargas) x OFERTA (professores ativos)
 // - Filtro obrigatório por req.user.escola_id
-// - GET /api/horarios/diagnostico?turno=Matutino
-//   • Retorna, por disciplina do turno: carga_necessaria, aulas_ofertadas, professores_ativos, gap
-//   • Inclui detalhamento por turma (para auditoria)
+// - Resolve automaticamente o semestre vigente da escola quando não informado
 // ============================================================================
 
 import express from "express";
 import pool from "../db.js";
+import { resolverVigenciaLetiva } from "../utils/vigenciaHorariosHelper.js";
 
 const router = express.Router();
 
@@ -30,18 +29,17 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
   try {
     const { escola_id } = req.user;
     const turno = (req.query.turno || "").trim();
-    const semestre = req.query.semestre ? Number(req.query.semestre) : 1;
 
     if (!turno) {
       return res.status(400).json({ message: "Parâmetro 'turno' é obrigatório." });
     }
 
-    // Ano letivo atual (janeiro ainda pertence ao ano anterior)
-    const hoje = new Date();
-    const anoAtual = hoje.getMonth() === 0 ? hoje.getFullYear() - 1 : hoje.getFullYear();
+    const vigencia = await resolverVigenciaLetiva(escola_id, req.query.semestre);
+    const semestre = vigencia.semestre_referencia;
+    const anoAtual = vigencia.ano_letivo;
 
     // 1) DEMANDA: soma das cargas das disciplinas definidas em turma_cargas
-    //    para as turmas da escola e do turno informado.
+    //    para as turmas da escola, turno e semestre vigente.
     const [demandaRows] = await pool.query(
       `
       SELECT
@@ -54,17 +52,21 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
       WHERE tc.escola_id = ?
         AND t.escola_id  = ?
         AND d.escola_id  = ?
-        AND t.turno = ?
+        AND LOWER(t.turno) = LOWER(?)
         AND t.ano   = ?
-        AND (t.regime = 'anual' OR tc.semestre = ?)
+        AND (
+          LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+          OR tc.semestre IS NULL
+          OR tc.semestre = 0
+          OR tc.semestre = ?
+        )
       GROUP BY tc.disciplina_id, d.nome
       ORDER BY d.nome
       `,
       [escola_id, escola_id, escola_id, turno, anoAtual, semestre]
     );
 
-    // 2) OFERTA: professores ATIVOS nesse turno (por disciplina)
-    //    soma de aulas + contagem de professores.
+    // 2) OFERTA: professores ATIVOS nesse turno e semestre (por disciplina)
     //    NOVO MODELO: baseia-se em professor_vinculos.
     const [ofertaRows] = await pool.query(
       `
@@ -77,7 +79,7 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
       WHERE pv.escola_id = ?
         AND p.status != 'inativo'
         AND LOWER(pv.turno) = LOWER(?)
-        AND (pv.semestre = 0 OR pv.semestre = ?)
+        AND (pv.semestre IS NULL OR pv.semestre = 0 OR pv.semestre = ?)
       GROUP BY pv.disciplina_id
       `,
       [escola_id, turno, semestre]
@@ -92,8 +94,7 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
       });
     }
 
-    // 3) Construir o checklist por disciplina (inclui as que tenham só demanda;
-    //    se desejar, também podemos trazer disciplinas com oferta mas sem demanda).
+    // 3) Construir o checklist por disciplina
     const checklist = demandaRows.map((d) => {
       const oferta = ofertaMap.get(Number(d.disciplina_id)) || {
         professores_ativos: 0,
@@ -137,9 +138,14 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
       WHERE tc.escola_id = ?
         AND t.escola_id  = ?
         AND d.escola_id  = ?
-        AND t.turno = ?
+        AND LOWER(t.turno) = LOWER(?)
         AND t.ano   = ?
-        AND (t.regime = 'anual' OR tc.semestre = ?)
+        AND (
+          LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+          OR tc.semestre IS NULL
+          OR tc.semestre = 0
+          OR tc.semestre = ?
+        )
       ORDER BY t.nome, d.nome
       `,
       [escola_id, escola_id, escola_id, turno, anoAtual, semestre]
@@ -148,6 +154,7 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
     return res.json({
       turno,
       semestre,
+      vigencia,
       resumo_por_disciplina: checklist,
       detalhe_por_turma: detalheTurmas,
     });
@@ -159,8 +166,8 @@ router.get("/diagnostico", verificarEscola, async (req, res) => {
 
 // ============================================================================
 // GET /api/modulacao/diagnostico/disponibilidade?turno=Matutino
-// Cruza carga modulada (aulas que o professor deve dar) com os slots livres
-// cadastrados na grade_disponibilidades pela direção.
+// Cruza carga modulada (aulas que o professor deve dar no semestre vigente)
+// com os slots livres cadastrados na grade_disponibilidades pela direção.
 // Retorna: professores com conflito (aulas > slots), ok e sem disponibilidade.
 // ============================================================================
 router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => {
@@ -168,18 +175,16 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
     const { escola_id } = req.user;
     const turno = (req.query.turno || "").trim();
 
-    const semestre = req.query.semestre ? Number(req.query.semestre) : 1;
-
     if (!turno) {
       return res.status(400).json({ message: "Parâmetro 'turno' é obrigatório." });
     }
 
-    // Ano letivo atual
-    const hoje = new Date();
-    const anoAtual = hoje.getMonth() === 0 ? hoje.getFullYear() - 1 : hoje.getFullYear();
+    const vigencia = await resolverVigenciaLetiva(escola_id, req.query.semestre);
+    const semestre = vigencia.semestre_referencia;
+    const anoAtual = vigencia.ano_letivo;
 
-    // 1) Carga modulada por professor neste turno
-    //    (soma de modulacao.aulas para turmas do turno)
+    // 1) Carga modulada por professor neste turno e semestre vigente
+    //    (soma de modulacao.aulas para turmas do turno, respeitando anualidade/semestralidade)
     const [modulados] = await pool.query(
       `SELECT
          m.professor_id,
@@ -194,14 +199,43 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
        WHERE m.escola_id = ?
          AND LOWER(t.turno) = LOWER(?)
          AND t.ano = ?
-         AND (t.regime = 'anual' OR m.semestre = ?)
+         AND (
+           LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+           OR m.semestre IS NULL
+           OR m.semestre = 0
+           OR m.semestre = ?
+           OR (
+             NOT EXISTS (
+               SELECT 1 FROM modulacao m2
+               WHERE m2.escola_id = m.escola_id
+                 AND m2.turma_id = m.turma_id
+                 AND m2.disciplina_id = m.disciplina_id
+                 AND m2.semestre = ?
+             )
+             AND EXISTS (
+               SELECT 1 FROM professor_vinculos pv0
+               WHERE pv0.professor_id = p.id
+                 AND pv0.disciplina_id = m.disciplina_id
+                 AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                 AND pv0.escola_id = p.escola_id
+                 AND (pv0.semestre = 0 OR pv0.semestre IS NULL)
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM professor_vinculos pvs
+               WHERE pvs.professor_id = p.id
+                 AND pvs.disciplina_id = m.disciplina_id
+                 AND LOWER(pvs.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                 AND pvs.escola_id = p.escola_id
+                 AND pvs.semestre IN (1, 2)
+             )
+           )
+         )
        GROUP BY m.professor_id, p.nome, d.nome
        ORDER BY p.nome`,
-      [escola_id, turno, anoAtual, semestre]
+      [escola_id, turno, anoAtual, semestre, semestre]
     );
 
     // 2) Slots livres por professor neste turno
-    //    Usa JSON_TABLE para expandir o JSON de periodos e contar status='livre'
     const [dispRows] = await pool.query(
       `SELECT
          gd.professor_id,
@@ -283,6 +317,8 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
 
     return res.json({
       turno,
+      semestre,
+      vigencia,
       total_modulados: modulados.length,
       conflitos,
       ok,
@@ -296,8 +332,9 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
 
 // ============================================================================
 // GET /api/modulacao/diagnostico/turmas-descobertas?turno=Matutino
-// Retorna turmas que têm disciplinas obrigatórias (turma_cargas) mas nenhum
-// professor modulado (modulacao) para cobrir aquela disciplina.
+// Retorna turmas que têm disciplinas obrigatórias (turma_cargas) no semestre
+// vigente mas nenhum professor modulado (modulacao / agrupamento_modulacao)
+// para cobrir aquela disciplina.
 // ============================================================================
 router.get("/diagnostico/turmas-descobertas", verificarEscola, async (req, res) => {
   try {
@@ -308,64 +345,85 @@ router.get("/diagnostico/turmas-descobertas", verificarEscola, async (req, res) 
       return res.status(400).json({ message: "Parâmetro 'turno' é obrigatório." });
     }
 
-    // Ano letivo atual
-    const hoje = new Date();
-    const anoAtual = hoje.getMonth() === 0 ? hoje.getFullYear() - 1 : hoje.getFullYear();
+    const vigencia = await resolverVigenciaLetiva(escola_id, req.query.semestre);
+    const semestre = vigencia.semestre_referencia;
+    const anoAtual = vigencia.ano_letivo;
 
-    // Turmas × Disciplinas obrigatórias SEM professor modulado
+    // Turmas × Disciplinas obrigatórias no semestre vigente SEM professor modulado
     const [descobertas] = await pool.query(
       `SELECT
          t.id      AS turma_id,
          t.nome    AS turma_nome,
          t.turno,
+         t.regime,
+         tc.semestre,
          d.id      AS disciplina_id,
          d.nome    AS disciplina_nome,
          tc.carga
        FROM turma_cargas tc
        JOIN turmas t      ON t.id  = tc.turma_id  AND t.escola_id = tc.escola_id
        JOIN disciplinas d ON d.id  = tc.disciplina_id
-       LEFT JOIN modulacao m
-         ON  m.turma_id      = tc.turma_id
-         AND m.disciplina_id = tc.disciplina_id
-         AND m.escola_id     = tc.escola_id
        WHERE tc.escola_id  = ?
          AND LOWER(t.turno) = LOWER(?)
          AND t.ano = ?
-         AND m.id IS NULL
+         AND (
+           LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+           OR tc.semestre IS NULL
+           OR tc.semestre = 0
+           OR tc.semestre = ?
+         )
+         AND NOT EXISTS (
+           SELECT 1
+             FROM modulacao m
+             JOIN professores p ON p.id = m.professor_id
+            WHERE m.escola_id = tc.escola_id
+              AND m.turma_id = tc.turma_id
+              AND m.disciplina_id = tc.disciplina_id
+              AND (
+                LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+                OR m.semestre IS NULL
+                OR m.semestre = 0
+                OR m.semestre = ?
+                OR EXISTS (
+                  SELECT 1 FROM professor_vinculos pv0
+                  WHERE pv0.professor_id = p.id
+                    AND pv0.disciplina_id = m.disciplina_id
+                    AND LOWER(pv0.turno) COLLATE utf8mb4_unicode_ci = LOWER(t.turno) COLLATE utf8mb4_unicode_ci
+                    AND pv0.escola_id = p.escola_id
+                    AND (pv0.semestre = 0 OR pv0.semestre IS NULL)
+                )
+              )
+         )
        ORDER BY t.nome, d.nome`,
-      [escola_id, turno, anoAtual]
+      [escola_id, turno, anoAtual, semestre, semestre]
     );
 
-    // Totais para o score
+    // Totais de turmas com carga no semestre vigente para o score
     const [totaisTurmas] = await pool.query(
       `SELECT COUNT(DISTINCT tc.turma_id) AS total_turmas_com_carga
        FROM turma_cargas tc
        JOIN turmas t ON t.id = tc.turma_id AND t.escola_id = tc.escola_id
-       WHERE tc.escola_id = ? AND LOWER(t.turno) = LOWER(?) AND t.ano = ?`,
-      [escola_id, turno, anoAtual]
-    );
-
-    const [turmasDescobertasCount] = await pool.query(
-      `SELECT COUNT(DISTINCT tc.turma_id) AS turmas_com_gap
-       FROM turma_cargas tc
-       JOIN turmas t ON t.id = tc.turma_id AND t.escola_id = tc.escola_id
-       LEFT JOIN modulacao m
-         ON  m.turma_id      = tc.turma_id
-         AND m.disciplina_id = tc.disciplina_id
-         AND m.escola_id     = tc.escola_id
-       WHERE tc.escola_id  = ?
+       WHERE tc.escola_id = ?
          AND LOWER(t.turno) = LOWER(?)
          AND t.ano = ?
-         AND m.id IS NULL`,
-      [escola_id, turno, anoAtual]
+         AND (
+           LOWER(COALESCE(t.regime, 'anual')) <> 'semestral'
+           OR tc.semestre IS NULL
+           OR tc.semestre = 0
+           OR tc.semestre = ?
+         )`,
+      [escola_id, turno, anoAtual, semestre]
     );
 
+    const turmasComGapSet = new Set((descobertas || []).map((r) => Number(r.turma_id)));
     const totalTurmas = Number(totaisTurmas[0]?.total_turmas_com_carga) || 0;
-    const turmasComGap = Number(turmasDescobertasCount[0]?.turmas_com_gap) || 0;
-    const turmasCompletas = totalTurmas - turmasComGap;
+    const turmasComGap = turmasComGapSet.size;
+    const turmasCompletas = Math.max(0, totalTurmas - turmasComGap);
 
     return res.json({
       turno,
+      semestre,
+      vigencia,
       total_turmas: totalTurmas,
       turmas_completas: turmasCompletas,
       turmas_com_gap: turmasComGap,
@@ -378,4 +436,3 @@ router.get("/diagnostico/turmas-descobertas", verificarEscola, async (req, res) 
 });
 
 export default router;
-
