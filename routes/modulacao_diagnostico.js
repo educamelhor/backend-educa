@@ -394,8 +394,19 @@ router.get("/diagnostico/turmas-descobertas", verificarEscola, async (req, res) 
                 )
               )
          )
+         AND NOT EXISTS (
+           SELECT 1
+             FROM agrupamento_modulacao am
+             JOIN agrupamentos g ON g.id = am.agrupamento_id
+            WHERE g.escola_id = tc.escola_id
+              AND g.ano_letivo = ?
+              AND COALESCE(g.status, 'ATIVO') <> 'ENCERRADO'
+              AND LOWER(g.turno) = LOWER(t.turno)
+              AND (g.semestre IS NULL OR g.semestre = 0 OR g.semestre = ?)
+              AND (am.disciplina_id = tc.disciplina_id OR g.origem_disciplina_legada_id = tc.disciplina_id)
+         )
        ORDER BY t.nome, d.nome`,
-      [escola_id, turno, anoAtual, semestre, semestre]
+      [escola_id, turno, anoAtual, semestre, semestre, anoAtual, semestre]
     );
 
     // Totais de turmas com carga no semestre vigente para o score
