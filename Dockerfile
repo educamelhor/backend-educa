@@ -7,7 +7,8 @@ FROM node:20-slim
 # Instalar Python 3 + dependências do Playwright/Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
-    # Dependências do Chromium (Playwright)
+    # Dependências do Chromium e do driver Node embutido do Playwright (libatomic1)
+    libatomic1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 \
@@ -32,29 +33,28 @@ RUN mkdir -p /tmp/latex-jobs && chmod 777 /tmp/latex-jobs
 # Diretório da aplicação Node.js
 WORKDIR /app
 
-# ── Node.js ──────────────────────────────────────────
+# ── Node.js & Playwright (camadas cacheadas antes do código) ──
 # Copia apenas manifests primeiro (cache eficiente)
 COPY package*.json ./
 
 # Instala dependências (sem npm ci, sem workspaces)
 RUN npm install
 
-# Copia o restante do código
-COPY . .
-
-# Instala Chromium do Playwright para o Node.js
+# Instala Chromium do Playwright para o Node.js (cacheado enquanto package.json não mudar)
 RUN npx playwright install chromium
 
-
-# ── Python (Agente SEEDF) ────────────────────────────
+# ── Python (Agente SEEDF — cacheado antes do código) ─────────
 # Instala dependências Python do agente
 RUN pip3 install --break-system-packages \
     playwright>=1.40.0 \
     requests>=2.31.0 \
     python-dotenv>=1.0.0
 
-# Instala o browser Chromium para Playwright
+# Instala o browser Chromium para Playwright Python
 RUN python3 -m playwright install chromium
+
+# Copia o restante do código da aplicação (camada rápida)
+COPY . .
 
 # Cria diretório de downloads do agente
 RUN mkdir -p /app/educa-agent/downloads
