@@ -6,16 +6,19 @@
 // ============================================================
 import express from 'express';
 import pool from '../db.js';
-import { resolverVigenciaLetiva } from '../utils/vigenciaHorariosHelper.js';
+import {
+  resolverVigenciaLetiva,
+  resolverHorariosReaisPorTurno,
+} from '../utils/vigenciaHorariosHelper.js';
 
 const router = express.Router();
 
 // GET /api/escola/configuracao-grade
-// Retorna a configuracao atual da escola do usuario logado + vigencia academica atual
+// Retorna a configuracao atual da escola do usuario logado + vigencia academica + horarios reais (HH:MM) da Governanca
 router.get('/', async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const [[[row]], vigencia] = await Promise.all([
+    const [[[row]], vigencia, [[escolaRow]]] = await Promise.all([
       pool.query(
         `SELECT id, turnos, dias_semana, periodos, criado_em, atualizado_em
          FROM escola_configuracao_grade
@@ -23,19 +26,38 @@ router.get('/', async (req, res) => {
         [escola_id]
       ),
       resolverVigenciaLetiva(escola_id),
+      pool
+        .query(`SELECT id, nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escola_id])
+        .catch(() => [[null]]),
     ]);
     if (!row) return res.json(null);
-    
+
+    const horariosInfo = await resolverHorariosReaisPorTurno(
+      escola_id,
+      vigencia?.ano_letivo,
+      pool
+    );
+
     const parsedPeriodos = parseJson(row.periodos, {});
     const regras_gerais = parsedPeriodos._regras_gerais || {};
     delete parsedPeriodos._regras_gerais;
 
     return res.json({
       id:           row.id,
+      escola: escolaRow
+        ? {
+            id: escolaRow.id,
+            nome: escolaRow.nome || '',
+            apelido: escolaRow.apelido || '',
+          }
+        : null,
       turnos:       parseJson(row.turnos,      []),
       dias_semana:  parseJson(row.dias_semana, [1, 2, 3, 4, 5]),
       periodos:     parsedPeriodos,
       regras_gerais,
+      horarios_por_turno:   horariosInfo.horarios_por_turno || {},
+      intervalos_por_turno: horariosInfo.intervalos_por_turno || {},
+      fonte_horarios_por_turno: horariosInfo.fonte_por_turno || {},
       vigencia,
       semestre_atual: vigencia.semestre_atual,
       ano_letivo:     vigencia.ano_letivo,

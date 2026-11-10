@@ -180,9 +180,155 @@ export async function resolverVigenciaLetiva(escolaId, semestreExplicito = null)
   };
 }
 
+function hhmmParaMinutos(str) {
+  const m = String(str || "").trim().match(/^(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function parseJsonSafe(raw, fallback = null) {
+  try {
+    if (raw == null) return fallback;
+    if (typeof raw === "string") return JSON.parse(raw);
+    if (Buffer.isBuffer(raw)) return JSON.parse(raw.toString("utf8"));
+    if (typeof raw === "object") return raw;
+  } catch {
+    // fallback silencioso
+  }
+  return fallback;
+}
+
+/**
+ * Unifica os horários reais de início/término (`HH:MM`) e intervalos por turno
+ * priorizando `governanca_ano_letivo_horarios` (Direção > Governança) com fallback
+ * automático para `grade_base`.
+ */
+export async function resolverHorariosReaisPorTurno(escolaId, anoLetivo = null, dbConn = pool) {
+  const anoAlvo = Number(anoLetivo) || getAnoLetivoAtual();
+  const horariosPorTurno = {};
+  const intervalosPorTurno = {};
+  const fontePorTurno = {};
+
+  if (!escolaId) {
+    return {
+      horarios_por_turno: horariosPorTurno,
+      intervalos_por_turno: intervalosPorTurno,
+      fonte_por_turno: fontePorTurno,
+    };
+  }
+
+  const conn = dbConn || pool;
+
+  // 1) Fonte Primária Oficial: governanca_ano_letivo_horarios (Direção > Governança)
+  try {
+    const [govRows] = await conn.query(
+      `SELECT LOWER(turno) AS turno, ano_letivo, quantidade_aulas, aulas_json
+         FROM governanca_ano_letivo_horarios
+        WHERE escola_id = ?
+        ORDER BY (ano_letivo = ?) DESC, ano_letivo DESC`,
+      [Number(escolaId), anoAlvo]
+    );
+
+    for (const row of govRows || []) {
+      const turno = String(row.turno || "").toLowerCase().trim();
+      if (!turno || horariosPorTurno[turno]) continue; // mantém o ano mais relevante já lido
+
+      const listaAulas = parseJsonSafe(row.aulas_json, []);
+      if (!Array.isArray(listaAulas) || listaAulas.length === 0) continue;
+
+      const mapaTurno = {};
+      for (let i = 0; i < listaAulas.length; i++) {
+        const item = listaAulas[i] || {};
+        const ord = Number(item.numero || item.ordem || i + 1);
+        const ini = String(item.inicio || "").trim().slice(0, 5);
+        const fim = String(item.fim || "").trim().slice(0, 5);
+        if (ord > 0 && /^\d{2}:\d{2}$/.test(ini) && /^\d{2}:\d{2}$/.test(fim)) {
+          mapaTurno[ord] = { ordem: ord, inicio: ini, fim };
+        }
+      }
+
+      if (Object.keys(mapaTurno).length > 0) {
+        horariosPorTurno[turno] = mapaTurno;
+        fontePorTurno[turno] = "governanca_ano_letivo_horarios";
+      }
+    }
+  } catch {
+    // Tabela pode ainda não existir em banco legado recém-inicializado
+  }
+
+  // 2) Fallback Secundário: grade_base (para turnos ainda sem cadastro na Governança)
+  try {
+    const [gbRows] = await conn.query(
+      `SELECT LOWER(turno) AS turno, periodo_ordem AS ordem,
+              TIME_FORMAT(hora_inicio, '%H:%i') AS inicio,
+              TIME_FORMAT(hora_fim, '%H:%i') AS fim
+         FROM grade_base
+        WHERE escola_id = ?
+        ORDER BY turno ASC, dia_semana ASC, periodo_ordem ASC`,
+      [Number(escolaId)]
+    );
+
+    for (const gb of gbRows || []) {
+      const turno = String(gb.turno || "").toLowerCase().trim();
+      if (!turno || fontePorTurno[turno] === "governanca_ano_letivo_horarios") continue;
+      const ord = Number(gb.ordem);
+      const ini = String(gb.inicio || "").trim().slice(0, 5);
+      const fim = String(gb.fim || "").trim().slice(0, 5);
+      if (ord > 0 && /^\d{2}:\d{2}$/.test(ini) && /^\d{2}:\d{2}$/.test(fim)) {
+        if (!horariosPorTurno[turno]) horariosPorTurno[turno] = {};
+        if (!horariosPorTurno[turno][ord]) {
+          horariosPorTurno[turno][ord] = { ordem: ord, inicio: ini, fim };
+          fontePorTurno[turno] = "grade_base";
+        }
+      }
+    }
+  } catch {
+    // fallback silencioso
+  }
+
+  // 3) Detecta automaticamente intervalos reais (ex.: 21:15 -> 21:30 entre 3ª e 4ª aula)
+  for (const [turno, mapa] of Object.entries(horariosPorTurno)) {
+    const ordens = Object.keys(mapa)
+      .map(Number)
+      .sort((a, b) => a - b);
+    let melhorGap = null;
+
+    for (let i = 0; i < ordens.length - 1; i++) {
+      const atual = mapa[ordens[i]];
+      const prox = mapa[ordens[i + 1]];
+      if (ordens[i + 1] !== ordens[i] + 1) continue;
+      const fimMin = hhmmParaMinutos(atual.fim);
+      const iniProxMin = hhmmParaMinutos(prox.inicio);
+      if (fimMin != null && iniProxMin != null && iniProxMin - fimMin >= 5) {
+        const duracao = iniProxMin - fimMin;
+        if (!melhorGap || duracao > melhorGap.duracao_min) {
+          melhorGap = {
+            apos_periodo: atual.ordem,
+            inicio: atual.fim,
+            fim: prox.inicio,
+            duracao_min: duracao,
+            origem: fontePorTurno[turno] || "governanca",
+          };
+        }
+      }
+    }
+
+    if (melhorGap) {
+      intervalosPorTurno[turno] = melhorGap;
+    }
+  }
+
+  return {
+    horarios_por_turno: horariosPorTurno,
+    intervalos_por_turno: intervalosPorTurno,
+    fonte_por_turno: fontePorTurno,
+  };
+}
+
 export default {
   getAnoLetivoAtual,
   getSemestrePadraoCalendario,
   getBimestrePadraoCalendario,
   resolverVigenciaLetiva,
+  resolverHorariosReaisPorTurno,
 };

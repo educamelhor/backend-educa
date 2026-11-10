@@ -23,6 +23,10 @@ import {
   publicarRascunho,
   getPublicadoByTurno,
 } from "../services/gradePersistenceService.js";
+import {
+  resolverVigenciaLetiva,
+  resolverHorariosReaisPorTurno,
+} from "../utils/vigenciaHorariosHelper.js";
 
 const router = express.Router();
 
@@ -864,7 +868,9 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
         professor: null,
         professores_escola: professoresEscola,
         is_gestao: isGestao,
-        turnos: {},
+        turnos: [],
+        turnos_map: {},
+        total_aulas_semanais: 0,
         slots: [],
       });
     }
@@ -878,24 +884,17 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
       foto: profRows[0].foto || null,
     };
 
-    // 4) Busca dados da escola e configuração de grade
-    const [[[escolaRow]], [[cfgRow]], [gradeBaseRows], [resultadosRows]] = await Promise.all([
+    // 4) Busca dados da escola, configuração de grade, vigência e horários reais (Governança + fallback grade_base)
+    const [[[escolaRow]], [[cfgRow]], vigencia, [resultadosRows]] = await Promise.all([
       db.query(`SELECT id, nome, apelido FROM escolas WHERE id = ? LIMIT 1`, [escolaId]),
       db.query(
         `SELECT turnos, dias_semana, periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1`,
         [escolaId]
       ).catch(() => [[null]]),
-      db.query(
-        `SELECT LOWER(turno) AS turno, dia_semana AS dia, periodo_ordem AS ordem,
-                TIME_FORMAT(hora_inicio, '%H:%i') AS inicio,
-                TIME_FORMAT(hora_fim, '%H:%i') AS fim
-           FROM grade_base
-          WHERE escola_id = ?
-          ORDER BY turno, dia_semana, periodo_ordem`,
-        [escolaId]
-      ).catch(() => [[]]),
+      resolverVigenciaLetiva(escolaId),
       db.query(
         `SELECT id, LOWER(turno) AS turno, status, version, descricao,
+                published_at, updated_at,
                 DATE_FORMAT(published_at, '%d/%m/%Y %H:%i') AS publicado_em,
                 DATE_FORMAT(updated_at, '%d/%m/%Y %H:%i') AS atualizado_em
            FROM grade_resultado
@@ -905,11 +904,17 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
       ),
     ]);
 
+    const horariosReaisInfo = await resolverHorariosReaisPorTurno(
+      escolaId,
+      vigencia?.ano_letivo,
+      db
+    );
+
     const diasSemana = (() => {
       const parsed = parseJsonColumn(cfgRow?.dias_semana);
       return Array.isArray(parsed) && parsed.length ? parsed.map(Number) : [1, 2, 3, 4, 5];
     })();
-    const periodosCfg = (() => {
+    const periodosCfgRaw = (() => {
       try {
         if (!cfgRow?.periodos) return {};
         return typeof cfgRow.periodos === "string" ? JSON.parse(cfgRow.periodos) : cfgRow.periodos;
@@ -917,23 +922,16 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
         return {};
       }
     })();
+    const regrasGeraisCfg = periodosCfgRaw?._regras_gerais || {};
+    const periodosCfg = { ...periodosCfgRaw };
+    delete periodosCfg._regras_gerais;
 
-    // Mapa de horários por turno e ordem
-    const horariosBasePorTurno = {};
-    for (const gb of gradeBaseRows || []) {
-      const t = String(gb.turno || "").toLowerCase();
-      if (!horariosBasePorTurno[t]) horariosBasePorTurno[t] = {};
-      if (!horariosBasePorTurno[t][gb.ordem]) {
-        horariosBasePorTurno[t][gb.ordem] = {
-          ordem: Number(gb.ordem),
-          inicio: gb.inicio,
-          fim: gb.fim,
-        };
-      }
-    }
+    // Mapa unificado de horários por turno e ordem (Governança -> grade_base)
+    const horariosBasePorTurno = horariosReaisInfo.horarios_por_turno || {};
+    const intervalosReaisPorTurno = horariosReaisInfo.intervalos_por_turno || {};
 
     // 5) Seleciona o melhor resultado por turno para este professor:
-    // Prioriza 'publicado' se contiver aulas do professor; caso contrário, usa 'rascunho' se existir
+    // Para docentes comuns prioriza estritamente 'publicado' se existir; gestão também pode inspecionar 'rascunho'
     const resIds = (resultadosRows || []).map((r) => Number(r.id)).filter(Boolean);
     let allProfSlots = [];
     if (resIds.length > 0 && profIds.length > 0) {
@@ -982,9 +980,18 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
     }
 
     const turnosOut = {};
+    const turnosArray = [];
     const flatSlotsOut = [];
 
-    for (const [turnoKey, candList] of resultadosPorTurno.entries()) {
+    const ordemTurnos = ["matutino", "vespertino", "integral", "noturno"];
+    const chavesOrdenadas = Array.from(resultadosPorTurno.keys()).sort((a, b) => {
+      const ia = ordemTurnos.indexOf(a);
+      const ib = ordemTurnos.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+
+    for (const turnoKey of chavesOrdenadas) {
+      const candList = resultadosPorTurno.get(turnoKey) || [];
       const pubRes = candList.find((c) => c.status === "publicado");
       const draftRes = candList.find((c) => c.status === "rascunho");
 
@@ -996,31 +1003,58 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
       if (pubRes && pubSlots.length > 0) {
         chosenRes = pubRes;
         chosenSlots = pubSlots;
-      } else if (draftRes && draftSlots.length > 0) {
+      } else if (isGestao && draftRes && draftSlots.length > 0) {
         chosenRes = draftRes;
         chosenSlots = draftSlots;
-      } else if (pubRes) {
-        chosenRes = pubRes;
-        chosenSlots = [];
-      } else if (draftRes) {
+      } else if (!pubRes && draftRes && draftSlots.length > 0) {
         chosenRes = draftRes;
-        chosenSlots = [];
+        chosenSlots = draftSlots;
       }
 
-      if (!chosenRes) continue;
+      if (!chosenRes || chosenSlots.length === 0) continue;
 
-      const periodosPorDia = Number(periodosCfg?.[turnoKey]) || (turnoKey === "noturno" ? 5 : 6);
+      const maxSlotOrd = chosenSlots.reduce((mx, s) => Math.max(mx, Number(s.ordem) || 0), 0);
+      const periodosPorDia = Math.max(
+        Number(periodosCfg?.[turnoKey]) || (turnoKey === "noturno" ? 5 : 6),
+        maxSlotOrd
+      );
+
+      const intervaloReal = intervalosReaisPorTurno[turnoKey] || null;
+      const recreioWizard =
+        regrasGeraisCfg?.recreio_apos_periodo?.[turnoKey] !== undefined
+          ? Number(regrasGeraisCfg.recreio_apos_periodo[turnoKey])
+          : null;
+      const intervaloApos =
+        intervaloReal?.apos_periodo ??
+        (recreioWizard != null ? recreioWizard : turnoKey === "noturno" ? 3 : 3);
+
+      const periodosLista = Array.from({ length: periodosPorDia }, (_, idx) => {
+        const ord = idx + 1;
+        const h = horariosBasePorTurno[turnoKey]?.[ord] || null;
+        return {
+          ordem: ord,
+          rotulo: `${ord}ª Aula`,
+          inicio: h?.inicio || null,
+          fim: h?.fim || null,
+        };
+      });
+
       const enrichedSlots = chosenSlots.map((s) => {
-        const hInfo = horariosBasePorTurno[turnoKey]?.[s.ordem] || null;
+        const ordNum = Number(s.ordem);
+        const diaNum = Number(s.dia);
+        const hInfo = horariosBasePorTurno[turnoKey]?.[ordNum] || null;
         return {
           turno: turnoKey,
           status_grade: chosenRes.status,
           turma_id: Number(s.turma_id),
           turma_nome: s.turma_nome || `Turma ${s.turma_id}`,
+          serie: s.turma_serie || "",
           turma_serie: s.turma_serie || "",
           turma_etapa: s.turma_etapa || "",
-          dia: Number(s.dia),
-          ordem: Number(s.ordem),
+          dia: diaNum,
+          dia_semana: diaNum,
+          ordem: ordNum,
+          periodo_ordem: ordNum,
           disciplina_id: Number(s.disciplina_id),
           disciplina_nome: s.disciplina_nome || `Disc. ${s.disciplina_id}`,
           disciplina_sigla: s.disciplina_sigla || "",
@@ -1032,19 +1066,30 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
         };
       });
 
-      if (enrichedSlots.length > 0) {
-        turnosOut[turnoKey] = {
-          turno: turnoKey,
-          resultado_id: chosenRes.id,
-          status: chosenRes.status,
-          version: chosenRes.version || 1,
-          publicado_em: chosenRes.publicado_em || chosenRes.atualizado_em || null,
-          periodos_por_dia: periodosPorDia,
-          horarios_periodos: horariosBasePorTurno[turnoKey] || {},
-          slots: enrichedSlots,
-        };
-        flatSlotsOut.push(...enrichedSlots);
-      }
+      const turnoPayload = {
+        turno: turnoKey,
+        resultado_id: chosenRes.id,
+        status: chosenRes.status,
+        version: chosenRes.version || 1,
+        updated_at: chosenRes.published_at || chosenRes.updated_at || null,
+        publicado_em: chosenRes.publicado_em || chosenRes.atualizado_em || null,
+        dias_semana: diasSemana,
+        periodos_por_dia: periodosPorDia,
+        periodos: periodosLista,
+        horarios_periodos: horariosBasePorTurno[turnoKey] || {},
+        intervalo: {
+          apos_periodo: intervaloApos,
+          inicio: intervaloReal?.inicio || null,
+          fim: intervaloReal?.fim || null,
+          duracao_min: intervaloReal?.duracao_min || null,
+        },
+        total_aulas: enrichedSlots.length,
+        slots: enrichedSlots,
+      };
+
+      turnosOut[turnoKey] = turnoPayload;
+      turnosArray.push(turnoPayload);
+      flatSlotsOut.push(...enrichedSlots);
     }
 
     return res.json({
@@ -1054,11 +1099,14 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
         nome: escolaRow?.nome || "Unidade Escolar",
         apelido: escolaRow?.apelido || "",
       },
+      vigencia,
       professor: professorPrincipal,
       professores_escola: professoresEscola,
       is_gestao: isGestao,
       dias_semana: diasSemana,
-      turnos: turnosOut,
+      total_aulas_semanais: flatSlotsOut.length,
+      turnos: turnosArray,
+      turnos_map: turnosOut,
       slots: flatSlotsOut,
     });
   } catch (e) {
