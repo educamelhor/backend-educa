@@ -11,6 +11,12 @@
 //  - removeDraftSlot(pool, { escolaId, turno, turma_id, dia, ordem })
 // -----------------------------------------------------------------------------
 
+import {
+  ensureGradeSlotMultiTurmaSupport,
+  carregarParesTurmasUnidasPermitidas,
+  saoTurmasUnidasPermitidas,
+} from "./solverEtapa3Helper.js";
+
 function normTurno(t) {
   return String(t || "").trim().toLowerCase();
 }
@@ -125,8 +131,10 @@ async function ensureTurmaNoEscopoConn(conn, { resultadoId, turmaId }) {
 export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, slots }) {
   const conn = await pool.getConnection();
   try {
+    await ensureGradeSlotMultiTurmaSupport(conn);
     await conn.beginTransaction();
     const turnoNorm = normTurno(turno);
+    const paresUnidosSet = await carregarParesTurmasUnidasPermitidas(conn, escolaId, turnoNorm);
 
     // Reutiliza cabeçalho de rascunho existente (ou cria se não existir),
     // preservando horários manuais (locked=1) de outras turmas que não estejam no escopo atual
@@ -181,7 +189,7 @@ export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, sl
         throw new Error("Slot inválido: campos obrigatórios ausentes.");
       }
 
-      // PASSO 3.2.6 — H2 no rascunho completo também (mesma regra)
+      // PASSO 3.2.6 + ETAPA 3 — H2 no rascunho completo (permite turmas unidas autorizadas em blocos simultâneos)
       const [conf] = await conn.query(
         `
         SELECT turma_id
@@ -191,11 +199,14 @@ export async function upsertRascunhoCompleto(pool, { escolaId, turno, turmas, sl
            AND dia_semana = ?
            AND periodo_ordem = ?
            AND NOT (turma_id = ? AND dia_semana = ? AND periodo_ordem = ?)
-         LIMIT 1
         `,
         [resultadoId, professor_id, dia, ordem, turma_id, dia, ordem]
       );
-      if (conf?.[0]?.turma_id) {
+      const explicitUnidas = Boolean(s.permitir_turmas_unidas || s.bloco_simultaneo_id);
+      const hasRealProfConflict = (conf || []).some(
+        (c) => !saoTurmasUnidasPermitidas(paresUnidosSet, turma_id, c.turma_id, explicitUnidas)
+      );
+      if (hasRealProfConflict) {
         throw makeDupEntryError("Conflito: choque de turma/professor no mesmo dia/período.");
       }
 
@@ -384,28 +395,26 @@ export async function upsertDraftSlot(
     professor_id,
     origem = "manual",
     locked = false,
+    permitir_turmas_unidas = false,
   }
 ) {
   // ---------------------------------------------------------------------------
-  // PASSO 3.2.6 (reforçado) — Executa a regra H2 em transação, reduzindo race.
+  // PASSO 3.2.6 (reforçado) + ETAPA 3 — Executa H2 respeitando Turmas Unidas.
   // ---------------------------------------------------------------------------
   const conn = await pool.getConnection();
   try {
+    await ensureGradeSlotMultiTurmaSupport(conn);
     await conn.beginTransaction();
 
     const resultadoId = await ensureRascunhoConn(conn, { escolaId, turno });
     await ensureTurmaNoEscopoConn(conn, { resultadoId, turmaId: turma_id });
+    const paresUnidosSet = await carregarParesTurmasUnidasPermitidas(conn, escolaId, turno);
 
     const profId = Number(professor_id);
     const diaNum = Number(dia);
     const ordemNum = Number(ordem);
     const turmaId = Number(turma_id);
 
-    // -------------------------------------------------------------------------
-    // H2: Conflito de professor no mesmo (dia, ordem) em outra turma
-    // - Usamos FOR UPDATE para evitar que dois inserts simultâneos passem juntos.
-    // - Se seu MySQL estiver em MyISAM/sem suporte, ele ignora; ainda assim a checagem funciona.
-    // -------------------------------------------------------------------------
     const [profConflict] = await conn.query(
       `
       SELECT turma_id
@@ -415,13 +424,15 @@ export async function upsertDraftSlot(
          AND dia_semana = ?
          AND periodo_ordem = ?
          AND NOT (turma_id = ? AND dia_semana = ? AND periodo_ordem = ?)
-       LIMIT 1
        FOR UPDATE
       `,
       [resultadoId, profId, diaNum, ordemNum, turmaId, diaNum, ordemNum]
     );
 
-    if (profConflict?.[0]?.turma_id) {
+    const hasRealConflict = (profConflict || []).some(
+      (c) => !saoTurmasUnidasPermitidas(paresUnidosSet, turmaId, c.turma_id, Boolean(permitir_turmas_unidas))
+    );
+    if (hasRealConflict) {
       throw makeDupEntryError("Conflito: choque de turma/professor no mesmo dia/período.");
     }
 

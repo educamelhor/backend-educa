@@ -1,4 +1,4 @@
-﻿// src/features/secretaria/horarios/solverEngine.js
+// src/features/secretaria/horarios/solverEngine.js
 // ============================================================================
 // MOTOR SOLVER 2.0 (Urânia-Engine) — Web Worker + Multi-Start + Kempe Chains + Tabu Search
 // Executa 100% em background thread no navegador do usuário (sem timeout HTTP),
@@ -40,7 +40,7 @@ function solverWorkerBootstrap(workerScope) {
     return out;
   }
 
-  function buildDisponibilidadeIndex(disponibilidades, diasList, periodosPorDia) {
+  function buildDisponibilidadeIndex(disponibilidades, diasList, periodosPorDia, restricoesInterturno = null, regrasGerais = null) {
     const idx = new Map();
     const list = Array.isArray(disponibilidades) ? disponibilidades : [];
 
@@ -62,16 +62,152 @@ function solverWorkerBootstrap(workerScope) {
         }
       }
     }
+
+    idx._interturno = buildInterturnoIndex(restricoesInterturno, regrasGerais, diasList, periodosPorDia);
     return idx;
   }
 
-  function professorPode(dispoIdx, professorId, dia, periodo) {
+  function buildInterturnoIndex(restricoesInterturno, regrasGerais, diasList, periodosPorDia) {
+    const cfgRaw = regrasGerais?.interturno_regras || restricoesInterturno?.regras || {};
+    const ativo = cfgRaw.ativo !== false;
+    const interjornadaMinHoras =
+      cfgRaw.interjornada_min_horas !== undefined && cfgRaw.interjornada_min_horas !== null
+        ? Math.max(0, Number(cfgRaw.interjornada_min_horas) || 0)
+        : 11;
+    const interjornadaMinMinutos = Math.round(interjornadaMinHoras * 60);
+    const interjornadaModo = cfgRaw.interjornada_modo === "soft" ? "soft" : "hard";
+    const transicaoMin =
+      cfgRaw.transicao_turno_min_minutos !== undefined && cfgRaw.transicao_turno_min_minutos !== null
+        ? Math.max(0, Number(cfgRaw.transicao_turno_min_minutos) || 0)
+        : 30;
+    const transicaoModo = cfgRaw.transicao_turno_modo === "hard" ? "hard" : "soft";
+    const maxAulasDiaCpf =
+      cfgRaw.max_aulas_dia_cpf !== undefined && cfgRaw.max_aulas_dia_cpf !== null
+        ? Math.max(0, toInt(cfgRaw.max_aulas_dia_cpf, 12))
+        : 12;
+    const maxAulasDiaModo = cfgRaw.max_aulas_dia_modo === "soft" ? "soft" : "hard";
+
+    const hardMap = new Map();
+    const softMap = new Map();
+    const cargaOutrosPorDia = new Map();
+
+    if (!ativo || !restricoesInterturno) {
+      return { ativo: false, hardMap, softMap, cargaOutrosPorDia, maxAulasDiaCpf: 0, maxAulasDiaModo };
+    }
+
+    const rawCarga = restricoesInterturno.carga_outros_turnos_por_dia || {};
+    for (const [pIdStr, diasObj] of Object.entries(rawCarga)) {
+      const pId = toInt(pIdStr, 0);
+      if (!pId || !diasObj) continue;
+      for (const [dStr, qtd] of Object.entries(diasObj)) {
+        const d = toInt(dStr, 0);
+        const c = toInt(qtd, 0);
+        if (d && c > 0) cargaOutrosPorDia.set(`${pId}|${d}`, c);
+      }
+    }
+
+    const rawSlots = Array.isArray(restricoesInterturno)
+      ? restricoesInterturno
+      : Array.isArray(restricoesInterturno.slots)
+      ? restricoesInterturno.slots
+      : [];
+    for (const s of rawSlots) {
+      const pId = toInt(s?.professor_id, 0);
+      const dia = toInt(s?.dia, 0);
+      const per = toInt(s?.ordem ?? s?.periodo, 0);
+      if (!pId || !dia || !per) continue;
+      if (!diasList.includes(dia) || per < 1 || per > periodosPorDia) continue;
+
+      const motivo = String(s?.motivo || "INTERJORNADA_CLT");
+      let effStatus = null;
+
+      if (motivo === "SOBREPOSICAO_INTERTURNO") {
+        effStatus = "bloqueado";
+      } else if (motivo === "INTERJORNADA_CLT") {
+        if (interjornadaMinMinutos <= 0) continue;
+        if (s?.descanso_minutos != null && Number(s.descanso_minutos) >= interjornadaMinMinutos) continue;
+        effStatus = interjornadaModo === "hard" ? "bloqueado" : "evitar";
+      } else if (motivo === "TRANSICAO_TURNO") {
+        if (transicaoMin <= 0) continue;
+        if (s?.descanso_minutos != null && Number(s.descanso_minutos) >= transicaoMin) continue;
+        effStatus = transicaoModo === "hard" ? "bloqueado" : "evitar";
+      } else {
+        effStatus = s?.status === "bloqueado" ? "bloqueado" : "evitar";
+      }
+
+      const key = `${pId}|${dia}|${per}`;
+      if (effStatus === "bloqueado") {
+        hardMap.set(key, s);
+        softMap.delete(key);
+      } else if (effStatus === "evitar" && !hardMap.has(key)) {
+        softMap.set(key, s);
+      }
+    }
+
+    return {
+      ativo: true,
+      hardMap,
+      softMap,
+      cargaOutrosPorDia,
+      maxAulasDiaCpf,
+      maxAulasDiaModo,
+    };
+  }
+
+  function professorBloqueadoPorInterturno(dispoIdx, professorId, dia, periodo) {
+    const it = dispoIdx?._interturno;
+    if (!it || !it.ativo || it.hardMap.size === 0) return false;
+    return it.hardMap.has(`${professorId}|${dia}|${periodo}`);
+  }
+
+  function professorEvitaInterturno(dispoIdx, professorId, dia, periodo) {
+    const it = dispoIdx?._interturno;
+    if (!it || !it.ativo || it.softMap.size === 0) return false;
+    return it.softMap.has(`${professorId}|${dia}|${periodo}`);
+  }
+
+  function countProfLessonsInDay(profGrade, dia) {
+    const row = profGrade?.[dia];
+    if (!row) return 0;
+    let c = 0;
+    for (const k of Object.keys(row)) {
+      if (row[k]) c++;
+    }
+    return c;
+  }
+
+  function canProfRespectDailyCpfCap(dispoIdx, profGrade, professorId, dia, additionalLessons = 1) {
+    const it = dispoIdx?._interturno;
+    if (!it || !it.ativo || !it.maxAulasDiaCpf || it.maxAulasDiaModo !== "hard") return true;
+    const outros = it.cargaOutrosPorDia.get(`${professorId}|${dia}`) || 0;
+    if (outros === 0 && additionalLessons <= it.maxAulasDiaCpf && countProfLessonsInDay(profGrade, dia) + additionalLessons <= it.maxAulasDiaCpf) {
+      return true;
+    }
+    const inShift = countProfLessonsInDay(profGrade, dia);
+    return outros + inShift + additionalLessons <= it.maxAulasDiaCpf;
+  }
+
+  function exceedsSoftDailyCpfCap(dispoIdx, profGrade, professorId, dia) {
+    const it = dispoIdx?._interturno;
+    if (!it || !it.ativo || !it.maxAulasDiaCpf || it.maxAulasDiaModo !== "soft") return false;
+    const outros = it.cargaOutrosPorDia.get(`${professorId}|${dia}`) || 0;
+    const inShift = countProfLessonsInDay(profGrade, dia);
+    return outros + inShift + 1 > it.maxAulasDiaCpf;
+  }
+
+  function professorPodeDispoPura(dispoIdx, professorId, dia, periodo) {
     if (!dispoIdx || dispoIdx.size === 0) return true;
     return dispoIdx.get(`${professorId}|${dia}|${periodo}`) !== "indisponivel";
   }
 
+  function professorPode(dispoIdx, professorId, dia, periodo) {
+    if (!professorPodeDispoPura(dispoIdx, professorId, dia, periodo)) return false;
+    if (professorBloqueadoPorInterturno(dispoIdx, professorId, dia, periodo)) return false;
+    return true;
+  }
+
   function professorEvita(dispoIdx, professorId, dia, periodo) {
-    if (!dispoIdx || dispoIdx.size === 0) return false;
+    if (!dispoIdx) return false;
     return dispoIdx.get(`${professorId}|${dia}|${periodo}`) === "evitar";
   }
 
@@ -80,7 +216,8 @@ function solverWorkerBootstrap(workerScope) {
     for (const d of diasList) {
       for (let p = 1; p <= periodosPorDia; p++) {
         if (professorPode(dispoIdx, professorId, d, p)) {
-          available += professorEvita(dispoIdx, professorId, d, p) ? 0.5 : 1;
+          const softPenalty = professorEvita(dispoIdx, professorId, d, p) || professorEvitaInterturno(dispoIdx, professorId, d, p);
+          available += softPenalty ? 0.5 : 1;
         }
       }
     }
@@ -188,6 +325,213 @@ function solverWorkerBootstrap(workerScope) {
       map.get(d2).add(d1);
     }
     return map;
+  }
+
+  function buildRecursosFisicosIndex(regrasGerais, payloadRecursos = null) {
+    if (regrasGerais && regrasGerais._recursosFisicosIdx) {
+      return regrasGerais._recursosFisicosIdx;
+    }
+    const rawList = Array.isArray(regrasGerais?.recursos_fisicos)
+      ? regrasGerais.recursos_fisicos
+      : Array.isArray(payloadRecursos)
+      ? payloadRecursos
+      : [];
+
+    const list = [];
+    const hardList = [];
+    const byDisc = new Map();
+
+    for (let i = 0; i < rawList.length; i++) {
+      const r = rawList[i];
+      if (!r || r.ativo === false) continue;
+      const discIds = Array.isArray(r.disciplina_ids)
+        ? uniq(r.disciplina_ids.map(x => toInt(x, 0)).filter(Boolean))
+        : [];
+      if (discIds.length === 0) continue;
+      const rec = {
+        id: String(r.id || `rec_${i + 1}`),
+        nome: String(r.nome || `Sala ${i + 1}`),
+        capacidade: Math.max(1, toInt(r.capacidade, 1)),
+        modo: r.modo === "soft" ? "soft" : "hard",
+        discSet: new Set(discIds),
+      };
+      list.push(rec);
+      if (rec.modo === "hard") hardList.push(rec);
+      for (const dId of discIds) {
+        if (!byDisc.has(dId)) byDisc.set(dId, []);
+        byDisc.get(dId).push(rec);
+      }
+    }
+
+    const idx = { list, hardList, byDisc };
+    if (regrasGerais && typeof regrasGerais === "object") {
+      regrasGerais._recursosFisicosIdx = idx;
+    }
+    return idx;
+  }
+
+  function countRecursoUsageAt(gradePorTurma, rec, dia, periodo, ignoreTurmaId = 0, candidateUnitedRoomKey = null) {
+    if (!gradePorTurma || !rec) return 0;
+    let used = 0;
+    const seenUnitedKeys = new Set();
+    let sharesExistingUnitedRoom = false;
+
+    for (const [tIdStr, tGrade] of Object.entries(gradePorTurma)) {
+      const tId = toInt(tIdStr, 0);
+      if (!tId || tId === ignoreTurmaId) continue;
+      const cell = tGrade?.[dia]?.[periodo];
+      if (!cell || !cell.disciplina_id) continue;
+      if (!rec.discSet.has(toInt(cell.disciplina_id, 0))) continue;
+
+      const uKey = cell.united_room_key || null;
+      if (uKey) {
+        if (candidateUnitedRoomKey && uKey === candidateUnitedRoomKey) {
+          sharesExistingUnitedRoom = true;
+        }
+        if (seenUnitedKeys.has(uKey)) continue;
+        seenUnitedKeys.add(uKey);
+      }
+      used++;
+    }
+
+    return sharesExistingUnitedRoom ? -1 : used;
+  }
+
+  function canUseRecursosFisicosAt(
+    gradePorTurma,
+    regrasGerais,
+    dia,
+    periodo,
+    disciplinaId,
+    ignoreTurmaId = 0,
+    candidateUnitedRoomKey = null,
+    strict = true
+  ) {
+    if (!strict || !regrasGerais) return true;
+    const idx = buildRecursosFisicosIndex(regrasGerais);
+    if (!idx || idx.list.length === 0) return true;
+    const recs = idx.byDisc.get(toInt(disciplinaId, 0));
+    if (!recs || recs.length === 0) return true;
+
+    for (const rec of recs) {
+      if (rec.modo !== "hard") continue;
+      const used = countRecursoUsageAt(gradePorTurma, rec, dia, periodo, ignoreTurmaId, candidateUnitedRoomKey);
+      if (used >= 0 && used >= rec.capacidade) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function areRecursosFisicosValidInDays(gradePorTurma, regrasGerais, diasToCheck, periodosPorDia, strict = true) {
+    if (!strict || !regrasGerais) return true;
+    const idx = buildRecursosFisicosIndex(regrasGerais);
+    if (!idx || idx.hardList.length === 0) return true;
+
+    for (const d of diasToCheck) {
+      for (let p = 1; p <= periodosPorDia; p++) {
+        for (const rec of idx.hardList) {
+          let used = 0;
+          let allLocked = true;
+          const seenUnitedKeys = new Set();
+
+          for (const [, tGrade] of Object.entries(gradePorTurma)) {
+            const cell = tGrade?.[d]?.[p];
+            if (!cell || !cell.disciplina_id) continue;
+            if (!rec.discSet.has(toInt(cell.disciplina_id, 0))) continue;
+            if (!cell.locked) allLocked = false;
+            const uKey = cell.united_room_key || null;
+            if (uKey) {
+              if (seenUnitedKeys.has(uKey)) continue;
+              seenUnitedKeys.add(uKey);
+            }
+            used++;
+          }
+
+          if (used > rec.capacidade && !allLocked) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  function resolveBlocosSimultaneosEngine(payload, regrasGerais, demandasAjustadas, turmaIds, turno) {
+    const turnoKey = String(turno || "matutino").trim().toLowerCase();
+    const turmaSet = new Set((turmaIds || []).map(Number));
+    const demByPair = new Map();
+    for (const d of demandasAjustadas || []) {
+      const k = `${d.turma_id}|${d.disciplina_id}`;
+      if (!demByPair.has(k)) demByPair.set(k, d);
+    }
+
+    const rawSources = [];
+    if (Array.isArray(payload?.blocos_simultaneos) && payload.blocos_simultaneos.length > 0) {
+      rawSources.push(...payload.blocos_simultaneos);
+    } else if (Array.isArray(regrasGerais?.blocos_simultaneos) && regrasGerais.blocos_simultaneos.length > 0) {
+      rawSources.push(...regrasGerais.blocos_simultaneos);
+    }
+    if (rawSources.length === 0) return [];
+
+    const out = [];
+    const seenIds = new Set();
+
+    for (let i = 0; i < rawSources.length; i++) {
+      const b = rawSources[i];
+      if (!b || b.ativo === false) continue;
+      if (b.turno && String(b.turno).trim().toLowerCase() !== turnoKey) continue;
+      const bId = String(b.id || `bloco_${i + 1}`);
+      if (seenIds.has(bId)) continue;
+      seenIds.add(bId);
+
+      const itemPorTurma = new Map();
+      if (Array.isArray(b.itens) && b.itens.length > 0) {
+        for (const it of b.itens) {
+          const tid = toInt(it?.turma_id, 0);
+          const did = toInt(it?.disciplina_id, 0);
+          if (!tid || !did || (turmaSet.size > 0 && !turmaSet.has(tid))) continue;
+          const demRef = demByPair.get(`${tid}|${did}`);
+          if (!demRef) continue;
+          if (!itemPorTurma.has(tid)) itemPorTurma.set(tid, demRef);
+        }
+      }
+
+      const tIds = Array.isArray(b.turma_ids) ? b.turma_ids.map(x => toInt(x, 0)).filter(Boolean) : [];
+      const dIds = Array.isArray(b.disciplina_ids) ? b.disciplina_ids.map(x => toInt(x, 0)).filter(Boolean) : [];
+      for (const tid of tIds) {
+        if (turmaSet.size > 0 && !turmaSet.has(tid)) continue;
+        if (itemPorTurma.has(tid)) continue;
+        for (const did of dIds) {
+          const demRef = demByPair.get(`${tid}|${did}`);
+          if (demRef) {
+            itemPorTurma.set(tid, demRef);
+            break;
+          }
+        }
+      }
+
+      const demandasBloco = Array.from(itemPorTurma.values());
+      if (demandasBloco.length < 2) continue;
+
+      const minSemanal = Math.min(...demandasBloco.map(d => d.aulas_semanais || 0));
+      const metaSinc =
+        toInt(b.aulas_sincronizadas, 0) > 0
+          ? Math.min(toInt(b.aulas_sincronizadas, 0), minSemanal)
+          : minSemanal;
+      if (metaSinc <= 0) continue;
+
+      out.push({
+        id: bId,
+        nome: String(b.nome || `Super-Aula ${i + 1}`),
+        permitir_mesmo_prof_simultaneo: b.permitir_mesmo_prof_simultaneo !== false,
+        modo: b.modo === "soft" ? "soft" : "hard",
+        aulas_sincronizadas: metaSinc,
+        demandas: demandasBloco,
+      });
+    }
+
+    return out;
   }
 
   /**
@@ -484,6 +828,42 @@ function solverWorkerBootstrap(workerScope) {
           }
         }
       }
+
+      if (regrasGerais?._gradePorTurmaRef) {
+        if (
+          !areRecursosFisicosValidInDays(
+            regrasGerais._gradePorTurmaRef,
+            regrasGerais,
+            [dia],
+            periodosPorDia,
+            strictPedagogical
+          )
+        ) {
+          return false;
+        }
+      }
+
+      if (regrasGerais?._dispoIdxRef && regrasGerais?._gradePorProfessorRef) {
+        const checkedProfs = new Set();
+        for (let p = 1; p <= periodosPorDia; p++) {
+          const cell = row[p];
+          if (!cell || cell.locked || !cell.professor_id) continue;
+          const pId = Number(cell.professor_id);
+          if (checkedProfs.has(pId)) continue;
+          checkedProfs.add(pId);
+          if (
+            !canProfRespectDailyCpfCap(
+              regrasGerais._dispoIdxRef,
+              regrasGerais._gradePorProfessorRef[pId],
+              pId,
+              dia,
+              0
+            )
+          ) {
+            return false;
+          }
+        }
+      }
     }
 
     return true;
@@ -508,6 +888,26 @@ function solverWorkerBootstrap(workerScope) {
 
     if (professorEvita(dispoIdx, professorId, dia, periodo)) {
       score += 1800;
+    }
+    if (professorEvitaInterturno(dispoIdx, professorId, dia, periodo)) {
+      score += 28000;
+    }
+    if (exceedsSoftDailyCpfCap(dispoIdx, profGrade, professorId, dia)) {
+      score += 25000;
+    }
+    if (regrasGerais?._gradePorTurmaRef) {
+      const recIdx = buildRecursosFisicosIndex(regrasGerais);
+      const recs = recIdx?.byDisc?.get(toInt(disciplinaId, 0));
+      if (recs && recs.length > 0) {
+        for (const rec of recs) {
+          const used = countRecursoUsageAt(regrasGerais._gradePorTurmaRef, rec, dia, periodo, 0, null);
+          if (rec.modo === "soft" && used >= rec.capacidade) {
+            score += 32000 + (used - rec.capacidade + 1) * 8000;
+          } else if (used > 0) {
+            score += used * 18;
+          }
+        }
+      }
     }
 
     const turmaDayCount = Object.values(turmaGrade?.[dia] || {}).filter(Boolean).length;
@@ -907,9 +1307,15 @@ function solverWorkerBootstrap(workerScope) {
     return out;
   }
 
+  function isCellProtected(cell) {
+    return Boolean(cell && (cell.locked || cell.locked_simultaneo));
+  }
+
   function isCellLocked(gradePorTurma, gradePorProfessor, turmaId, profId, d, p) {
-    if (turmaId && gradePorTurma?.[turmaId]?.[d]?.[p]?.locked) return true;
-    if (profId && gradePorProfessor?.[profId]?.[d]?.[p]?.locked) return true;
+    const cT = turmaId ? gradePorTurma?.[turmaId]?.[d]?.[p] : null;
+    if (cT && (cT.locked || cT.locked_simultaneo)) return true;
+    const cP = profId ? gradePorProfessor?.[profId]?.[d]?.[p] : null;
+    if (cP && (cP.locked || cP.locked_simultaneo)) return true;
     return false;
   }
 
@@ -921,17 +1327,53 @@ function solverWorkerBootstrap(workerScope) {
       }
     }
     if (gradePorTurma[turmaId]?.[d]) gradePorTurma[turmaId][d][p] = null;
-    if (gradePorProfessor[profId]?.[d]) gradePorProfessor[profId][d][p] = null;
+
+    const cellP = gradePorProfessor?.[profId]?.[d]?.[p];
+    if (cellP) {
+      if (Array.isArray(cellP.turmas_unidas) && cellP.turmas_unidas.length > 1) {
+        const restantes = cellP.turmas_unidas.filter(x => Number(x) !== Number(turmaId));
+        if (restantes.length === 0) {
+          gradePorProfessor[profId][d][p] = null;
+        } else {
+          const leadTurma = restantes[0];
+          const leadCell = gradePorTurma?.[leadTurma]?.[d]?.[p];
+          gradePorProfessor[profId][d][p] = {
+            ...cellP,
+            turma_id: leadTurma,
+            disciplina_id: leadCell?.disciplina_id ?? cellP.disciplina_id,
+            turmas_unidas: restantes,
+          };
+        }
+      } else {
+        gradePorProfessor[profId][d][p] = null;
+      }
+    }
   }
 
-  function setSlot(gradePorTurma, gradePorProfessor, turmaId, profId, d, p, discId, locked = false, coProfessores = []) {
+  function setSlot(
+    gradePorTurma,
+    gradePorProfessor,
+    turmaId,
+    profId,
+    d,
+    p,
+    discId,
+    locked = false,
+    coProfessores = [],
+    extraMeta = null
+  ) {
     ensurePath(gradePorTurma, turmaId, d);
     ensurePath(gradePorProfessor, profId, d);
     const cellT = { disciplina_id: discId, professor_id: profId };
-    const cellP = { turma_id: turmaId, disciplina_id: discId };
     if (locked) {
       cellT.locked = true;
-      cellP.locked = true;
+    }
+    if (extraMeta && typeof extraMeta === "object") {
+      if (extraMeta.bloco_simultaneo_id) cellT.bloco_simultaneo_id = extraMeta.bloco_simultaneo_id;
+      if (extraMeta.bloco_simultaneo_nome) cellT.bloco_simultaneo_nome = extraMeta.bloco_simultaneo_nome;
+      if (extraMeta.locked_simultaneo) cellT.locked_simultaneo = true;
+      if (extraMeta.permitir_turmas_unidas) cellT.permitir_turmas_unidas = true;
+      if (extraMeta.united_room_key) cellT.united_room_key = extraMeta.united_room_key;
     }
     if (Array.isArray(coProfessores) && coProfessores.length > 0) {
       cellT.co_professores = coProfessores;
@@ -942,11 +1384,393 @@ function solverWorkerBootstrap(workerScope) {
           disciplina_id: discId,
           co_docencia: true,
           ...(locked ? { locked: true } : {}),
+          ...(extraMeta?.locked_simultaneo ? { locked_simultaneo: true } : {}),
         };
       }
     }
     gradePorTurma[turmaId][d][p] = cellT;
-    gradePorProfessor[profId][d][p] = cellP;
+
+    const prevP = gradePorProfessor[profId][d][p];
+    if (
+      prevP &&
+      Number(prevP.turma_id) !== Number(turmaId) &&
+      ((locked && prevP.locked) ||
+        (extraMeta?.permitir_turmas_unidas &&
+          extraMeta?.bloco_simultaneo_id &&
+          prevP.bloco_simultaneo_id === extraMeta.bloco_simultaneo_id))
+    ) {
+      const unidas = uniq([...(prevP.turmas_unidas || [Number(prevP.turma_id)]), Number(turmaId)]);
+      gradePorProfessor[profId][d][p] = {
+        ...prevP,
+        turmas_unidas: unidas,
+        permitir_turmas_unidas: true,
+        ...(locked ? { locked: true } : {}),
+        ...(extraMeta?.locked_simultaneo ? { locked_simultaneo: true } : {}),
+        ...(extraMeta?.bloco_simultaneo_id ? { bloco_simultaneo_id: extraMeta.bloco_simultaneo_id } : {}),
+      };
+      // Sincroniza `turmas_unidas` e `united_room_key` nas células de turma participantes
+      const sharedRoomKey = extraMeta?.united_room_key || `united_${profId}_${d}_${p}`;
+      for (const utId of unidas) {
+        const utCell = gradePorTurma?.[utId]?.[d]?.[p];
+        if (utCell && Number(utCell.professor_id) === Number(profId)) {
+          utCell.permitir_turmas_unidas = true;
+          utCell.turmas_unidas = unidas;
+          if (!utCell.united_room_key) utCell.united_room_key = sharedRoomKey;
+        }
+      }
+    } else {
+      const cellP = {
+        turma_id: turmaId,
+        disciplina_id: discId,
+        ...(locked ? { locked: true } : {}),
+        ...(extraMeta?.locked_simultaneo ? { locked_simultaneo: true } : {}),
+        ...(extraMeta?.bloco_simultaneo_id ? { bloco_simultaneo_id: extraMeta.bloco_simultaneo_id } : {}),
+        ...(extraMeta?.permitir_turmas_unidas ? { permitir_turmas_unidas: true } : {}),
+      };
+      gradePorProfessor[profId][d][p] = cellP;
+    }
+  }
+
+  /**
+   * FASE -1 (ETAPA 3 — Super-Aulas Simultâneas de IFA / Eletivas / Turmas Unidas):
+   * Aloca de forma 100% sincronizada todas as turmas participantes de cada `bloco_simultaneo`
+   * exatamente no mesmo `(dia, período)`, respeitando:
+   *  - Aulas fixas manuais pré-existentes (`📌`) em qualquer turma do bloco
+   *  - Turmas Unidas (mesmo professor em 2+ turmas simultâneas sem contar choque nem dobrar sala)
+   *  - Aulas duplas geminadas prioritárias (#1-#2, #4-#5...)
+   *  - Disponibilidade, Interjornada por CPF e Capacidade Física de Salas/Laboratórios/Quadras
+   */
+  function allocateSimultaneousBlocksPhase({
+    blocosSimultaneos,
+    gradePorTurma,
+    gradePorProfessor,
+    dispoIdx,
+    diasList,
+    periodosPorDia,
+    rc01MaxConsecutivas,
+    rc02Cfg,
+    regrasGerais,
+    turno,
+    preferencias = null,
+    randomize = false,
+  }) {
+    const divergencias = [];
+    const forcedUnplaced = [];
+    let superAulasAlocadas = 0;
+
+    if (!Array.isArray(blocosSimultaneos) || blocosSimultaneos.length === 0) {
+      return { superAulasAlocadas, divergencias, forcedUnplaced };
+    }
+
+    const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
+    const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
+    const recIdx = buildRecursosFisicosIndex(regrasGerais);
+
+    for (const bloco of blocosSimultaneos) {
+      const items = bloco.demandas || [];
+      if (items.length < 2) continue;
+
+      // Verifica se há compartilhamento de professor dentro do bloco (Turmas Unidas)
+      const profCountsInBlock = new Map();
+      for (const it of items) {
+        profCountsInBlock.set(it.professor_id, (profCountsInBlock.get(it.professor_id) || 0) + 1);
+      }
+      const hasSharedProf = Array.from(profCountsInBlock.values()).some(c => c > 1);
+      if (hasSharedProf && !bloco.permitir_mesmo_prof_simultaneo) {
+        divergencias.push({
+          bloco_id: bloco.id,
+          bloco_nome: bloco.nome,
+          faltantes: bloco.aulas_sincronizadas,
+          motivo: "MESMO_PROFESSOR_BLOQUEADO_NO_BLOCO",
+        });
+        continue;
+      }
+
+      const buildItemMeta = (it) => {
+        const isUnitedProf = (profCountsInBlock.get(it.professor_id) || 0) > 1;
+        return {
+          bloco_simultaneo_id: bloco.id,
+          bloco_simultaneo_nome: bloco.nome,
+          locked_simultaneo: true,
+          permitir_turmas_unidas: Boolean(isUnitedProf && bloco.permitir_mesmo_prof_simultaneo),
+          united_room_key: isUnitedProf ? `bloco_${bloco.id}_prof_${it.professor_id}` : null,
+        };
+      };
+
+      // Passo A: Inspeciona se alguma turma do bloco já possui aula fixa manual (`locked`) da disciplina do bloco
+      // 1) Se TODAS as turmas do bloco já estão alocadas em (d, p), conta como sincronizada!
+      // 2) Se ALGUMAS turmas do bloco estão fixadas em (d, p) e as irmãs estão livres e aptas, propaga!
+      let sincronizadasCount = 0;
+      for (const d of diasList) {
+        for (let p = 1; p <= periodosPorDia; p++) {
+          let matchCount = 0;
+          const missingItems = [];
+          for (const it of items) {
+            const cell = gradePorTurma[it.turma_id]?.[d]?.[p];
+            if (
+              cell &&
+              Number(cell.disciplina_id) === Number(it.disciplina_id) &&
+              Number(cell.professor_id) === Number(it.professor_id)
+            ) {
+              matchCount++;
+              // Anota metadados de super-aula mesmo nos slots fixos já existentes
+              const meta = buildItemMeta(it);
+              cell.bloco_simultaneo_id = meta.bloco_simultaneo_id;
+              cell.bloco_simultaneo_nome = meta.bloco_simultaneo_nome;
+              if (meta.united_room_key) cell.united_room_key = meta.united_room_key;
+            } else {
+              missingItems.push(it);
+            }
+          }
+
+          if (matchCount === items.length) {
+            sincronizadasCount++;
+            superAulasAlocadas += items.length;
+          } else if (matchCount > 0 && missingItems.length > 0) {
+            // Tenta propagar para as turmas irmãs que ainda têm saldo restante
+            const canPropagateAll = missingItems.every(it => {
+              if ((it.aulas_restantes || 0) <= 0) return false;
+              if (gradePorTurma[it.turma_id]?.[d]?.[p]) return false;
+              const pCell = gradePorProfessor[it.professor_id]?.[d]?.[p];
+              const isUnitedProf = (profCountsInBlock.get(it.professor_id) || 0) > 1;
+              if (pCell && !(isUnitedProf && bloco.permitir_mesmo_prof_simultaneo && items.some(x => x.turma_id === pCell.turma_id && x.professor_id === it.professor_id))) {
+                return false;
+              }
+              if (!professorPode(dispoIdx, it.professor_id, d, p)) return false;
+              return canPlaceDiscInTurmaSlot({
+                turmaGrade: gradePorTurma[it.turma_id],
+                dia: d,
+                periodo: p,
+                disciplinaId: it.disciplina_id,
+                periodosPorDia,
+                rc01MaxConsecutivas,
+                rc02Cfg,
+                regrasGerais,
+                strictPedagogical: true,
+              });
+            });
+
+            if (canPropagateAll) {
+              for (const it of missingItems) {
+                setSlot(
+                  gradePorTurma,
+                  gradePorProfessor,
+                  it.turma_id,
+                  it.professor_id,
+                  d,
+                  p,
+                  it.disciplina_id,
+                  false,
+                  it.co_professores,
+                  buildItemMeta(it)
+                );
+                it.aulas_restantes = Math.max(0, (it.aulas_restantes || 0) - 1);
+              }
+              sincronizadasCount++;
+              superAulasAlocadas += items.length;
+            }
+          }
+        }
+      }
+
+      const maxRestantesComum = Math.min(...items.map(it => it.aulas_restantes || 0));
+      let faltam = Math.min(Math.max(0, bloco.aulas_sincronizadas - sincronizadasCount), maxRestantesComum);
+
+      const canPlaceBlockAtPeriod = (dia, periodo, extraDayLessons = 1) => {
+        // 1) Verifica turmas e professores
+        const checkedProfs = new Set();
+        for (const it of items) {
+          if (gradePorTurma[it.turma_id]?.[dia]?.[periodo]) return false;
+          if (
+            !canPlaceDiscInTurmaSlot({
+              turmaGrade: gradePorTurma[it.turma_id],
+              dia,
+              periodo,
+              disciplinaId: it.disciplina_id,
+              periodosPorDia,
+              rc01MaxConsecutivas,
+              rc02Cfg,
+              regrasGerais,
+              strictPedagogical: true,
+            })
+          ) {
+            return false;
+          }
+          const pId = it.professor_id;
+          if (!checkedProfs.has(pId)) {
+            checkedProfs.add(pId);
+            if (gradePorProfessor[pId]?.[dia]?.[periodo]) return false;
+            if (!professorPode(dispoIdx, pId, dia, periodo)) return false;
+            if (!canProfRespectDailyCpfCap(dispoIdx, gradePorProfessor[pId], pId, dia, extraDayLessons)) {
+              return false;
+            }
+          }
+        }
+
+        // 2) Verifica capacidade de Salas/Laboratórios/Quadras somando todas as turmas do bloco (unidas contam 1)
+        if (recIdx && recIdx.hardList.length > 0) {
+          for (const rec of recIdx.hardList) {
+            let blockDemandOnRec = 0;
+            const seenBlockUnited = new Set();
+            for (const it of items) {
+              if (!rec.discSet.has(toInt(it.disciplina_id, 0))) continue;
+              const isUnitedProf = (profCountsInBlock.get(it.professor_id) || 0) > 1;
+              if (isUnitedProf && bloco.permitir_mesmo_prof_simultaneo) {
+                const uk = `bloco_${bloco.id}_prof_${it.professor_id}`;
+                if (seenBlockUnited.has(uk)) continue;
+                seenBlockUnited.add(uk);
+              }
+              blockDemandOnRec++;
+            }
+            if (blockDemandOnRec > 0) {
+              const alreadyUsed = countRecursoUsageAt(gradePorTurma, rec, dia, periodo, 0, null);
+              if (alreadyUsed + blockDemandOnRec > rec.capacidade) return false;
+            }
+          }
+        }
+
+        return true;
+      };
+
+      // Passo B: Prioriza pares duplos geminados (#1-#2, #4-#5...) quando faltam >= 2 aulas sincronizadas
+      if (faltam >= 2 && prefDuplas && rc01MaxConsecutivas >= 2) {
+        while (faltam >= 2) {
+          let bestPair = null;
+          for (const dia of diasList) {
+            const canAnyTake2InDay = items.every(
+              it =>
+                getRc02MaxForDisc(rc02Cfg, it.disciplina_id) >= 2 &&
+                countDiscInDay(gradePorTurma[it.turma_id], dia, it.disciplina_id) === 0
+            );
+            if (!canAnyTake2InDay) continue;
+
+            for (const pStart of pairGov.orderedStarts) {
+              const pEnd = pStart + 1;
+              if (pEnd > periodosPorDia || pairGov.isPairBlocked(pStart)) continue;
+              if (!canPlaceBlockAtPeriod(dia, pStart, 2) || !canPlaceBlockAtPeriod(dia, pEnd, 2)) continue;
+
+              let totalScore = 0;
+              for (const it of items) {
+                totalScore += computeSlotScore({
+                  turmaGrade: gradePorTurma[it.turma_id],
+                  profGrade: gradePorProfessor[it.professor_id],
+                  dispoIdx,
+                  dia,
+                  periodo: pStart,
+                  periodosPorDia,
+                  professorId: it.professor_id,
+                  disciplinaId: it.disciplina_id,
+                  rc01MaxConsecutivas,
+                  rc02Cfg,
+                  regrasGerais,
+                  turno,
+                  preferenciasProfessor: preferencias?.[it.professor_id] || {},
+                });
+              }
+              const pInfo = pairGov.getPairInfo(pStart);
+              totalScore += (pInfo?.pairScoreBonus || -4000) * items.length;
+              if (randomize) totalScore += (Math.random() - 0.5) * 450;
+
+              if (!bestPair || totalScore < bestPair.score) {
+                bestPair = { dia, pStart, pEnd, score: totalScore };
+              }
+            }
+          }
+
+          if (!bestPair) break;
+
+          for (const it of items) {
+            const meta = buildItemMeta(it);
+            setSlot(gradePorTurma, gradePorProfessor, it.turma_id, it.professor_id, bestPair.dia, bestPair.pStart, it.disciplina_id, false, it.co_professores, meta);
+            setSlot(gradePorTurma, gradePorProfessor, it.turma_id, it.professor_id, bestPair.dia, bestPair.pEnd, it.disciplina_id, false, it.co_professores, meta);
+            it.aulas_restantes = Math.max(0, (it.aulas_restantes || 0) - 2);
+          }
+          faltam -= 2;
+          superAulasAlocadas += items.length * 2;
+        }
+      }
+
+      // Passo C: Aloca aulas sincronizadas simples restantes (ex.: 1h de IFA/Eletiva ou ímpar)
+      while (faltam > 0) {
+        let bestSingle = null;
+        for (const dia of diasList) {
+          for (let periodo = 1; periodo <= periodosPorDia; periodo++) {
+            if (!canPlaceBlockAtPeriod(dia, periodo, 1)) continue;
+            let totalScore = 0;
+            for (const it of items) {
+              totalScore += computeSlotScore({
+                turmaGrade: gradePorTurma[it.turma_id],
+                profGrade: gradePorProfessor[it.professor_id],
+                dispoIdx,
+                dia,
+                periodo,
+                periodosPorDia,
+                professorId: it.professor_id,
+                disciplinaId: it.disciplina_id,
+                rc01MaxConsecutivas,
+                rc02Cfg,
+                regrasGerais,
+                turno,
+                preferenciasProfessor: preferencias?.[it.professor_id] || {},
+              });
+            }
+            if (randomize) totalScore += (Math.random() - 0.5) * 350;
+            if (!bestSingle || totalScore < bestSingle.score) {
+              bestSingle = { dia, periodo, score: totalScore };
+            }
+          }
+        }
+
+        if (!bestSingle) break;
+
+        for (const it of items) {
+          setSlot(
+            gradePorTurma,
+            gradePorProfessor,
+            it.turma_id,
+            it.professor_id,
+            bestSingle.dia,
+            bestSingle.periodo,
+            it.disciplina_id,
+            false,
+            it.co_professores,
+            buildItemMeta(it)
+          );
+          it.aulas_restantes = Math.max(0, (it.aulas_restantes || 0) - 1);
+        }
+        faltam -= 1;
+        superAulasAlocadas += items.length;
+      }
+
+      if (faltam > 0) {
+        divergencias.push({
+          bloco_id: bloco.id,
+          bloco_nome: bloco.nome,
+          faltantes: faltam,
+          turmas: items.map(x => x.turma_id),
+        });
+        // Quando o bloco é 'hard' (ou possui professor compartilhado em turmas unidas),
+        // retira do pool avulso para impedir desalinhamento das turmas de IFA ou duplicação física de professor
+        if (bloco.modo === "hard" || hasSharedProf) {
+          for (const it of items) {
+            const qtdRemover = Math.min(it.aulas_restantes || 0, faltam);
+            it.aulas_restantes = Math.max(0, (it.aulas_restantes || 0) - qtdRemover);
+            for (let k = 0; k < qtdRemover; k++) {
+              forcedUnplaced.push({
+                turma_id: it.turma_id,
+                disciplina_id: it.disciplina_id,
+                professor_id: it.professor_id,
+                co_professores: it.co_professores || [],
+                _motivoForcado: "CONFLITO_BLOCO_SIMULTANEO",
+                _blocoNome: bloco.nome,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return { superAulasAlocadas, divergencias, forcedUnplaced };
   }
 
   function isPartOfGeminatedMandatoryPair(turmaGrade, dia, periodo, pairGov) {
@@ -990,6 +1814,7 @@ function solverWorkerBootstrap(workerScope) {
     const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
     if (!prefDuplas || rc01MaxConsecutivas < 2) return;
     const exclMap = buildExcludentesMap(regrasGerais);
+    const recIdx = buildRecursosFisicosIndex(regrasGerais);
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const mandatoryStarts = pairGov.orderedStarts.filter(p => pairGov.isPairMandatory(p));
@@ -1075,6 +1900,15 @@ function solverWorkerBootstrap(workerScope) {
           if (!professorPode(dispoIdx, pId, dia, pStart) || !professorPode(dispoIdx, pId, dia, pEnd)) {
             return false;
           }
+          if (!canProfRespectDailyCpfCap(dispoIdx, gradePorProfessor[pId], pId, dia, 2)) {
+            return false;
+          }
+          if (
+            !canUseRecursosFisicosAt(gradePorTurma, regrasGerais, dia, pStart, d.disciplina_id, tId, null, true) ||
+            !canUseRecursosFisicosAt(gradePorTurma, regrasGerais, dia, pEnd, d.disciplina_id, tId, null, true)
+          ) {
+            return false;
+          }
           return true;
         }
 
@@ -1103,6 +1937,32 @@ function solverWorkerBootstrap(workerScope) {
             });
 
           for (const d of candidates) {
+            // Se esta disciplina exige Sala/Quadra com limite rígido, verifica se os outros pares já casados neste (dia, pStart) já esgotaram a sala
+            if (recIdx && recIdx.hardList.length > 0) {
+              const recs = recIdx.byDisc.get(toInt(d.disciplina_id, 0));
+              if (recs && recs.some(r => r.modo === "hard")) {
+                let roomExhausted = false;
+                for (const r of recs) {
+                  if (r.modo !== "hard") continue;
+                  const baseUsed = Math.max(
+                    countRecursoUsageAt(gradePorTurma, r, dia, pStart, tId, null),
+                    countRecursoUsageAt(gradePorTurma, r, dia, pEnd, tId, null)
+                  );
+                  let matchedOnRoom = 0;
+                  for (const [otherTid, otherDem] of matchTurmaToDemand.entries()) {
+                    if (otherTid !== tId && r.discSet.has(toInt(otherDem.disciplina_id, 0))) {
+                      matchedOnRoom++;
+                    }
+                  }
+                  if (Math.max(0, baseUsed) + matchedOnRoom >= r.capacidade) {
+                    roomExhausted = true;
+                    break;
+                  }
+                }
+                if (roomExhausted) continue;
+              }
+            }
+
             const pId = d.professor_id;
             if (visitedProfs.has(pId)) continue;
             visitedProfs.add(pId);
@@ -1153,10 +2013,14 @@ function solverWorkerBootstrap(workerScope) {
     let best = null;
 
     for (const dia of diasList) {
+      if (!canProfRespectDailyCpfCap(dispoIdx, profGrade, professorId, dia, 1)) continue;
       for (let periodo = 1; periodo <= periodosPorDia; periodo++) {
         if (turmaGrade?.[dia]?.[periodo]) continue;
         if (profGrade?.[dia]?.[periodo]) continue;
         if (!professorPode(dispoIdx, professorId, dia, periodo)) continue;
+        if (!canUseRecursosFisicosAt(gradePorTurma, regrasGerais, dia, periodo, disciplinaId, turmaId, null, strictPedagogical)) {
+          continue;
+        }
 
         if (
           !canPlaceDiscInTurmaSlot({
@@ -1177,7 +2041,11 @@ function solverWorkerBootstrap(workerScope) {
         if (Array.isArray(coProfessores) && coProfessores.length > 0) {
           let coOk = true;
           for (const cp of coProfessores) {
-            if (gradePorProfessor?.[cp]?.[dia]?.[periodo] || !professorPode(dispoIdx, cp, dia, periodo)) {
+            if (
+              gradePorProfessor?.[cp]?.[dia]?.[periodo] ||
+              !professorPode(dispoIdx, cp, dia, periodo) ||
+              !canProfRespectDailyCpfCap(dispoIdx, gradePorProfessor[cp], cp, dia, 1)
+            ) {
               coOk = false;
               break;
             }
@@ -2060,7 +2928,9 @@ function solverWorkerBootstrap(workerScope) {
 
           const cellT = gradePorTurma[tId]?.[d]?.[p];
           const cellP = gradePorProfessor[pId]?.[d]?.[p];
-          if (cellT?.locked || cellP?.locked || cellT?.co_professores?.length || cellP?.co_docencia) continue;
+          if (isCellProtected(cellT) || isCellProtected(cellP) || cellT?.co_professores?.length || cellP?.co_docencia) continue;
+          if (!canProfRespectDailyCpfCap(dispoIdx, gradePorProfessor[pId], pId, d, cellP ? 0 : 1)) continue;
+          if (!canUseRecursosFisicosAt(gradePorTurma, regrasGerais, d, p, dId, tId, null, strictPedagogical)) continue;
 
           const tabuKey = `${tId}|${pId}|${d}|${p}`;
           const isTabu = (tabuMap.get(tabuKey) || 0) > step;
@@ -2150,20 +3020,38 @@ function solverWorkerBootstrap(workerScope) {
     profGrade,
     dispoIdx,
     professorId,
+    disciplinaId,
+    turmaId,
+    gradePorTurma,
+    regrasGerais,
     periodosPorDia,
     diasList,
+    motivoForcado = null,
   }) {
+    if (motivoForcado) return motivoForcado;
+
     let livresTurma = 0;
     let livresProf = 0;
-    let livresDispo = 0;
+    let livresDispoPura = 0;
+    let livresInterturno = 0;
+    let livresSala = 0;
 
     for (const dia of diasList) {
+      const capDiaOk = canProfRespectDailyCpfCap(dispoIdx, profGrade, professorId, dia, 1);
       for (let periodo = 1; periodo <= periodosPorDia; periodo++) {
         if (!turmaGrade?.[dia]?.[periodo]) {
           livresTurma++;
           if (!profGrade?.[dia]?.[periodo]) {
             livresProf++;
-            if (professorPode(dispoIdx, professorId, dia, periodo)) livresDispo++;
+            if (professorPodeDispoPura(dispoIdx, professorId, dia, periodo)) {
+              livresDispoPura++;
+              if (capDiaOk && professorPode(dispoIdx, professorId, dia, periodo)) {
+                livresInterturno++;
+                if (canUseRecursosFisicosAt(gradePorTurma, regrasGerais, dia, periodo, disciplinaId, turmaId, null, true)) {
+                  livresSala++;
+                }
+              }
+            }
           }
         }
       }
@@ -2171,7 +3059,9 @@ function solverWorkerBootstrap(workerScope) {
 
     if (livresTurma === 0) return "SEM_SLOT_LIVRE_TURMA";
     if (livresProf === 0) return "COLISAO_PROFESSOR";
-    if (livresDispo === 0) return "SEM_DISPONIBILIDADE_PROFESSOR";
+    if (livresDispoPura === 0) return "SEM_DISPONIBILIDADE_PROFESSOR";
+    if (livresInterturno === 0) return "RESTRICAO_INTERTURNO_CPF";
+    if (livresSala === 0) return "SEM_SALA_DISPONIVEL";
     return "OUTRO";
   }
 
@@ -2202,8 +3092,7 @@ function solverWorkerBootstrap(workerScope) {
           }
 
           if (maxAllowed === 0 || current >= maxAllowed) {
-            gradePorTurma[turmaId][dia][per] = null;
-            if (gradePorProfessor[profId]?.[dia]) gradePorProfessor[profId][dia][per] = null;
+            clearSlot(gradePorTurma, gradePorProfessor, turmaId, profId, dia, per);
           } else {
             allocatedCount.set(k, current + 1);
           }
@@ -2236,10 +3125,10 @@ function solverWorkerBootstrap(workerScope) {
         const row = turmaGrade[d] || {};
         for (let p1 = 1; p1 <= periodosPorDia; p1++) {
           const c1 = row[p1];
-          if (!c1 || c1.locked || c1.co_professores?.length) continue;
+          if (!c1 || isCellProtected(c1) || c1.co_professores?.length) continue;
           for (let p2 = p1 + 2; p2 <= periodosPorDia; p2++) {
             const c2 = row[p2];
-            if (!c2 || c2.locked || c2.co_professores?.length) continue;
+            if (!c2 || isCellProtected(c2) || c2.co_professores?.length) continue;
             if (Number(c1.disciplina_id) !== Number(c2.disciplina_id)) continue;
 
             const targets = [
@@ -2250,7 +3139,7 @@ function solverWorkerBootstrap(workerScope) {
             for (const { moveFrom, swapWith } of targets) {
               const cellMove = row[moveFrom];
               const cellNeighbor = row[swapWith];
-              if (!cellMove || !cellNeighbor || cellNeighbor.locked || cellNeighbor.co_professores?.length) continue;
+              if (!cellMove || !cellNeighbor || isCellProtected(cellMove) || isCellProtected(cellNeighbor) || cellNeighbor.co_professores?.length) continue;
 
               const profM = cellMove.professor_id;
               const discM = cellMove.disciplina_id;
@@ -2306,7 +3195,7 @@ function solverWorkerBootstrap(workerScope) {
         for (const d1 of diasList) {
           for (const p1 of candidatePeriodsOrder) {
             const c1 = turmaGrade[d1]?.[p1];
-            if (!c1 || c1.locked || c1.co_professores?.length) continue;
+            if (!c1 || isCellProtected(c1) || c1.co_professores?.length) continue;
             if (preferencias?.[c1.professor_id]?.prefere_aula_unica) continue;
             if (countDiscInDay(turmaGrade, d1, c1.disciplina_id) !== 1) continue;
 
@@ -2324,7 +3213,7 @@ function solverWorkerBootstrap(workerScope) {
 
             for (const pAdj of adjCandidates) {
               const cAdj = turmaGrade[d1]?.[pAdj];
-              if (!cAdj || cAdj.locked || cAdj.co_professores?.length) continue;
+              if (!cAdj || isCellProtected(cAdj) || cAdj.co_professores?.length) continue;
               if (Number(cAdj.disciplina_id) === Number(c1.disciplina_id)) continue;
               if (countDiscInDay(turmaGrade, d1, cAdj.disciplina_id) > 1) continue;
 
@@ -2335,7 +3224,7 @@ function solverWorkerBootstrap(workerScope) {
 
                 for (let p2 = 1; p2 <= periodosPorDia; p2++) {
                   const c2 = turmaGrade[d2]?.[p2];
-                  if (!c2 || c2.locked || c2.co_professores?.length) continue;
+                  if (!c2 || isCellProtected(c2) || c2.co_professores?.length) continue;
                   if (Number(c2.disciplina_id) !== Number(c1.disciplina_id)) continue;
 
                   const prof1 = c2.professor_id;
@@ -2407,7 +3296,7 @@ function solverWorkerBootstrap(workerScope) {
               const c2 = row[pA + 1];
               const c3 = row[pA + 2];
               if (!c1 || !c2 || !c3) continue;
-              if (c1.locked || c2.locked || c3.locked) continue;
+              if (isCellProtected(c1) || isCellProtected(c2) || isCellProtected(c3)) continue;
               if (c1.co_professores?.length || c2.co_professores?.length || c3.co_professores?.length) continue;
 
               const rightIsPair =
@@ -2469,7 +3358,7 @@ function solverWorkerBootstrap(workerScope) {
 
               const cH1 = row[pHigh];
               const cH2 = row[pHigh + 1];
-              if (!cH1 || !cH2 || cH1.locked || cH2.locked) continue;
+              if (!cH1 || !cH2 || isCellProtected(cH1) || isCellProtected(cH2)) continue;
               if (cH1.co_professores?.length || cH2.co_professores?.length) continue;
               if (Number(cH1.disciplina_id) === Number(cH2.disciplina_id)) continue; // já é dupla!
               if (
@@ -2487,7 +3376,7 @@ function solverWorkerBootstrap(workerScope) {
 
                 const cL1 = row[pLow];
                 const cL2 = row[pLow + 1];
-                if (!cL1 || !cL2 || cL1.locked || cL2.locked) continue;
+                if (!cL1 || !cL2 || isCellProtected(cL1) || isCellProtected(cL2)) continue;
                 if (cL1.co_professores?.length || cL2.co_professores?.length) continue;
                 if (Number(cL1.disciplina_id) !== Number(cL2.disciplina_id)) continue; // precisa ser dupla geminada
                 if (Number(cL1.professor_id) !== Number(cL2.professor_id)) continue;
@@ -2577,7 +3466,7 @@ function solverWorkerBootstrap(workerScope) {
 
               const cH1 = row1[pHigh];
               const cH2 = row1[pHigh + 1];
-              if (!cH1 || !cH2 || cH1.locked || cH2.locked) continue;
+              if (!cH1 || !cH2 || isCellProtected(cH1) || isCellProtected(cH2)) continue;
               if (cH1.co_professores?.length || cH2.co_professores?.length) continue;
               if (Number(cH1.disciplina_id) === Number(cH2.disciplina_id)) continue;
               if (
@@ -2599,7 +3488,7 @@ function solverWorkerBootstrap(workerScope) {
 
                   const cL1 = row2[pLow];
                   const cL2 = row2[pLow + 1];
-                  if (!cL1 || !cL2 || cL1.locked || cL2.locked) continue;
+                  if (!cL1 || !cL2 || isCellProtected(cL1) || isCellProtected(cL2)) continue;
                   if (cL1.co_professores?.length || cL2.co_professores?.length) continue;
                   if (Number(cL1.disciplina_id) !== Number(cL2.disciplina_id)) continue;
                   if (Number(cL1.professor_id) !== Number(cL2.professor_id)) continue;
@@ -2782,7 +3671,8 @@ function solverWorkerBootstrap(workerScope) {
 
           // 1) Se exceder o máximo diário (ex: 3 aulas no mesmo dia), remove as excedentes não-travadas
           while (list.length > maxDia) {
-            const idx = list.findLastIndex(x => !x.cell.locked);
+            let idx = list.findLastIndex(x => !isCellProtected(x.cell));
+            if (idx === -1) idx = list.findLastIndex(x => !x.cell.locked);
             if (idx === -1) break;
             const [rem] = list.splice(idx, 1);
             clearSlot(gradePorTurma, gradePorProfessor, tId, rem.cell.professor_id, d, rem.p);
@@ -2809,7 +3699,8 @@ function solverWorkerBootstrap(workerScope) {
             }
 
             if (isSeparated || crossesBlockedPair) {
-              const idx = list.findLastIndex(x => !x.cell.locked);
+              let idx = list.findLastIndex(x => !isCellProtected(x.cell));
+              if (idx === -1) idx = list.findLastIndex(x => !x.cell.locked);
               if (idx !== -1) {
                 const [rem] = list.splice(idx, 1);
                 clearSlot(gradePorTurma, gradePorProfessor, tId, rem.cell.professor_id, d, rem.p);
@@ -2820,6 +3711,40 @@ function solverWorkerBootstrap(workerScope) {
                   co_professores: rem.cell.co_professores || null,
                 });
               }
+            }
+          }
+        }
+      }
+    }
+
+    // 3) Capacidade física estrita de Salas/Quadras/Laboratórios (preservando soberania de cell.locked)
+    const recIdx = buildRecursosFisicosIndex(regrasGerais);
+    if (recIdx?.hardList?.length > 0) {
+      for (const rec of recIdx.hardList) {
+        for (const d of diasList) {
+          for (let p = 1; p <= periodosPorDia; p++) {
+            while (countRecursoUsageAt(gradePorTurma, rec, d, p, 0, null) > rec.capacidade) {
+              let candidateToEvict = null;
+              for (const [tIdStr, tGrade] of Object.entries(gradePorTurma)) {
+                const cell = tGrade?.[d]?.[p];
+                if (!cell || cell.locked || !rec.discSet.has(toInt(cell.disciplina_id, 0))) continue;
+                if (!cell.locked_simultaneo) {
+                  candidateToEvict = { tId: toInt(tIdStr, 0), cell };
+                  break;
+                }
+                if (!candidateToEvict) {
+                  candidateToEvict = { tId: toInt(tIdStr, 0), cell };
+                }
+              }
+              if (!candidateToEvict) break; // Todas as ocupações são travas manuais soberanas
+              const { tId: evTId, cell: evCell } = candidateToEvict;
+              clearSlot(gradePorTurma, gradePorProfessor, evTId, evCell.professor_id, d, p);
+              evicted.push({
+                turma_id: evTId,
+                disciplina_id: Number(evCell.disciplina_id),
+                professor_id: evCell.professor_id,
+                co_professores: evCell.co_professores || null,
+              });
             }
           }
         }
@@ -2872,13 +3797,19 @@ function solverWorkerBootstrap(workerScope) {
     rc02Cfg,
     regrasGerais = null,
     turno = "matutino",
-    dispoIdx = null
+    dispoIdx = null,
+    blocosSimultaneos = [],
+    gradePorProfessor = null
   ) {
     let violacoesSeparadasMesmoDia = 0;
     let violacoesMaxDia = 0;
     let violacoesParesBloqueados = 0;
     let violacoesIndisponibilidade = 0;
+    let violacoesInterturno = 0;
+    let violacoesCapacidadeSalas = 0;
+    let violacoesBlocosSimultaneos = 0;
     let violacoesDisciplinasExcludentes = 0;
+    let superAulasAlocadas = 0;
     let paresGeminados = 0;
     let scorePrioridadePares = 0;
     let paresObrigatoriosMeta = 0;
@@ -2887,9 +3818,11 @@ function solverWorkerBootstrap(workerScope) {
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const exclMap = buildExcludentesMap(regrasGerais);
+    const recIdx = buildRecursosFisicosIndex(regrasGerais);
     const mandatoryStarts = pairGov.orderedStarts.filter(p => pairGov.isPairMandatory(p));
     const turmaEntries = Object.entries(gradePorTurma || {}).filter(([, g]) => Boolean(g));
     const divergenciasParesObrigatorios = [];
+    const divergenciasBlocosSimultaneos = [];
 
     for (const [tIdStr, turmaGrade] of turmaEntries) {
       const tId = toInt(tIdStr, 0);
@@ -2932,8 +3865,17 @@ function solverWorkerBootstrap(workerScope) {
           if (!cell || !cell.disciplina_id) continue;
           const dId = Number(cell.disciplina_id);
 
-          if (!cell.locked && dispoIdx && !professorPode(dispoIdx, cell.professor_id, d, p)) {
-            violacoesIndisponibilidade++;
+          if (cell.bloco_simultaneo_id || cell.permitir_turmas_unidas) {
+            superAulasAlocadas++;
+          }
+
+          if (!cell.locked && dispoIdx) {
+            if (!professorPode(dispoIdx, cell.professor_id, d, p)) {
+              violacoesIndisponibilidade++;
+              if (professorBloqueadoPorInterturno(dispoIdx, cell.professor_id, d, p)) {
+                violacoesInterturno++;
+              }
+            }
           }
 
           if (p < periodosPorDia) {
@@ -2993,6 +3935,84 @@ function solverWorkerBootstrap(workerScope) {
       }
     }
 
+    if (dispoIdx && gradePorProfessor) {
+      for (const [pIdStr, pGrade] of Object.entries(gradePorProfessor)) {
+        const pId = toInt(pIdStr, 0);
+        for (const d of diasList) {
+          if (!canProfRespectDailyCpfCap(dispoIdx, pGrade, pId, d, 0)) {
+            let hasUnlocked = false;
+            for (let p = 1; p <= periodosPorDia; p++) {
+              if (pGrade?.[d]?.[p] && !pGrade[d][p].locked) {
+                hasUnlocked = true;
+                break;
+              }
+            }
+            if (hasUnlocked) violacoesInterturno++;
+          }
+        }
+      }
+    }
+
+    if (recIdx?.hardList?.length > 0) {
+      for (const rec of recIdx.hardList) {
+        for (const d of diasList) {
+          for (let p = 1; p <= periodosPorDia; p++) {
+            const used = countRecursoUsageAt(gradePorTurma, rec, d, p, 0, null);
+            if (used > rec.capacidade) {
+              let hasUnlocked = false;
+              for (const [, tGrade] of turmaEntries) {
+                const cell = tGrade?.[d]?.[p];
+                if (cell && !cell.locked && rec.discSet.has(toInt(cell.disciplina_id, 0))) {
+                  hasUnlocked = true;
+                  break;
+                }
+              }
+              if (hasUnlocked) {
+                violacoesCapacidadeSalas += used - rec.capacidade;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(blocosSimultaneos) && blocosSimultaneos.length > 0) {
+      for (const bloco of blocosSimultaneos) {
+        const blockItems = bloco?.demandas || bloco?.itens || [];
+        if (!Array.isArray(blockItems) || blockItems.length < 2) continue;
+        const discSetBloco = new Set(blockItems.map(it => toInt(it.disciplina_id, 0)));
+        const slotsPorTurma = blockItems.map(it => {
+          const slots = [];
+          let hasManualPin = false;
+          for (const d of diasList) {
+            for (let p = 1; p <= periodosPorDia; p++) {
+              const cell = gradePorTurma?.[it.turma_id]?.[d]?.[p];
+              if (cell && (cell.bloco_simultaneo_id === bloco.id || discSetBloco.has(toInt(cell.disciplina_id, 0)))) {
+                slots.push(`${d}-${p}`);
+                if (cell.locked) hasManualPin = true;
+              }
+            }
+          }
+          slots.sort();
+          return { turma_id: it.turma_id, sig: slots.join("|"), count: slots.length, hasManualPin };
+        });
+
+        const refSig = slotsPorTurma[0]?.sig || "";
+        for (let i = 1; i < slotsPorTurma.length; i++) {
+          if (slotsPorTurma[i].sig !== refSig && !slotsPorTurma[i].hasManualPin && !slotsPorTurma[0].hasManualPin) {
+            violacoesBlocosSimultaneos++;
+            divergenciasBlocosSimultaneos.push({
+              bloco_id: bloco.id,
+              bloco_nome: bloco.nome,
+              turma_id: slotsPorTurma[i].turma_id,
+              esperado: refSig,
+              encontrado: slotsPorTurma[i].sig,
+            });
+          }
+        }
+      }
+    }
+
     const paresObrigatoriosFaltantes = Math.max(0, paresObrigatoriosMeta - paresObrigatoriosAtendidos);
 
     return {
@@ -3000,7 +4020,11 @@ function solverWorkerBootstrap(workerScope) {
       violacoesMaxDia,
       violacoesParesBloqueados,
       violacoesIndisponibilidade,
+      violacoesInterturno,
+      violacoesCapacidadeSalas,
+      violacoesBlocosSimultaneos,
       violacoesDisciplinasExcludentes,
+      superAulasAlocadas,
       paresGeminados,
       scorePrioridadePares,
       paresObrigatoriosMeta,
@@ -3008,6 +4032,7 @@ function solverWorkerBootstrap(workerScope) {
       paresObrigatoriosIsentosManual,
       paresObrigatoriosFaltantes,
       divergenciasParesObrigatorios,
+      divergenciasBlocosSimultaneos,
     };
   }
 
@@ -3026,13 +4051,20 @@ function solverWorkerBootstrap(workerScope) {
     const rawRegrasGerais = configPedagogica?.regras_gerais || null;
     const pairGov = buildPairGovernanceIndex(rawRegrasGerais, turno, periodosPorDia);
     const exclMapRoot = buildExcludentesMap(rawRegrasGerais);
+    const recIdxRoot = buildRecursosFisicosIndex(rawRegrasGerais, payload?.recursos_fisicos);
     const regrasGerais = rawRegrasGerais
-      ? { ...rawRegrasGerais, _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot }
-      : { _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot };
+      ? { ...rawRegrasGerais, _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot, _recursosIdx: recIdxRoot }
+      : { _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot, _recursosIdx: recIdxRoot };
 
     const turmaIds = normalizeTurmaIds(payload);
     const demandasNorm = normalizeDemandas(payload);
-    const dispoIdx = buildDisponibilidadeIndex(payload?.disponibilidades, diasList, periodosPorDia);
+    const dispoIdx = buildDisponibilidadeIndex(
+      payload?.disponibilidades,
+      diasList,
+      periodosPorDia,
+      payload?.restricoes_interturno,
+      regrasGerais
+    );
 
     const slotsFixos = Array.isArray(payload?.slots_fixos) ? payload.slots_fixos : [];
     const turmaIdsSet = new Set(turmaIds.map(Number));
@@ -3120,6 +4152,9 @@ function solverWorkerBootstrap(workerScope) {
 
     const gradePorTurma = initGradePorTurma(turmaIds, diasList, periodosPorDia);
     const gradePorProfessor = initGradePorProfessor(allProfIds, diasList, periodosPorDia);
+    regrasGerais._gradePorTurmaRef = gradePorTurma;
+    regrasGerais._gradePorProfessorRef = gradePorProfessor;
+    regrasGerais._dispoIdxRef = dispoIdx;
 
     for (const ef of externalProfFixos) {
       if (!gradePorProfessor[ef.professor_id]) {
@@ -3141,11 +4176,36 @@ function solverWorkerBootstrap(workerScope) {
       if (!gradePorProfessor[sf.professor_id]) {
         gradePorProfessor[sf.professor_id] = initEmptyGridForEntity(diasList, periodosPorDia);
       }
-      if (!gradePorTurma[sf.turma_id]?.[sf.dia]?.[sf.ordem] && !gradePorProfessor[sf.professor_id]?.[sf.dia]?.[sf.ordem]) {
+      const existingProfFixed = gradePorProfessor[sf.professor_id]?.[sf.dia]?.[sf.ordem];
+      if (!gradePorTurma[sf.turma_id]?.[sf.dia]?.[sf.ordem] && (!existingProfFixed || existingProfFixed.locked)) {
         setSlot(gradePorTurma, gradePorProfessor, sf.turma_id, sf.professor_id, sf.dia, sf.ordem, sf.disciplina_id, true);
         alocadasFixas++;
       }
     }
+
+    // FASE -1 (ETAPA 3): Super-Aulas Simultâneas de IFA / Eletivas / Turmas Unidas
+    const blocosSimultaneos = resolveBlocosSimultaneosEngine(
+      payload,
+      rawRegrasGerais,
+      demandasAjustadas,
+      turmaIds,
+      turno
+    );
+    const simRes = allocateSimultaneousBlocksPhase({
+      blocosSimultaneos,
+      demandasAjustadas,
+      gradePorTurma,
+      gradePorProfessor,
+      dispoIdx,
+      diasList,
+      periodosPorDia,
+      rc01MaxConsecutivas,
+      rc02Cfg,
+      regrasGerais,
+      turno,
+      preferencias: payload?.preferencias,
+      randomize,
+    });
 
     // FASE 0: Emparelhamento Bipartido Estrutural para Pares 🔒 Obrigatórios (ex.: #1-#2)
     allocateMandatoryPairsPhase({
@@ -3174,7 +4234,7 @@ function solverWorkerBootstrap(workerScope) {
       periodosPorDia
     );
 
-    let unplaced = [];
+    let unplaced = [...(simRes?.forcedUnplaced || [])];
     for (const lesson of lessons) {
       const { turma_id: turmaId, disciplina_id: disciplinaId, professor_id: professorId, co_professores: coProfessores } = lesson;
 
@@ -3257,6 +4317,9 @@ function solverWorkerBootstrap(workerScope) {
       SEM_SLOT_LIVRE_TURMA: 0,
       COLISAO_PROFESSOR: 0,
       SEM_DISPONIBILIDADE_PROFESSOR: 0,
+      RESTRICAO_INTERTURNO_CPF: 0,
+      SEM_SALA_DISPONIVEL: 0,
+      CONFLITO_BLOCO_SIMULTANEO: 0,
       OUTRO: 0,
     };
 
@@ -3266,14 +4329,20 @@ function solverWorkerBootstrap(workerScope) {
         profGrade: gradePorProfessor[na.professor_id],
         dispoIdx,
         professorId: na.professor_id,
+        disciplinaId: na.disciplina_id,
+        turmaId: na.turma_id,
+        gradePorTurma,
+        regrasGerais,
         periodosPorDia,
         diasList,
+        motivoForcado: na._motivoForcado || null,
       });
       diagnosticoNaoAlocadas.push({
         turma_id: na.turma_id,
         disciplina_id: na.disciplina_id,
         professor_id: na.professor_id,
         motivo,
+        ...(na._blocoNome ? { bloco_simultaneo_nome: na._blocoNome } : {}),
       });
       const k = diagnosticoContadores[motivo] !== undefined ? motivo : "OUTRO";
       diagnosticoContadores[k] = (diagnosticoContadores[k] || 0) + 1;
@@ -3304,11 +4373,15 @@ function solverWorkerBootstrap(workerScope) {
       rc02Cfg,
       regrasGerais,
       turno,
-      dispoIdx
+      dispoIdx,
+      blocosSimultaneos,
+      gradePorProfessor
     );
     const qualidadeScore =
       totalAlocadasReal * 1000000 -
       qual.violacoesIndisponibilidade * 10000000 -
+      (qual.violacoesCapacidadeSalas || 0) * 9000000 -
+      (qual.violacoesBlocosSimultaneos || 0) * 8000000 -
       qual.violacoesSeparadasMesmoDia * 5000000 -
       qual.violacoesMaxDia * 5000000 -
       qual.violacoesParesBloqueados * 4000000 -
@@ -3323,6 +4396,9 @@ function solverWorkerBootstrap(workerScope) {
         aulas_demanda: demandaTotal,
         aulas_alocadas: totalAlocadasReal,
         aulas_fixas_manuais: alocadasFixas,
+        super_aulas_alocadas: qual.superAulasAlocadas || 0,
+        blocos_simultaneos_ativos: blocosSimultaneos.length,
+        recursos_fisicos_ativos: recIdxRoot?.list?.length || 0,
         aulas_nao_alocadas: unplaced.length,
         cobertura_percentual: cobertura,
         rc01_max_consecutivas: rc01MaxConsecutivas,
@@ -3332,6 +4408,9 @@ function solverWorkerBootstrap(workerScope) {
         rc02_max_hard_padrao: rc02Cfg.maxHardPadrao,
         rc02_strict_cap_mock: !!rc02Cfg.strictCapMock,
         violacoes_indisponibilidade: qual.violacoesIndisponibilidade,
+        violacoes_interturno: qual.violacoesInterturno || 0,
+        violacoes_capacidade_salas: qual.violacoesCapacidadeSalas || 0,
+        violacoes_blocos_simultaneos: qual.violacoesBlocosSimultaneos || 0,
         violacoes_separadas_mesmo_dia: qual.violacoesSeparadasMesmoDia,
         violacoes_max_dia: qual.violacoesMaxDia,
         violacoes_pares_bloqueados: qual.violacoesParesBloqueados,
@@ -3355,6 +4434,7 @@ function solverWorkerBootstrap(workerScope) {
         resumo_motivos: diagnosticoContadores,
         nao_alocadas_detalhado: diagnosticoNaoAlocadas,
         divergencias_pares_obrigatorios: qual.divergenciasParesObrigatorios,
+        divergencias_blocos_simultaneos: qual.divergenciasBlocosSimultaneos || [],
         excessos_fixados: excessosFixados,
         turmas_acima_capacidade: turmasAcimaCapacidade,
       },
@@ -3431,6 +4511,8 @@ function solverWorkerBootstrap(workerScope) {
             if (
               alocadas >= demanda &&
               (res.metrics.violacoes_indisponibilidade || 0) === 0 &&
+              (res.metrics.violacoes_capacidade_salas || 0) === 0 &&
+              (res.metrics.violacoes_blocos_simultaneos || 0) === 0 &&
               (res.metrics.violacoes_separadas_mesmo_dia || 0) === 0 &&
               (res.metrics.violacoes_max_dia || 0) === 0 &&
               (res.metrics.violacoes_pares_bloqueados || 0) === 0 &&

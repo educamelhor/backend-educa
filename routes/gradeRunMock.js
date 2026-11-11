@@ -7,6 +7,12 @@ import express from "express";
 import pool from "../db.js";
 import { buildSolverPayload } from "../services/solverPayloadService.js";
 import { runGreedySolver } from "../services/mockGreedySolver.js";
+import {
+  buildBlocosSimultaneosConsolidados,
+  calcularDescontoAulasUnidasPorProfessor,
+  fetchRestricoesInterTurnosPorCpf,
+  normalizarRecursosFisicos,
+} from "../services/solverEtapa3Helper.js";
 
 const router = express.Router();
 
@@ -293,15 +299,49 @@ async function assembleEnrichedSolverPayload({
     prev.aulas += Number(d.carga || 0);
     profCarga.set(prof.id, prev);
   }
+  // ETAPA 3: Recalcula blocos simultâneos, recursos físicos e restrições inter-turnos com regras_gerais consolidadas
+  const regrasGeraisFinais = payload.config_pedagogica?.regras_gerais || {};
+  payload.blocos_simultaneos = buildBlocosSimultaneosConsolidados({
+    agrupamentos: payload.agrupamentos || [],
+    demanda: dem,
+    modulacao: mod,
+    turmas: payload.turmas || [],
+    regrasGerais: regrasGeraisFinais,
+    turnoNorm,
+  });
+  payload.recursos_fisicos = normalizarRecursosFisicos(regrasGeraisFinais);
+
+  if (regrasGeraisFinais?.interturno_regras || !payload.restricoes_interturno) {
+    const profIdsPayload = Array.from(new Set(mod.map((m) => Number(m.professor_id)).filter(Boolean)));
+    payload.restricoes_interturno = await fetchRestricoesInterTurnosPorCpf(pool, {
+      escolaId,
+      turnoNorm,
+      profIds: profIdsPayload,
+      horariosPorTurno: payload.horarios_por_turno || {},
+      diasSemana: payload.dias_semana || [1, 2, 3, 4, 5],
+      periodosPorDia,
+      regrasGerais: regrasGeraisFinais,
+    });
+  }
+
+  const descontosUnidasMap = calcularDescontoAulasUnidasPorProfessor(payload.blocos_simultaneos);
+
   const warnings_payload = Array.from(profCarga.values())
-    .filter((p) => p.aulas >= maxSlotsProf - 2)
+    .map((p) => {
+      const desc = Number(descontosUnidasMap.get(Number(p.id))?.desconto_slots) || 0;
+      const aulasFisicas = Math.max(0, p.aulas - desc);
+      return { ...p, aulas_fisicas: aulasFisicas, desconto_turmas_unidas: desc };
+    })
+    .filter((p) => p.aulas_fisicas >= maxSlotsProf - 2)
     .map((p) => ({
       professor_id: p.id,
       professor_nome: p.nome,
-      aulas_demanda: p.aulas,
+      aulas_demanda: p.aulas_fisicas,
+      aulas_moduladas_brutas: p.aulas,
+      desconto_turmas_unidas: p.desconto_turmas_unidas,
       slots_disponiveis: maxSlotsProf,
-      utilization_pct: Math.round((p.aulas / maxSlotsProf) * 100),
-      is_100_percent: p.aulas >= maxSlotsProf,
+      utilization_pct: Math.round((p.aulas_fisicas / maxSlotsProf) * 100),
+      is_100_percent: p.aulas_fisicas >= maxSlotsProf,
     }));
 
   const slotsFixosNoEscopo = Array.isArray(payload.slots_fixos)
@@ -323,6 +363,11 @@ async function assembleEnrichedSolverPayload({
       ? new Set(payload.modulacao.map((m) => m.professor_id)).size
       : 0,
     slots_fixos_count: slotsFixosNoEscopo,
+    blocos_simultaneos_count: Array.isArray(payload.blocos_simultaneos) ? payload.blocos_simultaneos.length : 0,
+    recursos_fisicos_count: Array.isArray(payload.recursos_fisicos) ? payload.recursos_fisicos.length : 0,
+    professores_multiturno_count: Array.isArray(payload.restricoes_interturno?.resumo_professores_multiturno)
+      ? payload.restricoes_interturno.resumo_professores_multiturno.length
+      : 0,
   };
 
   return { payload, warnings_payload, payload_summary };

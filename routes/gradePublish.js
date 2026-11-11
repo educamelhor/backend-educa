@@ -27,6 +27,12 @@ import {
   resolverVigenciaLetiva,
   resolverHorariosReaisPorTurno,
 } from "../utils/vigenciaHorariosHelper.js";
+import {
+  ensureGradeSlotMultiTurmaSupport,
+  carregarParesTurmasUnidasPermitidas,
+  saoTurmasUnidasPermitidas,
+  fetchRestricoesInterTurnosPorCpf,
+} from "../services/solverEtapa3Helper.js";
 
 const router = express.Router();
 
@@ -115,7 +121,7 @@ router.post("/slot/upsert", requireEscola, async (req, res) => {
   try {
     const {
       turno, turma_id, dia, ordem, disciplina_id, professor_id,
-      origem, locked
+      origem, locked, permitir_turmas_unidas
     } = req.body || {};
 
     if (!turno) return res.status(400).json({ error: "turno é obrigatório" });
@@ -127,7 +133,7 @@ router.post("/slot/upsert", requireEscola, async (req, res) => {
       escolaId: req.escolaId,
       turno,
       turma_id, dia, ordem, disciplina_id, professor_id,
-      origem, locked
+      origem, locked, permitir_turmas_unidas
     });
 
     return res.json({ ok: true, ...out });
@@ -318,15 +324,18 @@ router.post("/validate-slot", requireEscola, async (req, res) => {
       [resultadoId, profId, diaNum, ordemNum]
     );
 
+    const paresUnidosSet = await carregarParesTurmasUnidasPermitidas(db, req.escolaId, turnoNorm);
     const hasProfConflict = (profRows || []).some((r) => {
       const t = Number(r.turma_id);
       const d = Number(r.dia_semana);
       const o = Number(r.periodo_ordem);
-      // Se for exatamente o slot de origem, ignorar
-      if (origemTurma && origemDia && origemOrdem) {
-        return !(t === origemTurma && d === origemDia && o === origemOrdem);
+      if (origemTurma && origemDia && origemOrdem && t === origemTurma && d === origemDia && o === origemOrdem) {
+        return false;
       }
-      return true; // qualquer ocorrência é conflito
+      if (saoTurmasUnidasPermitidas(paresUnidosSet, turmaId, t, Boolean(req.body?.permitir_turmas_unidas))) {
+        return false;
+      }
+      return true;
     });
 
     if (hasProfConflict) {
@@ -436,8 +445,46 @@ router.get("/manual", requireEscola, async (req, res) => {
       [req.escolaId, turnoNorm]
     );
 
+    // ETAPA 3: Carrega restrições inter-turnos por CPF para todos os professores da escola
+    // de modo que a aba Horário Manual exiba alertas visuais de aulas em outros turnos / interjornada
+    let restricoesInterturno = null;
+    try {
+      const [[cfgRow]] = await db.query(
+        `SELECT dias_semana, periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1`,
+        [req.escolaId]
+      );
+      let diasSemanaCfg = [1, 2, 3, 4, 5];
+      let periodosDiaCfg = 5;
+      let regrasGeraisCfg = {};
+      if (cfgRow) {
+        const ds = parseJsonColumn(cfgRow.dias_semana);
+        if (Array.isArray(ds) && ds.length > 0) diasSemanaCfg = ds.map(Number);
+        const per = parseJsonColumn(cfgRow.periodos);
+        if (per && typeof per === "object" && !Array.isArray(per)) {
+          regrasGeraisCfg = per._regras_gerais || {};
+          if (Number(per[turnoNorm]) > 0) periodosDiaCfg = Number(per[turnoNorm]);
+        }
+      }
+      const [profsEscola] = await db.query(
+        `SELECT id FROM professores WHERE escola_id = ?`,
+        [req.escolaId]
+      );
+      const horariosInfo = await resolverHorariosReaisPorTurno(req.escolaId, null, db);
+      restricoesInterturno = await fetchRestricoesInterTurnosPorCpf(db, {
+        escolaId: req.escolaId,
+        turnoNorm,
+        profIds: (profsEscola || []).map((p) => Number(p.id)),
+        horariosPorTurno: horariosInfo?.horarios_por_turno || {},
+        diasSemana: diasSemanaCfg,
+        periodosPorDia: periodosDiaCfg,
+        regrasGerais: regrasGeraisCfg,
+      });
+    } catch {
+      restricoesInterturno = null;
+    }
+
     if (!resultados || resultados.length === 0) {
-      return res.json({ ok: true, resultado_id: null, status: null, slots: [] });
+      return res.json({ ok: true, resultado_id: null, status: null, slots: [], restricoes_interturno: restricoesInterturno });
     }
 
     // Prioriza rascunho se tiver slots; caso contrário usa publicado se tiver slots
@@ -489,6 +536,7 @@ router.get("/manual", requireEscola, async (req, res) => {
           resultado_id: outro.id,
           status: outro.status,
           slots: slotsOutro,
+          restricoes_interturno: restricoesInterturno,
         });
       }
     }
@@ -498,6 +546,7 @@ router.get("/manual", requireEscola, async (req, res) => {
       resultado_id: escolhido.id,
       status: escolhido.status,
       slots: slotsEscolhido,
+      restricoes_interturno: restricoesInterturno,
     });
   } catch (e) {
     console.error("GET /api/grade/manual:", e);
@@ -534,7 +583,10 @@ router.post("/manual/professor", requireEscola, async (req, res) => {
       return res.status(400).json({ ok: false, error: "slots deve ser uma lista." });
     }
 
-    // Normaliza e deduplica slots por (dia, ordem)
+    await ensureGradeSlotMultiTurmaSupport(conn);
+    const paresUnidosSet = await carregarParesTurmasUnidasPermitidas(conn, req.escolaId, turnoNorm);
+
+    // Normaliza e deduplica slots preservando Turmas Unidas quando autorizadas no mesmo (dia, ordem)
     const mapaSlots = new Map();
     for (const s of slots) {
       const dia = Number(s?.dia ?? s?.dia_semana);
@@ -542,7 +594,17 @@ router.post("/manual/professor", requireEscola, async (req, res) => {
       const turma_id = Number(s?.turma_id);
       const disciplina_id = Number(s?.disciplina_id);
       if (!dia || !ordem || !turma_id || !disciplina_id) continue;
-      mapaSlots.set(`${dia}-${ordem}`, { dia, ordem, turma_id, disciplina_id });
+      const baseKey = `${dia}-${ordem}`;
+      const existing = mapaSlots.get(baseKey);
+      if (
+        existing &&
+        existing.turma_id !== turma_id &&
+        saoTurmasUnidasPermitidas(paresUnidosSet, existing.turma_id, turma_id, Boolean(s?.permitir_turmas_unidas))
+      ) {
+        mapaSlots.set(`${dia}-${ordem}-${turma_id}`, { dia, ordem, turma_id, disciplina_id });
+      } else {
+        mapaSlots.set(baseKey, { dia, ordem, turma_id, disciplina_id });
+      }
     }
     const validSlots = Array.from(mapaSlots.values());
 

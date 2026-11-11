@@ -12,6 +12,11 @@
 
 import pool from "../db.js";
 import { resolverVigenciaLetiva, resolverHorariosReaisPorTurno } from "../utils/vigenciaHorariosHelper.js";
+import {
+  buildBlocosSimultaneosConsolidados,
+  fetchRestricoesInterTurnosPorCpf,
+  normalizarRecursosFisicos,
+} from "./solverEtapa3Helper.js";
 
 function toInt(v, def = 0) {
   const n = Number(v);
@@ -422,7 +427,7 @@ async function fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, nivel = "f
 }
 
 // ---------------------- agrupamentos (IFA / PCA / Eletiva / PD) ------------
-async function fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semestre = 1) {
+export async function fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semestre = 1) {
   try {
     const semNum = toInt(semestre, 1) || 1;
     const anoAtual = new Date().getMonth() === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear();
@@ -595,9 +600,18 @@ export async function buildSolverPayload({
     ])
   ).filter(Boolean);
 
-  const [disponibilidades, preferenciasMap] = await Promise.all([
+  const [disponibilidades, preferenciasMap, restricoes_interturno] = await Promise.all([
     fetchDisponibilidades(escolaId, turnoNorm, profIds),
     fetchPreferencias(escolaId, turnoNorm, profIds),
+    fetchRestricoesInterTurnosPorCpf(pool, {
+      escolaId,
+      turnoNorm,
+      profIds,
+      horariosPorTurno: horariosReaisInfo?.horarios_por_turno || {},
+      diasSemana: escolaCfg.dias_semana,
+      periodosPorDia: escolaCfg.periodos_por_dia,
+      regrasGerais: escolaCfg.regras_gerais || {},
+    }),
   ]);
 
   // Se escola_configuracao_grade possui regras_gerais, aplica sobre config_pedagogica
@@ -641,6 +655,18 @@ export async function buildSolverPayload({
     demanda, // [{ turma_id,disciplina_id,disciplina_nome,carga }]
     modulacao, // [{ professor_id,turma_id,disciplina_id,aulas,professor_nome }]
     agrupamentos, // [{ id,nome,tipo,modulacao,turmas_origem }]
+    blocos_simultaneos: buildBlocosSimultaneosConsolidados({
+      agrupamentos,
+      demanda,
+      modulacao,
+      turmas,
+      regrasGerais: config_pedagogica?.regras_gerais || escolaCfg.regras_gerais || {},
+      turnoNorm,
+    }),
+    recursos_fisicos: normalizarRecursosFisicos(
+      config_pedagogica?.regras_gerais || escolaCfg.regras_gerais || {}
+    ),
+    restricoes_interturno,
     disponibilidades, // [{ professor_id,dia,ordem,periodo,status }]
     preferencias: Object.fromEntries(preferenciasMap), // { [profId]: regras_json }
     slots_fixos, // [{ turma_id,dia,ordem,disciplina_id,professor_id,origem,locked }]

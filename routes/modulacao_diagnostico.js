@@ -8,7 +8,14 @@
 
 import express from "express";
 import pool from "../db.js";
-import { resolverVigenciaLetiva } from "../utils/vigenciaHorariosHelper.js";
+import { resolverVigenciaLetiva, resolverHorariosReaisPorTurno } from "../utils/vigenciaHorariosHelper.js";
+import {
+  buildBlocosSimultaneosConsolidados,
+  calcularDescontoAulasUnidasPorProfessor,
+  fetchRestricoesInterTurnosPorCpf,
+  normalizarRecursosFisicos,
+} from "../services/solverEtapa3Helper.js";
+import { fetchAgrupamentos } from "../services/solverPayloadService.js";
 
 const router = express.Router();
 
@@ -274,6 +281,116 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
       });
     }
 
+    // 4) ETAPA 3: Carrega configuração da escola + agrupamentos + horários reais para:
+    //    (a) Descontar aulas em Turmas Unidas (1 professor lecionando 2+ turmas simultaneamente)
+    //    (b) Alertar restrições Inter-Turnos / Interjornada por CPF
+    //    (c) Auditar gargalos físicos de Salas Especiais / Quadras / Laboratórios
+    const turnoLower = String(turno || "").trim().toLowerCase();
+    let regrasGerais = {};
+    let diasSemanaCfg = [1, 2, 3, 4, 5];
+    let periodosDiaCfg = 5;
+    try {
+      const [[cfgRow]] = await pool.query(
+        `SELECT dias_semana, periodos FROM escola_configuracao_grade WHERE escola_id = ? LIMIT 1`,
+        [escola_id]
+      );
+      if (cfgRow) {
+        const ds = typeof cfgRow.dias_semana === "string" ? JSON.parse(cfgRow.dias_semana) : cfgRow.dias_semana;
+        if (Array.isArray(ds) && ds.length > 0) diasSemanaCfg = ds.map(Number);
+        const per = typeof cfgRow.periodos === "string" ? JSON.parse(cfgRow.periodos) : (cfgRow.periodos || {});
+        if (per && typeof per === "object") {
+          regrasGerais = per._regras_gerais || {};
+          if (Number(per[turnoLower]) > 0) periodosDiaCfg = Number(per[turnoLower]);
+        }
+      }
+    } catch {
+      // segue com defaults
+    }
+
+    const [horariosInfo, [modParesRows], [turmasTurnoRows], agrupamentosAtivos] = await Promise.all([
+      resolverHorariosReaisPorTurno(escola_id, anoAtual, pool).catch(() => ({ horarios_por_turno: {} })),
+      pool.query(
+        `SELECT m.professor_id, m.turma_id, m.disciplina_id, m.aulas
+           FROM modulacao m
+           JOIN turmas t ON t.id = m.turma_id AND t.escola_id = m.escola_id
+          WHERE m.escola_id = ? AND LOWER(t.turno) = LOWER(?) AND t.ano = ?`,
+        [escola_id, turno, anoAtual]
+      ).catch(() => [[]]),
+      pool.query(
+        `SELECT id, nome, turno, regime FROM turmas WHERE escola_id = ? AND LOWER(turno) = LOWER(?) AND ano = ?`,
+        [escola_id, turno, anoAtual]
+      ).catch(() => [[]]),
+      fetchAgrupamentos(escola_id, turnoLower, [], semestre).catch(() => []),
+    ]);
+
+    const demandaPares = (modParesRows || []).map((r) => ({
+      turma_id: Number(r.turma_id),
+      disciplina_id: Number(r.disciplina_id),
+      carga: Number(r.aulas) || 0,
+    }));
+
+    const blocosSimultaneos = buildBlocosSimultaneosConsolidados({
+      agrupamentos: agrupamentosAtivos || [],
+      demanda: demandaPares,
+      modulacao: modParesRows || [],
+      turmas: turmasTurnoRows || [],
+      regrasGerais,
+      turnoNorm: turnoLower,
+    });
+    const descontosUnidasMap = calcularDescontoAulasUnidasPorProfessor(blocosSimultaneos);
+    const recursosFisicos = normalizarRecursosFisicos(regrasGerais);
+
+    const profIdsModulados = modulados.map((m) => Number(m.professor_id)).filter((n) => n > 0);
+    const restricoesInterturno = await fetchRestricoesInterTurnosPorCpf(pool, {
+      escolaId: escola_id,
+      turnoNorm: turnoLower,
+      profIds: profIdsModulados,
+      horariosPorTurno: horariosInfo?.horarios_por_turno || {},
+      diasSemana: diasSemanaCfg,
+      periodosPorDia: periodosDiaCfg,
+      regrasGerais,
+    });
+
+    const resumoMultiturnoMap = new Map(
+      (restricoesInterturno.resumo_professores_multiturno || []).map((r) => [Number(r.professor_id), r])
+    );
+
+    // Avalia ocupação total semanal dos Recursos Físicos (Salas / Quadras / Laboratórios) no turno
+    const totalSlotsSemanaTurno = diasSemanaCfg.length * periodosDiaCfg;
+    const recursosFisicosResumo = recursosFisicos.map((rec) => {
+      const discSet = new Set(rec.disciplina_ids.map(Number));
+      let aulasExigidas = 0;
+      for (const m of modParesRows || []) {
+        if (discSet.has(Number(m.disciplina_id))) {
+          aulasExigidas += Number(m.aulas) || 0;
+        }
+      }
+      // Desconta turmas unidas que compartilham o mesmo espaço físico simultaneamente
+      for (const b of blocosSimultaneos) {
+        if (b.permitir_mesmo_prof_simultaneo === false) continue;
+        const porProfDisc = new Map();
+        for (const it of b.itens || []) {
+          if (!discSet.has(Number(it.disciplina_id))) continue;
+          const k = `${it.professor_id}|${it.disciplina_id}`;
+          porProfDisc.set(k, (porProfDisc.get(k) || 0) + 1);
+        }
+        for (const qtdTurmas of porProfDisc.values()) {
+          if (qtdTurmas >= 2) {
+            aulasExigidas -= (qtdTurmas - 1) * (Number(b.aulas_sincronizadas) || 0);
+          }
+        }
+      }
+      aulasExigidas = Math.max(0, aulasExigidas);
+      const capacidadeSemanal = rec.capacidade * totalSlotsSemanaTurno;
+      return {
+        ...rec,
+        aulas_exigidas: aulasExigidas,
+        capacidade_semanal: capacidadeSemanal,
+        ocupacao_pct: capacidadeSemanal > 0 ? Math.round((aulasExigidas / capacidadeSemanal) * 100) : 0,
+        gargalo_critico: aulasExigidas > capacidadeSemanal,
+      };
+    });
+
     const conflitos = [];
     const ok = [];
     const semDisponibilidade = [];
@@ -281,6 +398,10 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
     for (const prof of modulados) {
       const pid = Number(prof.professor_id);
       const aulasMod = Number(prof.aulas_moduladas) || 0;
+      const descontoInfo = descontosUnidasMap.get(pid);
+      const descontoUnidas = Number(descontoInfo?.desconto_slots) || 0;
+      const aulasFisicas = Math.max(0, aulasMod - descontoUnidas);
+      const multiTurnoInfo = resumoMultiturnoMap.get(pid) || null;
 
       if (!idsComDisp.has(pid)) {
         semDisponibilidade.push({
@@ -289,6 +410,9 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
           disciplina_nome: prof.disciplina_nome,
           turmas_count: Number(prof.turmas_count),
           aulas_moduladas: aulasMod,
+          aulas_fisicas: aulasFisicas,
+          desconto_turmas_unidas: descontoUnidas,
+          multiturno: multiTurnoInfo,
           slots_livres: null,
           deficit_slots: null,
           severidade: "SEM_DISPONIBILIDADE",
@@ -298,7 +422,7 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
 
       const slotsLivres = slotsMap.get(pid) ?? 0;
       const detalhe = slotsDetalheMap.get(pid) || { livres_puros: slotsLivres, evitar: 0 };
-      const deficitSlots = slotsLivres - aulasMod; // negativo = conflito
+      const deficitSlots = slotsLivres - aulasFisicas; // negativo = conflito real de slots físicos
 
       const entry = {
         professor_id: pid,
@@ -306,6 +430,9 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
         disciplina_nome: prof.disciplina_nome,
         turmas_count: Number(prof.turmas_count),
         aulas_moduladas: aulasMod,
+        aulas_fisicas: aulasFisicas,
+        desconto_turmas_unidas: descontoUnidas,
+        multiturno: multiTurnoInfo,
         slots_livres: slotsLivres,
         slots_livres_puros: detalhe.livres_puros,
         slots_evitar: detalhe.evitar,
@@ -333,6 +460,20 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
       conflitos,
       ok,
       sem_disponibilidade: semDisponibilidade,
+      etapa3_resumo: {
+        blocos_simultaneos: blocosSimultaneos.map((b) => ({
+          id: b.id,
+          nome: b.nome,
+          tipo: b.tipo,
+          origem: b.origem,
+          turmas_count: b.turma_ids.length,
+          aulas_sincronizadas: b.aulas_sincronizadas,
+          permitir_mesmo_prof_simultaneo: b.permitir_mesmo_prof_simultaneo,
+        })),
+        professores_multiturno: restricoesInterturno.resumo_professores_multiturno || [],
+        regras_interturno: restricoesInterturno.regras || null,
+        recursos_fisicos: recursosFisicosResumo,
+      },
     });
   } catch (err) {
     console.error("Erro no diagnóstico de disponibilidade:", err);
