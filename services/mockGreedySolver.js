@@ -1,4 +1,4 @@
-// src/features/secretaria/horarios/solverEngine.js
+﻿// src/features/secretaria/horarios/solverEngine.js
 // ============================================================================
 // MOTOR SOLVER 2.0 (Urânia-Engine) — Web Worker + Multi-Start + Kempe Chains + Tabu Search
 // Executa 100% em background thread no navegador do usuário (sem timeout HTTP),
@@ -170,28 +170,57 @@ function solverWorkerBootstrap(workerScope) {
     return left + 1 + right;
   }
 
+  function buildExcludentesMap(regrasGerais) {
+    if (!regrasGerais) return null;
+    if (regrasGerais._excludentesMap instanceof Map) return regrasGerais._excludentesMap;
+    const raw = Array.isArray(regrasGerais.disciplinas_excludentes)
+      ? regrasGerais.disciplinas_excludentes
+      : [];
+    const map = new Map();
+    for (const pair of raw) {
+      if (!Array.isArray(pair) || pair.length < 2) continue;
+      const d1 = toInt(pair[0], 0);
+      const d2 = toInt(pair[1], 0);
+      if (!d1 || !d2 || d1 === d2) continue;
+      if (!map.has(d1)) map.set(d1, new Set());
+      if (!map.has(d2)) map.set(d2, new Set());
+      map.get(d1).add(d2);
+      map.get(d2).add(d1);
+    }
+    return map;
+  }
+
   /**
    * Constrói o índice de Governança Multi-Escola de Pares de Aulas Duplas
    * (Ordem de prioridade #1-#2, #4-#5, etc., modos: obrigatorio | prioritario | permitido | bloqueado,
-   * e bloqueio de pares que cortam o recreio/intervalo).
+   * e bloqueio de pares que cortam o recreio/intervalo específico do turno ativo).
    */
   function buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia) {
+    const turnoKey = String(turno || regrasGerais?._turno || "matutino").toLowerCase();
     if (
       regrasGerais &&
       regrasGerais._pairGov &&
-      regrasGerais._pairGov.periodosPorDia === periodosPorDia
+      regrasGerais._pairGov.periodosPorDia === periodosPorDia &&
+      regrasGerais._pairGov.turnoKey === turnoKey
     ) {
       return regrasGerais._pairGov;
     }
 
-    const isNoturno = String(turno || regrasGerais?._turno || "").toLowerCase().includes("noturno");
-    const turnoKey = String(turno || regrasGerais?._turno || "matutino").toLowerCase();
-    const intAfter =
-      regrasGerais?.recreio_apos_periodo?.[turnoKey] !== undefined
-        ? Number(regrasGerais.recreio_apos_periodo[turnoKey])
-        : isNoturno
-        ? 2
-        : 3;
+    const isNoturno = turnoKey.includes("noturno");
+    const govApos = toInt(regrasGerais?._intervalos_governanca?.[turnoKey]?.apos_periodo, 0);
+    const cfgAposRaw = regrasGerais?.recreio_apos_periodo?.[turnoKey];
+    const cfgApos = cfgAposRaw !== undefined ? toInt(cfgAposRaw, 0) : null;
+
+    // Prioriza o intervalo real cadastrado em Direção > Governança quando válido para os períodos do turno;
+    // caso contrário usa recreio_apos_periodo[turno] (corrigindo legado noturno=2 quando turno tem >=5 aulas)
+    let intAfter = 3;
+    if (govApos > 0 && govApos < periodosPorDia) {
+      intAfter = govApos;
+    } else if (cfgApos !== null && cfgApos >= 0 && cfgApos < periodosPorDia) {
+      intAfter = isNoturno && cfgApos === 2 && periodosPorDia >= 5 ? 3 : cfgApos;
+    } else {
+      intAfter = isNoturno ? (periodosPorDia >= 5 ? 3 : 2) : 3;
+    }
 
     const bloquearRecreio =
       regrasGerais?.bloquear_duplas_no_recreio !== undefined
@@ -203,6 +232,17 @@ function solverWorkerBootstrap(workerScope) {
     const rawList = Array.isArray(regrasGerais?.pares_duplas_governanca)
       ? regrasGerais.pares_duplas_governanca
       : [];
+
+    // Identifica recreios de outros turnos para não bloquear indevidamente um par válido do turno atual
+    const otherShiftRecesses = new Set();
+    if (regrasGerais?.recreio_apos_periodo && typeof regrasGerais.recreio_apos_periodo === "object") {
+      for (const [tk, val] of Object.entries(regrasGerais.recreio_apos_periodo)) {
+        if (String(tk).toLowerCase() !== turnoKey) {
+          const rv = toInt(val, 0);
+          if (rv > 0 && rv !== intAfter) otherShiftRecesses.add(rv);
+        }
+      }
+    }
 
     const defaultOrder = [];
     if (periodosPorDia >= 2) defaultOrder.push(1);
@@ -226,6 +266,14 @@ function solverWorkerBootstrap(workerScope) {
         let modo = String(item?.modo || "prioritario").toLowerCase();
         if (!["obrigatorio", "prioritario", "permitido", "bloqueado"].includes(modo)) {
           modo = "prioritario";
+        }
+        // Se o par veio 'bloqueado' apenas por ser o recreio de OUTRO turno (ex: #3-#4 da manhã num turno de 4 aulas com recreio no #2), libera no turno atual
+        if (
+          modo === "bloqueado" &&
+          ini !== intAfter &&
+          (item?.bloqueado_por_recreio || otherShiftRecesses.has(ini))
+        ) {
+          modo = ini === intAfter + 1 ? "prioritario" : "permitido";
         }
         if (bloquearRecreio && intAfter > 0 && ini === intAfter) {
           modo = "bloqueado";
@@ -276,6 +324,7 @@ function solverWorkerBootstrap(workerScope) {
     });
 
     return {
+      turnoKey,
       periodosPorDia,
       intAfter,
       bloquearRecreio,
@@ -316,11 +365,18 @@ function solverWorkerBootstrap(workerScope) {
     let countExisting = 0;
     let minP = periodo;
     let maxP = periodo;
+    const exclMap = strictPedagogical ? buildExcludentesMap(regrasGerais) : null;
+    const exclSet = exclMap ? exclMap.get(Number(disciplinaId)) : null;
 
     for (let p = 1; p <= periodosPorDia; p++) {
       if (p === periodo) continue;
       const cell = row[p];
-      if (cell && Number(cell.disciplina_id) === Number(disciplinaId)) {
+      if (!cell || !cell.disciplina_id) continue;
+      const cellDiscId = Number(cell.disciplina_id);
+      if (exclSet && exclSet.has(cellDiscId)) {
+        return false;
+      }
+      if (cellDiscId === Number(disciplinaId)) {
         countExisting++;
         if (p < minP) minP = p;
         if (p > maxP) maxP = p;
@@ -408,6 +464,28 @@ function solverWorkerBootstrap(workerScope) {
       }
     }
 
+    if (strictPedagogical) {
+      const exclMap = buildExcludentesMap(regrasGerais);
+      if (exclMap && exclMap.size > 0) {
+        const discIds = Array.from(byDisc.keys());
+        for (let i = 0; i < discIds.length; i++) {
+          const dA = discIds[i];
+          const setA = exclMap.get(dA);
+          if (!setA) continue;
+          for (let j = i + 1; j < discIds.length; j++) {
+            const dB = discIds[j];
+            if (setA.has(dB)) {
+              const stA = byDisc.get(dA);
+              const stB = byDisc.get(dB);
+              if (!(stA?.allLocked && stB?.allLocked)) {
+                return false;
+              }
+            }
+          }
+        }
+      }
+    }
+
     return true;
   }
 
@@ -449,11 +527,25 @@ function solverWorkerBootstrap(workerScope) {
     const leftSame = leftCell && Number(leftCell.disciplina_id) === Number(disciplinaId);
     const rightSame = rightCell && Number(rightCell.disciplina_id) === Number(disciplinaId);
 
-    const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
+    const prefDuplasEscola = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
+    const profPrefereUnica = Boolean(preferenciasProfessor?.prefere_aula_unica);
+    const prefDuplas = prefDuplasEscola && !profPrefereUnica;
     const proibirSeparadas = regrasGerais ? regrasGerais.proibir_aulas_separadas_mesmo_dia !== false : true;
     const maxDia = getRc02MaxForDisc(rc02Cfg, disciplinaId);
     const inDay = countDiscInDay(turmaGrade, dia, disciplinaId);
     const strictCap = !!rc02Cfg?.strictCapMock;
+
+    const exclMap = buildExcludentesMap(regrasGerais);
+    const exclSet = exclMap ? exclMap.get(Number(disciplinaId)) : null;
+    if (exclSet && exclSet.size > 0) {
+      const rowDia = turmaGrade?.[dia] || {};
+      for (const c of Object.values(rowDia)) {
+        if (c && exclSet.has(Number(c.disciplina_id))) {
+          score += 65000;
+          break;
+        }
+      }
+    }
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const intAfter = pairGov.intAfter;
@@ -465,7 +557,8 @@ function solverWorkerBootstrap(workerScope) {
     }
 
     if (!prefDuplas) {
-      if (leftSame || rightSame) score += 2000;
+      if (leftSame || rightSame) score += profPrefereUnica ? 4500 : 2000;
+      else if (profPrefereUnica && inDay > 0) score += 4500;
     } else {
       if (leftSame || rightSame) {
         const pStart = leftSame ? periodo - 1 : periodo;
@@ -872,6 +965,12 @@ function solverWorkerBootstrap(workerScope) {
     return false;
   }
 
+  /**
+   * FASE 0 (Urânia-Engine): Emparelhamento Bipartido Estrutural (Kuhn Augmenting Path)
+   * para Pares marcados como 🔒 OBRIGATÓRIO (ex.: #1-#2).
+   * Reserva e aloca duplas geminadas nos blocos obrigatórios de todas as turmas e dias
+   * ANTES de distribuir as aulas avulsas e os horários restantes (#3..#6).
+   */
   function allocateMandatoryPairsPhase({
     demandasAjustadas,
     gradePorTurma,
@@ -884,16 +983,19 @@ function solverWorkerBootstrap(workerScope) {
     rc02Cfg,
     regrasGerais,
     turno,
+    preferencias = null,
     randomize = false,
     strategy = "dsatur_slack",
   }) {
     const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
     if (!prefDuplas || rc01MaxConsecutivas < 2) return;
+    const exclMap = buildExcludentesMap(regrasGerais);
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
     const mandatoryStarts = pairGov.orderedStarts.filter(p => pairGov.isPairMandatory(p));
-    const totalGridSlots = diasList.length * periodosPorDia;
+    if (mandatoryStarts.length === 0) return;
 
+    const totalGridSlots = diasList.length * periodosPorDia;
     const profTotalPairs = new Map();
     const profExcludedSlots = new Map();
     for (const d of demandasAjustadas) {
@@ -930,6 +1032,7 @@ function solverWorkerBootstrap(workerScope) {
       const pEnd = pStart + 1;
       if (pEnd > periodosPorDia) continue;
 
+      // Evita sobrepor com outro par já preenchido
       for (const dia of diasOrdered) {
         const eligibleTurmas = turmaIds
           .map(Number)
@@ -947,17 +1050,25 @@ function solverWorkerBootstrap(workerScope) {
           return randomize ? Math.random() - 0.5 : a - b;
         });
 
-        const matchProfToTurma = new Map();
-        const matchTurmaToDemand = new Map();
+        const matchProfToTurma = new Map(); // profId -> { tId, demand }
+        const matchTurmaToDemand = new Map(); // tId -> demand
 
         function canDemandTakeMandatorySlot(tId, d) {
           if ((d.aulas_restantes || 0) < 2) return false;
           if (Array.isArray(d.co_professores) && d.co_professores.length > 0) return false;
           if (getRc02MaxForDisc(rc02Cfg, d.disciplina_id) < 2) return false;
+          const pId = d.professor_id;
+          if (preferencias?.[pId]?.prefere_aula_unica) return false;
           const tGrade = gradePorTurma[tId];
           if (countDiscInDay(tGrade, dia, d.disciplina_id) > 0) return false;
+          const exclSet = exclMap ? exclMap.get(Number(d.disciplina_id)) : null;
+          if (exclSet && exclSet.size > 0) {
+            const rowDia = tGrade?.[dia] || {};
+            for (const c of Object.values(rowDia)) {
+              if (c && exclSet.has(Number(c.disciplina_id))) return false;
+            }
+          }
 
-          const pId = d.professor_id;
           if (gradePorProfessor[pId]?.[dia]?.[pStart] || gradePorProfessor[pId]?.[dia]?.[pEnd]) {
             return false;
           }
@@ -2110,6 +2221,7 @@ function solverWorkerBootstrap(workerScope) {
     rc01MaxConsecutivas,
     rc02Cfg,
     regrasGerais,
+    preferencias = null,
   }) {
     const prefDuplas = regrasGerais ? Boolean(regrasGerais.preferencia_aulas_duplas) : true;
     const pairGov = buildPairGovernanceIndex(regrasGerais, regrasGerais?._turno, periodosPorDia);
@@ -2195,6 +2307,7 @@ function solverWorkerBootstrap(workerScope) {
           for (const p1 of candidatePeriodsOrder) {
             const c1 = turmaGrade[d1]?.[p1];
             if (!c1 || c1.locked || c1.co_professores?.length) continue;
+            if (preferencias?.[c1.professor_id]?.prefere_aula_unica) continue;
             if (countDiscInDay(turmaGrade, d1, c1.disciplina_id) !== 1) continue;
 
             const adjCandidates = [p1 - 1, p1 + 1]
@@ -2304,6 +2417,9 @@ function solverWorkerBootstrap(workerScope) {
                 Number(c1.disciplina_id) === Number(c2.disciplina_id) &&
                 Number(c3.disciplina_id) !== Number(c2.disciplina_id);
 
+              // Se a dupla está em (pA+1, pA+2) mas (pA, pA+1) tem prioridade maior (ex: #1-#2 > #2-#3),
+              // ou se a dupla está em (pA, pA+1) mas (pA+1, pA+2) tem prioridade maior:
+              // basta permutar pA com pA+2!
               const shouldSlideLeft = rightIsPair && infoLeft.qualityWeight > infoRight.qualityWeight;
               const shouldSlideRight = leftIsPair && infoRight.qualityWeight > infoLeft.qualityWeight;
 
@@ -2355,7 +2471,7 @@ function solverWorkerBootstrap(workerScope) {
               const cH2 = row[pHigh + 1];
               if (!cH1 || !cH2 || cH1.locked || cH2.locked) continue;
               if (cH1.co_professores?.length || cH2.co_professores?.length) continue;
-              if (Number(cH1.disciplina_id) === Number(cH2.disciplina_id)) continue;
+              if (Number(cH1.disciplina_id) === Number(cH2.disciplina_id)) continue; // já é dupla!
               if (
                 countDiscInDay(turmaGrade, d, cH1.disciplina_id) > 1 ||
                 countDiscInDay(turmaGrade, d, cH2.disciplina_id) > 1
@@ -2364,7 +2480,7 @@ function solverWorkerBootstrap(workerScope) {
               }
 
               for (const pLow of [...pairGov.orderedStarts].reverse()) {
-                if (Math.abs(pLow - pHigh) < 2) continue;
+                if (Math.abs(pLow - pHigh) < 2) continue; // precisa ser bloco disjunto
                 const infoLow = pairGov.getPairInfo(pLow);
                 if (!infoLow || infoLow.modo === "bloqueado") continue;
                 if (infoHigh.qualityWeight <= infoLow.qualityWeight) continue;
@@ -2373,7 +2489,7 @@ function solverWorkerBootstrap(workerScope) {
                 const cL2 = row[pLow + 1];
                 if (!cL1 || !cL2 || cL1.locked || cL2.locked) continue;
                 if (cL1.co_professores?.length || cL2.co_professores?.length) continue;
-                if (Number(cL1.disciplina_id) !== Number(cL2.disciplina_id)) continue;
+                if (Number(cL1.disciplina_id) !== Number(cL2.disciplina_id)) continue; // precisa ser dupla geminada
                 if (Number(cL1.professor_id) !== Number(cL2.professor_id)) continue;
 
                 const profD = cL1.professor_id;
@@ -2391,6 +2507,7 @@ function solverWorkerBootstrap(workerScope) {
 
                 if (!profDCanHigh) continue;
 
+                // Ordem direta: S1 -> pLow, S2 -> pLow+1 (ou invertida: S1 -> pLow+1, S2 -> pLow)
                 const arrangements = [
                   { pForS1: pLow, pForS2: pLow + 1 },
                   { pForS1: pLow + 1, pForS2: pLow },
@@ -2432,6 +2549,7 @@ function solverWorkerBootstrap(workerScope) {
                       break;
                     }
 
+                    // Reverte
                     clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh);
                     clearSlot(gradePorTurma, gradePorProfessor, tId, profD, d, pHigh + 1);
                     clearSlot(gradePorTurma, gradePorProfessor, tId, profS1, d, pForS1);
@@ -2608,8 +2726,9 @@ function solverWorkerBootstrap(workerScope) {
         for (let p = 1; p <= periodosPorDia; p++) {
           const cell = row[p];
           if (!cell || !cell.disciplina_id) continue;
-          // REGRA INVIOLÁVEL: Jamais permitir aula em horário marcado como EXCLUIR (indisponivel) na disponibilidade do professor
-          if (!professorPode(dispoIdx, cell.professor_id, d, p)) {
+          // HIERARQUIA SOBERANA: Aulas fixadas manualmente (cell.locked) JAMAIS são removidas;
+          // apenas aulas móveis do solver respeitam obrigatoriamente o bloqueio de disponibilidade
+          if (!cell.locked && !professorPode(dispoIdx, cell.professor_id, d, p)) {
             clearSlot(gradePorTurma, gradePorProfessor, tId, cell.professor_id, d, p);
             evicted.push({
               turma_id: tId,
@@ -2622,6 +2741,39 @@ function solverWorkerBootstrap(workerScope) {
           const dId = Number(cell.disciplina_id);
           if (!byDisc.has(dId)) byDisc.set(dId, []);
           byDisc.get(dId).push({ p, cell });
+        }
+
+        // 0) Se houver par de disciplinas excludentes no mesmo dia (e pelo menos uma não estiver travada), realoca a não-travada
+        const exclMap = buildExcludentesMap(regrasGerais);
+        if (exclMap && exclMap.size > 0) {
+          const presentDiscs = Array.from(byDisc.keys());
+          for (let i = 0; i < presentDiscs.length; i++) {
+            const dA = presentDiscs[i];
+            const setA = exclMap.get(dA);
+            if (!setA) continue;
+            for (let j = i + 1; j < presentDiscs.length; j++) {
+              const dB = presentDiscs[j];
+              if (!setA.has(dB)) continue;
+              const listB = byDisc.get(dB) || [];
+              const listA = byDisc.get(dA) || [];
+              const targetList = listB.some(x => !x.cell.locked) ? listB : listA.some(x => !x.cell.locked) ? listA : null;
+              const targetDisc = targetList === listB ? dB : dA;
+              if (targetList) {
+                for (let k = targetList.length - 1; k >= 0; k--) {
+                  if (!targetList[k].cell.locked) {
+                    const [rem] = targetList.splice(k, 1);
+                    clearSlot(gradePorTurma, gradePorProfessor, tId, rem.cell.professor_id, d, rem.p);
+                    evicted.push({
+                      turma_id: tId,
+                      disciplina_id: targetDisc,
+                      professor_id: rem.cell.professor_id,
+                      co_professores: rem.cell.co_professores || null,
+                    });
+                  }
+                }
+              }
+            }
+          }
         }
 
         for (const [dId, list] of byDisc.entries()) {
@@ -2707,6 +2859,7 @@ function solverWorkerBootstrap(workerScope) {
         rc01MaxConsecutivas,
         rc02Cfg,
         regrasGerais,
+        preferencias,
       });
     }
   }
@@ -2725,14 +2878,17 @@ function solverWorkerBootstrap(workerScope) {
     let violacoesMaxDia = 0;
     let violacoesParesBloqueados = 0;
     let violacoesIndisponibilidade = 0;
+    let violacoesDisciplinasExcludentes = 0;
     let paresGeminados = 0;
     let scorePrioridadePares = 0;
+    let paresObrigatoriosMeta = 0;
     let paresObrigatoriosAtendidos = 0;
+    let paresObrigatoriosIsentosManual = 0;
 
     const pairGov = buildPairGovernanceIndex(regrasGerais, turno, periodosPorDia);
+    const exclMap = buildExcludentesMap(regrasGerais);
     const mandatoryStarts = pairGov.orderedStarts.filter(p => pairGov.isPairMandatory(p));
     const turmaEntries = Object.entries(gradePorTurma || {}).filter(([, g]) => Boolean(g));
-    const paresObrigatoriosMeta = mandatoryStarts.length * turmaEntries.length * diasList.length;
     const divergenciasParesObrigatorios = [];
 
     for (const [tIdStr, turmaGrade] of turmaEntries) {
@@ -2750,7 +2906,14 @@ function solverWorkerBootstrap(workerScope) {
             cOb1.disciplina_id &&
             Number(cOb1.disciplina_id) === Number(cOb2.disciplina_id);
 
-          if (!isGeminatedOb) {
+          if (isGeminatedOb) {
+            paresObrigatoriosMeta++;
+            paresObrigatoriosAtendidos++;
+          } else if (cOb1?.locked || cOb2?.locked) {
+            // Hierarquia Soberana: marcação manual prevalece sobre par obrigatório sem gerar pendência
+            paresObrigatoriosIsentosManual++;
+          } else {
+            paresObrigatoriosMeta++;
             divergenciasParesObrigatorios.push({
               turma_id: tId,
               dia: Number(d),
@@ -2769,7 +2932,7 @@ function solverWorkerBootstrap(workerScope) {
           if (!cell || !cell.disciplina_id) continue;
           const dId = Number(cell.disciplina_id);
 
-          if (dispoIdx && !professorPode(dispoIdx, cell.professor_id, d, p)) {
+          if (!cell.locked && dispoIdx && !professorPode(dispoIdx, cell.professor_id, d, p)) {
             violacoesIndisponibilidade++;
           }
 
@@ -2782,9 +2945,6 @@ function solverWorkerBootstrap(workerScope) {
                 scorePrioridadePares += pInfo.qualityWeight || 0;
                 if (pInfo.modo === "bloqueado" && (!cell.locked || !nextCell.locked)) {
                   violacoesParesBloqueados++;
-                }
-                if (pInfo.modo === "obrigatorio") {
-                  paresObrigatoriosAtendidos++;
                 }
               }
             }
@@ -2811,6 +2971,25 @@ function solverWorkerBootstrap(workerScope) {
             violacoesMaxDia++;
           }
         }
+
+        if (exclMap && exclMap.size > 0) {
+          const discIds = Array.from(byDisc.keys());
+          for (let i = 0; i < discIds.length; i++) {
+            const dA = discIds[i];
+            const setA = exclMap.get(dA);
+            if (!setA) continue;
+            for (let j = i + 1; j < discIds.length; j++) {
+              const dB = discIds[j];
+              if (setA.has(dB)) {
+                const stA = byDisc.get(dA);
+                const stB = byDisc.get(dB);
+                if (!(stA?.allLocked && stB?.allLocked)) {
+                  violacoesDisciplinasExcludentes++;
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -2821,10 +3000,12 @@ function solverWorkerBootstrap(workerScope) {
       violacoesMaxDia,
       violacoesParesBloqueados,
       violacoesIndisponibilidade,
+      violacoesDisciplinasExcludentes,
       paresGeminados,
       scorePrioridadePares,
       paresObrigatoriosMeta,
       paresObrigatoriosAtendidos,
+      paresObrigatoriosIsentosManual,
       paresObrigatoriosFaltantes,
       divergenciasParesObrigatorios,
     };
@@ -2844,9 +3025,10 @@ function solverWorkerBootstrap(workerScope) {
     const turno = payload?.turno || "matutino";
     const rawRegrasGerais = configPedagogica?.regras_gerais || null;
     const pairGov = buildPairGovernanceIndex(rawRegrasGerais, turno, periodosPorDia);
+    const exclMapRoot = buildExcludentesMap(rawRegrasGerais);
     const regrasGerais = rawRegrasGerais
-      ? { ...rawRegrasGerais, _turno: turno, _pairGov: pairGov }
-      : { _turno: turno, _pairGov: pairGov };
+      ? { ...rawRegrasGerais, _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot }
+      : { _turno: turno, _pairGov: pairGov, _excludentesMap: exclMapRoot };
 
     const turmaIds = normalizeTurmaIds(payload);
     const demandasNorm = normalizeDemandas(payload);
@@ -2867,9 +3049,7 @@ function solverWorkerBootstrap(workerScope) {
       const dia = toInt(sf.dia ?? sf.dia_semana, 0);
       const ord = toInt(sf.ordem ?? sf.periodo_ordem, 0);
       if (!tId || !dId || !pId || !diasSet.has(dia) || ord < 1 || ord > periodosPorDia) continue;
-      // REGRA INVIOLÁVEL: Se o horário está marcado como EXCLUIR (indisponivel) na disponibilidade do professor,
-      // jamais mantém este slot fixo — libera para ser realocado nos dias/horários disponíveis!
-      if (!professorPode(dispoIdx, pId, dia, ord)) continue;
+      // HIERARQUIA SOBERANA: Marcações manuais (slots_fixos) prevalecem sobre Disponibilidade e Reconfigurar!
 
       if (turmaIdsSet.size === 0 || turmaIdsSet.has(tId)) {
         validFixos.push({ turma_id: tId, disciplina_id: dId, professor_id: pId, dia, ordem: ord });
@@ -2880,14 +3060,56 @@ function solverWorkerBootstrap(workerScope) {
       }
     }
 
+    const capacidadeFisicaTurma = diasList.length * periodosPorDia;
+    const cargaPorTurmaMap = new Map();
+    const matchedFixoKeys = new Set();
+    const excessosFixados = [];
+
     const demandasAjustadas = demandasNorm.map(d => {
       const k = `${d.turma_id}|${d.disciplina_id}|${d.professor_id}`;
+      matchedFixoKeys.add(k);
+      cargaPorTurmaMap.set(d.turma_id, (cargaPorTurmaMap.get(d.turma_id) || 0) + d.aulas_semanais);
       const jaFixadas = fixosCountMap.get(k) || 0;
+      if (jaFixadas > d.aulas_semanais) {
+        excessosFixados.push({
+          turma_id: d.turma_id,
+          disciplina_id: d.disciplina_id,
+          professor_id: d.professor_id,
+          fixadas: jaFixadas,
+          previstas: d.aulas_semanais,
+          excedente: jaFixadas - d.aulas_semanais,
+        });
+      }
       return {
         ...d,
         aulas_restantes: Math.max(0, d.aulas_semanais - jaFixadas),
       };
     });
+
+    for (const [k, qtdFixa] of fixosCountMap.entries()) {
+      if (matchedFixoKeys.has(k) || qtdFixa <= 0) continue;
+      const [tIdStr, dIdStr, pIdStr] = k.split("|");
+      excessosFixados.push({
+        turma_id: Number(tIdStr),
+        disciplina_id: Number(dIdStr),
+        professor_id: Number(pIdStr),
+        fixadas: qtdFixa,
+        previstas: 0,
+        excedente: qtdFixa,
+      });
+    }
+
+    const turmasAcimaCapacidade = [];
+    for (const [tId, cargaTot] of cargaPorTurmaMap.entries()) {
+      if (cargaTot > capacidadeFisicaTurma) {
+        turmasAcimaCapacidade.push({
+          turma_id: Number(tId),
+          carga_total: cargaTot,
+          capacidade_turno: capacidadeFisicaTurma,
+          excedente: cargaTot - capacidadeFisicaTurma,
+        });
+      }
+    }
 
     const allProfIds = uniq([
       ...demandasNorm.map(d => d.professor_id),
@@ -2938,6 +3160,7 @@ function solverWorkerBootstrap(workerScope) {
       rc02Cfg,
       regrasGerais,
       turno,
+      preferencias: payload?.preferencias,
       randomize,
       strategy,
     });
@@ -3011,6 +3234,7 @@ function solverWorkerBootstrap(workerScope) {
       rc01MaxConsecutivas,
       rc02Cfg,
       regrasGerais,
+      preferencias: payload?.preferencias,
     });
 
     // Blindagem final inviolável: garante zero aulas separadas no mesmo dia, zero dias acima do limite e zero pares bloqueados (recreio)
@@ -3087,7 +3311,8 @@ function solverWorkerBootstrap(workerScope) {
       qual.violacoesIndisponibilidade * 10000000 -
       qual.violacoesSeparadasMesmoDia * 5000000 -
       qual.violacoesMaxDia * 5000000 -
-      qual.violacoesParesBloqueados * 4000000 +
+      qual.violacoesParesBloqueados * 4000000 -
+      (qual.violacoesDisciplinasExcludentes || 0) * 3500000 +
       qual.paresObrigatoriosAtendidos * 8500 +
       qual.paresGeminados * 60 +
       qual.scorePrioridadePares;
@@ -3110,9 +3335,11 @@ function solverWorkerBootstrap(workerScope) {
         violacoes_separadas_mesmo_dia: qual.violacoesSeparadasMesmoDia,
         violacoes_max_dia: qual.violacoesMaxDia,
         violacoes_pares_bloqueados: qual.violacoesParesBloqueados,
+        violacoes_disciplinas_excludentes: qual.violacoesDisciplinasExcludentes || 0,
         pares_geminados: qual.paresGeminados,
         pares_obrigatorios_meta: qual.paresObrigatoriosMeta,
         pares_obrigatorios_atendidos: qual.paresObrigatoriosAtendidos,
+        pares_obrigatorios_isentos_manual: qual.paresObrigatoriosIsentosManual || 0,
         pares_obrigatorios_faltantes: qual.paresObrigatoriosFaltantes,
         score_prioridade_pares: qual.scorePrioridadePares,
         qualidade_score: qualidadeScore,
@@ -3128,6 +3355,8 @@ function solverWorkerBootstrap(workerScope) {
         resumo_motivos: diagnosticoContadores,
         nao_alocadas_detalhado: diagnosticoNaoAlocadas,
         divergencias_pares_obrigatorios: qual.divergenciasParesObrigatorios,
+        excessos_fixados: excessosFixados,
+        turmas_acima_capacidade: turmasAcimaCapacidade,
       },
     };
   }
@@ -3205,6 +3434,7 @@ function solverWorkerBootstrap(workerScope) {
               (res.metrics.violacoes_separadas_mesmo_dia || 0) === 0 &&
               (res.metrics.violacoes_max_dia || 0) === 0 &&
               (res.metrics.violacoes_pares_bloqueados || 0) === 0 &&
+              (res.metrics.violacoes_disciplinas_excludentes || 0) === 0 &&
               (res.metrics.pares_obrigatorios_faltantes || 0) === 0
             ) {
               cleanPerfectFoundCount++;
@@ -3252,11 +3482,6 @@ function solverWorkerBootstrap(workerScope) {
 
 const localInstance = solverWorkerBootstrap(null);
 export const runGreedySolverLocal = localInstance.runGreedySolver;
-
-/**
- * Executa o Motor Solver 2.0 em um Web Worker real (Blob Worker),
- * retornando { promise, stop } para controle interativo na UI.
- */
 
 export const runGreedySolver = runGreedySolverLocal;
 export default { runGreedySolver };

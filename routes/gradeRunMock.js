@@ -244,7 +244,13 @@ async function assembleEnrichedSolverPayload({
       }
 
       if (parsedPeriodos && parsedPeriodos._regras_gerais) {
-        payload.config_pedagogica.regras_gerais = parsedPeriodos._regras_gerais;
+        payload.config_pedagogica.regras_gerais = {
+          ...parsedPeriodos._regras_gerais,
+          _intervalos_governanca:
+            payload.intervalos_por_turno ||
+            payload.config_pedagogica?.regras_gerais?._intervalos_governanca ||
+            {},
+        };
 
         if (parsedPeriodos._regras_gerais.preferencia_aulas_duplas) {
           payload.config_pedagogica.regras.rc01_distribuicao_disciplina = {

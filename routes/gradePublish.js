@@ -1006,9 +1006,6 @@ router.get("/meu-horario", requireEscola, async (req, res) => {
       } else if (isGestao && draftRes && draftSlots.length > 0) {
         chosenRes = draftRes;
         chosenSlots = draftSlots;
-      } else if (!pubRes && draftRes && draftSlots.length > 0) {
-        chosenRes = draftRes;
-        chosenSlots = draftSlots;
       }
 
       if (!chosenRes || chosenSlots.length === 0) continue;

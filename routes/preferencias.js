@@ -9,6 +9,22 @@ function norm(s) {
   return String(s || "").trim().toLowerCase();
 }
 
+// Validação Multi-Tenant estrita: garante que o professor pertence à escola autenticada
+async function validarProfessorDaEscola(req, professorId) {
+  const escolaId = Number(req.user?.escola_id || req.headers["x-escola-id"] || 0);
+  if (!escolaId) {
+    return { ok: false, status: 403, error: "Acesso negado: escola não identificada." };
+  }
+  const [rows] = await pool.query(
+    `SELECT id FROM professores WHERE id = ? AND escola_id = ? LIMIT 1`,
+    [Number(professorId), escolaId]
+  );
+  if (!rows || rows.length === 0) {
+    return { ok: false, status: 403, error: "Professor não pertence à escola autenticada." };
+  }
+  return { ok: true, escolaId };
+}
+
 // GET /api/preferencias?professor_id=12&turno=Matutino
 router.get("/", async (req, res) => {
   try {
@@ -16,6 +32,11 @@ router.get("/", async (req, res) => {
     const turno = norm(req.query.turno || "");
     if (!professor_id || !turno) {
       return res.status(400).json({ error: "professor_id e turno são obrigatórios" });
+    }
+
+    const check = await validarProfessorDaEscola(req, professor_id);
+    if (!check.ok) {
+      return res.status(check.status).json({ error: check.error });
     }
 
     const [rows] = await pool.query(
@@ -82,6 +103,11 @@ router.post("/upsert", async (req, res) => {
 
     if (!professor_id || !turno) {
       return res.status(400).json({ ok: false, error: "professor_id e turno são obrigatórios" });
+    }
+
+    const check = await validarProfessorDaEscola(req, professor_id);
+    if (!check.ok) {
+      return res.status(check.status).json({ ok: false, error: check.error });
     }
 
     const prefere_aula_dupla = body.prefere_aula_dupla ? 1 : 0;

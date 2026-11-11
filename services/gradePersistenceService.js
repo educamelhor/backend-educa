@@ -49,6 +49,23 @@ function makeDupEntryError(message) {
 // Helpers internos para permitir transação compartilhada (conn)
 // -----------------------------------------------------------------------------
 
+async function hydrateDraftFromPublishedIfNeeded(conn, { draftId, pubId }) {
+  if (!draftId || !pubId) return;
+  await conn.query(
+    `INSERT IGNORE INTO grade_resultado_turma (resultado_id, turma_id)
+     SELECT ?, turma_id FROM grade_resultado_turma WHERE resultado_id = ?`,
+    [draftId, pubId]
+  );
+  await conn.query(
+    `INSERT IGNORE INTO grade_slot
+       (resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked)
+     SELECT ?, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked
+       FROM grade_slot
+      WHERE resultado_id = ?`,
+    [draftId, pubId]
+  );
+}
+
 async function ensureRascunhoConn(conn, { escolaId, turno }) {
   const turnoNorm = normTurno(turno);
 
@@ -59,15 +76,39 @@ async function ensureRascunhoConn(conn, { escolaId, turno }) {
     [escolaId, turnoNorm]
   );
 
-  if (draft?.id) return draft.id;
-
-  const [ins] = await conn.query(
-    `INSERT INTO grade_resultado (escola_id, turno, status, version)
-     VALUES (?, ?, 'rascunho', 1)`,
+  const [[pub]] = await conn.query(
+    `SELECT id, version FROM grade_resultado
+      WHERE escola_id=? AND turno=? AND status='publicado'
+      LIMIT 1`,
     [escolaId, turnoNorm]
   );
 
-  return ins.insertId;
+  if (draft?.id) {
+    if (pub?.id) {
+      const [[cntDraft]] = await conn.query(
+        `SELECT COUNT(*) AS total FROM grade_slot WHERE resultado_id = ?`,
+        [draft.id]
+      );
+      if (Number(cntDraft?.total || 0) === 0) {
+        await hydrateDraftFromPublishedIfNeeded(conn, { draftId: draft.id, pubId: pub.id });
+      }
+    }
+    return draft.id;
+  }
+
+  const baseVersion = pub?.version ? Number(pub.version) : 1;
+  const [ins] = await conn.query(
+    `INSERT INTO grade_resultado (escola_id, turno, status, version)
+     VALUES (?, ?, 'rascunho', ?)`,
+    [escolaId, turnoNorm, baseVersion]
+  );
+
+  const newDraftId = ins.insertId;
+  if (pub?.id) {
+    await hydrateDraftFromPublishedIfNeeded(conn, { draftId: newDraftId, pubId: pub.id });
+  }
+
+  return newDraftId;
 }
 
 async function ensureTurmaNoEscopoConn(conn, { resultadoId, turmaId }) {
@@ -308,31 +349,12 @@ export async function getPublicadoByTurno(pool, { escolaId, turno }) {
 
 /** Garante que existe um rascunho para (escola, turno). Retorna resultado_id. */
 export async function ensureRascunho(pool, { escolaId, turno }) {
-  const turnoNorm = normTurno(turno);
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-
-    const [[draft]] = await conn.query(
-      `SELECT id FROM grade_resultado
-        WHERE escola_id=? AND turno=? AND status='rascunho'
-        LIMIT 1`,
-      [escolaId, turnoNorm]
-    );
-
-    if (draft?.id) {
-      await conn.commit();
-      return draft.id;
-    }
-
-    const [ins] = await conn.query(
-      `INSERT INTO grade_resultado (escola_id, turno, status, version)
-       VALUES (?, ?, 'rascunho', 1)`,
-      [escolaId, turnoNorm]
-    );
-
+    const resultadoId = await ensureRascunhoConn(conn, { escolaId, turno });
     await conn.commit();
-    return ins.insertId;
+    return resultadoId;
   } catch (e) {
     await conn.rollback();
     throw e;
@@ -453,11 +475,21 @@ export async function upsertDraftSlot(
 
 /** Remove 1 slot do rascunho. */
 export async function removeDraftSlot(pool, { escolaId, turno, turma_id, dia, ordem }) {
-  const resultadoId = await ensureRascunho(pool, { escolaId, turno });
-  const [res] = await pool.query(
-    `DELETE FROM grade_slot
-      WHERE resultado_id=? AND turma_id=? AND dia_semana=? AND periodo_ordem=?`,
-    [resultadoId, Number(turma_id), Number(dia), Number(ordem)]
-  );
-  return { resultado_id: resultadoId, removed: res.affectedRows || 0 };
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const resultadoId = await ensureRascunhoConn(conn, { escolaId, turno });
+    const [res] = await conn.query(
+      `DELETE FROM grade_slot
+        WHERE resultado_id=? AND turma_id=? AND dia_semana=? AND periodo_ordem=?`,
+      [resultadoId, Number(turma_id), Number(dia), Number(ordem)]
+    );
+    await conn.commit();
+    return { resultado_id: resultadoId, removed: res.affectedRows || 0 };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 }

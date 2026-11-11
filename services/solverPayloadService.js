@@ -11,7 +11,7 @@
 // =====================================================
 
 import pool from "../db.js";
-import { resolverVigenciaLetiva } from "../utils/vigenciaHorariosHelper.js";
+import { resolverVigenciaLetiva, resolverHorariosReaisPorTurno } from "../utils/vigenciaHorariosHelper.js";
 
 function toInt(v, def = 0) {
   const n = Number(v);
@@ -538,6 +538,7 @@ export async function buildSolverPayload({
     config_pedagogica,
     slots_fixos,
     agrupamentos,
+    horariosReaisInfo,
   ] = await Promise.all([
     fetchGradeBase(escolaId, turnoNorm),
     fetchTurmas(escolaId, turnoNorm, turmaIds),
@@ -547,6 +548,7 @@ export async function buildSolverPayload({
     fetchConfigPedagogica(escolaId, turnoNorm, anoRefNorm, "fundamental_II"),
     respeitarHorarioManual ? fetchSlotsFixos(escolaId, turnoNorm, turmaIds) : Promise.resolve([]),
     fetchAgrupamentos(escolaId, turnoNorm, turmaIds, semEfetivo),
+    resolverHorariosReaisPorTurno(escolaId, anoRefNorm || vigencia.ano_letivo),
   ]);
 
   // Mescla modulação regular com modulação de Agrupamentos (IFA / PCA / Eletiva / PD)
@@ -600,7 +602,10 @@ export async function buildSolverPayload({
 
   // Se escola_configuracao_grade possui regras_gerais, aplica sobre config_pedagogica
   if (escolaCfg.regras_gerais) {
-    config_pedagogica.regras_gerais = escolaCfg.regras_gerais;
+    config_pedagogica.regras_gerais = {
+      ...escolaCfg.regras_gerais,
+      _intervalos_governanca: horariosReaisInfo?.intervalos_por_turno || {},
+    };
     if (!config_pedagogica.regras) config_pedagogica.regras = {};
     if (escolaCfg.regras_gerais.preferencia_aulas_duplas) {
       config_pedagogica.regras.rc01_distribuicao_disciplina = {
@@ -625,6 +630,8 @@ export async function buildSolverPayload({
     vigencia,
     dias_semana: escolaCfg.dias_semana,
     periodos_por_dia: escolaCfg.periodos_por_dia,
+    horarios_por_turno: horariosReaisInfo?.horarios_por_turno || {},
+    intervalos_por_turno: horariosReaisInfo?.intervalos_por_turno || {},
 
     // ✅ regras pedagógicas consolidadas para o solver
     config_pedagogica, // { nivel, regras, regras_gerais }

@@ -189,7 +189,7 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
       `SELECT
          m.professor_id,
          p.nome              AS professor_nome,
-         d.nome              AS disciplina_nome,
+         GROUP_CONCAT(DISTINCT d.nome ORDER BY d.nome SEPARATOR ' / ') AS disciplina_nome,
          COUNT(DISTINCT m.turma_id) AS turmas_count,
          SUM(m.aulas)               AS aulas_moduladas
        FROM modulacao m
@@ -230,16 +230,18 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
              )
            )
          )
-       GROUP BY m.professor_id, p.nome, d.nome
+       GROUP BY m.professor_id, p.nome
        ORDER BY p.nome`,
       [escola_id, turno, anoAtual, semestre, semestre]
     );
 
-    // 2) Slots livres por professor neste turno
+    // 2) Slots utilizáveis ('livre' + 'evitar') por professor neste turno
     const [dispRows] = await pool.query(
       `SELECT
          gd.professor_id,
-         COUNT(*) AS slots_livres
+         SUM(CASE WHEN LOWER(COALESCE(jt.status, 'livre')) IN ('livre', 'evitar') THEN 1 ELSE 0 END) AS slots_livres,
+         SUM(CASE WHEN LOWER(COALESCE(jt.status, 'livre')) = 'livre' THEN 1 ELSE 0 END) AS slots_livres_puros,
+         SUM(CASE WHEN LOWER(COALESCE(jt.status, 'livre')) = 'evitar' THEN 1 ELSE 0 END) AS slots_evitar
        FROM grade_disponibilidades gd,
          JSON_TABLE(
            gd.periodos,
@@ -247,7 +249,6 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
          ) AS jt
        WHERE gd.escola_id = ?
          AND gd.turno = LOWER(?)
-         AND jt.status = 'livre'
        GROUP BY gd.professor_id`,
       [escola_id, turno]
     );
@@ -263,8 +264,14 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
 
     // Indexar slots por professor_id
     const slotsMap = new Map();
+    const slotsDetalheMap = new Map();
     for (const r of dispRows) {
-      slotsMap.set(Number(r.professor_id), Number(r.slots_livres) || 0);
+      const pid = Number(r.professor_id);
+      slotsMap.set(pid, Number(r.slots_livres) || 0);
+      slotsDetalheMap.set(pid, {
+        livres_puros: Number(r.slots_livres_puros) || 0,
+        evitar: Number(r.slots_evitar) || 0,
+      });
     }
 
     const conflitos = [];
@@ -290,6 +297,7 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
       }
 
       const slotsLivres = slotsMap.get(pid) ?? 0;
+      const detalhe = slotsDetalheMap.get(pid) || { livres_puros: slotsLivres, evitar: 0 };
       const deficitSlots = slotsLivres - aulasMod; // negativo = conflito
 
       const entry = {
@@ -299,6 +307,8 @@ router.get("/diagnostico/disponibilidade", verificarEscola, async (req, res) => 
         turmas_count: Number(prof.turmas_count),
         aulas_moduladas: aulasMod,
         slots_livres: slotsLivres,
+        slots_livres_puros: detalhe.livres_puros,
+        slots_evitar: detalhe.evitar,
         deficit_slots: deficitSlots,
         severidade: deficitSlots < 0
           ? (Math.abs(deficitSlots) >= 5 ? "CRITICO" : "ATENCAO")
