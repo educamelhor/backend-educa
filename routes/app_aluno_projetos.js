@@ -166,7 +166,7 @@ async function autenticarMobileProjetos(req, res, next) {
  * Identifica se a turma/série do estudante pertence ao Ensino Médio (1ª, 2ª ou 3ª Série),
  * cobrindo nomenclaturas convencionais e códigos oficiais SEEDF (`EM_...` / `EMI_...`).
  */
-function detectarElegibilidadeEnsinoMedio({ etapa, serie, turmaNome }) {
+function detectarElegibilidadeEnsinoMedio({ etapa, serie, turmaNome, nomeOficial }) {
   const txtEtapa = String(etapa || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -179,11 +179,15 @@ function detectarElegibilidadeEnsinoMedio({ etapa, serie, turmaNome }) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
+  const txtOficial = String(nomeOficial || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
 
-  const combinado = `${txtEtapa} | ${txtSerie} | ${txtTurma}`;
+  const combinado = `${txtEtapa} | ${txtSerie} | ${txtTurma} | ${txtOficial}`;
 
-  // Códigos oficiais SEEDF: EM_1_M_1_A, EMI_2_I_1_B, EJA/EM etc.
-  const matchCodigoSeedf = txtTurma.match(/\bEMI?_([123])_/);
+  // Códigos oficiais SEEDF: EM_1_M_1_A (Ensino Médio), EMI_2_I_1_B (Ensino Médio Integral), etc.
+  const matchCodigoSeedf = combinado.match(/\bEMI?_([123])_/);
   if (matchCodigoSeedf) {
     return {
       elegivel_ensino_medio: true,
@@ -194,6 +198,7 @@ function detectarElegibilidadeEnsinoMedio({ etapa, serie, turmaNome }) {
   const mencionaMedio =
     txtEtapa.includes("MEDIO") ||
     combinado.includes("ENSINO MEDIO") ||
+    combinado.includes("MEDIO INTEGRAL") ||
     /\b[123]\s*(A|ª|O|º)?\s*SERIE\b/.test(combinado) ||
     /\b[123]\s*(O|º|A|ª)?\s*EM\b/.test(combinado);
 
@@ -201,7 +206,7 @@ function detectarElegibilidadeEnsinoMedio({ etapa, serie, turmaNome }) {
     return { elegivel_ensino_medio: false, serie_detectada: null };
   }
 
-  // Extrai número da série (1, 2 ou 3)
+  // Extrai número da série (1, 2 ou 3 — cobre inclusive "3º ANO A" quando etapa = MÉDIO)
   const matchNum =
     txtSerie.match(/\b([123])\b/) ||
     txtTurma.match(/(?:^|\D)([123])(?:\D|$)/);
@@ -228,7 +233,7 @@ async function carregarContextoEstudante(alunoId, anoLetivo, executor = pool) {
 
   // Prioriza matrícula ativa do ano letivo na tabela `matriculas`
   const [[mat]] = await executor.query(
-    `SELECT m.id AS matricula_id, m.turma_id, t.nome AS turma_nome, t.turno, t.etapa, t.serie
+    `SELECT m.id AS matricula_id, m.turma_id, t.nome AS turma_nome, t.nome_oficial, t.turno, t.etapa, t.serie
        FROM matriculas m
        JOIN turmas t ON t.id = m.turma_id
       WHERE m.escola_id = ?
@@ -243,7 +248,7 @@ async function carregarContextoEstudante(alunoId, anoLetivo, executor = pool) {
   let turmaFallback = null;
   if (!mat && aluno.turma_cadastro_id) {
     const [[tf]] = await executor.query(
-      `SELECT id AS turma_id, nome AS turma_nome, turno, etapa, serie
+      `SELECT id AS turma_id, nome AS turma_nome, nome_oficial, turno, etapa, serie
          FROM turmas
         WHERE id = ? AND escola_id = ?
         LIMIT 1`,
@@ -257,6 +262,7 @@ async function carregarContextoEstudante(alunoId, anoLetivo, executor = pool) {
     etapa: turmaRef.etapa,
     serie: turmaRef.serie || aluno.serie_cadastro,
     turmaNome: turmaRef.turma_nome,
+    nomeOficial: turmaRef.nome_oficial,
   });
 
   return {

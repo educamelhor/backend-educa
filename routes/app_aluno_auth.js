@@ -75,14 +75,24 @@ router.post("/verificar-data-nascimento", async (req, res) => {
 
     const [[aluno]] = await pool.query(
       `SELECT a.id, a.estudante, a.escola_id, a.cpf, a.data_nascimento, a.telefone, a.foto, a.serie,
-              t.nome AS turma_nome, e.apelido AS escola_apelido, e.nome AS escola_nome,
+              COALESCE(tm.id, t.id)                     AS turma_id_resolved,
+              COALESCE(tm.nome, t.nome)                 AS turma_nome,
+              COALESCE(tm.etapa, t.etapa)               AS etapa,
+              COALESCE(tm.etapa, t.etapa)               AS turma_etapa,
+              COALESCE(tm.serie, t.serie)               AS turma_serie,
+              COALESCE(tm.nome_oficial, t.nome_oficial) AS turma_nome_oficial,
+              COALESCE(tm.turno, t.turno)               AS turno,
+              e.apelido AS escola_apelido, e.nome AS escola_nome,
               COALESCE(
                 (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
                    FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0
               ) AS consentimento_imagem
        FROM alunos a
-       LEFT JOIN turmas  t ON t.id = a.turma_id
-       LEFT JOIN escolas e ON e.id = a.escola_id
+       LEFT JOIN turmas  t  ON t.id = a.turma_id
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.status IN ('ativo','matriculado')
+                             AND m.id = (SELECT MAX(m2.id) FROM matriculas m2 WHERE m2.aluno_id = a.id AND m2.escola_id = a.escola_id AND m2.status IN ('ativo','matriculado'))
+       LEFT JOIN turmas  tm ON tm.id = m.turma_id
+       LEFT JOIN escolas e  ON e.id = a.escola_id
        WHERE a.cpf = ? AND a.status = 'ativo' LIMIT 1`,
       [cpf]
     );
@@ -124,6 +134,15 @@ router.post("/verificar-data-nascimento", async (req, res) => {
       );
       console.log(`[APP_ALUNO/DATA-NASC] JWT emitido diretamente para aluno_id=${aluno.id} (telefone já cadastrado)`);
       const consentOk = Number(aluno.consentimento_imagem) === 1;
+      const rawEtapa = String(aluno.etapa || "").trim();
+      const rawOficial = String(aluno.turma_nome_oficial || "").toUpperCase();
+      const etapaResolvida =
+        rawEtapa ||
+        (/\bEMI_[123]_/.test(rawOficial)
+          ? "ENSINO MÉDIO INTEGRAL"
+          : /\bEM_[123]_/.test(rawOficial)
+          ? "ENSINO MÉDIO"
+          : null);
       return res.json({
         ok: true,
         token,
@@ -132,7 +151,13 @@ router.post("/verificar-data-nascimento", async (req, res) => {
           nome: aluno.estudante,
           escola_id: aluno.escola_id,
           escola_apelido: aluno.escola_apelido || aluno.escola_nome || "",
+          turma_id: aluno.turma_id_resolved || null,
           turma_nome: aluno.turma_nome || aluno.serie || "",
+          etapa: etapaResolvida,
+          turma_etapa: etapaResolvida,
+          turma_serie: aluno.turma_serie || aluno.serie || null,
+          turma_nome_oficial: aluno.turma_nome_oficial || null,
+          turno: aluno.turno || null,
           foto: consentOk ? aluno.foto : null,
         },
       });
@@ -274,17 +299,22 @@ router.get("/me", async (req, res) => {
     const [[aluno]] = await pool.query(
       `SELECT
          a.id,
-         a.estudante            AS nome,
+         a.estudante                               AS nome,
          a.cpf,
          a.telefone,
          a.escola_id,
          a.data_nascimento,
          a.foto,
          a.serie,
-         t.nome                 AS turma_nome,
-         t.turno,
-         e.apelido              AS escola_apelido,
-         e.nome                 AS escola_nome,
+         COALESCE(tm.id, t.id)                     AS turma_id,
+         COALESCE(tm.nome, t.nome)                 AS turma_nome,
+         COALESCE(tm.turno, t.turno)               AS turno,
+         COALESCE(tm.etapa, t.etapa)               AS etapa,
+         COALESCE(tm.etapa, t.etapa)               AS turma_etapa,
+         COALESCE(tm.serie, t.serie)               AS turma_serie,
+         COALESCE(tm.nome_oficial, t.nome_oficial) AS turma_nome_oficial,
+         e.apelido                                 AS escola_apelido,
+         e.nome                                    AS escola_nome,
          COALESCE(
            (SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END)
               FROM responsaveis_alunos ra
@@ -292,8 +322,11 @@ router.get("/me", async (req, res) => {
            0
          ) AS consentimento_imagem
        FROM alunos a
-       LEFT JOIN turmas  t ON t.id = a.turma_id
-       LEFT JOIN escolas e ON e.id = a.escola_id
+       LEFT JOIN turmas  t  ON t.id = a.turma_id
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.status IN ('ativo','matriculado')
+                             AND m.id = (SELECT MAX(m2.id) FROM matriculas m2 WHERE m2.aluno_id = a.id AND m2.escola_id = a.escola_id AND m2.status IN ('ativo','matriculado'))
+       LEFT JOIN turmas  tm ON tm.id = m.turma_id
+       LEFT JOIN escolas e  ON e.id = a.escola_id
        WHERE a.id = ? AND a.status = 'ativo'
        LIMIT 1`,
       [payload.aluno_id]
@@ -302,11 +335,22 @@ router.get("/me", async (req, res) => {
 
     // LGPD: só expõe foto se responsável concedeu consentimento de imagem
     const consentimento_ok = Number(aluno.consentimento_imagem) === 1;
+    const rawEtapa = String(aluno.etapa || "").trim();
+    const rawOficial = String(aluno.turma_nome_oficial || "").toUpperCase();
+    const etapaResolvida =
+      rawEtapa ||
+      (/\bEMI_[123]_/.test(rawOficial)
+        ? "ENSINO MÉDIO INTEGRAL"
+        : /\bEM_[123]_/.test(rawOficial)
+        ? "ENSINO MÉDIO"
+        : null);
 
     return res.json({
       ok: true,
       aluno: {
         ...aluno,
+        etapa: etapaResolvida,
+        turma_etapa: etapaResolvida,
         foto: consentimento_ok ? aluno.foto : null,
         consentimento_imagem: consentimento_ok,
       },

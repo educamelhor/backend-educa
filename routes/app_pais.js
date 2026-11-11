@@ -2282,18 +2282,56 @@ router.get('/aluno/me', authAluno, async (req, res) => {
   try {
     const { aluno_id } = req.alunoAuth;
     const [[aluno]] = await pool.query(
-      `SELECT a.id, a.estudante AS nome, a.codigo AS ra, a.escola_id, a.cpf, a.serie,
-              e.apelido AS escola_apelido,
-              t.nome AS turma_nome, t.serie AS turma_serie, t.turno AS turma_turno
+      `SELECT a.id, a.estudante AS nome, a.codigo AS ra, a.escola_id, a.cpf, a.serie, a.foto,
+              e.apelido AS escola_apelido, e.nome AS escola_nome,
+              COALESCE(tm.id, t.id)                     AS turma_id,
+              COALESCE(tm.nome, t.nome)                 AS turma_nome,
+              COALESCE(tm.serie, t.serie)               AS turma_serie,
+              COALESCE(tm.turno, t.turno)               AS turma_turno,
+              COALESCE(tm.turno, t.turno)               AS turno,
+              COALESCE(tm.etapa, t.etapa)               AS etapa,
+              COALESCE(tm.etapa, t.etapa)               AS turma_etapa,
+              COALESCE(tm.nome_oficial, t.nome_oficial) AS turma_nome_oficial,
+              COALESCE(
+                (SELECT MAX(CASE WHEN ra2.consentimento_imagem = 1 AND ra2.ativo = 1 THEN 1 ELSE 0 END)
+                   FROM responsaveis_alunos ra2
+                  WHERE ra2.aluno_id = a.id AND ra2.escola_id = a.escola_id),
+                0
+              ) AS consentimento_imagem
        FROM alunos a
        LEFT JOIN escolas e ON e.id = a.escola_id
        LEFT JOIN turmas t ON t.id = a.turma_id
+       LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.status IN ('ativo','matriculado')
+                             AND m.id = (SELECT MAX(m2.id) FROM matriculas m2 WHERE m2.aluno_id = a.id AND m2.escola_id = a.escola_id AND m2.status IN ('ativo','matriculado'))
+       LEFT JOIN turmas tm ON tm.id = m.turma_id
        WHERE a.id = ? LIMIT 1`,
       [aluno_id]
     );
     if (!aluno) return res.status(404).json({ message: 'Aluno não encontrado.' });
-    return res.json({ ok: true, aluno });
+
+    const rawEtapa = String(aluno.etapa || '').trim();
+    const rawOficial = String(aluno.turma_nome_oficial || '').toUpperCase();
+    const etapaResolvida =
+      rawEtapa ||
+      (/\bEMI_[123]_/.test(rawOficial)
+        ? 'ENSINO MÉDIO INTEGRAL'
+        : /\bEM_[123]_/.test(rawOficial)
+        ? 'ENSINO MÉDIO'
+        : null);
+    const consentOk = Number(aluno.consentimento_imagem) === 1;
+
+    return res.json({
+      ok: true,
+      aluno: {
+        ...aluno,
+        etapa: etapaResolvida,
+        turma_etapa: etapaResolvida,
+        foto: consentOk ? aluno.foto : null,
+        consentimento_imagem: consentOk,
+      },
+    });
   } catch (e) {
+    console.error('[APP_PAIS/ALUNO/ME]', e);
     return res.status(500).json({ message: 'Erro interno.' });
   }
 });
