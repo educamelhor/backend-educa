@@ -15,8 +15,12 @@
 
 import express from "express";
 import pool from "../db.js";
+import matriculasProjetosRouter from "./matriculasProjetos.js";
 
 const router = express.Router();
+
+// Submódulo PROJETOS (Novo Ensino Médio: IFA, Eletiva, PCA, Projeto de Vida, PDs, Clubes)
+router.use("/projetos", matriculasProjetosRouter);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: calcula o ano letivo padrão com data de corte em 31/jan

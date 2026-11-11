@@ -36,7 +36,7 @@ router.use(async (req, _res, next) => {
 
 const MODULOS_VALIDOS = new Set([
   // Secretaria
-  'secretaria', 'secretaria.alunos', 'secretaria.responsaveis',
+  'secretaria', 'secretaria.matriculas', 'secretaria.alunos', 'secretaria.responsaveis',
   'secretaria.cargas_horarias', 'secretaria.disciplinas', 'secretaria.turmas',
   'secretaria.professores', 'secretaria.boletim', 'secretaria.relatorios',
   'secretaria.horarios', 'secretaria.agente', 'secretaria.tabela_codigos',
