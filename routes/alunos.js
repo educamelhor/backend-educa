@@ -44,6 +44,70 @@ function verificarEscola(req, res, next) {
   next();
 }
 
+// -----------------------------------------------------------------------------
+// Governança de Nome Social (Resolução CNE/CP nº 1/2018 · Decreto DF nº 37.982/2017)
+// - `nome_registro`: preserva o nome civil de registro do estudante.
+// - `usa_nome_social` (0|1) e `nome_social`: controlam o uso de Nome Social.
+// - `estudante`: reflete automaticamente o Nome Social quando ativo, garantindo
+//   que 100% das listas online/impressas, diários, chamadas, boletins e app
+//   exibam e ordenem pelo Nome Social sem expor o nome civil.
+// -----------------------------------------------------------------------------
+let _nomeSocialSchemaPromise = null;
+function ensureNomeSocialReady() {
+  if (!_nomeSocialSchemaPromise) {
+    _nomeSocialSchemaPromise = (async () => {
+      try {
+        const [cols] = await pool.query(`
+          SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'alunos'
+             AND COLUMN_NAME IN ('nome_registro', 'usa_nome_social', 'nome_social')
+        `);
+        const exist = new Set(cols.map((c) => c.COLUMN_NAME));
+        const alters = [];
+        if (!exist.has("nome_registro")) {
+          alters.push(`ADD COLUMN nome_registro VARCHAR(255) DEFAULT NULL AFTER estudante`);
+        }
+        if (!exist.has("usa_nome_social")) {
+          alters.push(`ADD COLUMN usa_nome_social TINYINT(1) NOT NULL DEFAULT 0 AFTER atendimento_diferencial`);
+        }
+        if (!exist.has("nome_social")) {
+          alters.push(`ADD COLUMN nome_social VARCHAR(255) DEFAULT NULL AFTER usa_nome_social`);
+        }
+        if (alters.length > 0) {
+          await pool.query(`ALTER TABLE alunos ${alters.join(", ")}`);
+        }
+        await pool.query(`
+          UPDATE alunos
+             SET nome_registro = estudante
+           WHERE nome_registro IS NULL OR TRIM(nome_registro) = ''
+        `);
+      } catch (e) {
+        console.warn("[alunos] ensureNomeSocialReady warning:", e.message);
+      }
+    })();
+  }
+  return _nomeSocialSchemaPromise;
+}
+
+function registrarChavesNomeAluno(map, aluno, normFn) {
+  for (const raw of [aluno?.estudante, aluno?.nome_registro, aluno?.nome_social]) {
+    const k = normFn(raw);
+    if (k && !map.has(k)) map.set(k, aluno);
+  }
+}
+
+function nomeCorrespondeAoAluno(nomeEntrada, aluno, normFn) {
+  const alvo = normFn(nomeEntrada);
+  if (!alvo) return false;
+  return (
+    normFn(aluno?.estudante) === alvo ||
+    normFn(aluno?.nome_registro) === alvo ||
+    normFn(aluno?.nome_social) === alvo
+  );
+}
+
 /* ============================================================================
  * 1) CONFIGURAÃ‡ÃƒO DE UPLOAD DE FOTOS (MULTER)
  * - Grava em /uploads/CEF04_PLAN/alunos (pasta servida pelo server.js)
@@ -107,11 +171,13 @@ router.get("/publico", async (req, res) => {
  * ========================================================================== */
 router.get("/", verificarEscola, async (req, res) => {
   try {
+    await ensureNomeSocialReady();
     const {
       turma_id,
       filtro = "",
       status = "",
       aee = "",
+      nome_social = "",
       ano_letivo,
       contexto = "",
       limit = 100,
@@ -144,13 +210,47 @@ router.get("/", verificarEscola, async (req, res) => {
       params.push(Number(turma_id));
     }
 
-    if (filtro) {
-      where.push(`(
-        a.estudante LIKE ? OR a.codigo LIKE ? OR
-        t.nome LIKE ? OR t.turno LIKE ?
-      )`);
-      const filtroLike = `%${filtro}%`;
-      params.push(filtroLike, filtroLike, filtroLike, filtroLike);
+    const filtroTrim = String(filtro || "").trim();
+    const atalhoNomeSocial =
+      nome_social === "1" ||
+      filtroTrim
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase() === "nome social";
+
+    if (atalhoNomeSocial) {
+      where.push("a.usa_nome_social = 1");
+    } else if (filtroTrim) {
+      // Busca inteligente multi-termo e insensível a acentos:
+      // encontra tanto pelo Nome de Registro (a.nome_registro) quanto pelo Nome Social (a.nome_social / a.estudante),
+      // além de RE (a.codigo), CPF, Turma e Turno.
+      const tokens = filtroTrim.split(/\s+/).filter(Boolean);
+      for (const tk of tokens) {
+        const tkLike = `%${tk}%`;
+        const cpfDigits = tk.replace(/\D/g, "");
+        if (cpfDigits.length >= 3) {
+          where.push(`(
+            a.estudante COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(a.nome_registro, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(a.nome_social, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            a.codigo LIKE ? OR
+            REPLACE(REPLACE(COALESCE(a.cpf, ''), '.', ''), '-', '') LIKE ? OR
+            COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?
+          )`);
+          params.push(tkLike, tkLike, tkLike, tkLike, `%${cpfDigits}%`, tkLike, tkLike);
+        } else {
+          where.push(`(
+            a.estudante COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(a.nome_registro, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(a.nome_social, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            a.codigo LIKE ? OR
+            COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
+            COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?
+          )`);
+          params.push(tkLike, tkLike, tkLike, tkLike, tkLike, tkLike);
+        }
+      }
     }
 
     const statusNorm = String(status || "").trim().toLowerCase();
@@ -186,6 +286,9 @@ router.get("/", verificarEscola, async (req, res) => {
              a.id,
              a.codigo,
              a.estudante,
+             COALESCE(NULLIF(TRIM(a.nome_registro), ''), a.estudante) AS nome_registro,
+             a.usa_nome_social,
+             a.nome_social,
              DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
              a.sexo,
              a.cpf,
@@ -274,12 +377,35 @@ router.get("/", verificarEscola, async (req, res) => {
  * ========================================================================== */
 router.post("/", verificarEscola, async (req, res) => {
   try {
-    const { codigo, estudante, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial } = req.body;
+    await ensureNomeSocialReady();
+    const {
+      codigo,
+      estudante,
+      nome_registro,
+      usa_nome_social,
+      nome_social,
+      data_nascimento,
+      sexo,
+      turma_id,
+      cpf,
+      atendimento_diferencial,
+    } = req.body;
     const { escola_id } = req.user;
 
-    if (!codigo || !estudante) {
-      return res.status(400).json({ message: "CÃ³digo e nome sÃ£o obrigatÃ³rios." });
+    const nomeRegistroLimpo = String(nome_registro ?? estudante ?? "").trim();
+    if (!codigo || !nomeRegistroLimpo) {
+      return res.status(400).json({ message: "Código e nome são obrigatórios." });
     }
+
+    const usaSocialFlag =
+      Number(usa_nome_social) === 1 || usa_nome_social === true ? 1 : 0;
+    const nomeSocialLimpo = usaSocialFlag
+      ? String(nome_social || "").trim()
+      : "";
+    if (usaSocialFlag && !nomeSocialLimpo) {
+      return res.status(400).json({ message: "Informe o Nome Social do estudante." });
+    }
+    const estudanteExibicao = usaSocialFlag ? nomeSocialLimpo : nomeRegistroLimpo;
 
     const anoLetivoAtual = anoLetivoPadrao();
 
@@ -300,22 +426,57 @@ router.post("/", verificarEscola, async (req, res) => {
         [alunoId, anoLetivoAtual, escola_id]
       );
       if (matr && matr.status === "ativo") {
-        return res.status(409).json({ message: "Este estudante jÃ¡ possui uma matrÃ­cula ativa no ano corrente." });
+        return res.status(409).json({ message: "Este estudante já possui uma matrícula ativa no ano corrente." });
       }
 
       // Se ele jÃ¡ estava na base, apenas atualizamos seus dados e o validamos como ativo
       await pool.query(
-        `UPDATE alunos SET estudante = ?, data_nascimento = ?, sexo = ?, turma_id = ?, cpf = ?, atendimento_diferencial = ?, status = 'ativo' WHERE id = ?`,
-        [estudante, data_nascimento || null, sexo || null, turma_id || null, cpf || null, atendimento_diferencial ? 1 : 0, alunoId]
+        `UPDATE alunos
+            SET estudante = ?,
+                nome_registro = ?,
+                usa_nome_social = ?,
+                nome_social = ?,
+                data_nascimento = ?,
+                sexo = ?,
+                turma_id = ?,
+                cpf = ?,
+                atendimento_diferencial = ?,
+                status = 'ativo'
+          WHERE id = ?`,
+        [
+          estudanteExibicao,
+          nomeRegistroLimpo,
+          usaSocialFlag,
+          usaSocialFlag ? nomeSocialLimpo : null,
+          data_nascimento || null,
+          sexo || null,
+          turma_id || null,
+          cpf || null,
+          atendimento_diferencial ? 1 : 0,
+          alunoId,
+        ]
       );
     } else {
       // InserÃ§Ã£o inÃ©dita na base global
       const [result] = await pool.query(
         `
-        INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial, escola_id, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
+        INSERT INTO alunos
+          (codigo, estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial, escola_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
         `,
-        [codigo, estudante, data_nascimento || null, sexo || null, turma_id || null, cpf || null, atendimento_diferencial ? 1 : 0, escola_id]
+        [
+          codigo,
+          estudanteExibicao,
+          nomeRegistroLimpo,
+          usaSocialFlag,
+          usaSocialFlag ? nomeSocialLimpo : null,
+          data_nascimento || null,
+          sexo || null,
+          turma_id || null,
+          cpf || null,
+          atendimento_diferencial ? 1 : 0,
+          escola_id,
+        ]
       );
       alunoId = result.insertId;
     }
@@ -340,18 +501,94 @@ router.post("/", verificarEscola, async (req, res) => {
 /* ============================================================================
  * 5) ATUALIZAR ALUNO
  * PUT /api/alunos/:id
- * Body pode conter: { estudante, data_nascimento, sexo, turma_id, status }
+ * Body pode conter: { estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, turma_id, status }
  * ========================================================================== */
 router.put("/:id", verificarEscola, async (req, res) => {
   try {
+    await ensureNomeSocialReady();
     const { id } = req.params;
     const { escola_id } = req.user;
-    const { estudante, data_nascimento, sexo, turma_id, status, cpf, atendimento_diferencial } = req.body;
+    const {
+      estudante,
+      nome_registro,
+      usa_nome_social,
+      nome_social,
+      data_nascimento,
+      sexo,
+      turma_id,
+      status,
+      cpf,
+      atendimento_diferencial,
+    } = req.body;
 
     const campos = [];
     const valores = [];
 
-    if (typeof estudante !== "undefined") { campos.push("estudante = ?"); valores.push(estudante); }
+    const alterouNomes =
+      typeof estudante !== "undefined" ||
+      typeof nome_registro !== "undefined" ||
+      typeof usa_nome_social !== "undefined" ||
+      typeof nome_social !== "undefined";
+
+    if (alterouNomes) {
+      const [[atual]] = await pool.query(
+        `SELECT id, estudante, nome_registro, usa_nome_social, nome_social
+           FROM alunos
+          WHERE id = ? AND escola_id = ?
+          LIMIT 1`,
+        [id, escola_id]
+      );
+      if (!atual) {
+        return res.status(404).json({ message: "Aluno não encontrado." });
+      }
+
+      const civilAtual = String(atual.nome_registro || atual.estudante || "").trim();
+      let novoNomeRegistro = civilAtual;
+
+      if (typeof nome_registro !== "undefined" && String(nome_registro).trim()) {
+        novoNomeRegistro = String(nome_registro).trim();
+      } else if (typeof estudante !== "undefined" && String(estudante).trim()) {
+        const estEnviado = String(estudante).trim();
+        const eraSocialEco =
+          Number(atual.usa_nome_social) === 1 &&
+          typeof nome_registro === "undefined" &&
+          typeof usa_nome_social === "undefined" &&
+          estEnviado === String(atual.nome_social || "").trim();
+        if (!eraSocialEco) {
+          novoNomeRegistro = estEnviado;
+        }
+      }
+
+      const novoUsaSocial =
+        typeof usa_nome_social !== "undefined"
+          ? Number(usa_nome_social) === 1 || usa_nome_social === true
+            ? 1
+            : 0
+          : Number(atual.usa_nome_social) === 1
+          ? 1
+          : 0;
+
+      const novoNomeSocial = novoUsaSocial
+        ? String(
+            typeof nome_social !== "undefined" ? nome_social || "" : atual.nome_social || ""
+          ).trim()
+        : "";
+
+      if (novoUsaSocial && !novoNomeSocial) {
+        return res.status(400).json({ message: "Informe o Nome Social do estudante." });
+      }
+
+      const novoEstudanteExibicao = novoUsaSocial ? novoNomeSocial : novoNomeRegistro;
+
+      campos.push("estudante = ?", "nome_registro = ?", "usa_nome_social = ?", "nome_social = ?");
+      valores.push(
+        novoEstudanteExibicao,
+        novoNomeRegistro,
+        novoUsaSocial,
+        novoUsaSocial ? novoNomeSocial : null
+      );
+    }
+
     if (typeof data_nascimento !== "undefined") { campos.push("data_nascimento = ?"); valores.push(data_nascimento || null); }
     if (typeof sexo !== "undefined") { campos.push("sexo = ?"); valores.push(sexo || null); }
     if (typeof turma_id !== "undefined") { campos.push("turma_id = ?"); valores.push(turma_id || null); }
@@ -444,11 +681,14 @@ router.delete("/:id", verificarEscola, async (req, res) => {
  * ========================================================================== */
 router.get("/por-codigo/:codigo", verificarEscola, async (req, res) => {
   try {
+    await ensureNomeSocialReady();
     const { codigo } = req.params;
     const { escola_id } = req.user;
     const anoLetivoAtual = anoLetivoPadrao();
     const [[aluno]] = await pool.query(
       `SELECT a.id, a.codigo, a.estudante AS nome,
+              COALESCE(NULLIF(TRIM(a.nome_registro), ''), a.estudante) AS nome_registro,
+              a.usa_nome_social, a.nome_social,
               DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
               a.sexo, a.foto, COALESCE(m.status, a.status, 'ativo') AS status,
               t.nome AS turma, t.turno
@@ -527,6 +767,7 @@ router.get("/:id/notas-detalhadas", async (req, res) => {
 router.get("/:id", async (req, res) => {
   const { id } = req.params;
   try {
+    await ensureNomeSocialReady();
     const [[aluno]] = await pool.query(
       `
       SELECT
@@ -534,6 +775,9 @@ router.get("/:id", async (req, res) => {
         a.escola_id,
         a.codigo,
         a.estudante AS estudante,
+        COALESCE(NULLIF(TRIM(a.nome_registro), ''), a.estudante) AS nome_registro,
+        a.usa_nome_social,
+        a.nome_social,
         DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
         a.sexo,
         a.cpf,
@@ -902,19 +1146,20 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 8: SituaÃ§Ã£o atual no BD para a turma (duas fontes)
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    await ensureNomeSocialReady();
     const atuaisIdSet = new Set();
     const atuais = [];
 
     if (turma_id) {
       const [atuaisMatricula] = await pool.query(
-        `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+        `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, 'ativo' AS status
          FROM matriculas m
          INNER JOIN alunos a ON a.id = m.aluno_id
          WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
         [turma_id, anoLetivoAtual, escola_id]
       );
       const [atuaisAlunos] = await pool.query(
-        `SELECT a.id, a.codigo, a.estudante, a.status
+        `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, a.status
          FROM alunos a
          WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
         [turma_id, escola_id]
@@ -933,8 +1178,7 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
     const atuaisNomeMap = new Map();
     for (const a of atuais) {
-      const key = normName(a.estudante);
-      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+      registrarChavesNomeAluno(atuaisNomeMap, a, normName);
     }
 
     const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
@@ -1016,15 +1260,16 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     let inseridos = 0;
     for (const e of toInsert) {
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
-      const baseParams = [e.codigo, e.estudante];
+      const baseParams = [e.codigo, e.estudante, e.estudante];
       let insertSql;
 
       if (dataValida) {
-        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, cpf, serie, turma_id, escola_id, status)
-          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
+        insertSql = `INSERT INTO alunos (codigo, estudante, nome_registro, data_nascimento, sexo, cpf, serie, turma_id, escola_id, status)
+          VALUES (?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
@@ -1033,11 +1278,12 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
             status = 'ativo'`;
         baseParams.push(e.dataBr, e.sexo || null, e.cpfAluno || null, e.serie || null, turma_id, escola_id);
       } else {
-        insertSql = `INSERT INTO alunos (codigo, estudante, sexo, cpf, serie, turma_id, escola_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'ativo')
+        insertSql = `INSERT INTO alunos (codigo, estudante, nome_registro, sexo, cpf, serie, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
             serie = IF(serie IS NULL OR serie = '', VALUES(serie),  serie),
@@ -1135,9 +1381,8 @@ router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
       const cod = String(atual.codigo);
-      const nomeKey = normName(atual.estudante);
       const noCodigoPdf = entradaSet.has(cod);
-      const noNomePdf = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
+      const noNomePdf = pdfEntries.some((e) => nomeCorrespondeAoAluno(e.estudante, atual, normName));
       if (!noCodigoPdf && !noNomePdf) {
         pendentesInativacao.push({
           id: atual.id,
@@ -1436,15 +1681,16 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // FASE 4: SituaÃ§Ã£o atual no BD (duas fontes â€” matrÃ­cula e aluno direto)
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    await ensureNomeSocialReady();
     const [atuaisMatricula] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+      `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, 'ativo' AS status
        FROM matriculas m
        INNER JOIN alunos a ON a.id = m.aluno_id
        WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
       [turma_id, anoLetivoAtual, escola_id]
     );
     const [atuaisAlunos] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, a.status
+      `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, a.status
        FROM alunos a
        WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
       [turma_id, escola_id]
@@ -1470,8 +1716,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
     const atuaisNomeMap = new Map();
     for (const a of atuais) {
-      const key = normName(a.estudante);
-      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+      registrarChavesNomeAluno(atuaisNomeMap, a, normName);
     }
 
     const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
@@ -1554,11 +1799,12 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       let insertSql, baseParams;
       if (dataValida) {
         insertSql = `INSERT INTO alunos
-          (codigo, estudante, data_nascimento, sexo, cpf, anees, turma_id, escola_id, status)
-          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
+          (codigo, estudante, nome_registro, data_nascimento, sexo, cpf, anees, turma_id, escola_id, status)
+          VALUES (?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
@@ -1566,24 +1812,25 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
             turma_id = VALUES(turma_id),
             status = 'ativo'`;
         baseParams = [
-          e.codigo, e.estudante, e.dataBr,
+          e.codigo, e.estudante, e.estudante, e.dataBr,
           e.sexo || null, e.cpfAluno || null, e.anees || null,
           turma_id, escola_id,
         ];
       } else {
         insertSql = `INSERT INTO alunos
-          (codigo, estudante, sexo, cpf, anees, turma_id, escola_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'ativo')
+          (codigo, estudante, nome_registro, sexo, cpf, anees, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
             anees = IF(anees IS NULL OR anees = '', VALUES(anees), anees),
             turma_id = VALUES(turma_id),
             status = 'ativo'`;
         baseParams = [
-          e.codigo, e.estudante,
+          e.codigo, e.estudante, e.estudante,
           e.sexo || null, e.cpfAluno || null, e.anees || null,
           turma_id, escola_id,
         ];
@@ -1666,9 +1913,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
       const cod = String(atual.codigo);
-      const nomeKey = normName(atual.estudante);
       const noCodigoCsv = entradaSet.has(cod);
-      const noNomeCsv = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
+      const noNomeCsv = pdfEntries.some((e) => nomeCorrespondeAoAluno(e.estudante, atual, normName));
       if (!noCodigoCsv && !noNomeCsv) {
         pendentesInativacao.push({
           id: atual.id,
@@ -1915,20 +2161,22 @@ router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
 
     const toInactivate = atuais.filter((a) => !entradaSet.has(String(a.codigo)));
 
+    await ensureNomeSocialReady();
     // Inserir novos
     let inseridos = 0;
     for (const e of toInsert) {
       const [result] = await pool.query(
-        `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
-         VALUES (?, ?, ${e.dataBr ? "STR_TO_DATE(?, '%d/%m/%Y')" : "NULL"}, ?, ?, ?, 'ativo')
+        `INSERT INTO alunos (codigo, estudante, nome_registro, data_nascimento, sexo, turma_id, escola_id, status)
+         VALUES (?, ?, ?, ${e.dataBr ? "STR_TO_DATE(?, '%d/%m/%Y')" : "NULL"}, ?, ?, ?, 'ativo')
          ON DUPLICATE KEY UPDATE 
            id = LAST_INSERT_ID(id),
-           estudante = VALUES(estudante),
+           nome_registro = VALUES(nome_registro),
+           estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
            turma_id = VALUES(turma_id),
            status = 'ativo'`,
         e.dataBr
-          ? [e.codigo, e.estudante, e.dataBr, e.sexo, turma_id, escola_id]
-          : [e.codigo, e.estudante, e.sexo, turma_id, escola_id]
+          ? [e.codigo, e.estudante, e.estudante, e.dataBr, e.sexo, turma_id, escola_id]
+          : [e.codigo, e.estudante, e.estudante, e.sexo, turma_id, escola_id]
       );
       
       const alunoId = result.insertId;
@@ -3077,19 +3325,20 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
     }
 
     // FASE 8: Situação atual no BD para a turma
+    await ensureNomeSocialReady();
     const atuaisIdSet = new Set();
     const atuais = [];
 
     if (turma_id) {
       const [atuaisMatricula] = await pool.query(
-        `SELECT a.id, a.codigo, a.estudante, 'ativo' AS status
+        `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, 'ativo' AS status
          FROM matriculas m
          INNER JOIN alunos a ON a.id = m.aluno_id
          WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
         [turma_id, anoLetivoAtual, escola_id]
       );
       const [atuaisAlunos] = await pool.query(
-        `SELECT a.id, a.codigo, a.estudante, a.status
+        `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, a.status
          FROM alunos a
          WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
         [turma_id, escola_id]
@@ -3108,8 +3357,7 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
     const atuaisMap = new Map(atuais.map((a) => [String(a.codigo), a]));
     const atuaisNomeMap = new Map();
     for (const a of atuais) {
-      const key = normName(a.estudante);
-      if (key && !atuaisNomeMap.has(key)) atuaisNomeMap.set(key, a);
+      registrarChavesNomeAluno(atuaisNomeMap, a, normName);
     }
 
     const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
@@ -3175,26 +3423,28 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
     let inseridos = 0;
     for (const e of toInsert) {
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
-      const baseParams = [e.codigo, e.estudante];
+      const baseParams = [e.codigo, e.estudante, e.estudante];
       let insertSql;
 
       if (dataValida) {
-        insertSql = `INSERT INTO alunos (codigo, estudante, data_nascimento, sexo, turma_id, escola_id, status)
-          VALUES (?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
+        insertSql = `INSERT INTO alunos (codigo, estudante, nome_registro, data_nascimento, sexo, turma_id, escola_id, status)
+          VALUES (?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             turma_id = VALUES(turma_id),
             status = 'ativo'`;
         baseParams.push(e.dataBr, e.sexo || null, turma_id, escola_id);
       } else {
-        insertSql = `INSERT INTO alunos (codigo, estudante, sexo, turma_id, escola_id, status)
-          VALUES (?, ?, ?, ?, ?, 'ativo')
+        insertSql = `INSERT INTO alunos (codigo, estudante, nome_registro, sexo, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
-            estudante = VALUES(estudante),
+            nome_registro = VALUES(nome_registro),
+            estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             turma_id = VALUES(turma_id),
             status = 'ativo'`;
@@ -3276,9 +3526,8 @@ router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) 
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
       const cod = String(atual.codigo);
-      const nomeKey = normName(atual.estudante);
       const noCodigoPdf = entradaSet.has(cod);
-      const noNomePdf = pdfEntries.some((e) => normName(e.estudante) === nomeKey);
+      const noNomePdf = pdfEntries.some((e) => nomeCorrespondeAoAluno(e.estudante, atual, normName));
       if (!noCodigoPdf && !noNomePdf) {
         pendentesInativacao.push({
           id: atual.id,

@@ -48,11 +48,11 @@ router.get("/secretaria", async (req, res) => {
 
     if (filtro) {
       where.push(`(
-        a.estudante LIKE ? OR a.codigo LIKE ? OR
+        a.estudante LIKE ? OR COALESCE(a.nome_registro, '') LIKE ? OR a.codigo LIKE ? OR
         r.nome LIKE ? OR r.cpf LIKE ?
       )`);
       const f = `%${filtro}%`;
-      params.push(f, f, f, f);
+      params.push(f, f, f, f, f);
     }
 
     const whereSql = `WHERE ${where.join(" AND ")}`;

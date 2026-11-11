@@ -129,9 +129,9 @@ router.get("/alunos", verificarEscola, async (req, res) => {
     }
 
     if (filtro && filtro.trim().length > 0) {
-      where.push("(a.estudante LIKE ? OR a.codigo LIKE ? OR t.nome LIKE ?)");
+      where.push("(a.estudante LIKE ? OR COALESCE(a.nome_registro, '') LIKE ? OR a.codigo LIKE ? OR t.nome LIKE ?)");
       const lk = `%${filtro.trim()}%`;
-      params.push(lk, lk, lk);
+      params.push(lk, lk, lk, lk);
     }
 
     if (apenas_aee === "1" || apenas_aee === "true") {

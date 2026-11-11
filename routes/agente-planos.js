@@ -589,6 +589,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
           nd.oportunidade_idx,
           a.codigo        AS re,
           a.estudante     AS nome,
+          a.nome_registro AS nome_registro,
           nd.nota,
           nd.cor
         FROM notas_diario nd
@@ -612,6 +613,7 @@ router.post('/:id/exportar-notas', async (req, res) => {
         notasMap[alunoKey] = {
           re: String(r.re || ''),
           nome: String(r.nome || ''),
+          nome_registro: String(r.nome_registro || ''),
           itens: {}
         };
       }

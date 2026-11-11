@@ -1558,6 +1558,45 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao sincronizar CEO santos.morais.andre@gmail.com:", ceoErr.message);
   }
 
+  // [2026-11-11] Nome Social na tabela alunos (Res. CNE/CP nº 1/2018 · Decreto DF nº 37.982/2017)
+  try {
+    const [colsNomeSocial] = await pool.query(`
+      SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'alunos'
+         AND COLUMN_NAME IN ('nome_registro', 'usa_nome_social', 'nome_social')
+    `);
+    const existCols = new Set(colsNomeSocial.map((c) => c.COLUMN_NAME));
+    const alters = [];
+    if (!existCols.has("nome_registro")) {
+      alters.push(
+        `ADD COLUMN nome_registro VARCHAR(255) DEFAULT NULL COMMENT 'Nome civil de registro do estudante (preservado quando usa_nome_social = 1)' AFTER estudante`
+      );
+    }
+    if (!existCols.has("usa_nome_social")) {
+      alters.push(
+        `ADD COLUMN usa_nome_social TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Usa Nome Social nos registros escolares (Res. CNE/CP 1/2018)' AFTER atendimento_diferencial`
+      );
+    }
+    if (!existCols.has("nome_social")) {
+      alters.push(
+        `ADD COLUMN nome_social VARCHAR(255) DEFAULT NULL COMMENT 'Nome Social do estudante (Res. CNE/CP 1/2018; Dec. DF 37.982/2017)' AFTER usa_nome_social`
+      );
+    }
+    if (alters.length > 0) {
+      await pool.query(`ALTER TABLE alunos ${alters.join(", ")}`);
+      console.log("[MIGRATION] Colunas de Nome Social adicionadas em 'alunos' ✅");
+    }
+    await pool.query(`
+      UPDATE alunos
+         SET nome_registro = estudante
+       WHERE nome_registro IS NULL OR TRIM(nome_registro) = ''
+    `);
+  } catch (nsErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration Nome Social em alunos (não crítico):", nsErr.message);
+  }
+
 
   // ============================================================================
   // Plataforma (CEO/Admin Global) — rotas públicas próprias (NÃO dependem de escola)

@@ -876,8 +876,8 @@ router.get("/:id/candidatos", async (req, res) => {
 
     if (turmaId) { sql += " AND m.turma_id = ?"; params.push(turmaId); }
     if (q) {
-      sql += " AND (a.estudante LIKE ? OR a.codigo = ?)";
-      params.push(`%${q}%`, toInt(q, -1));
+      sql += " AND (a.estudante LIKE ? OR COALESCE(a.nome_registro, '') LIKE ? OR a.codigo = ?)";
+      params.push(`%${q}%`, `%${q}%`, toInt(q, -1));
     }
     sql += " ORDER BY t.nome, a.estudante LIMIT ?";
     params.push(limite);

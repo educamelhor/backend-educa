@@ -1434,8 +1434,8 @@ router.get("/turmas/:agrupamentoId/candidatos", async (req, res) => {
       params.push(agr.turno);
     }
     if (q) {
-      sql += " AND (a.estudante LIKE ? OR CAST(a.codigo AS CHAR) LIKE ?)";
-      params.push(`%${q}%`, `%${q}%`);
+      sql += " AND (a.estudante LIKE ? OR COALESCE(a.nome_registro, '') LIKE ? OR CAST(a.codigo AS CHAR) LIKE ?)";
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
 
     sql += " ORDER BY t.nome ASC, a.estudante ASC LIMIT ?";

@@ -3560,7 +3560,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
       const reNorm  = String(aluno.re || '').trim().replace(/^0+/, '');
 
       // ── Passo 1: encontra a linha no DOM, verifica disabled, retorna uid ─
-      const linhaInfo = await page.evaluate(({ re, nome, colIdx, colName }) => {
+      const linhaInfo = await page.evaluate(({ re, nome, nomeRegistro, colIdx, colName }) => {
         const norm   = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
         const normRE = s => String(s || '').trim().replace(/^0+/, '');
         const reNorm = normRE(re);
@@ -3575,7 +3575,9 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
 
           const reMatch   = reNorm && cells.some(c => normRE(c.textContent?.trim() || '') === reNorm);
           const rowText   = cells.map(c => c.textContent?.trim()).join(' ');
-          const nomeMatch = nome && norm(rowText).includes(norm(nome));
+          const nomeMatch =
+            (nome && norm(rowText).includes(norm(nome))) ||
+            (nomeRegistro && norm(rowText).includes(norm(nomeRegistro)));
 
           if (!reMatch && !nomeMatch) continue;
 
@@ -3602,7 +3604,7 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
         }
 
         return { ok: false, motivo: `RE="${reNorm}" não encontrado no EDUCADF` };
-      }, { re: aluno.re, nome: aluno.nome, colIdx: colunaIdx.idx, colName: targetColuna });
+      }, { re: aluno.re, nome: aluno.nome, nomeRegistro: aluno.nome_registro || '', colIdx: colunaIdx.idx, colName: targetColuna });
 
       if (!linhaInfo.ok) {
         totalErros++;
