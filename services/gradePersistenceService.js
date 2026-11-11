@@ -16,6 +16,10 @@ import {
   carregarParesTurmasUnidasPermitidas,
   saoTurmasUnidasPermitidas,
 } from "./solverEtapa3Helper.js";
+import {
+  ensureEtapa4Schema,
+  registrarSnapshotPublicacaoAutomatica,
+} from "./gradeEtapa4Service.js";
 
 function normTurno(t) {
   return String(t || "").trim().toLowerCase();
@@ -272,25 +276,43 @@ export async function getRascunhoByTurno(pool, { escolaId, turno }) {
   };
 }
 
-export async function publicarRascunho(pool, { escolaId, turno, descricao }) {
+export async function publicarRascunho(pool, { escolaId, turno, descricao, usuario = null }) {
   const conn = await pool.getConnection();
   try {
+    await ensureEtapa4Schema(conn);
+    await ensureGradeSlotMultiTurmaSupport(conn);
     await conn.beginTransaction();
     const turnoNorm = normTurno(turno);
 
     // Existe rascunho?
     const [[ras]] = await conn.query(
-      `SELECT id FROM grade_resultado WHERE escola_id=? AND turno=? AND status='rascunho' LIMIT 1`,
+      `SELECT id, version FROM grade_resultado WHERE escola_id=? AND turno=? AND status='rascunho' LIMIT 1`,
       [escolaId, turnoNorm]
     );
     if (!ras?.id) throw new Error("Não há rascunho para publicar.");
 
-    // Arquivar publicado atual (se houver)
+    // Arquivar publicado atual (se houver) + salvar snapshot automático em grade_cenarios (ETAPA 4)
     const [[pub]] = await conn.query(
-      `SELECT id FROM grade_resultado WHERE escola_id=? AND turno=? AND status='publicado' LIMIT 1`,
+      `SELECT id, version, descricao FROM grade_resultado WHERE escola_id=? AND turno=? AND status='publicado' LIMIT 1`,
       [escolaId, turnoNorm]
     );
+    let nextVersion = Math.max(1, Number(ras.version) || 1);
     if (pub?.id) {
+      nextVersion = Math.max(nextVersion, (Number(pub.version) || 1) + 1);
+      const [oldPubSlots] = await conn.query(
+        `SELECT turma_id, dia_semana AS dia, periodo_ordem AS ordem, disciplina_id, professor_id, origem, locked
+           FROM grade_slot WHERE resultado_id=?`,
+        [pub.id]
+      );
+      await registrarSnapshotPublicacaoAutomatica(conn, {
+        escolaId,
+        turno: turnoNorm,
+        pubRow: pub,
+        slots: oldPubSlots || [],
+        usuario,
+      }).catch((errSnap) => {
+        console.warn("[publicarRascunho] Aviso ao gravar snapshot de publicação:", errSnap?.message);
+      });
       await conn.query(`UPDATE grade_resultado SET status='arquivado' WHERE id=?`, [pub.id]);
     }
 
@@ -300,13 +322,13 @@ export async function publicarRascunho(pool, { escolaId, turno, descricao }) {
           SET status='publicado',
               descricao=?,
               published_at=NOW(),
-              version=IFNULL(version, 0) + 1
+              version=?
         WHERE id=?`,
-      [descricao || null, ras.id]
+      [descricao || null, nextVersion, ras.id]
     );
 
     await conn.commit();
-    return { resultado_id: ras.id, status: "publicado" };
+    return { resultado_id: ras.id, status: "publicado", version: nextVersion };
   } catch (e) {
     await conn.rollback();
     throw e;

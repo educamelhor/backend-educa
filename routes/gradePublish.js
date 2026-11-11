@@ -33,8 +33,10 @@ import {
   saoTurmasUnidasPermitidas,
   fetchRestricoesInterTurnosPorCpf,
 } from "../services/solverEtapa3Helper.js";
+import gradeEtapa4Router from "./gradeEtapa4.js";
 
 const router = express.Router();
+router.use(gradeEtapa4Router);
 
 function requireEscola(req, res, next) {
   const escolaId = req.user?.escola_id || Number(req.headers["x-escola-id"]);
@@ -87,7 +89,11 @@ router.post("/publicar", requireEscola, async (req, res) => {
   try {
     const { turno, descricao } = req.body || {};
     if (!turno) return res.status(400).json({ error: "turno obrigatório." });
-    const out = await publicarRascunho(pool, { escolaId: req.escolaId, turno, descricao });
+    const usuario = {
+      id: req.user?.id || req.user?.usuario_id || null,
+      nome: req.user?.nome || req.user?.name || req.user?.email || null,
+    };
+    const out = await publicarRascunho(pool, { escolaId: req.escolaId, turno, descricao, usuario });
     return res.json({ ok: true, ...out });
   } catch (e) {
     console.error("POST /grade/publicar:", e);

@@ -22,6 +22,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
 import { resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import { ensureEtapa4Schema } from "../services/gradeEtapa4Service.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -478,15 +479,16 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       return res.status(400).json({ ok: false, message: "O professor substituto deve ser diferente do professor de origem." });
     }
 
+    await ensureEtapa4Schema(connection);
     await connection.beginTransaction();
 
     // 1. Validação de Permissão e Escola
     const [origemRows] = await connection.query(
-      "SELECT id, nome, status FROM professores WHERE id = ? AND escola_id = ?",
+      "SELECT id, nome, cpf, status FROM professores WHERE id = ? AND escola_id = ?",
       [Number(professor_origem_id), Number(escolaId)]
     );
     const [destinoRows] = await connection.query(
-      "SELECT id, nome, status FROM professores WHERE id = ? AND escola_id = ?",
+      "SELECT id, nome, cpf, status FROM professores WHERE id = ? AND escola_id = ?",
       [Number(professor_destino_id), Number(escolaId)]
     );
 
@@ -511,9 +513,10 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       return res.status(400).json({ ok: false, message: "O professor substituto precisa estar com status 'ativo'." });
     }
 
-    // 2. Buscar Alocações Atuais do Professor de Origem
+    // 2. Buscar Alocações Atuais do Professor de Origem (preservando semestre)
     const [modulacoesOrigem] = await connection.query(
-      `SELECT m.turma_id, m.disciplina_id, m.aulas, t.turno, t.ano, t.nome AS turma_nome, d.nome AS disciplina_nome
+      `SELECT m.id, m.escola_id, m.professor_id, m.turma_id, m.disciplina_id, m.aulas, COALESCE(m.semestre, 0) AS semestre,
+              t.turno, t.ano, t.nome AS turma_nome, d.nome AS disciplina_nome
          FROM modulacao m
          JOIN turmas t ON t.id = m.turma_id
          LEFT JOIN disciplinas d ON d.id = m.disciplina_id
@@ -540,21 +543,27 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
 
       if (discId) {
         await connection.query(
-          `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
-           VALUES (?, ?, ?, ?, ?, 'ativo')`,
-          [Number(professor_destino_id), Number(escolaId), turno, discId, aulas]
-        );
+          `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'ativo')`,
+          [Number(professor_destino_id), Number(escolaId), turno, discId, aulas, mod.semestre || 0]
+        ).catch(async () => {
+          await connection.query(
+            `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
+             VALUES (?, ?, ?, ?, ?, 'ativo')`,
+            [Number(professor_destino_id), Number(escolaId), turno, discId, aulas]
+          );
+        });
       }
     }
 
-    // 4. Transferir / Clonar Modulação (modulacao)
+    // 4. Transferir / Clonar Modulação (modulacao) preservando semestre
     const detalhes = [];
     for (const mod of modulacoesOrigem) {
       await connection.query(
-        `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
-        [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, mod.aulas || 1]
+        [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, mod.aulas || 1, mod.semestre || 0]
       );
       const label = mod.disciplina_nome ? `${mod.turma_nome} - ${mod.disciplina_nome}` : mod.turma_nome;
       detalhes.push(label);
@@ -568,6 +577,41 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       );
     }
 
+    // 4.5. ETAPA 4: Sincroniza também grade_slot (rascunho e publicado) onde não houver colisão
+    const snapshotSlots = [];
+    let slotsTransferidos = 0;
+    try {
+      const [resRows] = await connection.query(
+        `SELECT id FROM grade_resultado WHERE escola_id = ? AND status IN ('rascunho', 'publicado')`,
+        [Number(escolaId)]
+      );
+      const resIds = (resRows || []).map((r) => Number(r.id));
+      if (resIds.length > 0 && remover_alocacoes_origem) {
+        const ph = resIds.map(() => "?").join(",");
+        const [slotsOrig] = await connection.query(
+          `SELECT id, resultado_id, turma_id, dia_semana, periodo_ordem, disciplina_id, professor_id, origem, locked
+             FROM grade_slot WHERE resultado_id IN (${ph}) AND professor_id = ? FOR UPDATE`,
+          [...resIds, Number(professor_origem_id)]
+        );
+        for (const s of slotsOrig || []) {
+          const [conf] = await connection.query(
+            `SELECT id FROM grade_slot WHERE resultado_id = ? AND professor_id = ? AND dia_semana = ? AND periodo_ordem = ? LIMIT 1`,
+            [s.resultado_id, Number(professor_destino_id), s.dia_semana, s.periodo_ordem]
+          );
+          if (!conf?.length) {
+            snapshotSlots.push({ ...s });
+            await connection.query(`UPDATE grade_slot SET professor_id = ? WHERE id = ?`, [
+              Number(professor_destino_id),
+              s.id,
+            ]);
+            slotsTransferidos++;
+          }
+        }
+      }
+    } catch (slotSyncErr) {
+      console.warn("[SUBSTITUICAO] Aviso ao sincronizar grade_slot:", slotSyncErr?.message);
+    }
+
     // 5. Inativação da Origem (se solicitado)
     if (inativar_origem) {
       await connection.query(
@@ -576,18 +620,65 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       );
     }
 
+    // 6. Grava auditoria unificada em grade_substituicoes_historico (ETAPA 4)
+    try {
+      const turnoRef = String(modulacoesOrigem[0]?.turno || "matutino").toLowerCase();
+      const anoRef = Number(modulacoesOrigem[0]?.ano) || new Date().getFullYear();
+      await connection.query(
+        `INSERT INTO grade_substituicoes_historico
+           (escola_id, turno, ano_letivo, semestre,
+            professor_titular_id, professor_titular_nome, professor_titular_cpf,
+            professor_substituto_id, professor_substituto_nome, professor_substituto_cpf,
+            motivo, observacao, data_inicio, inativou_titular, status,
+            escopo_json, snapshot_reversao_json, realizado_por, realizado_por_nome)
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?)`,
+        [
+          Number(escolaId),
+          turnoRef,
+          anoRef,
+          Number(professor_origem_id),
+          professorOrigem.nome,
+          String(professorOrigem.cpf || "").replace(/\D/g, "") || null,
+          Number(professor_destino_id),
+          professorDestino.nome,
+          String(professorDestino.cpf || "").replace(/\D/g, "") || null,
+          inativar_origem ? "TROCA_DEFINITIVA" : "SUBSTITUICAO_TEMPORARIA",
+          motivo || "Substituição via Cadastro de Professores",
+          inativar_origem ? 1 : 0,
+          inativar_origem ? "DEFINITIVA" : "ATIVA",
+          JSON.stringify({
+            turmas_nomes: [...new Set(modulacoesOrigem.map((m) => m.turma_nome).filter(Boolean))],
+            disciplinas_nomes: [...new Set(modulacoesOrigem.map((m) => m.disciplina_nome).filter(Boolean))],
+            slots_transferidos: slotsTransferidos,
+            modulacoes_transferidas: modulacoesOrigem.length,
+          }),
+          JSON.stringify({
+            status_anterior_titular: professorOrigem.status || "ativo",
+            slots: snapshotSlots,
+            modulacao: modulacoesOrigem,
+            agrupamento_modulacao: [],
+          }),
+          req.user?.id || req.user?.usuario_id || null,
+          req.user?.nome || req.user?.email || null,
+        ]
+      );
+    } catch (histErr) {
+      console.warn("[SUBSTITUICAO] Aviso ao gravar histórico ETAPA 4:", histErr?.message);
+    }
+
     await connection.commit();
     connection.release();
 
-    // 6. Auditoria / Log
+    // 7. Auditoria / Log
     console.log(
-      `[SUBSTITUICAO] Professor ${professorOrigem.nome} (ID: ${professorOrigem.id}) substituído por ${professorDestino.nome} (ID: ${professorDestino.id}). ${modulacoesOrigem.length} turmas transferidas.${motivo ? ` Motivo: ${motivo}` : ""}`
+      `[SUBSTITUICAO] Professor ${professorOrigem.nome} (ID: ${professorOrigem.id}) substituído por ${professorDestino.nome} (ID: ${professorDestino.id}). ${modulacoesOrigem.length} turmas transferidas, ${slotsTransferidos} slots de horário atualizados.${motivo ? ` Motivo: ${motivo}` : ""}`
     );
 
     return res.json({
       ok: true,
-      message: "Substituição realizada com sucesso!",
+      message: "Substituição realizada com sucesso! Diários preservados e quadro de horários atualizado.",
       turmas_transferidas: modulacoesOrigem.length,
+      slots_horario_atualizados: slotsTransferidos,
       detalhes: [...new Set(detalhes)]
     });
 
