@@ -103,7 +103,7 @@ function exigirGestao(req, res, next) {
 let _schemaReady = false;
 let _schemaPromise = null;
 
-async function ensureMatriculasProjetosSchema() {
+export async function ensureMatriculasProjetosSchema() {
   if (_schemaReady) return;
   if (_schemaPromise) return _schemaPromise;
 

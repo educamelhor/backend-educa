@@ -136,6 +136,7 @@ import pedagogicoRelatoriosRouter from "./routes/pedagogico_relatorios.js";
 import agendaPedagogicaRouter from "./routes/agendaPedagogica.js";
 import appPaisRouterModule, { mountToApp as mountAppPaisToApp } from "./routes/app_pais.js";
 import appPaisLoginRouter from "./routes/app_pais_login.js"; // ✅ Router público pre-auth — workaround Express 5 + Docker
+import appAlunoProjetosRouter, { mountAppAlunoProjetosToApp } from "./routes/app_aluno_projetos.js"; // ✅ Educa Mobile — Projetos do Novo Ensino Médio (APP_PAIS_JWT_SECRET)
 import bnccCascadeRouter from "./routes/bncc_cascade.js"; // ✅ import estático — sem feature flag
 import bibliotecaRouter from "./routes/biblioteca.js"; // ✅ Módulo BIBLIOTECA
 import secretariaAgenteRouter from "./routes/secretaria-agente.js"; // ✅ Agente Secretaria (SEEDF PDF Parser)
@@ -1607,6 +1608,13 @@ async function bootstrap() {
   // Rotas públicas de auth do aluno em router separado para contornar
   // definitivamente o bug Express 5 + Docker com app.use(router) em POSTs.
   // Montado ANTES do catch-all app.use("/api", autenticarToken, ...).
+  // ─── APP ALUNO PROJETOS (Novo Ensino Médio — escolha semestral pelo Educa Mobile) ──
+  mountAppAlunoProjetosToApp(app, "/api/app-pais/aluno/projetos");
+  app.use("/api/app-pais/aluno/projetos", appAlunoProjetosRouter);
+  mountAppAlunoProjetosToApp(app, "/api/app-aluno/projetos");
+  app.use("/api/app-aluno/projetos", appAlunoProjetosRouter);
+  console.log("[APP_ALUNO_PROJETOS] rotas mobile montadas em /api/app-pais/aluno/projetos ✅");
+
   app.use("/api/app-pais/aluno", appAlunoAuthRouter);
   console.log("[APP_ALUNO_AUTH] router montado em /api/app-pais/aluno ✅");
 
