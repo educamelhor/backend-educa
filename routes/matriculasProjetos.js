@@ -119,9 +119,9 @@ export const EIXOS_PADRAO_SISTEMA = [
   {
     codigo: "PROJETO",
     card_id_mobile: "outros",
-    sigla: "CLUBES",
+    sigla: "OUTROS",
     label_mobile: "OUTROS",
-    titulo: "Clubes Juvenis & Projetos Científicos",
+    titulo: "Outros projetos",
     subtitulo: "Iniciação científica, robótica, olimpíadas, cultura, artes e desporto",
     descricao_curta: "Núcleos de protagonismo estudantil, feiras científicas, teatro, música e esportes.",
     cor_tema: "rose",
@@ -331,6 +331,16 @@ export async function ensureMatriculasProjetosSchema() {
           UNIQUE KEY uq_em_eixos_escola_codigo (escola_id, codigo),
           INDEX idx_em_eixos_escola_ordem (escola_id, ativo, ordem)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+
+      // Alinha nomenclatura padrão do 6º eixo ("Outros projetos") nas escolas já semeadas,
+      // preservando qualquer personalização manual posterior feita pela direção.
+      await pool.query(`
+        UPDATE em_eixos
+           SET titulo = 'Outros projetos',
+               sigla = 'OUTROS'
+         WHERE codigo = 'PROJETO'
+           AND titulo = 'Clubes Juvenis & Projetos Científicos'
       `);
 
       _schemaReady = true;
