@@ -47,7 +47,8 @@ export async function obterProva(req, res) {
       `SELECT pq.id, pq.ordem, pq.valor_pontos,
               q.id AS questao_id, q.conteudo_bruto, q.tipo, q.nivel,
               q.disciplina, q.alternativas_json, q.correta, q.tags,
-              q.habilidade_bncc, q.imagem_base64
+              q.habilidade_bncc, q.imagem_url, q.imagem_base64,
+              q.texto_apoio, q.fonte
        FROM prova_questoes pq
        JOIN questoes q ON q.id = pq.questao_id
        WHERE pq.prova_id = ?

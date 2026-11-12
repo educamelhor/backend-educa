@@ -1074,12 +1074,12 @@ async function bootstrap() {
   // [2026-05-01] Banco Global de Questões — correta_texto + temas + tabelas
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // 1) Colunas novas em questoes: correta_texto (gabarito por conteúdo) + temas (JSON)
+  // 1) Colunas novas em questoes: correta_texto (gabarito por conteúdo) + temas (JSON) + imagem_url (DO Spaces)
   try {
     const [colsQ] = await pool.query(`
       SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes'
-        AND COLUMN_NAME IN ('correta_texto','temas','global_id','publicada_globalmente')
+        AND COLUMN_NAME IN ('correta_texto','temas','global_id','publicada_globalmente','imagem_url')
     `);
     const existentes = new Set(colsQ.map((c) => c.COLUMN_NAME));
     const addCols = [];
@@ -1095,9 +1095,12 @@ async function bootstrap() {
     if (!existentes.has("publicada_globalmente"))
       addCols.push(`ADD COLUMN publicada_globalmente TINYINT(1) NOT NULL DEFAULT 0
         COMMENT '1 = questão publicada no banco global'`);
+    if (!existentes.has("imagem_url"))
+      addCols.push(`ADD COLUMN imagem_url VARCHAR(500) DEFAULT NULL
+        COMMENT 'URL pública da imagem da questão no DO Spaces'`);
     if (addCols.length > 0)
       await pool.query(`ALTER TABLE questoes ${addCols.join(", ")}`);
-    console.log("[MIGRATION] Colunas do banco global em questoes garantidas ✅");
+    console.log("[MIGRATION] Colunas do banco global e imagem_url em questoes garantidas ✅");
   } catch (migErr) {
     console.warn("[MIGRATION] Erro ao alterar tabela questoes (não crítico):", migErr.message);
   }
@@ -1115,6 +1118,7 @@ async function bootstrap() {
         serie               VARCHAR(50)  DEFAULT NULL,
         disciplina          VARCHAR(100) DEFAULT NULL,
         habilidade_bncc     VARCHAR(100) DEFAULT NULL,
+        imagem_url          VARCHAR(500) DEFAULT NULL,
         temas               JSON         DEFAULT NULL
           COMMENT 'Array de temas: ["Célula","DNA"]',
         alternativas_json   JSON         DEFAULT NULL
@@ -1146,6 +1150,13 @@ async function bootstrap() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         COMMENT='Banco Global EDUCA.MELHOR — questoes publicadas acessíveis por todas as escolas'
     `);
+    const [colsGlobal] = await pool.query(`
+      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes_banco_global' AND COLUMN_NAME = 'imagem_url'
+    `);
+    if (colsGlobal.length === 0) {
+      await pool.query(`ALTER TABLE questoes_banco_global ADD COLUMN imagem_url VARCHAR(500) DEFAULT NULL AFTER habilidade_bncc`);
+    }
     console.log("[MIGRATION] Tabela questoes_banco_global garantida ✅");
   } catch (migErr) {
     console.warn("[MIGRATION] Erro ao criar questoes_banco_global (não crítico):", migErr.message);
@@ -1750,6 +1761,8 @@ async function bootstrap() {
 
 
   if (FF_QUESTOES) {
+    // ✅ EDUCA.PROVA — Upload de imagens de questões para DO Spaces (antes das rotas dinâmicas :id)
+    app.use("/api/questoes", autenticarToken, questaoUploadRouter);
     app.use("/api/questoes", autenticarToken, verificarEscola, questoesRouter);
     app.use(
       "/api/questoes",
@@ -1763,8 +1776,6 @@ async function bootstrap() {
     app.use("/api/provas", autenticarToken, verificarEscola, provaPdfRouter);
     // ✅ EDUCA.PROVA — PDF Premium via LaTeX/Tectonic
     app.use("/api/provas", autenticarToken, verificarEscola, provaLatexPdfRouter);
-    // ✅ EDUCA.PROVA — Upload de imagens de questões para DO Spaces
-    app.use("/api/questoes", autenticarToken, questaoUploadRouter);
     // ✅ EDUCA.PROVA — Banco Master (questões premium EDUCA.MELHOR)
     app.use("/api/master", masterRouter);
   } else {

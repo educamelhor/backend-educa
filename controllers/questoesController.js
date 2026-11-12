@@ -46,10 +46,25 @@ async function registrarHistorico(questao_id, acao, usuario_id, prova_id = null)
 // ─── Campos completos para SELECT ────────────────────────────────────────────
 const CAMPOS = `
   id, numero_q, conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-  disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta,
-  texto_apoio, fonte, explicacao, tags, compartilhada, status,
+  disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta,
+  texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
   escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
 `;
+
+// ─── Helper — Normaliza imagem_url (DO Spaces) vs imagem_base64 (legado) ────
+function normalizarCamposImagem(imagem_url, imagem_base64) {
+  const rawUrl = typeof imagem_url === 'string' ? imagem_url.trim() : '';
+  if (rawUrl.startsWith('blob:')) {
+    return { erroBlob: true, url: null, base64: null };
+  }
+  if (rawUrl.startsWith('data:')) {
+    return { erroBlob: false, url: null, base64: rawUrl };
+  }
+  if (rawUrl) {
+    return { erroBlob: false, url: rawUrl, base64: null };
+  }
+  return { erroBlob: false, url: null, base64: imagem_base64 || null };
+}
 
 // ─── BUILD WHERE helper ──────────────────────────────────────────────
 function buildWhere(escola_id, professor_id, perfil, filters = {}) {
@@ -217,7 +232,7 @@ export async function criarQuestao(req, res) {
   const {
     conteudo_bruto, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
-    imagem_base64, alternativas_json, correta,
+    imagem_base64, imagem_url, alternativas_json, correta,
     texto_apoio, fonte, explicacao, tags, temas,
     compartilhada = 0, status = 'ativa',
   } = req.body;
@@ -226,6 +241,12 @@ export async function criarQuestao(req, res) {
   if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
   if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
   if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
+
+  const imgNorm = normalizarCamposImagem(imagem_url, imagem_base64);
+  if (imgNorm.erroBlob) {
+    return res.status(422).json({ message: 'Aguarde o término do envio da imagem antes de salvar.', campo: 'imagem' });
+  }
+
   // Normaliza temas: aceita array direto ou string JSON (ex: '["cartografia"]')
   let temasValidos = [];
   try {
@@ -247,17 +268,17 @@ export async function criarQuestao(req, res) {
       `INSERT INTO questoes (
         numero_q,
         conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta, correta_texto,
+        disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta, correta_texto,
         texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
         escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
       [
         numero_q,
         conteudo_bruto  || null, latex_formatado  || null,
         tipo, nivel,
         serie           || null, bimestre || null,
         disciplina, habilidade_bncc || null,
-        imagem_base64   || null, alternativas_json || null, correta || null, correta_texto,
+        imgNorm.base64, imgNorm.url, alternativas_json || null, correta || null, correta_texto,
         texto_apoio     || null, fonte || null, explicacao || null,
         tags            || '',
         JSON.stringify(temasValidos),
@@ -303,6 +324,11 @@ export async function atualizarQuestao(req, res) {
   if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
   if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
 
+  const imgNorm = normalizarCamposImagem(imagem_url, imagem_base64);
+  if (imgNorm.erroBlob) {
+    return res.status(422).json({ message: 'Aguarde o término do envio da imagem antes de salvar.', campo: 'imagem' });
+  }
+
   // Gabarito por conteúdo — invariante à permutação de alternativas
   const correta_texto = resolverTextoCorreta(alternativas_json, correta);
 
@@ -326,7 +352,7 @@ export async function atualizarQuestao(req, res) {
       `UPDATE questoes SET
         conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?,
         serie = ?, bimestre = ?, disciplina = ?, habilidade_bncc = ?,
-        imagem_base64 = ?, alternativas_json = ?, correta = ?, correta_texto = ?,
+        imagem_base64 = ?, imagem_url = ?, alternativas_json = ?, correta = ?, correta_texto = ?,
         texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?, temas = ?,
         compartilhada = ?, status = ?, atualizada_em = NOW()
        WHERE id = ? AND escola_id = ?`,
@@ -339,7 +365,8 @@ export async function atualizarQuestao(req, res) {
         bimestre          || null,
         disciplina        || null,
         habilidade_bncc   || null,
-        imagem_base64     || null,
+        imgNorm.base64,
+        imgNorm.url,
         alternativas_json || null,
         correta           || null,
         correta_texto,
@@ -441,21 +468,28 @@ export async function duplicarQuestao(req, res) {
     const [seqResult] = await pool.query('INSERT INTO questoes_num_seq VALUES ()');
     const numero_q_copia = seqResult.insertId;
 
+    const altsOrigJson = orig.alternativas_json == null
+      ? null
+      : (typeof orig.alternativas_json === 'string' ? orig.alternativas_json : JSON.stringify(orig.alternativas_json));
+    const temasOrigJson = orig.temas == null
+      ? null
+      : (typeof orig.temas === 'string' ? orig.temas : JSON.stringify(orig.temas));
+
     const [r] = await pool.query(
       `INSERT INTO questoes (
         numero_q,
         conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, alternativas_json, correta, correta_texto,
+        disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta, correta_texto,
         texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
         escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, ?, 0, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, ?, 0, NOW(), NOW())`,
       [
         numero_q_copia,
         `[CÓPIA] ${orig.conteudo_bruto || ''}`,
         orig.latex_formatado, orig.tipo, orig.nivel, orig.serie, orig.bimestre,
-        orig.disciplina, orig.habilidade_bncc, orig.imagem_base64,
-        orig.alternativas_json, orig.correta, orig.correta_texto,
-        orig.texto_apoio, orig.fonte, orig.explicacao, orig.tags, orig.temas,
+        orig.disciplina, orig.habilidade_bncc, orig.imagem_base64, orig.imagem_url || null,
+        altsOrigJson, orig.correta, orig.correta_texto,
+        orig.texto_apoio, orig.fonte, orig.explicacao, orig.tags, temasOrigJson,
         escola_id, professor_id || null, nomeProfessor || null,
       ]
     );
@@ -588,7 +622,11 @@ export async function publicarQuestao(req, res) {
     // Resolve texto da alternativa correta (ponto 1 do usuário)
     const correta_texto = resolverTextoCorreta(q.alternativas_json, q.correta);
 
-    // Normaliza temas: pode chegar como string JSON, array, ou null da tabela questoes
+    // Normaliza temas e alternativas_json para string JSON (seguro contra colunas JSON do MySQL2)
+    const altsJson = q.alternativas_json == null
+      ? null
+      : (typeof q.alternativas_json === 'string' ? q.alternativas_json : JSON.stringify(q.alternativas_json));
+
     let temasJson = null;
     try {
       if (Array.isArray(q.temas)) {
@@ -605,16 +643,16 @@ export async function publicarQuestao(req, res) {
       await pool.query(
         `UPDATE questoes_banco_global SET
            conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?, serie = ?,
-           disciplina = ?, habilidade_bncc = ?, temas = ?,
+           disciplina = ?, habilidade_bncc = ?, imagem_url = ?, temas = ?,
            alternativas_json = ?, correta = ?, correta_texto = ?,
            texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?,
            atualizada_em = NOW()
          WHERE id = ?`,
         [
           q.conteudo_bruto, q.latex_formatado, q.tipo, q.nivel, q.serie,
-          q.disciplina, q.habilidade_bncc,
+          q.disciplina, q.habilidade_bncc, q.imagem_url || null,
           temasJson,
-          q.alternativas_json, q.correta, correta_texto,
+          altsJson, q.correta, correta_texto,
           q.texto_apoio, q.fonte, q.explicacao, q.tags,
           q.global_id,
         ]
@@ -644,17 +682,17 @@ export async function publicarQuestao(req, res) {
     const [ins] = await pool.query(
       `INSERT INTO questoes_banco_global (
          conteudo_bruto, latex_formatado, tipo, nivel, serie,
-         disciplina, habilidade_bncc, temas,
+         disciplina, habilidade_bncc, imagem_url, temas,
          alternativas_json, correta, correta_texto,
          texto_apoio, fonte, explicacao, tags,
          escola_id_origem, professor_id_origem, uso_count, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'publicada')`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'publicada')`,
       [
         q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva",
         q.nivel || "medio", q.serie || null,
-        q.disciplina, q.habilidade_bncc || null,
+        q.disciplina, q.habilidade_bncc || null, q.imagem_url || null,
         temasJson,
-        q.alternativas_json || null, q.correta || null, correta_texto,
+        altsJson, q.correta || null, correta_texto,
         q.texto_apoio || null, q.fonte || null, q.explicacao || null,
         q.tags || null,
         escola_id, professor_id || null,
@@ -737,9 +775,9 @@ export async function buscarBancoGlobal(req, res) {
          g.id,
          CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
          g.conteudo_bruto, g.tipo, g.nivel, g.serie,
-         g.disciplina, g.habilidade_bncc, g.temas,
+         g.disciplina, g.habilidade_bncc, g.imagem_url, g.temas,
          g.alternativas_json, g.correta, g.correta_texto,
-         g.fonte, g.tags, g.uso_count,
+         g.texto_apoio, g.fonte, g.tags, g.uso_count,
          g.escola_id_origem, g.professor_id_origem,
          g.publicada_em
        FROM questoes_banco_global g
@@ -794,7 +832,7 @@ export async function getQuestaoGlobal(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function registrarUsoGlobal(req, res) {
   const { id } = req.params;
-  const { escola_id, professor_id } = req.user;
+  const { escola_id, professor_id, nome: nomeProfessor } = req.user;
   const { contexto = "prova", contexto_id = null } = req.body;
 
   try {
@@ -805,12 +843,63 @@ export async function registrarUsoGlobal(req, res) {
     );
     if (!q) return res.status(404).json({ message: "Questão não encontrada no banco global." });
 
+    let questaoLocalId = null;
+
+    // Quando acionado pelo botão "+ Usar" do Banco Global (contexto = 'banco'),
+    // materializa uma cópia ativa no banco local da escola (preservando imagem_url)
+    // caso ainda não exista uma cópia visível para este professor/escola.
+    if (contexto === "banco" && escola_id) {
+      const [[existente]] = await pool.query(
+        `SELECT id FROM questoes
+         WHERE escola_id = ? AND global_id = ? AND status != 'arquivada'
+           AND (professor_id = ? OR compartilhada = 1)
+         LIMIT 1`,
+        [escola_id, id, professor_id || 0]
+      );
+
+      if (existente) {
+        questaoLocalId = existente.id;
+      } else {
+        const [seqResult] = await pool.query("INSERT INTO questoes_num_seq VALUES ()");
+        const numero_q = seqResult.insertId;
+
+        const altsJson = q.alternativas_json == null
+          ? null
+          : (typeof q.alternativas_json === "string" ? q.alternativas_json : JSON.stringify(q.alternativas_json));
+        const temasJson = q.temas == null
+          ? null
+          : (typeof q.temas === "string" ? q.temas : JSON.stringify(q.temas));
+
+        const [insLocal] = await pool.query(
+          `INSERT INTO questoes (
+             numero_q,
+             conteudo_bruto, latex_formatado, tipo, nivel, serie,
+             disciplina, habilidade_bncc, imagem_url, alternativas_json, correta, correta_texto,
+             texto_apoio, fonte, explicacao, tags, temas,
+             compartilhada, status, publicada_globalmente, global_id,
+             escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'ativa', 0, ?, ?, ?, ?, 0, NOW(), NOW())`,
+          [
+            numero_q,
+            q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva", q.nivel || "medio", q.serie || null,
+            q.disciplina || null, q.habilidade_bncc || null, q.imagem_url || null,
+            altsJson, q.correta || null, q.correta_texto || null,
+            q.texto_apoio || null, q.fonte || null, q.explicacao || null, q.tags || "", temasJson,
+            Number(id),
+            escola_id, professor_id || null, nomeProfessor || null,
+          ]
+        );
+        questaoLocalId = insLocal.insertId;
+        await registrarHistorico(questaoLocalId, "importou_global", professor_id);
+      }
+    }
+
     // Registra o uso
     await pool.query(
       `INSERT INTO questoes_uso_escola
          (questao_global_id, escola_id, professor_id, contexto, contexto_id)
        VALUES (?, ?, ?, ?, ?)`,
-      [id, escola_id, professor_id || null, contexto, contexto_id]
+      [id, escola_id, professor_id || null, contexto, contexto_id || questaoLocalId]
     );
 
     // Incrementa ranking global
@@ -819,8 +908,8 @@ export async function registrarUsoGlobal(req, res) {
       [id]
     );
 
-    console.log(`[BancoGlobal] Questão global #${id} usada por escola=${escola_id} (${contexto})`);
-    res.json({ message: "Uso registrado.", questao: q });
+    console.log(`[BancoGlobal] Questão global #${id} usada por escola=${escola_id} (${contexto}) -> local=${questaoLocalId}`);
+    res.json({ message: "Uso registrado.", questao: q, questao_local_id: questaoLocalId });
   } catch (err) {
     console.error("[registrarUsoGlobal] Erro:", err);
     res.status(500).json({ message: "Erro ao registrar uso." });
@@ -854,9 +943,9 @@ export async function getBancoEscola(req, res) {
          g.id,
          CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
          g.conteudo_bruto, g.tipo, g.nivel, g.serie,
-         g.disciplina, g.habilidade_bncc, g.temas,
+         g.disciplina, g.habilidade_bncc, g.imagem_url, g.temas,
          g.alternativas_json, g.correta, g.correta_texto,
-         g.fonte, g.tags, g.uso_count,
+         g.texto_apoio, g.fonte, g.tags, g.uso_count,
          COUNT(u.id) AS vezes_usada_escola,
          MAX(u.usado_em) AS ultimo_uso
        FROM questoes_uso_escola u

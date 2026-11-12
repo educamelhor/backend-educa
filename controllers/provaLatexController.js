@@ -40,16 +40,37 @@ function textoParaTex(str = '') {
   }).join('');
 }
 
-/** Salva imagem Base64 como arquivo, converte SVG→PNG se necessário */
-async function salvarImagem(base64Str, jobDir, index) {
-  if (!base64Str) return null;
+/** Salva imagem (URL remota DO Spaces ou Base64 legado) como arquivo local para o Tectonic */
+async function salvarImagem(imgSource, jobDir, index) {
+  if (!imgSource || typeof imgSource !== 'string') return null;
 
-  const match = base64Str.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
+  const src = imgSource.trim();
+  const imgPath = path.join(jobDir, `img_${index}`);
+
+  // 1) URL remota (DO Spaces / CDN / HTTP)
+  if (/^https?:\/\//i.test(src)) {
+    try {
+      const resp = await fetch(src, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) {
+        console.warn(`[provaLatex] Falha ao baixar imagem (${resp.status}): ${src}`);
+        return null;
+      }
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      const jpgPath = `${imgPath}.jpg`;
+      await sharp(buffer).rotate().flatten({ background: '#ffffff' }).jpeg({ quality: 92 }).toFile(jpgPath);
+      return jpgPath;
+    } catch (err) {
+      console.warn(`[provaLatex] Erro ao baixar/converter imagem remota (${src}):`, err.message);
+      return null;
+    }
+  }
+
+  // 2) Base64 legado (data:image/...;base64,...)
+  const match = src.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
   if (!match) return null;
 
   const [, tipo, dados] = match;
   const buffer = Buffer.from(dados, 'base64');
-  const imgPath = path.join(jobDir, `img_${index}`);
 
   if (tipo === 'svg+xml' || tipo === 'svg') {
     // SVG não é suportado pelo \includegraphics — converte para PNG via sharp
@@ -72,10 +93,14 @@ async function salvarImagem(base64Str, jobDir, index) {
 
 /* ── Gerador LaTeX ──────────────────────────────────────────────────────────── */
 
+function parseAlts(raw) {
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw || '[]'); } catch { return []; }
+}
+
 /** Gera bloco LaTeX de uma questão */
 function gerarTexQuestao(item, idx, imgPath, colunas) {
-  let alts = [];
-  try { alts = JSON.parse(item.alternativas_json || '[]'); } catch {}
+  const alts = parseAlts(item.alternativas_json);
 
   const num    = String(idx + 1).padStart(2, '0');
   const pontos = Number(item.valor_pontos || 1).toFixed(1);
@@ -250,7 +275,7 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
     tex += `\\begin{tabular}{|c|c|c|c|c|}\\hline\n`;
     tex += `\\textbf{Nº} & \\textbf{Resposta} & \\textbf{Pts} & \\textbf{Disciplina} & \\textbf{Nível} \\\\ \\hline\n`;
     itens.forEach((it, i) => {
-      let alts2 = []; try { alts2 = JSON.parse(it.alternativas_json || '[]'); } catch {}
+      const alts2 = parseAlts(it.alternativas_json);
       const corr  = alts2.find(a => a.correta)?.letra || it.correta || '---';
       const niv   = { facil: 'Fácil', medio: 'Médio', dificil: 'Difícil', enem: 'ENEM' }[it.nivel] || '---';
       const pts   = Number(it.valor_pontos || 1).toFixed(1);
@@ -290,7 +315,7 @@ export async function exportarPdfLatex(req, res) {
     const [rows] = await pool.query(
       `SELECT pq.valor_pontos, pq.ordem,
               q.conteudo_bruto, q.tipo, q.nivel, q.disciplina,
-              q.alternativas_json, q.correta, q.imagem_base64,
+              q.alternativas_json, q.correta, q.imagem_url, q.imagem_base64,
               q.texto_apoio
        FROM prova_questoes pq
        JOIN questoes q ON q.id = pq.questao_id
@@ -306,7 +331,7 @@ export async function exportarPdfLatex(req, res) {
 
   // 2. Cria diretório de trabalho
   const jobId  = randomUUID();
-  const jobDir = path.join('/tmp/latex-jobs', jobId);
+  const jobDir = path.join(os.tmpdir(), 'latex-jobs', jobId);
   fs.mkdirSync(jobDir, { recursive: true });
 
   try {
@@ -317,7 +342,7 @@ export async function exportarPdfLatex(req, res) {
     const colunas  = ['objetiva_2col', 'enem'].includes(template) ? 2 : 1;
 
     const imgPaths = await Promise.all(
-      itens.map((it, idx) => salvarImagem(it.imagem_base64, jobDir, idx))
+      itens.map((it, idx) => salvarImagem(it.imagem_url || it.imagem_base64, jobDir, idx))
     );
 
     // 4. Gera o .tex

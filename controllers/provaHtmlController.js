@@ -39,9 +39,13 @@ function txt(text = '') {
     .replace(/>/g, '&gt;');
 }
 
+function parseAlts(raw) {
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw || '[]'); } catch { return []; }
+}
+
 function renderAlternativas(altsJson, correta, template, showGabarito = false) {
-  let alts = [];
-  try { alts = JSON.parse(altsJson || '[]'); } catch {}
+  const alts = parseAlts(altsJson);
   if (!alts.length) return '';
   return `<div class="alternativas">
     ${alts.map(a => {
@@ -68,8 +72,9 @@ function renderQuestao(item, idx, template, showGabarito) {
   const pontos = item.valor_pontos || 1;
   const bncc = item.habilidade_bncc ? `<span class="bncc-tag">${item.habilidade_bncc}</span>` : '';
 
-  const imagem = item.imagem_base64
-    ? `<div class="questao-img"><img src="${item.imagem_base64}" alt="Figura" /></div>`
+  const imgSrc = item.imagem_url || item.imagem_base64;
+  const imagem = imgSrc
+    ? `<div class="questao-img"><img src="${imgSrc}" alt="Figura" /></div>`
     : '';
 
   const textoApoio = item.texto_apoio
@@ -220,8 +225,7 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
 
   // Embaralha alternativas
   let itensRender = embaralharAlt ? itens.map(it => {
-    let alts = [];
-    try { alts = JSON.parse(it.alternativas_json || '[]'); } catch {}
+    const alts = parseAlts(it.alternativas_json);
     if (alts.length > 1) {
       const shuffled = shuffleArray(alts).map((a, i) => ({
         ...a, letra: String.fromCharCode(65 + i),
@@ -299,7 +303,7 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
       <tbody>
         ${itensRender.map((it, idx) => {
           let corr = it.correta || '—';
-          try { const alts = JSON.parse(it.alternativas_json || '[]'); const c = alts.find(a => a.correta); if (c) corr = c.letra; } catch {}
+          try { const alts = parseAlts(it.alternativas_json); const c = alts.find(a => a.correta); if (c) corr = c.letra; } catch {}
           const nivel = { facil: 'Fácil', medio: 'Médio', dificil: 'Difícil', enem: 'ENEM' }[it.nivel] || it.nivel || '—';
           return `<tr><td>${String(idx+1).padStart(2,'0')}</td><td class="resp-ok">${corr}</td><td>${Number(it.valor_pontos||1).toFixed(1)}</td><td>${txt(it.disciplina||'—')}</td><td>${nivel}</td>${it.habilidade_bncc?`<td>${txt(it.habilidade_bncc)}</td>`:(itensRender[0]?.habilidade_bncc?'<td>—</td>':'')}</tr>`;
         }).join('')}
@@ -352,7 +356,7 @@ async function fetchProvaCompleta(id, escola_id) {
     `SELECT pq.id AS item_id, pq.ordem, pq.valor_pontos,
             q.id AS questao_id, q.conteudo_bruto, q.tipo, q.nivel,
             q.disciplina, q.alternativas_json, q.correta, q.tags,
-            q.habilidade_bncc, q.imagem_base64, q.texto_apoio, q.fonte
+            q.habilidade_bncc, q.imagem_url, q.imagem_base64, q.texto_apoio, q.fonte
      FROM prova_questoes pq
      JOIN questoes q ON q.id = pq.questao_id
      WHERE pq.prova_id = ?
