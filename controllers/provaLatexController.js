@@ -1,5 +1,5 @@
 // controllers/provaLatexController.js
-// Gera PDF via LaTeX/Tectonic — qualidade gráfica profissional
+// Gera PDF via LaTeX/Tectonic — qualidade gráfica profissional compatível com os 7 modelos e Smart Media
 import pool   from '../db.js';
 import fs     from 'fs';
 import path   from 'path';
@@ -13,7 +13,6 @@ const execFileAsync = promisify(execFile);
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
 
-/** Escapa caracteres especiais do LaTeX no texto do usuário */
 function escapeTex(str = '') {
   return String(str)
     .replace(/\\/g,  '\\textbackslash{}')
@@ -28,26 +27,31 @@ function escapeTex(str = '') {
     .replace(/_/g,   '\\_');
 }
 
-/** Converte texto com fórmulas $...$ e \[...\] para LaTeX válido (já é LaTeX) */
 function textoParaTex(str = '') {
-  // O texto do usuário já usa $...$ para inline e \[...\] para display
-  // Apenas escapa caracteres especiais FORA das fórmulas
-  const partes = str.split(/(\$[^$]+\$|\\\[[^\]]+\\\])/g);
-  return partes.map((p, i) => {
-    // partes ímpares são fórmulas — não escapar
+  const partes = String(str || '').split(/(\$\$[^$]+\$\$|\$[^$]+\$|\\\[[^\]]+\\\])/g);
+  return partes.map((p) => {
     if (p.startsWith('$') || p.startsWith('\\[')) return p;
     return escapeTex(p);
   }).join('');
 }
 
-/** Salva imagem (URL remota DO Spaces ou Base64 legado) como arquivo local para o Tectonic */
-async function salvarImagem(imgSource, jobDir, index) {
+function parseJsonObj(raw, fallback = null) {
+  if (!raw) return fallback;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+function parseAlts(raw) {
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw || '[]'); } catch { return []; }
+}
+
+async function salvarImagem(imgSource, jobDir, suffix) {
   if (!imgSource || typeof imgSource !== 'string') return null;
 
   const src = imgSource.trim();
-  const imgPath = path.join(jobDir, `img_${index}`);
+  const imgPath = path.join(jobDir, `img_${suffix}`);
 
-  // 1) URL remota (DO Spaces / CDN / HTTP)
   if (/^https?:\/\//i.test(src)) {
     try {
       const resp = await fetch(src, { signal: AbortSignal.timeout(15000) });
@@ -65,7 +69,6 @@ async function salvarImagem(imgSource, jobDir, index) {
     }
   }
 
-  // 2) Base64 legado (data:image/...;base64,...)
   const match = src.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
   if (!match) return null;
 
@@ -73,13 +76,11 @@ async function salvarImagem(imgSource, jobDir, index) {
   const buffer = Buffer.from(dados, 'base64');
 
   if (tipo === 'svg+xml' || tipo === 'svg') {
-    // SVG não é suportado pelo \includegraphics — converte para PNG via sharp
     const pngPath = `${imgPath}.png`;
     await sharp(buffer).png().toFile(pngPath);
     return pngPath;
   }
 
-  // PNG, JPG, WEBP — salva diretamente
   const ext = tipo === 'jpeg' ? 'jpg' : tipo === 'webp' ? 'jpg' : tipo;
   const filePath = `${imgPath}.${ext}`;
 
@@ -93,70 +94,208 @@ async function salvarImagem(imgSource, jobDir, index) {
 
 /* ── Gerador LaTeX ──────────────────────────────────────────────────────────── */
 
-function parseAlts(raw) {
-  if (Array.isArray(raw)) return raw;
-  try { return JSON.parse(raw || '[]'); } catch { return []; }
-}
+function renderFiguraTex(imgPath, midia, temMuitasAlts) {
+  if (!imgPath) return '';
+  const imgPathTex = imgPath.replace(/\\/g, '/');
+  const presetMap = { P: '0.36\\linewidth', M: '0.56\\linewidth', G: '0.84\\linewidth', '100%': '0.98\\linewidth' };
+  const widthTex = presetMap[midia?.preset] || '0.58\\linewidth';
+  const maxH = temMuitasAlts ? '4.8cm' : '6.5cm';
+  const envMap = { left: 'flushleft', center: 'center', right: 'flushright' };
+  const env = envMap[midia?.alinhamento] || 'center';
 
-/** Gera bloco LaTeX de uma questão */
-function gerarTexQuestao(item, idx, imgPath, colunas) {
-  const alts = parseAlts(item.alternativas_json);
+  const legendaTxt = [midia?.legenda, midia?.credito ? `Fonte: ${midia.credito}` : '']
+    .filter(Boolean)
+    .join(' — ');
 
-  const num    = String(idx + 1).padStart(2, '0');
-  const pontos = Number(item.valor_pontos || 1).toFixed(1);
-  // Largura da régua decorativa varia com 1 ou 2 colunas
-  const regraW = colunas === 2 ? '7.1cm' : '15cm';
-
-  let tex = '';
-  tex += `\\noindent\n`;
-  tex += `\\textbf{QUESTÃO-${num}} {\\color{laranja}\\rule{${regraW}}{0.3pt}} {\\small\\color{gray}(${pontos} pt)}\n\n`;
-
-  // Texto de apoio (blockquote)
-  if (item.texto_apoio) {
-    tex += `\\begin{quote}\\itshape\n${textoParaTex(item.texto_apoio)}\n\\end{quote}\n\n`;
+  let tex = `\\begin{${env}}\n`;
+  tex += `  \\includegraphics[width=${widthTex},height=${maxH},keepaspectratio]{${imgPathTex}}\n`;
+  if (legendaTxt) {
+    tex += `  \\\\ {\\footnotesize\\itshape\\color{gray} ${escapeTex(legendaTxt)}}\n`;
   }
-
-  // Enunciado
-  if (item.conteudo_bruto) {
-    tex += `${textoParaTex(item.conteudo_bruto)}\n\n`;
-  }
-
-  // Imagem (se houver)
-  if (imgPath) {
-    const imgPathTex = imgPath.replace(/\\/g, '/');
-    // max-height dinâmico: menos altura se tem muitas alternativas
-    const imgH = alts.length > 3 ? '4cm' : alts.length > 0 ? '5cm' : '8cm';
-    tex += `\\begin{center}\n`;
-    tex += `  \\includegraphics[height=${imgH},width=\\linewidth,keepaspectratio]{${imgPathTex}}\n`;
-    tex += `\\end{center}\n\n`;
-  }
-
-  // Alternativas
-  if (alts.length > 0) {
-    const numCols = alts.length <= 3 ? alts.length : 1;
-    if (numCols > 1) {
-      tex += `\\begin{tasks}(${numCols})\n`;
-      alts.forEach(a => { tex += `  \\task (${a.letra}) ${textoParaTex(a.texto || '')}\n`; });
-      tex += `\\end{tasks}\n`;
-    } else {
-      tex += `\\begin{enumerate}[label=\\textbf{(\\Alph*)}]\n`;
-      alts.forEach(a => { tex += `  \\item ${textoParaTex(a.texto || '')}\n`; });
-      tex += `\\end{enumerate}\n`;
-    }
-  } else if (item.tipo === 'discursiva') {
-    // Linhas para resposta discursiva
-    tex += `\\vspace{0.2cm}\n`;
-    for (let i = 0; i < 5; i++) {
-      tex += `\\noindent\\underline{\\hspace{\\linewidth}}\\vspace{0.2cm}\n\n`;
-    }
-  }
-
-  tex += `\\vspace{0.4cm}\n\n`;
+  tex += `\\end{${env}}\n\n`;
   return tex;
 }
 
-/** Gera o documento .tex completo */
-function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGabarito }) {
+function renderAlternativasTex(alts, altImgMap = {}) {
+  if (!alts.length) return '';
+  const temImgAlt = alts.some(a => Boolean(altImgMap[a.letra]));
+  const numCols = !temImgAlt && alts.length <= 3 ? alts.length : 1;
+
+  if (numCols > 1) {
+    let tex = `\\begin{tasks}(${numCols})\n`;
+    alts.forEach(a => { tex += `  \\task (${escapeTex(a.letra)}) ${textoParaTex(a.texto || '')}\n`; });
+    tex += `\\end{tasks}\n`;
+    return tex;
+  }
+
+  let tex = `\\begin{enumerate}[label=\\textbf{(\\Alph*)}]\n`;
+  alts.forEach(a => {
+    const pImg = altImgMap[a.letra];
+    const imgInline = pImg
+      ? `\\\\ \\includegraphics[width=0.38\\linewidth,height=2.8cm,keepaspectratio]{${pImg.replace(/\\/g, '/')}}`
+      : '';
+    tex += `  \\item ${textoParaTex(a.texto || '')}${imgInline}\n`;
+  });
+  tex += `\\end{enumerate}\n`;
+  return tex;
+}
+
+function resumirGabaritoTex(item) {
+  const est = parseJsonObj(item.estrutura_json, {}) || {};
+  const tipo = item.tipo || est.modelo || 'objetiva';
+  const alts = parseAlts(item.alternativas_json);
+  const altCorreta = alts.find(a => a.correta)?.letra || item.correta;
+
+  if (tipo === 'verdadeiro_falso' && (est.submodo || 'direto') === 'direto') {
+    return (est.itens || []).map(i => i.gabarito || 'V').join('-') || altCorreta || '---';
+  }
+  if (tipo === 'associacao' && (est.submodo || 'direto') === 'direto') {
+    return (est.coluna_b || []).map(b => b.vinculo_codigo || '-').join('-') || altCorreta || '---';
+  }
+  if (tipo === 'lacuna' && (est.submodo || 'direto') !== 'alternativas') {
+    const matches = [...String(item.conteudo_bruto || '').matchAll(/\{\{([^}]+)\}\}/g)].map(m => m[1].trim());
+    const lacs = matches.length ? matches : (est.lacunas || []);
+    return lacs.length ? lacs.join(' / ') : '---';
+  }
+  if (tipo === 'somatoria') {
+    const s = est.soma_correta ?? item.correta;
+    return s !== undefined && s !== null && s !== '' ? String(s).padStart(2, '0') : '---';
+  }
+  if (tipo === 'discursiva') return 'Discursiva';
+  return altCorreta || '---';
+}
+
+function gerarTexQuestao(item, idx, imgBundle, colunas) {
+  const alts = parseAlts(item.alternativas_json);
+  const est  = parseJsonObj(item.estrutura_json, {}) || {};
+  const midia = parseJsonObj(item.midia_json, null);
+  const tipo = item.tipo || est.modelo || 'objetiva';
+  const posicao = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(midia?.posicao)
+    ? midia.posicao
+    : 'entre_enunciado_e_comando';
+
+  const num    = String(idx + 1).padStart(2, '0');
+  const pontos = Number(item.valor_pontos || 1).toFixed(1);
+  const regraW = colunas === 2 ? '6.6cm' : '14.5cm';
+
+  let tex = `\\noindent\n`;
+  const fonteHdr = item.fonte && !item.texto_apoio ? ` {\\small (${escapeTex(item.fonte)})}` : '';
+  tex += `\\textbf{QUESTÃO-${num}}${fonteHdr} {\\color{laranja}\\rule{${regraW}}{0.3pt}} {\\small\\color{gray}(${pontos} pt)}\n\n`;
+
+  if (item.texto_apoio) {
+    const refFonte = item.fonte ? `\\\\ {\\footnotesize\\normalfont — ${escapeTex(item.fonte)}}` : '';
+    tex += `\\begin{quote}\\itshape\n${textoParaTex(item.texto_apoio)}${refFonte}\n\\end{quote}\n\n`;
+  }
+
+  const figTex = renderFiguraTex(imgBundle?.main || null, midia, alts.length > 3);
+
+  if (posicao === 'apos_texto_apoio') tex += figTex;
+
+  if (item.conteudo_bruto) {
+    if (tipo === 'lacuna') {
+      const partes = String(item.conteudo_bruto).split(/(\{\{[^}]+\}\})/g);
+      const texLac = partes.map(p => {
+        if (p.startsWith('{{') && p.endsWith('}}')) {
+          return '\\underline{\\hspace{2.4cm}}';
+        }
+        return textoParaTex(p);
+      }).join('');
+      tex += `${texLac}\n\n`;
+    } else {
+      tex += `${textoParaTex(item.conteudo_bruto)}\n\n`;
+    }
+  }
+
+  if (posicao === 'entre_enunciado_e_comando') tex += figTex;
+
+  if (item.comando_final) {
+    tex += `\\textbf{${textoParaTex(item.comando_final)}}\n\n`;
+  }
+
+  if (posicao === 'abaixo_comando') tex += figTex;
+
+  // Renderização por modelo estrutural
+  if (tipo === 'afirmativas') {
+    const props = Array.isArray(est.proposicoes) ? est.proposicoes : [];
+    props.forEach((p, i) => {
+      const rom = escapeTex(p.romano || ['I', 'II', 'III', 'IV', 'V'][i] || String(i + 1));
+      tex += `\\noindent \\textbf{${rom}.} ${textoParaTex(p.texto || '')}\\\\[2pt]\n`;
+    });
+    if (est.comando_fechamento) {
+      tex += `\\vspace{2pt}\\noindent \\textbf{${textoParaTex(est.comando_fechamento)}}\n\n`;
+    }
+    tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+  } else if (tipo === 'verdadeiro_falso') {
+    const itensVf = Array.isArray(est.itens) ? est.itens : [];
+    itensVf.forEach(it => {
+      tex += `\\noindent \\texttt{(\\hspace{0.45cm})} ${textoParaTex(it.texto || '')}\\\\[3pt]\n`;
+    });
+    if ((est.submodo || 'direto') === 'sequencia') {
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+    } else if (est.exigir_justificativa_falsas) {
+      const nLin = Math.max(1, Math.min(8, Number(est.linhas_justificativa) || 3));
+      tex += `\\vspace{2pt}\\noindent{\\small\\textbf{Justifique as falsas:}}\\\\[2pt]\n`;
+      for (let i = 0; i < nLin; i++) {
+        tex += `\\noindent\\underline{\\hspace{\\linewidth}}\\vspace{0.18cm}\n\n`;
+      }
+    }
+  } else if (tipo === 'associacao') {
+    const colA = Array.isArray(est.coluna_a) ? est.coluna_a : [];
+    const colB = Array.isArray(est.coluna_b) ? est.coluna_b : [];
+    const maxR = Math.max(colA.length, colB.length);
+    if (maxR > 0) {
+      tex += `\\noindent\\begin{tabular}{|p{0.45\\linewidth}|p{0.45\\linewidth}|}\\hline\n`;
+      tex += `\\textbf{${escapeTex(est.titulo_coluna_a || 'Coluna A')}} & \\textbf{${escapeTex(est.titulo_coluna_b || 'Coluna B')}} \\\\ \\hline\n`;
+      for (let i = 0; i < maxR; i++) {
+        const a = colA[i];
+        const b = colB[i];
+        const cellA = a ? `\\textbf{(${escapeTex(a.codigo || i + 1)})} ${textoParaTex(a.texto || '')}` : '';
+        const cellB = b ? `\\texttt{(\\hspace{0.35cm})} ${textoParaTex(b.texto || '')}` : '';
+        tex += `${cellA} & ${cellB} \\\\ \\hline\n`;
+      }
+      tex += `\\end{tabular}\n\n`;
+    }
+    if ((est.submodo || 'direto') === 'sequencia') {
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+    }
+  } else if (tipo === 'lacuna') {
+    if ((est.submodo || 'direto') === 'banco_palavras') {
+      const banco = [...(est.lacunas || []), ...(est.distratores_banco || [])].filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      if (banco.length) {
+        tex += `\\noindent\\fbox{\\parbox{0.96\\linewidth}{\\small\\textbf{Banco de palavras:} ${banco.map(escapeTex).join(' \\textbullet{} ')}}}\n\n`;
+      }
+    } else if (est.submodo === 'alternativas') {
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+    }
+  } else if (tipo === 'somatoria') {
+    const props = Array.isArray(est.proposicoes) ? est.proposicoes : [];
+    props.forEach(p => {
+      const cod = escapeTex(p.codigo || String(p.valor || '').padStart(2, '0'));
+      tex += `\\noindent \\textbf{(${cod})} ${textoParaTex(p.texto || '')}\\\\[2pt]\n`;
+    });
+    tex += `\\begin{flushright}\\textbf{SOMA:} \\framebox[1.4cm]{\\rule{0pt}{0.45cm}}\\end{flushright}\n\n`;
+  } else if (tipo === 'discursiva') {
+    const formato = est.formato_espaco || 'linhas';
+    if (formato === 'quadro_calculo') {
+      const altCm = Math.max(2.5, Math.min(7.5, ((Number(est.altura_quadro_px) || 140) / 38))).toFixed(1);
+      tex += `\\vspace{0.15cm}\\noindent\\framebox[\\linewidth]{\\rule{0pt}{${altCm}cm}}\n\n`;
+    } else if (formato !== 'nenhum') {
+      const nLin = Math.max(2, Math.min(18, Number(est.linhas_resposta) || 6));
+      tex += `\\vspace{0.2cm}\n`;
+      for (let i = 0; i < nLin; i++) {
+        tex += `\\noindent\\underline{\\hspace{\\linewidth}}\\vspace{0.2cm}\n\n`;
+      }
+    }
+  } else {
+    tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+  }
+
+  tex += `\\vspace{0.35cm}\n\n`;
+  return tex;
+}
+
+function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito }) {
   const is2col    = colunas === 2;
   const comCab    = cfg.com_cabecalho ?? true;
   const comMarg   = cfg.com_margem   ?? true;
@@ -166,7 +305,6 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
 
   const margem = comMarg ? '0.7cm' : '0.3cm';
 
-  // ── Pacotes ──
   let tex = `\\documentclass{article}\n`;
   tex += `\\usepackage[brazil]{babel}\n`;
   tex += `\\usepackage[utf8]{inputenc}\n`;
@@ -188,13 +326,11 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
   tex += `\\usepackage{float}\n`;
   tex += `\\usepackage[indent=1cm,skip=0.1cm]{parskip}\n`;
 
-  // Cores do projeto do usuário
   tex += `\\definecolor{laranja}{HTML}{FF6600}\n`;
   tex += `\\definecolor{azul}{HTML}{0066FF}\n`;
   tex += `\\definecolor{amarelo}{HTML}{FCFB85}\n`;
   tex += `\\definecolor{gray}{HTML}{888888}\n`;
 
-  // Borda da página via TikZ (replicando BORDAS.tex do usuário)
   tex += `\n\\pagestyle{fancy}\n`;
   tex += `\\lhead{\\begin{tikzpicture}[overlay, remember picture]\n`;
   tex += `  \\draw [draw=laranja, line width=1.5pt]($(current page.north west) + (0.4,-0.4)$) rectangle ($(current page.south east) + (-0.4,0.4)$);\n`;
@@ -207,14 +343,12 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
   tex += `\\cfoot{} \\rfoot{}\n`;
   tex += `\\renewcommand{\\headrulewidth}{0pt}\n\n`;
 
-  // Rodapé texto
   const totalPts = itens.reduce((s, it) => s + Number(it.valor_pontos || 1), 0).toFixed(1);
   const rodapeStr = rodapeTxt ? `EDUCA.PROVA · ${rodapeTxt}` : 'EDUCA.PROVA';
 
   tex += `\\begin{document}\n`;
-  tex += `\\fontsize{12pt}{14pt}\\selectfont\n\n`;
+  tex += `\\fontsize{11pt}{13.5pt}\\selectfont\n\n`;
 
-  // ── Cabeçalho ──
   if (comCab) {
     tex += `\\begin{center}\n`;
     if (sh('cab_escola')) {
@@ -228,7 +362,6 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
     }
     tex += `\\end{center}\n\n`;
 
-    // Grade de identificação
     tex += `\\begin{tabular}{|p{0.55\\linewidth}|p{0.2\\linewidth}|p{0.15\\linewidth}|}\n\\hline\n`;
     if (sh('cab_nome')) tex += `Nome: \\hfill & `;
     if (sh('cab_turma')) tex += `Turma: ${escapeTex(prova.turma || '')} & `;
@@ -242,7 +375,6 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
     tex += `\\multicolumn{3}{|l|}{${linha2.join(' \\quad ')}} \\\\ \\hline\n`;
     tex += `\\end{tabular}\n\n`;
 
-    // Instruções
     if (sh('cab_instrucoes')) {
       tex += `\\vspace{4pt}\n`;
       tex += `\\fbox{\\parbox{\\linewidth}{\\textbf{INSTRUÇÕES:} `;
@@ -254,40 +386,35 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGab
 
   tex += `\\vspace{0.3cm}\n\n`;
 
-  // ── Questões ──
   if (is2col) {
     tex += `\\begin{multicols}{2}\n\\setlength{\\columnseprule}{0.8pt}\n\n`;
   }
 
   itens.forEach((item, idx) => {
-    tex += gerarTexQuestao(item, idx, imgPaths[idx] || null, colunas);
+    tex += gerarTexQuestao(item, idx, imgBundles[idx] || null, colunas);
   });
 
   if (is2col) {
     tex += `\\end{multicols}\n\n`;
   }
 
-  // ── Gabarito (página nova) ──
   if (comGabarito) {
     tex += `\\newpage\n`;
     tex += `\\begin{center}{\\large\\bfseries GABARITO — ${escapeTex(prova.titulo || '')}}\\end{center}\n\n`;
     tex += `\\begin{center}\n`;
-    tex += `\\begin{tabular}{|c|c|c|c|c|}\\hline\n`;
-    tex += `\\textbf{Nº} & \\textbf{Resposta} & \\textbf{Pts} & \\textbf{Disciplina} & \\textbf{Nível} \\\\ \\hline\n`;
+    tex += `\\begin{tabular}{|c|c|p{5.5cm}|c|c|}\\hline\n`;
+    tex += `\\textbf{Nº} & \\textbf{Código} & \\textbf{Resposta / Gabarito} & \\textbf{Pts} & \\textbf{Disciplina} \\\\ \\hline\n`;
     itens.forEach((it, i) => {
-      const alts2 = parseAlts(it.alternativas_json);
-      const corr  = alts2.find(a => a.correta)?.letra || it.correta || '---';
-      const niv   = { facil: 'Fácil', medio: 'Médio', dificil: 'Difícil', enem: 'ENEM' }[it.nivel] || '---';
-      const pts   = Number(it.valor_pontos || 1).toFixed(1);
-      tex += `${String(i+1).padStart(2,'0')} & \\textbf{${corr}} & ${pts} & ${escapeTex(it.disciplina || '---')} & ${niv} \\\\ \\hline\n`;
+      const corr = escapeTex(resumirGabaritoTex(it));
+      const cod  = escapeTex(it.codigo || `Q-${i + 1}`);
+      const pts  = Number(it.valor_pontos || 1).toFixed(1);
+      tex += `${String(i + 1).padStart(2, '0')} & ${cod} & \\textbf{${corr}} & ${pts} & ${escapeTex(it.disciplina || '---')} \\\\ \\hline\n`;
     });
-    const total = itens.reduce((s, it) => s + Number(it.valor_pontos || 1), 0).toFixed(1);
-    tex += `\\multicolumn{2}{|r|}{\\textbf{TOTAL}} & ${total} & \\multicolumn{2}{c|}{} \\\\ \\hline\n`;
+    tex += `\\multicolumn{3}{|r|}{\\textbf{TOTAL}} & ${totalPts} & \\\\ \\hline\n`;
     tex += `\\end{tabular}\n`;
     tex += `\\end{center}\n\n`;
   }
 
-  // Rodapé informativo
   tex += `\\vspace{1cm}\n`;
   tex += `{\\small\\color{gray}\\centering ${escapeTex(escola)} — ${escapeTex(rodapeStr)}\\par}\n`;
   tex += `\\end{document}\n`;
@@ -302,7 +429,6 @@ export async function exportarPdfLatex(req, res) {
   const { escola_id } = req.user;
   const comGabarito = req.query.gabarito === '1';
 
-  // 1. Busca prova + itens
   let prova, itens;
   try {
     const [[p]] = await pool.query(
@@ -314,9 +440,11 @@ export async function exportarPdfLatex(req, res) {
 
     const [rows] = await pool.query(
       `SELECT pq.valor_pontos, pq.ordem,
-              q.conteudo_bruto, q.tipo, q.nivel, q.disciplina,
-              q.alternativas_json, q.correta, q.imagem_url, q.imagem_base64,
-              q.texto_apoio
+              CONCAT('EMQE-', LPAD(COALESCE(q.numero_q, q.id), 5, '0')) AS codigo,
+              q.conteudo_bruto, q.comando_final, q.tipo, q.nivel, q.disciplina,
+              q.alternativas_json, q.estrutura_json, q.correta, q.resposta_aberta,
+              q.imagem_url, q.imagem_base64, q.midia_json,
+              q.texto_apoio, q.fonte
        FROM prova_questoes pq
        JOIN questoes q ON q.id = pq.questao_id
        WHERE pq.prova_id = ?
@@ -329,45 +457,52 @@ export async function exportarPdfLatex(req, res) {
     return res.status(500).json({ message: 'Erro ao carregar prova.', detail: err.message });
   }
 
-  // 2. Cria diretório de trabalho
   const jobId  = randomUUID();
   const jobDir = path.join(os.tmpdir(), 'latex-jobs', jobId);
   fs.mkdirSync(jobDir, { recursive: true });
 
   try {
-    // 3. Salva imagens como arquivos e coleta caminhos
     const cfg    = (() => { try { return typeof prova.config_json === 'string' ? JSON.parse(prova.config_json) : (prova.config_json || {}); } catch { return {}; } })();
     const escola = req.query.escola || prova.escola_nome || 'EDUCA.MELHOR';
     const template = prova.template_slug || 'objetiva_2col';
     const colunas  = ['objetiva_2col', 'enem'].includes(template) ? 2 : 1;
 
-    const imgPaths = await Promise.all(
-      itens.map((it, idx) => salvarImagem(it.imagem_url || it.imagem_base64, jobDir, idx))
+    const imgBundles = await Promise.all(
+      itens.map(async (it, idx) => {
+        const midia = parseJsonObj(it.midia_json, null);
+        const mainSrc = midia?.url || it.imagem_url || it.imagem_base64;
+        const main = await salvarImagem(mainSrc, jobDir, `${idx}_main`);
+        const alts = {};
+        const altsArr = parseAlts(it.alternativas_json);
+        for (const a of altsArr) {
+          if (a.imagem_url && a.letra) {
+            const pAlt = await salvarImagem(a.imagem_url, jobDir, `${idx}_alt_${a.letra}`);
+            if (pAlt) alts[a.letra] = pAlt;
+          }
+        }
+        return { main, alts };
+      })
     );
 
-    // 4. Gera o .tex
-    const texContent = gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgPaths, comGabarito });
+    const texContent = gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito });
     const texFile = path.join(jobDir, 'prova.tex');
     fs.writeFileSync(texFile, texContent, 'utf-8');
 
-    // 5. Compila com Tectonic (2 passagens para referências)
     await execFileAsync('tectonic', [
       '--outdir', jobDir,
       '--keep-logs',
       '--synctex', '0',
       texFile,
     ], {
-      timeout: 60000, // 60s timeout
+      timeout: 60000,
       env: {
         ...process.env,
-        TECTONIC_CACHE_DIR: '/tmp/tectonic-cache', // cache compartilhado entre jobs
+        TECTONIC_CACHE_DIR: '/tmp/tectonic-cache',
       },
     });
 
-    // 6. Lê o PDF gerado
     const pdfPath = path.join(jobDir, 'prova.pdf');
     if (!fs.existsSync(pdfPath)) {
-      // Lê o log para diagnóstico
       const logPath = path.join(jobDir, 'prova.log');
       const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8').slice(-2000) : 'sem log';
       throw new Error(`PDF não gerado. Log: ${logContent}`);
@@ -376,7 +511,6 @@ export async function exportarPdfLatex(req, res) {
     const pdfBuffer = fs.readFileSync(pdfPath);
     const nomeArq   = `${(prova.titulo || 'prova').toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-')}-latex.pdf`;
 
-    // 7. Envia o PDF
     res.set({
       'Content-Type':        'application/pdf',
       'Content-Disposition': `attachment; filename="${nomeArq}"`,
@@ -392,7 +526,6 @@ export async function exportarPdfLatex(req, res) {
       detail:  err.message?.slice(0, 300),
     });
   } finally {
-    // 8. Limpa diretório temporário
     try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
   }
 }

@@ -4,26 +4,15 @@
 import pool from "../db.js";
 import * as Questao from "../models/questaoModel.js";
 import { parsePdfFile } from "../utils/pdfParser.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import multer from "multer";
-
-// ─── Gemini Vision — instância lazy (só cria se GEMINI_API_KEY estiver definida) ──
-let _gemini = null;
-function getGemini() {
-  if (!_gemini) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error("GEMINI_API_KEY não configurada no ambiente.");
-    _gemini = new GoogleGenerativeAI(key);
-  }
-  return _gemini;
-}
+import { extrairQuestaoMultimodal, executarCopilotoQuestao } from "../modules/questoes-ai/visionExtractor.agent.js";
 
 // ─── Multer — memória (sem gravar em disco) ──────────────────────────────────
 export const uploadImagem = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  limits: { fileSize: 12 * 1024 * 1024 }, // 12 MB
   fileFilter(_, file, cb) {
-    cb(null, /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype));
+    cb(null, /^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype));
   },
 }).single("imagem");
 
@@ -43,13 +32,36 @@ async function registrarHistorico(questao_id, acao, usuario_id, prova_id = null)
 }
 
 
-// ─── Campos completos para SELECT ────────────────────────────────────────────
+// ─── Campos completos para SELECT (com código único identificável EMQE-XXXXX) ─
 const CAMPOS = `
-  id, numero_q, conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-  disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta,
-  texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
-  escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
+  q.id, q.numero_q,
+  CONCAT('EMQE-', LPAD(COALESCE(q.numero_q, q.id), 5, '0')) AS codigo,
+  CASE WHEN q.global_id IS NOT NULL THEN CONCAT('EMQG-', LPAD(q.global_id, 5, '0')) ELSE NULL END AS codigo_global,
+  q.global_id, q.publicada_globalmente,
+  q.conteudo_bruto, q.comando_final, q.latex_formatado, q.tipo, q.nivel, q.serie, q.bimestre,
+  q.disciplina, q.habilidade_bncc, q.imagem_base64, q.imagem_url, q.midia_json,
+  q.alternativas_json, q.estrutura_json, q.correta, q.correta_texto, q.resposta_aberta,
+  q.texto_apoio, q.fonte, q.explicacao, q.tags, q.temas, q.compartilhada, q.status,
+  q.escola_id, q.professor_id, q.professor_nome, q.vezes_utilizada, q.criada_em, q.atualizada_em
 `;
+
+function serializarJsonSeguro(val) {
+  if (val === undefined || val === null || val === '') return null;
+  if (typeof val === 'string') {
+    const t = val.trim();
+    return t ? t : null;
+  }
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return null;
+  }
+}
+
+function formatarCodigoEscola(numeroQ, fallbackId) {
+  const num = Number(numeroQ || fallbackId || 0);
+  return `EMQE-${String(num).padStart(5, '0')}`;
+}
 
 // ─── Helper — Normaliza imagem_url (DO Spaces) vs imagem_base64 (legado) ────
 function normalizarCamposImagem(imagem_url, imagem_base64) {
@@ -109,8 +121,30 @@ function buildWhere(escola_id, professor_id, perfil, filters = {}) {
   else                            conditions.push("q.status != 'arquivada'");
 
   if (busca) {
-    conditions.push('(q.conteudo_bruto LIKE ? OR q.tags LIKE ? OR q.habilidade_bncc LIKE ?)');
-    params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`);
+    const b = String(busca).trim();
+    const matchLocalCode = b.match(/^(?:EMQE[-\s]*|#)?0*(\d+)$/i);
+    const matchGlobalCode = b.match(/^EMQG[-\s]*0*(\d+)$/i);
+    const subConds = [
+      'q.conteudo_bruto LIKE ?',
+      'q.comando_final LIKE ?',
+      'q.texto_apoio LIKE ?',
+      'q.fonte LIKE ?',
+      'q.tags LIKE ?',
+      'q.habilidade_bncc LIKE ?',
+      "CONCAT('EMQE-', LPAD(COALESCE(q.numero_q, q.id), 5, '0')) LIKE ?",
+    ];
+    params.push(`%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`);
+    if (matchLocalCode) {
+      const numCode = Number(matchLocalCode[1]);
+      subConds.push('q.numero_q = ?', 'q.id = ?');
+      params.push(numCode, numCode);
+    }
+    if (matchGlobalCode) {
+      const gCode = Number(matchGlobalCode[1]);
+      subConds.push('q.global_id = ?');
+      params.push(gCode);
+    }
+    conditions.push(`(${subConds.join(' OR ')})`);
   }
 
   return { where: conditions.length > 0 ? conditions.join(' AND ') : '1=1', params };
@@ -230,17 +264,20 @@ export async function obterQuestao(req, res) {
 export async function criarQuestao(req, res) {
   const { escola_id, professor_id: uid, nome: nomeProfessor } = req.user;
   const {
-    conteudo_bruto, latex_formatado, tipo, nivel,
+    conteudo_bruto, comando_final, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
-    imagem_base64, imagem_url, alternativas_json, correta,
+    imagem_base64, imagem_url, midia_json,
+    alternativas_json, estrutura_json, correta, resposta_aberta,
     texto_apoio, fonte, explicacao, tags, temas,
     compartilhada = 0, status = 'ativa',
   } = req.body;
 
+  const isRascunho = status === 'rascunho';
+
   // Validações obrigatórias (422 Unprocessable Entity)
-  if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
-  if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
-  if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
+  if (!isRascunho && !disciplina?.trim()) return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
+  if (!tipo?.trim())                       return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
+  if (!nivel?.trim())                      return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
 
   const imgNorm = normalizarCamposImagem(imagem_url, imagem_base64);
   if (imgNorm.erroBlob) {
@@ -254,7 +291,9 @@ export async function criarQuestao(req, res) {
       : (typeof temas === 'string' ? JSON.parse(temas || '[]') : []);
     temasValidos = (Array.isArray(parsed) ? parsed : []).filter(Boolean);
   } catch { temasValidos = []; }
-  if (!temasValidos.length) return res.status(422).json({ message: 'Informe ao menos 1 tema/conteúdo.', campo: 'temas' });
+  if (!isRascunho && !temasValidos.length) {
+    return res.status(422).json({ message: 'Informe ao menos 1 tema/conteúdo.', campo: 'temas' });
+  }
 
   // Gabarito por conteúdo — invariante à permutação de alternativas
   const correta_texto = resolverTextoCorreta(alternativas_json, correta);
@@ -263,25 +302,31 @@ export async function criarQuestao(req, res) {
     // Gera número sequencial global (atômico via AUTO_INCREMENT)
     const [seqResult] = await pool.query('INSERT INTO questoes_num_seq VALUES ()');
     const numero_q = seqResult.insertId;
+    const codigo = formatarCodigoEscola(numero_q);
 
     const [result] = await pool.query(
       `INSERT INTO questoes (
         numero_q,
-        conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta, correta_texto,
+        conteudo_bruto, comando_final, latex_formatado, tipo, nivel, serie, bimestre,
+        disciplina, habilidade_bncc, imagem_base64, imagem_url, midia_json,
+        alternativas_json, estrutura_json, correta, correta_texto, resposta_aberta,
         texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
         escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())`,
       [
         numero_q,
-        conteudo_bruto  || null, latex_formatado  || null,
+        conteudo_bruto  || null,
+        comando_final   || null,
+        latex_formatado || null,
         tipo, nivel,
         serie           || null, bimestre || null,
-        disciplina, habilidade_bncc || null,
-        imgNorm.base64, imgNorm.url, alternativas_json || null, correta || null, correta_texto,
+        disciplina      || null, habilidade_bncc || null,
+        imgNorm.base64, imgNorm.url, serializarJsonSeguro(midia_json),
+        serializarJsonSeguro(alternativas_json), serializarJsonSeguro(estrutura_json),
+        correta || null, correta_texto, resposta_aberta || null,
         texto_apoio     || null, fonte || null, explicacao || null,
         tags            || '',
-        JSON.stringify(temasValidos),
+        temasValidos.length ? JSON.stringify(temasValidos) : null,
         compartilhada ? 1 : 0,
         ['rascunho','ativa','arquivada'].includes(status) ? status : 'ativa',
         escola_id, uid || null, nomeProfessor || null,
@@ -297,7 +342,7 @@ export async function criarQuestao(req, res) {
     }
 
     await registrarHistorico(qid, 'criou', uid);
-    res.status(201).json({ id: qid, numero_q, message: 'Questão criada com sucesso.' });
+    res.status(201).json({ id: qid, numero_q, codigo, message: 'Questão criada com sucesso.' });
   } catch (err) {
     console.error('Erro ao criar questão:', err);
     res.status(500).json({ message: 'Erro ao salvar questão.', detail: err.message });
@@ -312,17 +357,20 @@ export async function atualizarQuestao(req, res) {
   const { escola_id, professor_id, perfil } = req.user;
   const isGestor = ['diretor', 'coordenador', 'admin', 'militar'].includes(perfil);
   const {
-    conteudo_bruto, latex_formatado, tipo, nivel,
+    conteudo_bruto, comando_final, latex_formatado, tipo, nivel,
     serie, bimestre, disciplina, habilidade_bncc,
-    imagem_base64, imagem_url, alternativas_json, correta,
+    imagem_base64, imagem_url, midia_json,
+    alternativas_json, estrutura_json, correta, resposta_aberta,
     texto_apoio, fonte, explicacao, tags, temas,
     compartilhada, status,
   } = req.body;
 
+  const isRascunho = status === 'rascunho';
+
   // Validações obrigatórias
-  if (!disciplina?.trim())   return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
-  if (!tipo?.trim())         return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
-  if (!nivel?.trim())        return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
+  if (!isRascunho && !disciplina?.trim()) return res.status(422).json({ message: 'Disciplina é obrigatória.', campo: 'disciplina' });
+  if (!tipo?.trim())                       return res.status(422).json({ message: 'Tipo de questão é obrigatório.', campo: 'tipo' });
+  if (!nivel?.trim())                      return res.status(422).json({ message: 'Nível de dificuldade é obrigatório.', campo: 'nivel' });
 
   const imgNorm = normalizarCamposImagem(imagem_url, imagem_base64);
   if (imgNorm.erroBlob) {
@@ -335,7 +383,7 @@ export async function atualizarQuestao(req, res) {
   try {
     // Verifica autoria: só o professor_id que criou pode editar (ou gestores)
     const [[questao]] = await pool.query(
-      'SELECT professor_id FROM questoes WHERE id = ? AND escola_id = ?',
+      'SELECT professor_id, numero_q FROM questoes WHERE id = ? AND escola_id = ?',
       [id, escola_id]
     );
     if (!questao)
@@ -350,14 +398,16 @@ export async function atualizarQuestao(req, res) {
 
     const [result] = await pool.query(
       `UPDATE questoes SET
-        conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?,
+        conteudo_bruto = ?, comando_final = ?, latex_formatado = ?, tipo = ?, nivel = ?,
         serie = ?, bimestre = ?, disciplina = ?, habilidade_bncc = ?,
-        imagem_base64 = ?, imagem_url = ?, alternativas_json = ?, correta = ?, correta_texto = ?,
+        imagem_base64 = ?, imagem_url = ?, midia_json = ?,
+        alternativas_json = ?, estrutura_json = ?, correta = ?, correta_texto = ?, resposta_aberta = ?,
         texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?, temas = ?,
         compartilhada = ?, status = ?, atualizada_em = NOW()
        WHERE id = ? AND escola_id = ?`,
       [
         conteudo_bruto    || null,
+        comando_final     || null,
         latex_formatado   || null,
         tipo              || 'objetiva',
         nivel             || 'medio',
@@ -367,14 +417,17 @@ export async function atualizarQuestao(req, res) {
         habilidade_bncc   || null,
         imgNorm.base64,
         imgNorm.url,
-        alternativas_json || null,
+        serializarJsonSeguro(midia_json),
+        serializarJsonSeguro(alternativas_json),
+        serializarJsonSeguro(estrutura_json),
         correta           || null,
         correta_texto,
+        resposta_aberta   || null,
         texto_apoio       || null,
         fonte             || null,
         explicacao        || null,
         tags              || '',
-        temas ? (typeof temas === 'string' ? temas : JSON.stringify(temas)) : null,
+        serializarJsonSeguro(temas),
         compartilhada ? 1 : 0,
         ['rascunho','ativa','arquivada'].includes(status) ? status : 'ativa',
         id, escola_id,
@@ -396,7 +449,8 @@ export async function atualizarQuestao(req, res) {
       }
     } catch { /* não bloqueia a edição se questao_temas falhar */ }
 
-    res.json({ message: 'Questão atualizada com sucesso.' });
+    const codigo = formatarCodigoEscola(questao.numero_q, id);
+    res.json({ id: Number(id), numero_q: questao.numero_q, codigo, message: 'Questão atualizada com sucesso.' });
   } catch (err) {
     console.error('Erro ao atualizar questão:', err);
     res.status(500).json({ message: 'Erro ao atualizar questão.', detail: err.message });
@@ -468,27 +522,27 @@ export async function duplicarQuestao(req, res) {
     const [seqResult] = await pool.query('INSERT INTO questoes_num_seq VALUES ()');
     const numero_q_copia = seqResult.insertId;
 
-    const altsOrigJson = orig.alternativas_json == null
-      ? null
-      : (typeof orig.alternativas_json === 'string' ? orig.alternativas_json : JSON.stringify(orig.alternativas_json));
-    const temasOrigJson = orig.temas == null
-      ? null
-      : (typeof orig.temas === 'string' ? orig.temas : JSON.stringify(orig.temas));
+    const altsOrigJson = serializarJsonSeguro(orig.alternativas_json);
+    const temasOrigJson = serializarJsonSeguro(orig.temas);
+    const estOrigJson = serializarJsonSeguro(orig.estrutura_json);
+    const midiaOrigJson = serializarJsonSeguro(orig.midia_json);
 
     const [r] = await pool.query(
       `INSERT INTO questoes (
         numero_q,
-        conteudo_bruto, latex_formatado, tipo, nivel, serie, bimestre,
-        disciplina, habilidade_bncc, imagem_base64, imagem_url, alternativas_json, correta, correta_texto,
+        conteudo_bruto, comando_final, latex_formatado, tipo, nivel, serie, bimestre,
+        disciplina, habilidade_bncc, imagem_base64, imagem_url, midia_json,
+        alternativas_json, estrutura_json, correta, correta_texto, resposta_aberta,
         texto_apoio, fonte, explicacao, tags, temas, compartilhada, status,
         escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, ?, 0, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'rascunho', ?, ?, ?, 0, NOW(), NOW())`,
       [
         numero_q_copia,
         `[CÓPIA] ${orig.conteudo_bruto || ''}`,
+        orig.comando_final || null,
         orig.latex_formatado, orig.tipo, orig.nivel, orig.serie, orig.bimestre,
-        orig.disciplina, orig.habilidade_bncc, orig.imagem_base64, orig.imagem_url || null,
-        altsOrigJson, orig.correta, orig.correta_texto,
+        orig.disciplina, orig.habilidade_bncc, orig.imagem_base64, orig.imagem_url || null, midiaOrigJson,
+        altsOrigJson, estOrigJson, orig.correta, orig.correta_texto, orig.resposta_aberta || null,
         orig.texto_apoio, orig.fonte, orig.explicacao, orig.tags, temasOrigJson,
         escola_id, professor_id || null, nomeProfessor || null,
       ]
@@ -497,6 +551,7 @@ export async function duplicarQuestao(req, res) {
     res.status(201).json({
       id: r.insertId,
       numero_q: numero_q_copia,
+      codigo: formatarCodigoEscola(numero_q_copia, r.insertId),
       message: 'Questão duplicada com sucesso. Edite e salve como sua.',
     });
   } catch (err) {
@@ -622,10 +677,10 @@ export async function publicarQuestao(req, res) {
     // Resolve texto da alternativa correta (ponto 1 do usuário)
     const correta_texto = resolverTextoCorreta(q.alternativas_json, q.correta);
 
-    // Normaliza temas e alternativas_json para string JSON (seguro contra colunas JSON do MySQL2)
-    const altsJson = q.alternativas_json == null
-      ? null
-      : (typeof q.alternativas_json === 'string' ? q.alternativas_json : JSON.stringify(q.alternativas_json));
+    // Normaliza JSONs para string JSON (seguro contra colunas JSON do MySQL2)
+    const altsJson = serializarJsonSeguro(q.alternativas_json);
+    const estJson = serializarJsonSeguro(q.estrutura_json);
+    const midiaJson = serializarJsonSeguro(q.midia_json);
 
     let temasJson = null;
     try {
@@ -637,22 +692,24 @@ export async function publicarQuestao(req, res) {
       }
     } catch { temasJson = null; }
 
+    const codigoLocal = formatarCodigoEscola(q.numero_q, q.id);
+
     // Evita duplicatas: verifica se já foi publicada
     if (q.publicada_globalmente && q.global_id) {
       // Atualiza a entrada existente (sync)
       await pool.query(
         `UPDATE questoes_banco_global SET
-           conteudo_bruto = ?, latex_formatado = ?, tipo = ?, nivel = ?, serie = ?,
-           disciplina = ?, habilidade_bncc = ?, imagem_url = ?, temas = ?,
-           alternativas_json = ?, correta = ?, correta_texto = ?,
+           conteudo_bruto = ?, comando_final = ?, latex_formatado = ?, tipo = ?, nivel = ?, serie = ?,
+           disciplina = ?, habilidade_bncc = ?, imagem_url = ?, midia_json = ?, temas = ?,
+           alternativas_json = ?, estrutura_json = ?, correta = ?, correta_texto = ?, resposta_aberta = ?,
            texto_apoio = ?, fonte = ?, explicacao = ?, tags = ?,
            atualizada_em = NOW()
          WHERE id = ?`,
         [
-          q.conteudo_bruto, q.latex_formatado, q.tipo, q.nivel, q.serie,
-          q.disciplina, q.habilidade_bncc, q.imagem_url || null,
+          q.conteudo_bruto, q.comando_final || null, q.latex_formatado, q.tipo, q.nivel, q.serie,
+          q.disciplina, q.habilidade_bncc, q.imagem_url || null, midiaJson,
           temasJson,
-          altsJson, q.correta, correta_texto,
+          altsJson, estJson, q.correta, correta_texto, q.resposta_aberta || null,
           q.texto_apoio, q.fonte, q.explicacao, q.tags,
           q.global_id,
         ]
@@ -675,24 +732,25 @@ export async function publicarQuestao(req, res) {
         message: "Questão republicada no Banco Global com sucesso.",
         global_id: q.global_id,
         codigo,
+        codigo_escola: codigoLocal,
       });
     }
 
     // Insere no banco global
     const [ins] = await pool.query(
       `INSERT INTO questoes_banco_global (
-         conteudo_bruto, latex_formatado, tipo, nivel, serie,
-         disciplina, habilidade_bncc, imagem_url, temas,
-         alternativas_json, correta, correta_texto,
+         conteudo_bruto, comando_final, latex_formatado, tipo, nivel, serie,
+         disciplina, habilidade_bncc, imagem_url, midia_json, temas,
+         alternativas_json, estrutura_json, correta, correta_texto, resposta_aberta,
          texto_apoio, fonte, explicacao, tags,
          escola_id_origem, professor_id_origem, uso_count, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'publicada')`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'publicada')`,
       [
-        q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva",
+        q.conteudo_bruto, q.comando_final || null, q.latex_formatado || null, q.tipo || "objetiva",
         q.nivel || "medio", q.serie || null,
-        q.disciplina, q.habilidade_bncc || null, q.imagem_url || null,
+        q.disciplina, q.habilidade_bncc || null, q.imagem_url || null, midiaJson,
         temasJson,
-        altsJson, q.correta || null, correta_texto,
+        altsJson, estJson, q.correta || null, correta_texto, q.resposta_aberta || null,
         q.texto_apoio || null, q.fonte || null, q.explicacao || null,
         q.tags || null,
         escola_id, professor_id || null,
@@ -726,6 +784,7 @@ export async function publicarQuestao(req, res) {
       message: "Questão publicada no Banco Global com sucesso!",
       global_id: globalId,
       codigo,
+      codigo_escola: codigoLocal,
     });
   } catch (err) {
     console.error("[publicarQuestao] Erro:", err);
@@ -756,8 +815,23 @@ export async function buscarBancoGlobal(req, res) {
     params.push(tema);
   }
   if (busca) {
-    conds.push("(g.conteudo_bruto LIKE ? OR g.tags LIKE ? OR g.habilidade_bncc LIKE ?)");
-    params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`);
+    const b = String(busca).trim();
+    const matchG = b.match(/^(?:EMQG[-\s]*|#)?0*(\d+)$/i);
+    const sub = [
+      "g.conteudo_bruto LIKE ?",
+      "g.comando_final LIKE ?",
+      "g.texto_apoio LIKE ?",
+      "g.fonte LIKE ?",
+      "g.tags LIKE ?",
+      "g.habilidade_bncc LIKE ?",
+      "CONCAT('EMQG-', LPAD(g.id, 5, '0')) LIKE ?",
+    ];
+    params.push(`%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`, `%${b}%`);
+    if (matchG) {
+      sub.push("g.id = ?");
+      params.push(Number(matchG[1]));
+    }
+    conds.push(`(${sub.join(" OR ")})`);
   }
 
   const where = conds.join(" AND ");
@@ -774,10 +848,10 @@ export async function buscarBancoGlobal(req, res) {
       `SELECT
          g.id,
          CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
-         g.conteudo_bruto, g.tipo, g.nivel, g.serie,
-         g.disciplina, g.habilidade_bncc, g.imagem_url, g.temas,
-         g.alternativas_json, g.correta, g.correta_texto,
-         g.texto_apoio, g.fonte, g.tags, g.uso_count,
+         g.conteudo_bruto, g.comando_final, g.tipo, g.nivel, g.serie,
+         g.disciplina, g.habilidade_bncc, g.imagem_url, g.midia_json, g.temas,
+         g.alternativas_json, g.estrutura_json, g.correta, g.correta_texto, g.resposta_aberta,
+         g.texto_apoio, g.fonte, g.explicacao, g.tags, g.uso_count,
          g.escola_id_origem, g.professor_id_origem,
          g.publicada_em
        FROM questoes_banco_global g
@@ -863,27 +937,26 @@ export async function registrarUsoGlobal(req, res) {
         const [seqResult] = await pool.query("INSERT INTO questoes_num_seq VALUES ()");
         const numero_q = seqResult.insertId;
 
-        const altsJson = q.alternativas_json == null
-          ? null
-          : (typeof q.alternativas_json === "string" ? q.alternativas_json : JSON.stringify(q.alternativas_json));
-        const temasJson = q.temas == null
-          ? null
-          : (typeof q.temas === "string" ? q.temas : JSON.stringify(q.temas));
+        const altsJson = serializarJsonSeguro(q.alternativas_json);
+        const temasJson = serializarJsonSeguro(q.temas);
+        const estJson = serializarJsonSeguro(q.estrutura_json);
+        const midiaJson = serializarJsonSeguro(q.midia_json);
 
         const [insLocal] = await pool.query(
           `INSERT INTO questoes (
              numero_q,
-             conteudo_bruto, latex_formatado, tipo, nivel, serie,
-             disciplina, habilidade_bncc, imagem_url, alternativas_json, correta, correta_texto,
+             conteudo_bruto, comando_final, latex_formatado, tipo, nivel, serie,
+             disciplina, habilidade_bncc, imagem_url, midia_json,
+             alternativas_json, estrutura_json, correta, correta_texto, resposta_aberta,
              texto_apoio, fonte, explicacao, tags, temas,
              compartilhada, status, publicada_globalmente, global_id,
              escola_id, professor_id, professor_nome, vezes_utilizada, criada_em, atualizada_em
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'ativa', 0, ?, ?, ?, ?, 0, NOW(), NOW())`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'ativa', 0, ?, ?, ?, ?, 0, NOW(), NOW())`,
           [
             numero_q,
-            q.conteudo_bruto, q.latex_formatado || null, q.tipo || "objetiva", q.nivel || "medio", q.serie || null,
-            q.disciplina || null, q.habilidade_bncc || null, q.imagem_url || null,
-            altsJson, q.correta || null, q.correta_texto || null,
+            q.conteudo_bruto, q.comando_final || null, q.latex_formatado || null, q.tipo || "objetiva", q.nivel || "medio", q.serie || null,
+            q.disciplina || null, q.habilidade_bncc || null, q.imagem_url || null, midiaJson,
+            altsJson, estJson, q.correta || null, q.correta_texto || null, q.resposta_aberta || null,
             q.texto_apoio || null, q.fonte || null, q.explicacao || null, q.tags || "", temasJson,
             Number(id),
             escola_id, professor_id || null, nomeProfessor || null,
@@ -930,8 +1003,14 @@ export async function getBancoEscola(req, res) {
   if (disciplina) { conds.push("g.disciplina = ?"); params.push(disciplina); }
   if (nivel)      { conds.push("g.nivel = ?");      params.push(nivel); }
   if (busca) {
-    conds.push("(g.conteudo_bruto LIKE ? OR g.tags LIKE ?)");
-    params.push(`%${busca}%`, `%${busca}%`);
+    const numMatch = String(busca).trim().match(/^(?:EMQ[EGM]-?)?0*(\d+)$/i);
+    if (numMatch) {
+      conds.push("(g.id = ? OR g.conteudo_bruto LIKE ? OR g.tags LIKE ?)");
+      params.push(Number(numMatch[1]), `%${busca}%`, `%${busca}%`);
+    } else {
+      conds.push("(g.conteudo_bruto LIKE ? OR g.comando_final LIKE ? OR g.texto_apoio LIKE ? OR g.fonte LIKE ? OR g.tags LIKE ?)");
+      params.push(`%${busca}%`, `%${busca}%`, `%${busca}%`, `%${busca}%`, `%${busca}%`);
+    }
   }
 
   const where = conds.join(" AND ");
@@ -942,10 +1021,10 @@ export async function getBancoEscola(req, res) {
       `SELECT
          g.id,
          CONCAT('EMQG-', LPAD(g.id, 5, '0')) AS codigo,
-         g.conteudo_bruto, g.tipo, g.nivel, g.serie,
-         g.disciplina, g.habilidade_bncc, g.imagem_url, g.temas,
-         g.alternativas_json, g.correta, g.correta_texto,
-         g.texto_apoio, g.fonte, g.tags, g.uso_count,
+         g.conteudo_bruto, g.comando_final, g.tipo, g.nivel, g.serie,
+         g.disciplina, g.habilidade_bncc, g.imagem_url, g.midia_json, g.temas,
+         g.alternativas_json, g.estrutura_json, g.correta, g.correta_texto, g.resposta_aberta,
+         g.texto_apoio, g.fonte, g.explicacao, g.tags, g.uso_count,
          COUNT(u.id) AS vezes_usada_escola,
          MAX(u.usado_em) AS ultimo_uso
        FROM questoes_uso_escola u
@@ -1047,100 +1126,52 @@ export async function excluirQuestaoGlobal(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 16) POST /questoes/extrair-imagem — Gemini Vision OCR + estruturação
+// 16) POST /questoes/extrair-imagem — EDUCA.STUDIO AI (Multimodal + Auto-Crop + Solver)
 export async function extrairQuestaoImagem(req, res) {
   try {
     if (!req.file) {
       return res.status(400).json({ ok: false, message: "Nenhuma imagem enviada." });
     }
 
-    const genAI = getGemini();
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    // Converte buffer para formato inline que a API Gemini aceita
-    const imagePart = {
-      inlineData: {
-        data: req.file.buffer.toString("base64"),
-        mimeType: req.file.mimetype,
-      },
-    };
-
-    const prompt = `Você é um assistente especializado em extrair questões educacionais de imagens.
-
-Analise a imagem e extraia a questão presente nela. Retorne APENAS um JSON válido, sem markdown, sem explicações, no formato exato abaixo:
-
-{
-  "enunciado": "texto completo do enunciado/pergunta",
-  "fonte": "instituição ou prova de origem (ex: ENEM 2022, ISE Sta. Cecília-SP), deixe vazio se não houver",
-  "alternativas": [
-    { "letra": "A", "texto": "texto da alternativa A" },
-    { "letra": "B", "texto": "texto da alternativa B" },
-    { "letra": "C", "texto": "texto da alternativa C" },
-    { "letra": "D", "texto": "texto da alternativa D" },
-    { "letra": "E", "texto": "texto da alternativa E" }
-  ],
-  "gabarito": "letra da alternativa correta, ou null se não identificada",
-  "tipo": "objetiva",
-  "confianca": "alta|media|baixa"
-}
-
-Regras:
-- Inclua apenas as alternativas presentes na imagem (pode ser 2, 3, 4 ou 5)
-- Use letras maiúsculas: A, B, C, D, E
-- Se a alternativa usar a) b) c) minúsculo, converta para A, B, C maiúsculo
-- Preserve o texto exato, incluindo formatações como colchetes, fórmulas simples, etc.
-- Se houver número da questão no início (ex: "03. (ISE...)", NÃO inclua no enunciado
-- O gabarito geralmente é indicado por marcação, grifo ou asterisco na imagem. Se não houver, retorne null.
-- confianca: "alta" se o texto está claro, "media" se parcialmente legível, "baixa" se muito ruim`;
-
-    const result = await model.generateContent([prompt, imagePart]);
-    const rawText = result.response.text().trim();
-
-    // Remove blocos de código markdown se o modelo os incluir
-    const jsonText = rawText
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```\s*$/i, "")
-      .trim();
-
-    let dados;
-    try {
-      dados = JSON.parse(jsonText);
-    } catch {
-      console.error("[extrairQuestaoImagem] Gemini retornou texto não-JSON:", rawText);
-      return res.status(422).json({
-        ok: false,
-        message: "O modelo não conseguiu estruturar a questão. Tente com uma imagem mais nítida.",
-        raw: rawText,
-      });
-    }
-
-    // Normaliza letras maiúsculas e garante estrutura
-    if (Array.isArray(dados.alternativas)) {
-      dados.alternativas = dados.alternativas.map((a) => ({
-        letra: String(a.letra || "").toUpperCase(),
-        texto: String(a.texto || "").trim(),
-      }));
-    }
-    if (dados.gabarito) {
-      dados.gabarito = String(dados.gabarito).toUpperCase().trim();
-    }
+    const dados = await extrairQuestaoMultimodal(req.file.buffer, req.file.mimetype);
 
     console.log(
-      `[extrairQuestaoImagem] OK — ${dados.alternativas?.length || 0} alternativas` +
-      ` | gabarito: ${dados.gabarito || "N/A"} | confiança: ${dados.confianca}`
+      `[extrairQuestaoImagem] OK — tipo=${dados.tipo} | disc=${dados.disciplina}` +
+      ` | gabarito=${dados.gabarito || "N/A"} (${dados.gabarito_origem}) | midia=${dados.imagem_url ? "SIM" : "NAO"}`
     );
 
-    return res.json({ ok: true, ...dados });
+    return res.json(dados);
   } catch (err) {
-    console.error("[extrairQuestaoImagem] Erro:", err.message);
+    console.error("[extrairQuestaoImagem] Erro:", err);
 
     if (err.message?.includes("GEMINI_API_KEY")) {
       return res.status(503).json({ ok: false, message: err.message });
     }
     return res.status(500).json({
       ok: false,
-      message: "Erro ao processar imagem com Gemini.",
+      message: "Erro ao processar imagem com o Agente Multimodal.",
+      detail: err.message,
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17) POST /questoes/copiloto-ia — Copiloto Pedagógico (Metadados, Distratores, Resolução, LaTeX)
+export async function copilotoQuestao(req, res) {
+  try {
+    const { acao, ...payload } = req.body || {};
+    if (!acao) return res.status(400).json({ ok: false, message: "Informe a ação do copiloto." });
+
+    const resultado = await executarCopilotoQuestao(acao, payload);
+    return res.json({ ok: true, ...resultado });
+  } catch (err) {
+    console.error("[copilotoQuestao] Erro:", err);
+    if (err.message?.includes("GEMINI_API_KEY")) {
+      return res.status(503).json({ ok: false, message: err.message });
+    }
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao consultar Copiloto IA.",
       detail: err.message,
     });
   }

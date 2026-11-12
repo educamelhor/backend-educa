@@ -1074,12 +1074,12 @@ async function bootstrap() {
   // [2026-05-01] Banco Global de Questões — correta_texto + temas + tabelas
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // 1) Colunas novas em questoes: correta_texto (gabarito por conteúdo) + temas (JSON) + imagem_url (DO Spaces)
+  // 1) Colunas novas em questoes: correta_texto + temas + global + imagem_url + EDUCA.STUDIO AI (comando_final, resposta_aberta, estrutura_json, midia_json)
   try {
     const [colsQ] = await pool.query(`
       SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes'
-        AND COLUMN_NAME IN ('correta_texto','temas','global_id','publicada_globalmente','imagem_url')
+        AND COLUMN_NAME IN ('correta_texto','temas','global_id','publicada_globalmente','imagem_url','comando_final','resposta_aberta','estrutura_json','midia_json')
     `);
     const existentes = new Set(colsQ.map((c) => c.COLUMN_NAME));
     const addCols = [];
@@ -1098,9 +1098,22 @@ async function bootstrap() {
     if (!existentes.has("imagem_url"))
       addCols.push(`ADD COLUMN imagem_url VARCHAR(500) DEFAULT NULL
         COMMENT 'URL pública da imagem da questão no DO Spaces'`);
+    if (!existentes.has("comando_final"))
+      addCols.push(`ADD COLUMN comando_final TEXT DEFAULT NULL
+        COMMENT 'Comando pós-figura (ex: Considerando a figura acima, assinale...)'`);
+    if (!existentes.has("resposta_aberta"))
+      addCols.push(`ADD COLUMN resposta_aberta TEXT DEFAULT NULL
+        COMMENT 'Espelho de correção / gabarito esperado em questões abertas'`);
+    if (!existentes.has("estrutura_json"))
+      addCols.push(`ADD COLUMN estrutura_json JSON DEFAULT NULL
+        COMMENT 'Estrutura tipada dos 7 modelos universais de questão'`);
+    if (!existentes.has("midia_json"))
+      addCols.push(`ADD COLUMN midia_json JSON DEFAULT NULL
+        COMMENT 'Metadados independentes de imagem (preset, posição, bbox, scanner_clean, legenda)'`);
     if (addCols.length > 0)
       await pool.query(`ALTER TABLE questoes ${addCols.join(", ")}`);
-    console.log("[MIGRATION] Colunas do banco global e imagem_url em questoes garantidas ✅");
+    await pool.query(`UPDATE questoes SET numero_q = id WHERE numero_q IS NULL`);
+    console.log("[MIGRATION] Colunas EDUCA.STUDIO AI e banco global em questoes garantidas ✅");
   } catch (migErr) {
     console.warn("[MIGRATION] Erro ao alterar tabela questoes (não crítico):", migErr.message);
   }
@@ -1112,6 +1125,7 @@ async function bootstrap() {
         id                  INT          NOT NULL AUTO_INCREMENT,
         conteudo_bruto      TEXT         NOT NULL
           COMMENT 'Enunciado da questão',
+        comando_final       TEXT         DEFAULT NULL,
         latex_formatado     TEXT         DEFAULT NULL,
         tipo                VARCHAR(20)  NOT NULL DEFAULT 'objetiva',
         nivel               VARCHAR(20)  NOT NULL DEFAULT 'medio',
@@ -1119,6 +1133,8 @@ async function bootstrap() {
         disciplina          VARCHAR(100) DEFAULT NULL,
         habilidade_bncc     VARCHAR(100) DEFAULT NULL,
         imagem_url          VARCHAR(500) DEFAULT NULL,
+        midia_json          JSON         DEFAULT NULL,
+        estrutura_json      JSON         DEFAULT NULL,
         temas               JSON         DEFAULT NULL
           COMMENT 'Array de temas: ["Célula","DNA"]',
         alternativas_json   JSON         DEFAULT NULL
@@ -1127,6 +1143,7 @@ async function bootstrap() {
           COMMENT 'Letra da alternativa correta (Versão A)',
         correta_texto       TEXT         DEFAULT NULL
           COMMENT 'Texto da alternativa correta — invariante à permutação',
+        resposta_aberta     TEXT         DEFAULT NULL,
         texto_apoio         TEXT         DEFAULT NULL,
         fonte               VARCHAR(255) DEFAULT NULL,
         explicacao          TEXT         DEFAULT NULL,
@@ -1151,11 +1168,24 @@ async function bootstrap() {
         COMMENT='Banco Global EDUCA.MELHOR — questoes publicadas acessíveis por todas as escolas'
     `);
     const [colsGlobal] = await pool.query(`
-      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes_banco_global' AND COLUMN_NAME = 'imagem_url'
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'questoes_banco_global'
+        AND COLUMN_NAME IN ('imagem_url','comando_final','resposta_aberta','estrutura_json','midia_json')
     `);
-    if (colsGlobal.length === 0) {
-      await pool.query(`ALTER TABLE questoes_banco_global ADD COLUMN imagem_url VARCHAR(500) DEFAULT NULL AFTER habilidade_bncc`);
+    const existGlobal = new Set(colsGlobal.map((c) => c.COLUMN_NAME));
+    const addGlobal = [];
+    if (!existGlobal.has("imagem_url"))
+      addGlobal.push(`ADD COLUMN imagem_url VARCHAR(500) DEFAULT NULL AFTER habilidade_bncc`);
+    if (!existGlobal.has("comando_final"))
+      addGlobal.push(`ADD COLUMN comando_final TEXT DEFAULT NULL AFTER conteudo_bruto`);
+    if (!existGlobal.has("resposta_aberta"))
+      addGlobal.push(`ADD COLUMN resposta_aberta TEXT DEFAULT NULL AFTER correta_texto`);
+    if (!existGlobal.has("estrutura_json"))
+      addGlobal.push(`ADD COLUMN estrutura_json JSON DEFAULT NULL AFTER alternativas_json`);
+    if (!existGlobal.has("midia_json"))
+      addGlobal.push(`ADD COLUMN midia_json JSON DEFAULT NULL AFTER imagem_url`);
+    if (addGlobal.length > 0) {
+      await pool.query(`ALTER TABLE questoes_banco_global ${addGlobal.join(", ")}`);
     }
     console.log("[MIGRATION] Tabela questoes_banco_global garantida ✅");
   } catch (migErr) {

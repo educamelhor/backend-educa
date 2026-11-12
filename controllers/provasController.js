@@ -45,10 +45,13 @@ export async function obterProva(req, res) {
 
     const [itens] = await pool.query(
       `SELECT pq.id, pq.ordem, pq.valor_pontos,
-              q.id AS questao_id, q.conteudo_bruto, q.tipo, q.nivel,
-              q.disciplina, q.alternativas_json, q.correta, q.tags,
-              q.habilidade_bncc, q.imagem_url, q.imagem_base64,
-              q.texto_apoio, q.fonte
+              q.id AS questao_id,
+              CONCAT('EMQE-', LPAD(COALESCE(q.numero_q, q.id), 5, '0')) AS codigo,
+              q.conteudo_bruto, q.comando_final, q.tipo, q.nivel,
+              q.disciplina, q.alternativas_json, q.estrutura_json,
+              q.correta, q.resposta_aberta, q.tags,
+              q.habilidade_bncc, q.imagem_url, q.imagem_base64, q.midia_json,
+              q.texto_apoio, q.fonte, q.explicacao
        FROM prova_questoes pq
        JOIN questoes q ON q.id = pq.questao_id
        WHERE pq.prova_id = ?

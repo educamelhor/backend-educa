@@ -1,6 +1,5 @@
 // controllers/provaHtmlController.js
-// EDUCA.PROVA — Gerador de HTML/PDF via Playwright
-// Lê config_json da prova para aplicar cabeçalho dinâmico, rodapé e margens
+// EDUCA.PROVA — Gerador de HTML/PDF via Playwright (compatível com os 7 modelos universais e Smart Media)
 
 import pool from '../db.js';
 
@@ -18,25 +17,17 @@ function shuffleArray(arr) {
   return a;
 }
 
-// Converte LaTeX inline ($...$) e símbolos para HTML
-function ltx(text = '') {
-  if (!text) return '';
-  return text
-    .replace(/\$([^$]+)\$/g, '<span class="math">$1</span>')
-    .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
-    .replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>')
-    .replace(/\\text\{([^}]+)\}/g, '$1')
-    .replace(/&/g, '&amp;')
-    .replace(/>/g, '&gt;')
-    .replace(/</g, '&lt;')
-    .replace(/\n/g, '<br>');
-}
-
 function txt(text = '') {
-  return (text || '')
+  return String(text || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function parseJsonObj(raw, fallback = null) {
+  if (!raw) return fallback;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
 function parseAlts(raw) {
@@ -44,47 +35,256 @@ function parseAlts(raw) {
   try { return JSON.parse(raw || '[]'); } catch { return []; }
 }
 
-function renderAlternativas(altsJson, correta, template, showGabarito = false) {
+// Formata expressões LaTeX simples como fallback caso KaTeX não carregue e preserva delimitadores p/ KaTeX
+function ltx(text = '') {
+  if (!text) return '';
+  // Escapa HTML primeiro para nunca corromper spans gerados depois
+  let safe = txt(text);
+  safe = safe
+    .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
+    .replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>')
+    .replace(/\$\$([^$]+)\$\$/g, '<span class="math-block">$$$$$1$$$$</span>')
+    .replace(/\$([^$]+)\$/g, '<span class="math">$$$1$$</span>')
+    .replace(/\n/g, '<br>');
+  return safe;
+}
+
+function renderFigura(item) {
+  const midia = parseJsonObj(item.midia_json, null);
+  const imgSrc = midia?.url || item.imagem_url || item.imagem_base64;
+  if (!imgSrc) return { html: '', posicao: 'entre_enunciado_e_comando' };
+
+  const presetMap = { P: '36%', M: '56%', G: '84%', '100%': '100%' };
+  const widthCss = presetMap[midia?.preset] || '58%';
+  const align = ['left', 'center', 'right'].includes(midia?.alinhamento) ? midia.alinhamento : 'center';
+  const posicao = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(midia?.posicao)
+    ? midia.posicao
+    : 'entre_enunciado_e_comando';
+
+  const legendaTxt = [midia?.legenda, midia?.credito ? `Fonte: ${midia.credito}` : '']
+    .filter(Boolean)
+    .join(' — ');
+
+  const justifyMap = { left: 'flex-start', center: 'center', right: 'flex-end' };
+  const html = `
+    <figure class="questao-figura" style="display:flex;flex-direction:column;align-items:${justifyMap[align]};margin:6px 0;">
+      <img src="${txt(imgSrc)}" alt="Figura da questão" style="width:${widthCss};max-width:100%;height:auto;max-height:240px;object-fit:contain;" />
+      ${legendaTxt ? `<figcaption class="questao-legenda" style="width:${widthCss};text-align:${align};">${txt(legendaTxt)}</figcaption>` : ''}
+    </figure>`;
+
+  return { html, posicao };
+}
+
+function renderAlternativas(altsJson, correta, showGabarito = false) {
   const alts = parseAlts(altsJson);
   if (!alts.length) return '';
   return `<div class="alternativas">
     ${alts.map(a => {
       const isCorr = showGabarito && (a.correta || a.letra === correta);
+      const altImg = a.imagem_url
+        ? `<div class="alt-img-wrap"><img src="${txt(a.imagem_url)}" alt="Alternativa ${txt(a.letra)}" /></div>`
+        : '';
       return `<div class="alt${isCorr ? ' correta' : ''}">
-        <span class="alt-letra">(${a.letra || '?'})</span>
-        <span class="alt-texto">${ltx(a.texto)}</span>
+        <span class="alt-letra">(${txt(a.letra || '?')})</span>
+        <div class="alt-body">
+          ${a.texto ? `<span class="alt-texto">${ltx(a.texto)}</span>` : ''}
+          ${altImg}
+        </div>
         ${isCorr ? '<span class="corr-mark">✔</span>' : ''}
       </div>`;
     }).join('')}
   </div>`;
 }
 
-function renderLinhasResposta(n = 8) {
-  return `<div class="linhas-resposta">${Array.from({ length: n }, () =>
+function renderLinhasResposta(n = 6) {
+  const qtd = Math.max(1, Math.min(20, Number(n) || 6));
+  return `<div class="linhas-resposta">${Array.from({ length: qtd }, () =>
     '<div class="linha-resp"></div>'
   ).join('')}</div>`;
 }
 
+function renderCorpoModelo(item, template, showGabarito) {
+  const est = parseJsonObj(item.estrutura_json, {}) || {};
+  const tipo = item.tipo || est.modelo || (template === 'discursiva' ? 'discursiva' : 'objetiva');
+
+  if (tipo === 'afirmativas') {
+    const props = Array.isArray(est.proposicoes) ? est.proposicoes : [];
+    const propsHtml = props.length ? `
+      <div class="proposicoes-romanas">
+        ${props.map((p, i) => {
+          const rom = txt(p.romano || ['I', 'II', 'III', 'IV', 'V'][i] || String(i + 1));
+          return `<div class="prop-item"><strong>${rom}.</strong> <span>${ltx(p.texto || '')}</span></div>`;
+        }).join('')}
+      </div>` : '';
+    const cmdFech = est.comando_fechamento
+      ? `<div class="comando-final">${ltx(est.comando_fechamento)}</div>`
+      : '';
+    return `${propsHtml}${cmdFech}${renderAlternativas(item.alternativas_json, item.correta, showGabarito)}`;
+  }
+
+  if (tipo === 'verdadeiro_falso') {
+    const itensVf = Array.isArray(est.itens) ? est.itens : [];
+    const submodo = est.submodo || 'direto';
+    const itensHtml = itensVf.length ? `
+      <div class="vf-lista">
+        ${itensVf.map(it => {
+          const gab = showGabarito && submodo === 'direto' ? `<strong>${txt(it.gabarito || 'V')}</strong>` : '&nbsp;&nbsp;&nbsp;';
+          return `<div class="vf-item"><span class="vf-box">( ${gab} )</span> <span>${ltx(it.texto || '')}</span></div>`;
+        }).join('')}
+      </div>` : '';
+    const justHtml = submodo === 'direto' && est.exigir_justificativa_falsas
+      ? `<div class="vf-just-label">Justifique as afirmativas falsas:</div>${renderLinhasResposta(est.linhas_justificativa || 3)}`
+      : '';
+    const seqHtml = submodo === 'sequencia'
+      ? renderAlternativas(item.alternativas_json, item.correta, showGabarito)
+      : '';
+    return `${itensHtml}${justHtml}${seqHtml}`;
+  }
+
+  if (tipo === 'associacao') {
+    const colA = Array.isArray(est.coluna_a) ? est.coluna_a : [];
+    const colB = Array.isArray(est.coluna_b) ? est.coluna_b : [];
+    const submodo = est.submodo || 'direto';
+    const maxRows = Math.max(colA.length, colB.length);
+    let rowsHtml = '';
+    for (let i = 0; i < maxRows; i++) {
+      const a = colA[i];
+      const b = colB[i];
+      const gabB = showGabarito && submodo === 'direto' && b?.vinculo_codigo
+        ? `<strong>${txt(b.vinculo_codigo)}</strong>`
+        : '&nbsp;&nbsp;&nbsp;';
+      rowsHtml += `<tr>
+        <td>${a ? `<strong>(${txt(a.codigo || i + 1)})</strong> ${ltx(a.texto || '')}` : ''}</td>
+        <td>${b ? `<span class="vf-box">( ${gabB} )</span> ${ltx(b.texto || '')}` : ''}</td>
+      </tr>`;
+    }
+    const tabHtml = maxRows > 0 ? `
+      <table class="assoc-table">
+        <thead>
+          <tr>
+            <th>${txt(est.titulo_coluna_a || 'Coluna A')}</th>
+            <th>${txt(est.titulo_coluna_b || 'Coluna B')}</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>` : '';
+    const seqHtml = submodo === 'sequencia'
+      ? renderAlternativas(item.alternativas_json, item.correta, showGabarito)
+      : '';
+    return `${tabHtml}${seqHtml}`;
+  }
+
+  if (tipo === 'lacuna') {
+    const submodo = est.submodo || 'direto';
+    let bancoHtml = '';
+    if (submodo === 'banco_palavras') {
+      const palavras = [...(est.lacunas || []), ...(est.distratores_banco || [])].filter(Boolean);
+      const ordenadas = [...palavras].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      if (ordenadas.length > 0) {
+        bancoHtml = `<div class="banco-palavras"><strong>Banco de palavras:</strong> ${ordenadas.map(p => `<span class="palavra-chip">${txt(p)}</span>`).join(' · ')}</div>`;
+      }
+    }
+    const altsHtml = submodo === 'alternativas'
+      ? renderAlternativas(item.alternativas_json, item.correta, showGabarito)
+      : '';
+    return `${bancoHtml}${altsHtml}`;
+  }
+
+  if (tipo === 'somatoria') {
+    const props = Array.isArray(est.proposicoes) ? est.proposicoes : [];
+    const somaGab = showGabarito ? String(est.soma_correta ?? item.correta ?? '').padStart(2, '0') : '&nbsp;&nbsp;&nbsp;&nbsp;';
+    return `
+      <div class="somatoria-lista">
+        ${props.map(p => {
+          const cod = txt(p.codigo || String(p.valor || '').padStart(2, '0'));
+          const mark = showGabarito && p.correta ? ' <span class="corr-mark">✔</span>' : '';
+          return `<div class="somatoria-item"><strong>(${cod})</strong> <span>${ltx(p.texto || '')}${mark}</span></div>`;
+        }).join('')}
+      </div>
+      <div class="somatoria-box-wrap">
+        <span class="somatoria-label">SOMA:</span>
+        <span class="somatoria-box">${somaGab}</span>
+      </div>`;
+  }
+
+  if (tipo === 'discursiva' || template === 'discursiva') {
+    const formato = est.formato_espaco || 'linhas';
+    const espacoHtml = formato === 'quadro_calculo'
+      ? `<div class="quadro-calculo" style="height:${Math.max(80, Math.min(280, Number(est.altura_quadro_px) || 130))}px;"></div>`
+      : formato === 'nenhum'
+        ? ''
+        : renderLinhasResposta(est.linhas_resposta || 6);
+    const espelhoHtml = showGabarito && item.resposta_aberta
+      ? `<div class="espelho-correcao"><strong>Espelho de Correção:</strong> ${ltx(item.resposta_aberta)}</div>`
+      : '';
+    return `${espacoHtml}${espelhoHtml}`;
+  }
+
+  // Padrão: objetiva
+  return renderAlternativas(item.alternativas_json, item.correta, showGabarito);
+}
+
+function formatarEnunciadoPrincipal(item, showGabarito) {
+  const raw = item.conteudo_bruto || '';
+  if ((item.tipo || '') === 'lacuna') {
+    const htmlBase = ltx(raw);
+    return htmlBase.replace(/\{\{([^}]+)\}\}/g, (_, resp) => {
+      if (showGabarito) {
+        return `<span class="lacuna-gab">${txt(resp)}</span>`;
+      }
+      const len = Math.max(8, Math.min(24, String(resp).length + 4));
+      return `<span class="lacuna-blank">${'_'.repeat(len)}</span>`;
+    });
+  }
+  return ltx(raw);
+}
+
+function resumirGabaritoProva(item) {
+  const est = parseJsonObj(item.estrutura_json, {}) || {};
+  const tipo = item.tipo || est.modelo || 'objetiva';
+  const alts = parseAlts(item.alternativas_json);
+  const altCorreta = alts.find(a => a.correta)?.letra || item.correta;
+
+  if (tipo === 'verdadeiro_falso' && (est.submodo || 'direto') === 'direto') {
+    const seq = (est.itens || []).map(i => i.gabarito || 'V').join(' - ');
+    return seq || altCorreta || '—';
+  }
+  if (tipo === 'associacao' && (est.submodo || 'direto') === 'direto') {
+    const seq = (est.coluna_b || []).map(b => b.vinculo_codigo || '—').join(' - ');
+    return seq || altCorreta || '—';
+  }
+  if (tipo === 'lacuna' && (est.submodo || 'direto') !== 'alternativas') {
+    const matches = [...String(item.conteudo_bruto || '').matchAll(/\{\{([^}]+)\}\}/g)].map(m => m[1].trim());
+    const lacs = matches.length ? matches : (est.lacunas || []);
+    return lacs.length ? lacs.join(' / ') : '—';
+  }
+  if (tipo === 'somatoria') {
+    const s = est.soma_correta ?? item.correta;
+    return s !== undefined && s !== null && s !== '' ? String(s).padStart(2, '0') : '—';
+  }
+  if (tipo === 'discursiva') {
+    return item.resposta_aberta ? 'Discursiva (ver espelho)' : 'Discursiva';
+  }
+  return altCorreta || '—';
+}
+
 function renderQuestao(item, idx, template, showGabarito) {
   const num = String(idx + 1).padStart(2, '0');
-  const enunciado = ltx(item.conteudo_bruto);
-  const isDisc = template === 'discursiva' || (template === 'mista' && item.tipo === 'discursiva');
+  const enunciado = formatarEnunciadoPrincipal(item, showGabarito);
+  const comandoFinal = item.comando_final ? `<div class="comando-final">${ltx(item.comando_final)}</div>` : '';
   const pontos = item.valor_pontos || 1;
-  const bncc = item.habilidade_bncc ? `<span class="bncc-tag">${item.habilidade_bncc}</span>` : '';
+  const bncc = item.habilidade_bncc ? `<span class="bncc-tag">${txt(item.habilidade_bncc)}</span>` : '';
 
-  const imgSrc = item.imagem_url || item.imagem_base64;
-  const imagem = imgSrc
-    ? `<div class="questao-img"><img src="${imgSrc}" alt="Figura" /></div>`
-    : '';
+  const { html: figuraHtml, posicao } = renderFigura(item);
 
   const textoApoio = item.texto_apoio
     ? `<blockquote class="texto-apoio">${ltx(item.texto_apoio)}${item.fonte ? `<footer>— ${txt(item.fonte)}</footer>` : ''}</blockquote>`
     : '';
 
   return `
-  <div class="questao" data-nivel="${item.nivel || 'medio'}">
+  <div class="questao" data-nivel="${txt(item.nivel || 'medio')}">
     <div class="questao-header">
-      <span class="questao-num">QUESTÃO ${num}</span>
+      <span class="questao-num">QUESTÃO ${num}${item.fonte && !item.texto_apoio ? ` <span class="fonte-inline">(${txt(item.fonte)})</span>` : ''}</span>
       <span class="questao-meta">
         ${item.disciplina ? `<span class="disc-tag">${txt(item.disciplina)}</span>` : ''}
         ${bncc}
@@ -92,12 +292,12 @@ function renderQuestao(item, idx, template, showGabarito) {
       </span>
     </div>
     ${textoApoio}
+    ${posicao === 'apos_texto_apoio' ? figuraHtml : ''}
     <div class="questao-enunciado">${enunciado || '(sem enunciado)'}</div>
-    ${imagem}
-    ${isDisc
-      ? renderLinhasResposta(6)
-      : renderAlternativas(item.alternativas_json, item.correta, template, showGabarito)
-    }
+    ${posicao === 'entre_enunciado_e_comando' ? figuraHtml : ''}
+    ${comandoFinal}
+    ${posicao === 'abaixo_comando' ? figuraHtml : ''}
+    ${renderCorpoModelo(item, template, showGabarito)}
   </div>`;
 }
 
@@ -105,10 +305,10 @@ function renderQuestao(item, idx, template, showGabarito) {
 function buildCSS(template, margem = '10mm 12mm 14mm') {
   const is2col = template === 'objetiva_2col' || template === 'enem';
   return `
-    @import url('https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Source+Serif+4:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap');
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Source Serif 4', 'Times New Roman', serif; font-size: 11pt; line-height: 1.55; color: #000; background: #fff; }
+    body { font-family: 'Source Serif 4', 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.52; color: #000; background: #fff; }
 
     .pagina { width: 210mm; min-height: 297mm; margin: 0 auto; padding: ${margem}; background: #fff; position: relative; border: 1.5pt solid #000; }
 
@@ -129,42 +329,66 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     .instrucoes ol { margin-left: 18px; margin-top: 3px; }
     .instrucoes li { margin-bottom: 1px; }
 
-    .questoes-grid { ${is2col ? 'column-count: 2; column-gap: 10mm; column-rule: 0.8pt solid #555;' : ''} }
+    .questoes-grid { ${is2col ? 'column-count: 2; column-gap: 9mm; column-rule: 0.8pt solid #555;' : ''} }
 
     .questao { break-inside: avoid; margin-bottom: 11px; padding-bottom: 8px; border-bottom: 0.5px dashed #ccc; }
     .questao:last-child { border-bottom: none; }
-    .questao-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+    .questao-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; gap: 6px; }
     .questao-num { font-weight: 700; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.02em; }
-    .questao-meta { display: flex; gap: 5px; align-items: center; }
+    .fonte-inline { font-weight: 600; font-size: 8.5pt; text-transform: none; color: #333; }
+    .questao-meta { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
     .disc-tag, .bncc-tag, .pts-tag { font-size: 7pt; padding: 1px 5px; border: 0.7pt solid; border-radius: 3px; font-family: sans-serif; }
     .disc-tag { color: #1d4ed8; border-color: #1d4ed8; }
     .bncc-tag { color: #7c3aed; border-color: #7c3aed; }
-    .pts-tag  { color: #666; border-color: #999; }
-    .questao-enunciado { font-size: 10.5pt; line-height: 1.6; margin-bottom: 4px; text-align: justify; }
-    .texto-apoio { background: #f9f9f9; border-left: 3px solid #555; padding: 5px 8px; margin-bottom: 5px; font-size: 9.5pt; font-style: italic; color: #222; }
-    .texto-apoio footer { font-size: 8pt; font-style: normal; margin-top: 3px; color: #555; }
-    .questao-img img { max-width: 100%; max-height: 120px; display: block; margin: 4px auto; border: 0.5pt solid #ccc; }
+    .pts-tag  { color: #555; border-color: #999; }
 
-    .alternativas { margin-top: 3px; }
-    .alt { display: flex; gap: 5px; padding: 2px 0; font-size: 10pt; align-items: flex-start; }
-    .alt-letra { font-weight: 700; flex-shrink: 0; min-width: 20px; }
-    .alt-texto { flex: 1; }
+    .questao-enunciado { font-size: 10pt; line-height: 1.55; margin-bottom: 4px; text-align: justify; }
+    .comando-final { font-size: 10pt; line-height: 1.5; margin: 4px 0 5px; font-weight: 600; text-align: justify; }
+    .texto-apoio { background: #f9f9f9; border-left: 3px solid #555; padding: 5px 8px; margin-bottom: 5px; font-size: 9pt; font-style: italic; color: #222; }
+    .texto-apoio footer { font-size: 8pt; font-style: normal; margin-top: 3px; color: #555; }
+    .questao-legenda { font-size: 7.5pt; color: #444; margin-top: 2px; font-style: italic; }
+
+    .alternativas { margin-top: 4px; }
+    .alt { display: flex; gap: 5px; padding: 2px 0; font-size: 9.8pt; align-items: flex-start; }
+    .alt-letra { font-weight: 700; flex-shrink: 0; min-width: 22px; }
+    .alt-body { flex: 1; }
+    .alt-img-wrap img { max-width: 140px; max-height: 95px; margin-top: 3px; border: 0.5pt solid #ddd; display: block; }
     .alt.correta { background: #f0fdf4; }
     .alt.correta .alt-letra { color: #166534; }
-    .corr-mark { color: #166534; font-size: 9pt; flex-shrink: 0; }
+    .corr-mark { color: #166534; font-size: 9pt; flex-shrink: 0; font-weight: 700; }
+
+    .proposicoes-romanas { margin: 4px 0 5px 6px; font-size: 9.6pt; }
+    .prop-item { margin-bottom: 2px; text-align: justify; }
+
+    .vf-lista, .somatoria-lista { margin: 4px 0; font-size: 9.6pt; }
+    .vf-item, .somatoria-item { display: flex; gap: 6px; margin-bottom: 3px; align-items: baseline; text-align: justify; }
+    .vf-box { font-family: monospace; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+    .vf-just-label { font-size: 8.5pt; font-weight: 700; margin-top: 4px; }
+
+    .assoc-table { width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 9pt; }
+    .assoc-table th, .assoc-table td { border: 0.6pt solid #666; padding: 3px 6px; vertical-align: top; text-align: left; width: 50%; }
+    .assoc-table th { background: #f3f4f6; font-size: 8.5pt; text-transform: uppercase; }
+
+    .lacuna-blank { font-weight: 700; letter-spacing: 0.03em; }
+    .lacuna-gab { font-weight: 700; color: #166534; text-decoration: underline; padding: 0 3px; }
+    .banco-palavras { border: 0.8pt dashed #444; padding: 4px 8px; margin: 4px 0; font-size: 9pt; background: #fafafa; border-radius: 3px; }
+    .palavra-chip { font-weight: 600; }
+
+    .somatoria-box-wrap { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+    .somatoria-label { font-size: 8.5pt; font-weight: 700; }
+    .somatoria-box { border: 1.2pt solid #000; padding: 2px 10px; font-weight: 700; min-width: 38px; text-align: center; font-size: 10pt; }
 
     .linhas-resposta { margin-top: 4px; }
-    .linha-resp { height: 16px; border-bottom: 0.6pt dotted #999; margin-bottom: 3px; width: 100%; }
+    .linha-resp { height: 16px; border-bottom: 0.6pt dotted #888; margin-bottom: 3px; width: 100%; }
+    .quadro-calculo { width: 100%; border: 0.8pt solid #555; border-radius: 3px; margin-top: 5px; background: #fff; }
+    .espelho-correcao { margin-top: 5px; padding: 4px 8px; background: #f0fdf4; border-left: 2.5pt solid #166534; font-size: 8.5pt; color: #14532d; }
 
-    .math { font-family: 'IM Fell English', serif; font-style: italic; letter-spacing: 0.01em; }
-
-    .gabarito-tabela { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-top: 8px; }
+    .gabarito-tabela { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 8px; }
     .gabarito-tabela th { background: #333; color: #fff; padding: 4px 6px; text-align: center; font-size: 8.5pt; letter-spacing: 0.04em; text-transform: uppercase; }
-    .gabarito-tabela td { padding: 3px 6px; border: 0.5pt solid #ccc; text-align: center; font-size: 9pt; }
+    .gabarito-tabela td { padding: 3px 6px; border: 0.5pt solid #ccc; text-align: center; font-size: 8.8pt; }
     .gabarito-tabela tr:nth-child(even) td { background: #f5f5f5; }
     .gabarito-tabela .resp-ok { color: #166534; font-weight: 700; }
 
-    /* ── ROD APÉ — 1cm fixo no rodapé de cada página ── */
     .rodape {
       position: fixed;
       bottom: 0;
@@ -181,14 +405,8 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
       background: #fff;
       overflow: hidden;
     }
-    .rodape-esq {
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      max-width: 48%;
-    }
-    .rodape-dir {
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      max-width: 48%; font-weight: 700; text-align: right;
-    }
+    .rodape-esq { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48%; }
+    .rodape-dir { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48%; font-weight: 700; text-align: right; }
 
     @media print {
       @page { size: A4; margin: ${margem}; }
@@ -205,7 +423,6 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
 export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = false) {
   const template = prova.template_slug || 'objetiva_2col';
 
-  // Extrai config_json (pode vir como string ou objeto do MySQL)
   let cfg = {};
   try {
     const raw = prova.config_json;
@@ -214,19 +431,18 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
 
   const embaralharAlt   = cfg.embaralhar_alternativas ?? prova.embaralhar_alternativas ?? 0;
   const embaralharQuest = cfg.embaralhar_questoes ?? 0;
-  const comCabecalho   = cfg.com_cabecalho ?? true;
-  const comMargem      = cfg.com_margem    ?? true;
-  const cabItens       = cfg.cabecalho_itens ?? {};
-  const sh             = (k) => cabItens[k] ?? true;
-  const rodapeTxt      = cfg.rodape_texto  ?? '';
-  const mostrarInstr   = (cabItens.cab_instrucoes ?? true) && comCabecalho;
+  const comCabecalho    = cfg.com_cabecalho ?? true;
+  const comMargem       = cfg.com_margem    ?? true;
+  const cabItens        = cfg.cabecalho_itens ?? {};
+  const sh              = (k) => cabItens[k] ?? true;
+  const rodapeTxt       = cfg.rodape_texto  ?? '';
+  const mostrarInstr    = (cabItens.cab_instrucoes ?? true) && comCabecalho;
 
   const margem = comMargem ? '10mm 12mm 14mm' : '4mm';
 
-  // Embaralha alternativas
   let itensRender = embaralharAlt ? itens.map(it => {
     const alts = parseAlts(it.alternativas_json);
-    if (alts.length > 1) {
+    if (alts.length > 1 && (it.tipo || 'objetiva') === 'objetiva') {
       const shuffled = shuffleArray(alts).map((a, i) => ({
         ...a, letra: String.fromCharCode(65 + i),
       }));
@@ -235,7 +451,6 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
     return it;
   }) : itens;
 
-  // Embaralha questões
   if (embaralharQuest) itensRender = shuffleArray(itensRender);
 
   const isEnem    = template === 'enem';
@@ -248,7 +463,6 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
   const totalPts  = itensRender.reduce((s, it) => s + Number(it.valor_pontos || 1), 0).toFixed(1);
   const qtd       = itensRender.length;
 
-  // ── Cabeçalho dinâmico ──────────────────────────────────────────────────────
   let cabecalhoHtml = '';
   if (comCabecalho) {
     const topoHtml = (sh('cab_logo') || sh('cab_escola')) ? `
@@ -272,7 +486,6 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
     cabecalhoHtml = `<div class="cabecalho">${topoHtml}${tituloHtml}${gradeHtml}</div>`;
   }
 
-  // ── Instruções ──────────────────────────────────────────────────────────────
   const instrHtml = mostrarInstr ? `
   <div class="instrucoes">
     <strong>INSTRUÇÕES:</strong>
@@ -280,16 +493,15 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
       <li>Esta avaliação contém <strong>${qtd} questão(ões)</strong> no total de <strong>${totalPts} ponto(s)</strong>.</li>
       ${isEnem ? '<li>Utilize caneta azul ou preta para marcar as alternativas no gabarito.</li>' : ''}
       <li>Leia cada questão com atenção antes de responder.</li>
-      <li>${template === 'discursiva' || template === 'mista' ? 'Responda nas linhas abaixo de cada questão com letra legível.' : 'Marque apenas uma alternativa por questão.'}</li>
+      <li>${template === 'discursiva' || template === 'mista' ? 'Responda com letra legível nos espaços indicados.' : 'Assinale apenas uma alternativa correta quando aplicável.'}</li>
     </ol>
   </div>` : '';
 
-  // ── Questões ────────────────────────────────────────────────────────────────
   const questoesHtml = itensRender
     .map((item, idx) => renderQuestao(item, idx, template, showGabarito))
     .join('');
 
-  // ── Gabarito ────────────────────────────────────────────────────────────────
+  const temBncc = itensRender.some(it => Boolean(it.habilidade_bncc));
   const gabaritoHtml = showGabarito ? `
   <div style="page-break-before: always; margin-top: 20px;">
     <div class="cabecalho">
@@ -297,24 +509,37 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
     </div>
     <table class="gabarito-tabela">
       <thead><tr>
-        <th>Nº</th><th>Resp.</th><th>Pts</th><th>Disciplina</th><th>Nível</th>
-        ${itensRender[0]?.habilidade_bncc ? '<th>BNCC</th>' : ''}
+        <th>Nº</th><th>Código</th><th>Modelo</th><th>Resposta / Gabarito</th><th>Pts</th><th>Disciplina</th>
+        ${temBncc ? '<th>BNCC</th>' : ''}
       </tr></thead>
       <tbody>
         ${itensRender.map((it, idx) => {
-          let corr = it.correta || '—';
-          try { const alts = parseAlts(it.alternativas_json); const c = alts.find(a => a.correta); if (c) corr = c.letra; } catch {}
-          const nivel = { facil: 'Fácil', medio: 'Médio', dificil: 'Difícil', enem: 'ENEM' }[it.nivel] || it.nivel || '—';
-          return `<tr><td>${String(idx+1).padStart(2,'0')}</td><td class="resp-ok">${corr}</td><td>${Number(it.valor_pontos||1).toFixed(1)}</td><td>${txt(it.disciplina||'—')}</td><td>${nivel}</td>${it.habilidade_bncc?`<td>${txt(it.habilidade_bncc)}</td>`:(itensRender[0]?.habilidade_bncc?'<td>—</td>':'')}</tr>`;
+          const corr = txt(resumirGabaritoProva(it));
+          const cod = txt(it.codigo || `Q-${it.questao_id || idx + 1}`);
+          const modLabel = {
+            objetiva: 'Múlt. Escolha', afirmativas: 'Afirmativas', verdadeiro_falso: 'V / F',
+            associacao: 'Colunas', lacuna: 'Lacunas', discursiva: 'Discursiva', somatoria: 'Somatória',
+          }[it.tipo] || txt(it.tipo || 'Objetiva');
+          return `<tr>
+            <td>${String(idx + 1).padStart(2, '0')}</td>
+            <td>${cod}</td>
+            <td>${modLabel}</td>
+            <td class="resp-ok">${corr}</td>
+            <td>${Number(it.valor_pontos || 1).toFixed(1)}</td>
+            <td>${txt(it.disciplina || '—')}</td>
+            ${temBncc ? `<td>${txt(it.habilidade_bncc || '—')}</td>` : ''}
+          </tr>`;
         }).join('')}
-        <tr style="border-top:2px solid #333;font-weight:700"><td colspan="2" style="text-align:right">TOTAL</td><td>${itensRender.reduce((s,it)=>s+Number(it.valor_pontos||1),0).toFixed(1)}</td><td colspan="${itensRender[0]?.habilidade_bncc?3:2}"></td></tr>
+        <tr style="border-top:2px solid #333;font-weight:700">
+          <td colspan="4" style="text-align:right">TOTAL</td>
+          <td>${totalPts}</td>
+          <td colspan="${temBncc ? 2 : 1}"></td>
+        </tr>
       </tbody>
     </table>
   </div>` : '';
 
-  // ── Rodapé ───────────────────────────────────────────────────────────────────
   const rodapeStr = rodapeTxt ? `EDUCA.PROVA · ${txt(rodapeTxt)}` : 'EDUCA.PROVA';
-  // Lado esquerdo simplificado para caber em 1 linha (sem disciplina)
   const rodapeEsq = [escolaTxt, bimestre || anoLetivo].filter(Boolean).join(' — ');
   const rodapeHtml = `
   <div class="rodape">
@@ -328,6 +553,7 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${titulo}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <style>${buildCSS(template, margem)}</style>
 </head>
 <body>
@@ -340,6 +566,19 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
     ${gabaritoHtml}
     ${rodapeHtml}
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script>
+    if (window.renderMathInElement) {
+      window.renderMathInElement(document.body, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false }
+        ],
+        throwOnError: false
+      });
+    }
+  </script>
 </body>
 </html>`;
 }
@@ -354,9 +593,13 @@ async function fetchProvaCompleta(id, escola_id) {
 
   const [itens] = await pool.query(
     `SELECT pq.id AS item_id, pq.ordem, pq.valor_pontos,
-            q.id AS questao_id, q.conteudo_bruto, q.tipo, q.nivel,
-            q.disciplina, q.alternativas_json, q.correta, q.tags,
-            q.habilidade_bncc, q.imagem_url, q.imagem_base64, q.texto_apoio, q.fonte
+            q.id AS questao_id,
+            CONCAT('EMQE-', LPAD(COALESCE(q.numero_q, q.id), 5, '0')) AS codigo,
+            q.conteudo_bruto, q.comando_final, q.tipo, q.nivel,
+            q.disciplina, q.alternativas_json, q.estrutura_json,
+            q.correta, q.resposta_aberta, q.tags,
+            q.habilidade_bncc, q.imagem_url, q.imagem_base64, q.midia_json,
+            q.texto_apoio, q.fonte
      FROM prova_questoes pq
      JOIN questoes q ON q.id = pq.questao_id
      WHERE pq.prova_id = ?
@@ -397,10 +640,8 @@ export async function gerarPdf(req, res) {
     if (!data) return res.status(404).json({ message: 'Prova não encontrada.' });
 
     const escolaNome = req.query.escola || 'EDUCA.MELHOR';
-    // config_json já inclui embaralhar_alternativas, embaralhar_questoes, com_cabecalho, etc.
     const html = buildProvaHTML(data.prova, data.itens, escolaNome, showGab);
 
-    // Extrai margem do config_json para o Playwright
     let cfg = {};
     try { const raw = data.prova.config_json; cfg = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch {}
     const comMargem = cfg.com_margem ?? true;
