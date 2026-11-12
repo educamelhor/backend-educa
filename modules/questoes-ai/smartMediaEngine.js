@@ -1,10 +1,10 @@
 // modules/questoes-ai/smartMediaEngine.js
-// EDUCA.STUDIO AI — Smart Media Engine (v2 — Multi-Column & Multi-Figure)
+// EDUCA.STUDIO AI — Smart Media Engine (v2.1 — Optical Margin Rescue & 1D Seam Alignment)
 // Dá status independente às imagens de questões:
 // - Auto-crop espacial único ou múltiplo (questões em 2 colunas / múltiplas figuras)
-// - Gutter Clamp (trava na calha entre colunas p/ nunca invadir texto vizinho)
-// - Limpeza inteligente de resíduos de borda (letras/hífens cortados nas margens)
-// - Reconstrução de figuras partidas em quebras de coluna (stitch vertical)
+// - Smart Margin Rescue (resgata rótulos periféricos como R2, transmembrana e fórmulas no rodapé sem capturar texto)
+// - Gutter Clamp + Despeckle (trava na calha entre colunas e remove resíduos vizinhos)
+// - Costura de Quebra de Coluna com Alinhamento Óptico 1D por correlação de traços verticais
 // - Composição Editorial HD (Lado a Lado ou Empilhadas) + Scanner Clean + Escala/DPI
 
 import crypto from 'crypto';
@@ -17,10 +17,6 @@ function clamp(val, min, max) {
 
 /**
  * Classifica o preset ideal de largura da figura na questão com base na geometria real.
- * - 'P'    (36% largura): moléculas compactas, ícones geométricos, figuras verticais estreitas
- * - 'M'    (56% largura): gráficos cartesianos, mapas médios, circuitos, charges padrão
- * - 'G'    (84% largura): painéis compostos lado a lado (2 colunas), diagramas largos, 2–3 quadros
- * - '100%' (largura total): tirinhas panorâmicas extensas (4+ quadros em alta largura)
  */
 export function calcularPresetGeometria(width, height) {
   if (!width || !height) return 'M';
@@ -61,9 +57,251 @@ export async function baixarImagemSegura(sourceUrl) {
 }
 
 /**
+ * Expande de forma elástica e segura as bordas do bbox sobre o buffer RGB original para resgatar
+ * rótulos periféricos cortados pelo LLM (ex: "R2" abaixo da proteína, 2ª linha "transmembrana",
+ * fórmulas coladas no limite y=1000 da coluna), parando imediatamente ao encontrar corredor branco
+ * largo ou linhas de parágrafo de texto do enunciado/alternativas.
+ */
+function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
+  const {
+    coluna = 'unica',
+    divX = 0,
+    minTopNorm = 0,
+    maxBottomNorm = 1000,
+    stitchTop = false,
+    stitchBottom = false,
+  } = opts;
+
+  const [rawYmin, rawXmin, rawYmax, rawXmax] = rawBox.map(Number);
+  const hasValidGutter = Number.isFinite(divX) && divX >= 280 && divX <= 720;
+
+  // Limites rígidos horizontais da coluna
+  const colMinX = hasValidGutter && (coluna === 'direita' || rawXmin >= divX - 10)
+    ? clamp(Math.round((divX / 1000) * origW), 0, origW - 20)
+    : 0;
+  const colMaxX = hasValidGutter && (coluna === 'esquerda' || rawXmax <= divX + 10)
+    ? clamp(Math.round((divX / 1000) * origW), colMinX + 20, origW)
+    : origW;
+  const colW = Math.max(30, colMaxX - colMinX);
+
+  let topPx = clamp(Math.round((rawYmin / 1000) * origH), 0, origH - 12);
+  let bottomPx = clamp(Math.round((rawYmax / 1000) * origH), topPx + 12, origH);
+  let leftPx = clamp(Math.round((rawXmin / 1000) * origW), colMinX, colMaxX - 12);
+  let rightPx = clamp(Math.round((rawXmax / 1000) * origW), leftPx + 12, colMaxX);
+
+  const isInk = (x, y) => {
+    const idx = (y * origW + x) * 3;
+    return fullRgb[idx] < 228 || fullRgb[idx + 1] < 228 || fullRgb[idx + 2] < 228;
+  };
+
+  // Caso especial: figura partida na quebra de coluna (rodapé esq -> topo dir)
+  if (stitchBottom && rawYmax >= 870) {
+    bottomPx = origH;
+  }
+  if (stitchTop && rawYmin <= 95) {
+    topPx = 0;
+  }
+
+  // 1) Resgate horizontal (rótulos laterais como "transmembrana" ou "glicocálice" dentro da mesma coluna)
+  const maxGapX = Math.max(10, Math.round(colW * 0.026));
+  const limitLeft = Math.max(colMinX, leftPx - Math.round(colW * 0.14));
+  let rescuedLeft = leftPx;
+  let gapL = 0;
+  for (let x = leftPx - 1; x >= limitLeft; x--) {
+    let ink = 0;
+    for (let y = topPx; y < bottomPx; y++) {
+      if (isInk(x, y)) { ink++; if (ink >= 2) break; }
+    }
+    if (ink >= 2) {
+      rescuedLeft = x;
+      gapL = 0;
+    } else {
+      gapL++;
+      if (gapL > maxGapX) break;
+    }
+  }
+  leftPx = Math.max(colMinX, rescuedLeft - 6);
+
+  const limitRight = Math.min(colMaxX, rightPx + Math.round(colW * 0.16));
+  let rescuedRight = rightPx;
+  let gapR = 0;
+  for (let x = rightPx; x < limitRight; x++) {
+    let ink = 0;
+    for (let y = topPx; y < bottomPx; y++) {
+      if (isInk(x, y)) { ink++; if (ink >= 2) break; }
+    }
+    if (ink >= 2) {
+      rescuedRight = x + 1;
+      gapR = 0;
+    } else {
+      gapR++;
+      if (gapR > maxGapX) break;
+    }
+  }
+  rightPx = Math.min(colMaxX, rescuedRight + 6);
+
+  // Helper para agrupar linhas horizontais de tinta em bandas (tolerando 1..4px de espaço intra-palavra/acento)
+  const scanVerticalBands = (yFrom, yTo, step) => {
+    const rows = [];
+    for (let y = yFrom; step > 0 ? y < yTo : y >= yTo; y += step) {
+      let ink = 0;
+      let minX = colMaxX;
+      let maxX = colMinX;
+      for (let x = colMinX; x < colMaxX; x++) {
+        if (isInk(x, y)) {
+          ink++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+      rows.push({ y, hasInk: ink >= 2, minX, maxX });
+    }
+
+    const bands = [];
+    let cur = null;
+    let smallEmpty = 0;
+    for (const r of rows) {
+      if (r.hasInk) {
+        if (!cur) {
+          cur = { startY: r.y, endY: r.y, minX: r.minX, maxX: r.maxX };
+        } else {
+          cur.endY = r.y;
+          if (r.minX < cur.minX) cur.minX = r.minX;
+          if (r.maxX > cur.maxX) cur.maxX = r.maxX;
+        }
+        smallEmpty = 0;
+      } else if (cur) {
+        smallEmpty++;
+        if (smallEmpty >= 4) {
+          bands.push(cur);
+          cur = null;
+          smallEmpty = 0;
+        }
+      }
+    }
+    if (cur) bands.push(cur);
+    return bands;
+  };
+
+  // 2) Resgate inferior (ex: "R2" e "transmembrana" abaixo do limite inicial ymax)
+  if (!(stitchBottom && rawYmax >= 870)) {
+    const hardBottomPx = clamp(Math.round((maxBottomNorm / 1000) * origH), bottomPx, origH);
+    const limitBottom = Math.min(hardBottomPx, bottomPx + Math.round(origH * 0.12));
+    if (limitBottom > bottomPx + 2) {
+      const downBands = scanVerticalBands(bottomPx, limitBottom, 1);
+      let curBottom = bottomPx;
+      const connectedGapMax = Math.max(8, Math.round(origH * 0.014));
+      const labelGapMax = Math.max(15, Math.round(origH * 0.024));
+
+      for (const b of downBands) {
+        const gap = b.startY - curBottom;
+        const span = b.maxX - b.minX;
+        const startsAtLeftMargin = (b.minX - colMinX) < colW * 0.13;
+        const looksLikeBodyParagraph = startsAtLeftMargin && (span > colW * 0.46 || gap >= connectedGapMax);
+
+        if (looksLikeBodyParagraph) break;
+
+        if (gap <= connectedGapMax && span < colW * 0.78) {
+          curBottom = b.endY + 1;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+        } else if (gap <= labelGapMax && span < colW * 0.42 && !startsAtLeftMargin) {
+          curBottom = b.endY + 1;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+        } else {
+          break;
+        }
+      }
+      bottomPx = Math.min(hardBottomPx, curBottom + (stitchBottom ? 1 : 6));
+    }
+  }
+
+  // 3) Resgate superior (ex: seta ou "R1" ou "H  O" levemente acima de ymin)
+  if (!(stitchTop && rawYmin <= 95)) {
+    const hardTopPx = clamp(Math.round((minTopNorm / 1000) * origH), 0, topPx);
+    const limitTop = Math.max(hardTopPx, topPx - Math.round(origH * 0.08));
+    if (topPx - limitTop > 2) {
+      const upBands = scanVerticalBands(topPx - 1, limitTop, -1);
+      let curTop = topPx;
+      const connectedGapMax = Math.max(8, Math.round(origH * 0.014));
+      const labelGapMax = Math.max(14, Math.round(origH * 0.022));
+
+      for (const b of upBands) {
+        // No sentido reverso (step = -1), b.startY >= b.endY
+        const gap = curTop - 1 - b.startY;
+        const span = b.maxX - b.minX;
+        const startsAtLeftMargin = (b.minX - colMinX) < colW * 0.13;
+        const looksLikeBodyParagraph = startsAtLeftMargin && (span > colW * 0.46 || gap >= connectedGapMax);
+
+        if (looksLikeBodyParagraph) break;
+
+        if (gap <= connectedGapMax && span < colW * 0.78) {
+          curTop = b.endY;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+        } else if (gap <= labelGapMax && span < colW * 0.42 && !startsAtLeftMargin) {
+          curTop = b.endY;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+        } else {
+          break;
+        }
+      }
+      topPx = Math.max(hardTopPx, curTop - (stitchTop ? 1 : 6));
+    }
+  }
+
+  // Encontra o primeiro pixel real de tinta dentro da área resgatada (âncora p/ alinhamento entre colunas)
+  let firstInkOrigX = leftPx;
+  outerInk: for (let x = leftPx; x < rightPx; x++) {
+    let cnt = 0;
+    for (let y = topPx; y < bottomPx; y++) {
+      if (isInk(x, y)) {
+        cnt++;
+        if (cnt >= 2) {
+          firstInkOrigX = x;
+          break outerInk;
+        }
+      }
+    }
+  }
+
+  return {
+    left: clamp(leftPx, 0, origW - 12),
+    top: clamp(topPx, 0, origH - 12),
+    width: clamp(rightPx - leftPx, 12, origW - leftPx),
+    height: clamp(bottomPx - topPx, 12, origH - topPx),
+    firstInkOrigX,
+    normBbox: [
+      clamp(Math.round((topPx / origH) * 1000), 0, 995),
+      clamp(Math.round((leftPx / origW) * 1000), 0, 995),
+      clamp(Math.round((bottomPx / origH) * 1000), 5, 1000),
+      clamp(Math.round((rightPx / origW) * 1000), 5, 1000),
+    ],
+  };
+}
+
+/**
+ * Mede a coordenada X onde se inicia a margem esquerda do texto de uma coluna [xStart..xEnd).
+ */
+function medirMargemEsquerdaColuna(fullRgb, origW, origH, xStart, xEnd) {
+  for (let x = Math.max(0, xStart); x < Math.min(origW, xEnd); x++) {
+    let darkRows = 0;
+    for (let y = 0; y < origH; y++) {
+      const idx = (y * origW + x) * 3;
+      if (fullRgb[idx] < 200 || fullRgb[idx + 1] < 200 || fullRgb[idx + 2] < 200) {
+        darkRows++;
+        if (darkRows >= 8) return x;
+      }
+    }
+  }
+  return xStart;
+}
+
+/**
  * Remove artefatos isolados de texto vizinho que tenham encostado nos primeiros pixels
- * da borda do recorte (ex: hífens "-" ou finais de letras da coluna ao lado seguidos por
- * um corredor branco limpo), preservando molduras contínuas legítimas de tabelas/tirinhas.
+ * da borda do recorte, preservando molduras contínuas legítimas de tabelas/tirinhas.
  */
 async function limparArtefatosMargem(buf) {
   try {
@@ -83,8 +321,6 @@ async function limparArtefatosMargem(buf) {
     };
 
     let modified = false;
-
-    // 1) Varredura de margem esquerda e direita (ex: resíduos da coluna vizinha)
     const maxColScan = Math.min(48, Math.floor(W * 0.12));
     const colInkCount = new Int32Array(W);
     const colMaxRun = new Int32Array(W);
@@ -114,13 +350,12 @@ async function limparArtefatosMargem(buf) {
       if (colInkCount[x] <= 1) {
         if (leftSliverEnd >= 0) leftGapLen++;
       } else {
-        if (leftGapLen >= 9) break; // Encontrou a figura real após o corredor branco
+        if (leftGapLen >= 9) break;
         leftSliverEnd = x;
         leftGapLen = 0;
       }
     }
     if (leftSliverEnd >= 0 && leftSliverEnd <= Math.min(18, Math.floor(W * 0.05)) && leftGapLen >= 9) {
-      // Confirma que não é uma linha de moldura vertical (moldura ocupa > 35% da altura)
       let maxCoverage = 0;
       let longestRun = 0;
       for (let x = 0; x <= leftSliverEnd; x++) {
@@ -169,41 +404,6 @@ async function limparArtefatosMargem(buf) {
       }
     }
 
-    // 2) Margem superior e inferior (descendentes de letras "g, p, q" da linha acima/abaixo)
-    const maxRowScan = Math.min(36, Math.floor(H * 0.1));
-    const rowInkCount = new Int32Array(H);
-    const computeRowStats = (y) => {
-      let count = 0;
-      for (let x = 0; x < W; x++) if (isInk(x, y)) count++;
-      rowInkCount[y] = count;
-    };
-
-    for (let y = 0; y < maxRowScan; y++) computeRowStats(y);
-    let topSliverEnd = -1;
-    let topGapLen = 0;
-    for (let y = 0; y < maxRowScan; y++) {
-      if (rowInkCount[y] <= 1) {
-        if (topSliverEnd >= 0) topGapLen++;
-      } else {
-        if (topGapLen >= 8) break;
-        topSliverEnd = y;
-        topGapLen = 0;
-      }
-    }
-    if (topSliverEnd >= 0 && topSliverEnd <= 12 && topGapLen >= 8) {
-      let maxCoverage = 0;
-      for (let y = 0; y <= topSliverEnd; y++) if (rowInkCount[y] > maxCoverage) maxCoverage = rowInkCount[y];
-      if (maxCoverage < W * 0.25) {
-        for (let y = 0; y <= topSliverEnd + 1; y++) {
-          for (let x = 0; x < W; x++) {
-            const idx = (y * W + x) * 3;
-            data[idx] = 255; data[idx + 1] = 255; data[idx + 2] = 255;
-          }
-        }
-        modified = true;
-      }
-    }
-
     if (!modified) return buf;
     return await sharp(data, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
   } catch {
@@ -212,49 +412,45 @@ async function limparArtefatosMargem(buf) {
 }
 
 /**
- * Extrai e limpa individualmente um único recorte (bbox) aplicando Gutter Clamp entre colunas.
+ * Extrai e limpa individualmente um único recorte (bbox) com Smart Margin Rescue + Gutter Clamp.
  */
-async function extrairBlocoIndividual(normalizedBuf, origW, origH, spec, { scannerClean = false, autoTrim = true, tightTop = false, tightBottom = false }) {
+async function extrairBlocoIndividual(
+  normalizedBuf,
+  fullRgb,
+  origW,
+  origH,
+  spec,
+  { scannerClean = false, autoTrim = true, tightTop = false, tightBottom = false, minTopNorm = 0, maxBottomNorm = 1000 }
+) {
   let workBuf = normalizedBuf;
   let appliedBbox = null;
+  let firstInkOrigX = 0;
 
   const rawBox = Array.isArray(spec?.bbox) ? spec.bbox : (Array.isArray(spec) ? spec : null);
   const coluna = spec?.coluna || 'unica';
   const divX = Number(spec?.coluna_divisao_x || 0);
-  const hasValidGutter = Number.isFinite(divX) && divX >= 280 && divX <= 720;
 
   if (Array.isArray(rawBox) && rawBox.length === 4) {
     const [rawYmin, rawXmin, rawYmax, rawXmax] = rawBox.map(Number);
     if (
       Number.isFinite(rawYmin) && Number.isFinite(rawXmin) &&
       Number.isFinite(rawYmax) && Number.isFinite(rawXmax) &&
-      rawYmax - rawYmin >= 16 && rawXmax - rawXmin >= 16
+      rawYmax - rawYmin >= 14 && rawXmax - rawXmin >= 14
     ) {
-      const padY = 6;
-      const padX = 6;
-      let ymin = clamp(rawYmin - (tightTop ? 1 : padY), 0, 992);
-      let xmin = clamp(rawXmin - padX, 0, 992);
-      let ymax = clamp(rawYmax + (tightBottom ? 1 : padY), ymin + 12, 1000);
-      let xmax = clamp(rawXmax + padX, xmin + 12, 1000);
-
-      // Gutter Clamp: nunca deixa a margem invadir a coluna vizinha em layouts de 2 colunas
-      if (hasValidGutter) {
-        if (coluna === 'esquerda' || rawXmax <= divX + 10) {
-          xmax = Math.min(xmax, Math.max(xmin + 15, divX));
-        } else if (coluna === 'direita' || rawXmin >= divX - 10) {
-          xmin = Math.max(xmin, Math.min(xmax - 15, divX));
-        }
-      }
-
-      const left = clamp(Math.round((xmin / 1000) * origW), 0, origW - 12);
-      const top = clamp(Math.round((ymin / 1000) * origH), 0, origH - 12);
-      const width = clamp(Math.round(((xmax - xmin) / 1000) * origW), 12, origW - left);
-      const height = clamp(Math.round(((ymax - ymin) / 1000) * origH), 12, origH - top);
+      const rescued = resgatarMargensInteligente(fullRgb, origW, origH, [rawYmin, rawXmin, rawYmax, rawXmax], {
+        coluna,
+        divX,
+        minTopNorm,
+        maxBottomNorm,
+        stitchTop: tightTop,
+        stitchBottom: tightBottom,
+      });
 
       workBuf = await sharp(normalizedBuf)
-        .extract({ left, top, width, height })
+        .extract({ left: rescued.left, top: rescued.top, width: rescued.width, height: rescued.height })
         .toBuffer();
-      appliedBbox = [Math.round(ymin), Math.round(xmin), Math.round(ymax), Math.round(xmax)];
+      appliedBbox = rescued.normBbox;
+      firstInkOrigX = rescued.firstInkOrigX;
     }
   }
 
@@ -287,7 +483,7 @@ async function extrairBlocoIndividual(normalizedBuf, origW, origH, spec, { scann
         })
         .toBuffer();
       const tMeta = await sharp(trimmed).metadata();
-      if ((tMeta.width || 0) >= 20 && (tMeta.height || 0) >= 16) {
+      if ((tMeta.width || 0) >= 20 && (tMeta.height || 0) >= 14) {
         workBuf = trimmed;
       }
     } catch {
@@ -301,21 +497,121 @@ async function extrairBlocoIndividual(normalizedBuf, origW, origH, spec, { scann
     w: meta.width || 200,
     h: meta.height || 200,
     appliedBbox,
+    firstInkOrigX,
     continuacao: Boolean(spec?.continuacao || spec?.continuacao_quebra_coluna),
   };
 }
 
 /**
+ * Calcula o deslocamento horizontal ótimo (dx = leftBot - leftTop) combinando a âncora geométrica
+ * da margem da coluna original (priorDx) com correlação fina 1D na faixa inferior de átomos/hastes.
+ */
+async function calcularOffsetAlinhamentoCostura(topItem, bottomItem, priorDx = null) {
+  const anchorDx = Number.isFinite(priorDx) ? Math.round(priorDx) : Math.round((topItem.w - bottomItem.w) / 2);
+  try {
+    const topRaw = await sharp(topItem.buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const botRaw = await sharp(bottomItem.buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+
+    const w1 = topRaw.info.width;
+    const h1 = topRaw.info.height;
+    const w2 = botRaw.info.width;
+    const h2 = botRaw.info.height;
+
+    const isDark = (buf, w, x, y) => {
+      const idx = (y * w + x) * 3;
+      return buf[idx] < 210 || buf[idx + 1] < 210 || buf[idx + 2] < 210;
+    };
+
+    // Projeção do topo do bottomItem (primeiros 20px): detecta hastes/ligações verticais "|"
+    const botScanH = Math.min(20, Math.max(8, Math.floor(h2 * 0.24)));
+    const projBot = new Float32Array(w2);
+    let botEnergy = 0;
+    for (let x = 1; x < w2 - 1; x++) {
+      let vRun = 0;
+      let maxRun = 0;
+      for (let y = 0; y < botScanH; y++) {
+        if (isDark(botRaw.data, w2, x, y)) {
+          vRun++;
+          if (vRun > maxRun) maxRun = vRun;
+        } else {
+          vRun = 0;
+        }
+      }
+      if (maxRun >= 5) {
+        projBot[x] = 1;
+        botEnergy += 1;
+      }
+    }
+
+    if (botEnergy < 3) return anchorDx;
+
+    // Projeção APENAS dos últimos 16px do topItem (apenas a linha inferior de átomos "— N — C — C —",
+    // sem alcançar as ligações superiores "| H" e "|| O") e com peso binário igual (1.0) p/ N e C!
+    const topStartY = Math.max(0, h1 - 17);
+    const projTop = new Float32Array(w1);
+    let topEnergy = 0;
+    for (let x = 1; x < w1 - 1; x++) {
+      let darkCount = 0;
+      for (let y = topStartY; y < h1; y++) {
+        if (isDark(topRaw.data, w1, x, y)) darkCount++;
+      }
+      if (darkCount >= 5) {
+        projTop[x] = 1;
+        topEnergy += 1;
+      }
+    }
+
+    if (topEnergy < 3) return anchorDx;
+
+    const smoothTop = new Float32Array(w1);
+    for (let x = 1; x < w1 - 1; x++) {
+      smoothTop[x] = 0.5 * projTop[x - 1] + projTop[x] + 0.5 * projTop[x + 1];
+    }
+
+    // Quando temos priorDx medido das margens reais das duas colunas, restringe o ajuste fino a ±13px
+    // (impedindo matematicamente pular +32px para o átomo vizinho!)
+    const maxShift = Number.isFinite(priorDx) ? 13 : 28;
+    let bestDx = anchorDx;
+    let bestScore = -1;
+
+    for (let dx = anchorDx - maxShift; dx <= anchorDx + maxShift; dx++) {
+      let score = 0;
+      for (let xb = 0; xb < w2; xb++) {
+        if (projBot[xb] === 0) continue;
+        // Em "xb + dx": como leftBot - leftTop = dx, o pixel xb do bottomItem cai em xt = xb + dx do topItem!
+        const xt = xb + dx;
+        if (xt >= 0 && xt < w1) {
+          score += projBot[xb] * smoothTop[xt];
+        }
+      }
+      const distPenalty = 1 - Math.abs(dx - anchorDx) * 0.004;
+      const weighted = score * distPenalty;
+      if (weighted > bestScore) {
+        bestScore = weighted;
+        bestDx = dx;
+      }
+    }
+
+    return bestScore > 0 ? bestDx : anchorDx;
+  } catch {
+    return anchorDx;
+  }
+}
+
+/**
  * Costura verticalmente duas metades de uma mesma figura/fórmula partida na quebra de coluna.
  */
-async function costurarQuebraColuna(topItem, bottomItem) {
+async function costurarQuebraColuna(topItem, bottomItem, priorDx = null) {
   const pad = 6;
-  const seamGap = 3;
-  const canvasW = Math.max(topItem.w, bottomItem.w) + pad * 2;
-  const canvasH = topItem.h + bottomItem.h + seamGap + pad * 2;
+  const seamGap = 2;
+  const dx = await calcularOffsetAlinhamentoCostura(topItem, bottomItem, priorDx);
 
-  const leftTop = Math.floor((canvasW - topItem.w) / 2);
-  const leftBot = Math.floor((canvasW - bottomItem.w) / 2);
+  const leftTopRel = Math.max(0, -dx);
+  const leftBotRel = Math.max(0, dx);
+  const contentW = Math.max(leftTopRel + topItem.w, leftBotRel + bottomItem.w);
+
+  const canvasW = contentW + pad * 2;
+  const canvasH = topItem.h + bottomItem.h + seamGap + pad * 2;
 
   const stitchedBuf = await sharp({
     create: {
@@ -326,8 +622,8 @@ async function costurarQuebraColuna(topItem, bottomItem) {
     },
   })
     .composite([
-      { input: topItem.buf, left: leftTop, top: pad },
-      { input: bottomItem.buf, left: leftBot, top: pad + topItem.h + seamGap },
+      { input: topItem.buf, left: pad + leftTopRel, top: pad },
+      { input: bottomItem.buf, left: pad + leftBotRel, top: pad + topItem.h + seamGap },
     ])
     .png()
     .toBuffer();
@@ -341,8 +637,6 @@ async function costurarQuebraColuna(topItem, bottomItem) {
 
 /**
  * Decide e compõe múltiplos blocos visuais independentes em um único painel editorial HD.
- * - modo 'horizontal': lado a lado centralizados verticalmente (ideal p/ 2 figuras de 2 colunas)
- * - modo 'vertical': empilhados centralizados horizontalmente
  */
 async function comporPainelMultiFigura(blocos, modoPreferido = 'auto') {
   if (blocos.length === 1) {
@@ -351,8 +645,6 @@ async function comporPainelMultiFigura(blocos, modoPreferido = 'auto') {
 
   let modo = modoPreferido;
   if (modo !== 'horizontal' && modo !== 'vertical') {
-    // Auto-decisão geométrica: se forem exatamente 2 blocos e nenhum deles for largo demais,
-    // lado a lado economiza metade da altura na folha A4 mantendo escala 1:1 legível!
     if (blocos.length === 2) {
       const r0 = blocos[0].w / Math.max(1, blocos[0].h);
       const r1 = blocos[1].w / Math.max(1, blocos[1].h);
@@ -419,7 +711,6 @@ async function comporPainelMultiFigura(blocos, modoPreferido = 'auto') {
 
 /**
  * Processa um buffer de imagem e publica no DO Spaces retornando o objeto `midia` completo.
- * Suporta tanto 1 `bbox` quanto múltiplas regiões `bboxes` (questões de 2 colunas / multi-figura).
  */
 export async function processarMidiaQuestao(inputBuffer, opts = {}) {
   const {
@@ -439,14 +730,19 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     credito = '',
   } = opts;
 
-  // 1) Normaliza rotação EXIF do buffer base
+  // 1) Normaliza rotação EXIF e extrai buffer RGB plano p/ análise óptica de margens
   const normalizedBuf = await sharp(inputBuffer, { failOnError: false })
     .rotate()
     .toBuffer();
 
-  const baseMeta = await sharp(normalizedBuf).metadata();
-  const origW = baseMeta.width || 800;
-  const origH = baseMeta.height || 600;
+  const { data: fullRgb, info: rawInfo } = await sharp(normalizedBuf)
+    .flatten({ background: '#ffffff' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const origW = rawInfo.width || 800;
+  const origH = rawInfo.height || 600;
 
   // 2) Salva print original completo p/ permitir re-crop manual simples ou multi-caixa no frontend
   let originalUrl = existingOriginalUrl || null;
@@ -496,14 +792,13 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
   let composicaoUsada = 'unico';
 
   if (specsList.length === 0) {
-    // Upload direto de figura avulsa (sem recorte por bbox)
-    const single = await extrairBlocoIndividual(normalizedBuf, origW, origH, null, {
+    const single = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, null, {
       scannerClean,
       autoTrim,
     });
     workBuf = single.buf;
   } else if (specsList.length === 1) {
-    const single = await extrairBlocoIndividual(normalizedBuf, origW, origH, specsList[0], {
+    const single = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, specsList[0], {
       scannerClean,
       autoTrim,
     });
@@ -513,15 +808,13 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
       appliedBboxes = [{ bbox: appliedBbox, coluna: specsList[0].coluna, continuacao: false }];
     }
   } else {
-    // Múltiplas áreas visuais (ex: questão dividida em 2 colunas ou figura partida na quebra)
-    // Heurística adicional: se layout for 2 colunas e o item i encostar no rodapé esquerdo (ymax >= 945)
-    // e o item i+1 encostar no topo direito (ymin <= 105) sendo faixa curta, ativa costura automática!
+    // Heurística automática de costura em quebra de coluna: rodapé esq (ymax >= 930) + topo dir (ymin <= 110)
     for (let i = 0; i < specsList.length - 1; i++) {
       const cur = specsList[i];
       const nxt = specsList[i + 1];
       if (!nxt.continuacao && layoutOrigem === 'duas_colunas') {
         const curH = cur.bbox[2] - cur.bbox[0];
-        if (cur.bbox[2] >= 945 && nxt.bbox[0] <= 105 && cur.bbox[3] <= 530 && nxt.bbox[1] >= 470 && curH <= 210) {
+        if (cur.bbox[2] >= 925 && nxt.bbox[0] <= 115 && cur.bbox[3] <= 535 && nxt.bbox[1] >= 465 && curH <= 220) {
           nxt.continuacao = true;
         }
       }
@@ -529,17 +822,37 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
 
     const extraidos = [];
     for (let i = 0; i < specsList.length; i++) {
+      const curSpec = specsList[i];
       const nextIsStitch = i + 1 < specsList.length && specsList[i + 1].continuacao;
-      const curIsStitch = i > 0 && specsList[i].continuacao;
-      const item = await extrairBlocoIndividual(normalizedBuf, origW, origH, specsList[i], {
+      const curIsStitch = i > 0 && curSpec.continuacao;
+
+      // Calcula teto/piso de não-invasão contra outras figuras da mesma coluna
+      let minTopNorm = 0;
+      let maxBottomNorm = 1000;
+      for (let j = 0; j < specsList.length; j++) {
+        if (j === i) continue;
+        const other = specsList[j];
+        if (other.coluna === curSpec.coluna) {
+          if (other.bbox[2] <= curSpec.bbox[0] + 15 && other.bbox[2] > minTopNorm) {
+            minTopNorm = other.bbox[2];
+          }
+          if (other.bbox[0] >= curSpec.bbox[2] - 15 && other.bbox[0] < maxBottomNorm) {
+            maxBottomNorm = other.bbox[0];
+          }
+        }
+      }
+
+      const item = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, curSpec, {
         scannerClean,
         autoTrim,
         tightBottom: nextIsStitch,
         tightTop: curIsStitch,
+        minTopNorm,
+        maxBottomNorm,
       });
       extraidos.push({
         ...item,
-        coluna: specsList[i].coluna,
+        coluna: curSpec.coluna,
         continuacao: curIsStitch,
       });
     }
@@ -553,12 +866,33 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
       }));
     appliedBbox = appliedBboxes[0]?.bbox || null;
 
-    // 1º passo: costura pares marcados como continuação de quebra de coluna
+    // 1º passo: costura pares marcados como continuação de quebra de coluna (com âncora de margem + correlação 1D)
+    const divXPx = colunaDivisaoX >= 280 && colunaDivisaoX <= 720
+      ? Math.round((colunaDivisaoX / 1000) * origW)
+      : Math.round(origW / 2);
+    const col1MarginPx = layoutOrigem === 'duas_colunas'
+      ? medirMargemEsquerdaColuna(fullRgb, origW, origH, 0, divXPx)
+      : null;
+    const col2MarginPx = layoutOrigem === 'duas_colunas'
+      ? medirMargemEsquerdaColuna(fullRgb, origW, origH, divXPx, origW)
+      : null;
+
     const blocosConsolidados = [];
     for (const ext of extraidos) {
       if (ext.continuacao && blocosConsolidados.length > 0) {
         const prev = blocosConsolidados.pop();
-        const unidos = await costurarQuebraColuna(prev, ext);
+        let priorDx = null;
+        if (
+          col1MarginPx !== null &&
+          col2MarginPx !== null &&
+          prev.coluna === 'esquerda' &&
+          ext.coluna === 'direita' &&
+          prev.firstInkOrigX > 0 &&
+          ext.firstInkOrigX > 0
+        ) {
+          priorDx = (ext.firstInkOrigX - col2MarginPx) - (prev.firstInkOrigX - col1MarginPx);
+        }
+        const unidos = await costurarQuebraColuna(prev, ext, priorDx);
         blocosConsolidados.push(unidos);
       } else {
         blocosConsolidados.push(ext);

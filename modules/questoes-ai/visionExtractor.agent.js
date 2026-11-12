@@ -379,7 +379,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
    - Retorne em "figuras" CADA bloco visual não-textual da questão (esquemas biológicos, diagramas, gráficos, estruturas químicas desenhadas, circuitos, tirinhas, mapas).
    - Se a questão possuir 2 ou 3 regiões visuais separadas (ex: um esquema de membrana celular na coluna esquerda + fórmulas estruturais de aminoácidos no rodapé esquerdo e/ou topo da coluna direita), retorne UM ITEM SEPARADO em "figuras" (com alvo="principal") para CADA região visual!
    - Se na virada da coluna esquerda para a coluna direita uma MESMA fórmula estrutural ou tabela foi partida ao meio (ex: cadeia principal —N—C—C— no rodapé da coluna esquerda e radicais |CH3 alanina, serina, aspartato no topo da coluna direita), retorne o bbox da metade no rodapé esquerdo (coluna="esquerda", continuacao_quebra_coluna=false) E o bbox da metade no topo direito (coluna="direita", continuacao_quebra_coluna=true)!
-   - Em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000): englobe todos os rótulos pertencentes àquela ilustração, mas NÃO invada parágrafos de texto nem ultrapasse "coluna_divisao_x" para a coluna vizinha.
+   - Em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000): englobe 100% dos rótulos periféricos daquela ilustração (ex: siglas nas pontas superiores/inferiores como "R1" e "R2", segundas linhas de legendas com setas como "Proteína / transmembrana" e fórmulas encostadas no limite inferior y=1000 da coluna), mas NÃO invada parágrafos de texto nem ultrapasse "coluna_divisao_x" para a coluna vizinha.
    - Se a questão for 100% texto puro sem nenhuma figura, retorne "figuras": [].
 
 4. GABARITO E RESOLUÇÃO PASSO A PASSO:
