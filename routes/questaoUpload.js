@@ -40,7 +40,7 @@ router.post('/upload-imagem', autenticarToken, upload.single('imagem'), async (r
   }
 });
 
-// POST /api/questoes/processar-midia — Re-crop interativo [ymin, xmin, ymax, xmax] ou Scanner Clean sobre source_url
+// POST /api/questoes/processar-midia — Re-crop interativo (1 ou N bboxes), layout de composição ou Scanner Clean
 router.post('/processar-midia', autenticarToken, upload.single('imagem'), async (req, res) => {
   try {
     let buffer = req.file?.buffer || null;
@@ -61,10 +61,22 @@ router.post('/processar-midia', autenticarToken, upload.single('imagem'), async 
       } catch { bbox = null; }
     }
 
+    let bboxes = null;
+    if (req.body?.bboxes) {
+      try {
+        const parsed = typeof req.body.bboxes === 'string' ? JSON.parse(req.body.bboxes) : req.body.bboxes;
+        if (Array.isArray(parsed) && parsed.length > 0) bboxes = parsed;
+      } catch { bboxes = null; }
+    }
+
     const scannerClean = req.body?.scanner_clean === true || req.body?.scanner_clean === '1' || req.body?.scanner_clean === 'true';
 
     const result = await processarMidiaQuestao(buffer, {
       bbox,
+      bboxes,
+      composicaoLayout: req.body?.composicao_layout || 'auto',
+      colunaDivisaoX: Number(req.body?.coluna_divisao_x || 0),
+      layoutOrigem: req.body?.layout_origem || 'coluna_unica',
       autoTrim: req.body?.auto_trim !== false && req.body?.auto_trim !== '0',
       scannerClean,
       keepOriginal: Boolean(!sourceUrl),
