@@ -35,6 +35,7 @@ import pool from "../db.js";
 import {
   CATEGORIAS_EM,
   ensureMatriculasProjetosSchema,
+  obterEixosEscola,
 } from "./matriculasProjetos.js";
 
 const router = express.Router();
@@ -304,6 +305,10 @@ async function handleListarProjetosAluno(req, res) {
         : null;
 
     const est = await carregarContextoEstudante(alunoId, anoLetivo);
+    const eixosEscola = await obterEixosEscola(est.escola_id);
+    const eixosMap = new Map(eixosEscola.map((e) => [e.codigo, e]));
+    const eixosAtivos = eixosEscola.filter((e) => e.ativo === true);
+    const eixosAtivosSet = new Set(eixosAtivos.map((e) => e.codigo));
 
     // 1. Busca todas as inscrições ativas do estudante em projetos neste ano letivo
     const [inscricoesRows] = await pool.query(
@@ -324,6 +329,7 @@ async function handleListarProjetosAluno(req, res) {
          p.professor_idealizador,
          p.carga_semanal,
          p.inscricao_aberta,
+         COALESCE(p.ativo_mobile, 1) AS ativo_mobile,
          p.status AS projeto_status
        FROM agrupamento_alunos aa
        JOIN agrupamentos g ON g.id = aa.agrupamento_id
@@ -336,32 +342,64 @@ async function handleListarProjetosAluno(req, res) {
       [est.escola_id, est.id, anoLetivo]
     );
 
-    const minhasInscricoes = inscricoesRows.map((r) => ({
-      vinculo_id: r.vinculo_id,
-      projeto_id: r.projeto_id,
-      projeto_nome: r.projeto_nome,
-      abreviatura: r.abreviatura,
-      categoria: r.categoria,
-      categoria_info: CATEGORIAS_EM[r.categoria] || CATEGORIAS_EM.PROJETO,
-      sinopse: r.sinopse || "",
-      professor_idealizador: r.professor_idealizador || "",
-      carga_semanal: Number(r.carga_semanal || 2),
-      semestre: Number(r.semestre),
-      turno: r.turno,
-      agrupamento_id: r.agrupamento_id,
-      apelido_turma: r.apelido_turma || r.turma_nome,
-      turma_nome: r.turma_nome,
-      entrada_em: r.entrada_em,
-      pode_cancelar_ou_trocar:
-        !somente_leitura &&
-        Number(r.inscricao_aberta) === 1 &&
-        r.projeto_status === "ABERTO",
-    }));
+    const minhasInscricoes = inscricoesRows.map((r) => {
+      const catInfo = eixosMap.get(r.categoria) || CATEGORIAS_EM[r.categoria] || CATEGORIAS_EM.PROJETO;
+      const eixoEstaAtivo = eixosAtivosSet.has(r.categoria);
+      return {
+        vinculo_id: r.vinculo_id,
+        projeto_id: r.projeto_id,
+        projeto_nome: r.projeto_nome,
+        abreviatura: r.abreviatura,
+        categoria: r.categoria,
+        categoria_info: catInfo,
+        sinopse: r.sinopse || "",
+        professor_idealizador: r.professor_idealizador || "",
+        carga_semanal: Number(r.carga_semanal || 2),
+        semestre: Number(r.semestre),
+        turno: r.turno,
+        agrupamento_id: r.agrupamento_id,
+        apelido_turma: r.apelido_turma || r.turma_nome,
+        turma_nome: r.turma_nome,
+        entrada_em: r.entrada_em,
+        pode_cancelar_ou_trocar:
+          !somente_leitura &&
+          eixoEstaAtivo &&
+          Number(r.ativo_mobile) === 1 &&
+          Number(r.inscricao_aberta) === 1 &&
+          r.projeto_status === "ABERTO",
+      };
+    });
 
     // Se a Secretaria já inscreveu este aluno em algum projeto, garante elegibilidade visual
     if (minhasInscricoes.length > 0) {
       est.elegivel_ensino_medio = true;
     }
+
+    const formatarCardsMobile = (listaProjetosDisp = []) =>
+      eixosAtivos.map((e) => {
+        const qtdDisp = listaProjetosDisp.filter(
+          (p) =>
+            p.categoria === e.codigo &&
+            Array.isArray(p.turmas) &&
+            p.turmas.length > 0
+        ).length;
+        return {
+          id: e.card_id_mobile,
+          codigo: e.codigo,
+          label: e.label_mobile || e.sigla,
+          sigla: e.sigla,
+          titulo: e.titulo,
+          subtitulo: e.subtitulo,
+          descricao_curta: e.descricao_curta,
+          icon: e.icone_mobile || "school-outline",
+          icone_emoji: e.icone_emoji,
+          cor_tema: e.cor_tema,
+          ativo: true,
+          padrao_sistema: e.padrao_sistema,
+          ordem: e.ordem,
+          total_projetos_disponiveis: qtdDisp,
+        };
+      });
 
     // 2. Se não for Ensino Médio e não tiver inscrição, retorna vitrine vazia de forma limpa
     if (!est.elegivel_ensino_medio) {
@@ -372,14 +410,20 @@ async function handleListarProjetosAluno(req, res) {
         exibir_card_mobile: false,
         semestre_sugerido: semestreSugeridoAtual(),
         estudante: est,
-        categorias_catalogo: Object.values(CATEGORIAS_EM),
+        cards_mobile: [],
+        categorias_catalogo: [],
         minhas_inscricoes: [],
         projetos_disponiveis: [],
       });
     }
 
-    // 3. Busca projetos abertos da escola no ano letivo
-    const whereProj = ["p.escola_id = ?", "p.ano_letivo = ?", "p.status = 'ABERTO'"];
+    // 3. Busca apenas projetos abertos E ativos no mobile da escola no ano letivo
+    const whereProj = [
+      "p.escola_id = ?",
+      "p.ano_letivo = ?",
+      "p.status = 'ABERTO'",
+      "COALESCE(p.ativo_mobile, 1) = 1",
+    ];
     const paramsProj = [est.escola_id, anoLetivo];
     if (semestreFiltro !== null && [0, 1, 2].includes(semestreFiltro)) {
       whereProj.push("(p.semestre = ? OR p.semestre = 0)");
@@ -394,9 +438,10 @@ async function handleListarProjetosAluno(req, res) {
       paramsProj
     );
 
-    // Filtra projetos compatíveis com o turno e a série do estudante (ou nos quais ele já esteja inscrito)
+    // Filtra projetos pertencentes a Eixos ATIVOS e compatíveis com o turno e a série do estudante
     const projetosInscritosSet = new Set(minhasInscricoes.map((i) => i.projeto_id));
     const projetosElegiveisRows = projetosRows.filter((p) => {
+      if (!eixosAtivosSet.has(p.categoria)) return false;
       if (projetosInscritosSet.has(p.id)) return true;
       if (!turnosCompativeis(est.turno, p.turno)) return false;
       const seriesProj = parseSeriesJson(p.series_json);
@@ -483,7 +528,10 @@ async function handleListarProjetosAluno(req, res) {
         return {
           id: p.id,
           categoria: p.categoria,
-          categoria_info: CATEGORIAS_EM[p.categoria] || CATEGORIAS_EM.PROJETO,
+          categoria_info:
+            eixosMap.get(p.categoria) ||
+            CATEGORIAS_EM[p.categoria] ||
+            CATEGORIAS_EM.PROJETO,
           nome: p.nome,
           abreviatura: p.abreviatura,
           sinopse: p.sinopse || "",
@@ -508,16 +556,19 @@ async function handleListarProjetosAluno(req, res) {
       });
     }
 
+    const cardsMobile = formatarCardsMobile(projetosDisponiveis);
+
     return res.json({
       ok: true,
       perfil_token: perfilToken,
       somente_leitura,
       exibir_card_mobile:
         est.elegivel_ensino_medio &&
-        (projetosDisponiveis.length > 0 || minhasInscricoes.length > 0),
+        (cardsMobile.length > 0 || minhasInscricoes.length > 0),
       semestre_sugerido: semestreSugeridoAtual(),
       estudante: est,
-      categorias_catalogo: Object.values(CATEGORIAS_EM),
+      cards_mobile: cardsMobile,
+      categorias_catalogo: cardsMobile,
       minhas_inscricoes: minhasInscricoes,
       projetos_disponiveis: projetosDisponiveis,
     });
@@ -566,9 +617,11 @@ async function handleInscreverAlunoProjeto(req, res) {
          g.capacidade,
          g.status AS turma_status,
          g.projeto_id,
+         p.categoria AS projeto_categoria,
          p.nome AS projeto_nome,
          p.series_json,
          p.inscricao_aberta,
+         COALESCE(p.ativo_mobile, 1) AS projeto_ativo_mobile,
          p.status AS projeto_status
        FROM agrupamentos g
        JOIN em_projetos p ON p.id = g.projeto_id
@@ -590,6 +643,24 @@ async function handleInscreverAlunoProjeto(req, res) {
       throw falha(
         409,
         "Sua matrícula regular no ano letivo atual ainda não consta ativa na Secretaria."
+      );
+    }
+
+    // Verifica se o Eixo e o Projeto estão ATIVOS no Educa Mobile
+    const eixosEscolaInscricao = await obterEixosEscola(alvo.escola_id, conn);
+    const eixoDoProjeto = eixosEscolaInscricao.find(
+      (e) => e.codigo === alvo.projeto_categoria
+    );
+    if (!eixoDoProjeto || !eixoDoProjeto.ativo) {
+      throw falha(
+        403,
+        "Este eixo semestral está desativado pela gestão escolar no aplicativo."
+      );
+    }
+    if (Number(alvo.projeto_ativo_mobile) !== 1) {
+      throw falha(
+        403,
+        "Este projeto está desativado pela Secretaria Escolar no aplicativo."
       );
     }
     if (alvo.projeto_status !== "ABERTO" || alvo.turma_status !== "ABERTO") {

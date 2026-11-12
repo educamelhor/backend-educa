@@ -21,57 +21,176 @@ import pool from "../db.js";
 const router = Router();
 
 // ---------------------------------------------------------------------------
-// Catálogo Oficial dos 6 Cards do Novo Ensino Médio (Lei nº 14.945/2024 + SEEDF)
+// Catálogo Oficial Base dos 6 Eixos do Novo Ensino Médio (Lei nº 14.945/2024 + SEEDF)
+// Cada escola recebe este seed inicial em `em_eixos` (com autonomia para ativar/desativar
+// via botão pill ON/OFF e criar novos Eixos de Oferta Semestral personalizados).
 // ---------------------------------------------------------------------------
-export const CATEGORIAS_EM = {
-  IFA: {
+export const EIXOS_PADRAO_SISTEMA = [
+  {
     codigo: "IFA",
+    card_id_mobile: "ifa",
+    sigla: "IFA",
+    label_mobile: "IFA",
     titulo: "IFA — Itinerário Formativo",
     subtitulo: "Percursos e Trilhas de Aprofundamento por Área do Conhecimento ou FTP",
+    descricao_curta: "Trilhas estruturadas conectadas às 4 áreas do conhecimento ou FTP (Lei nº 14.945/2024).",
+    cor_tema: "purple",
+    icone_emoji: "🧭",
+    icone_mobile: "compass-outline",
     disciplinaTipo: "IFA",
     agrupamentoTipo: "IFA",
     abrevPrefix: "IFA",
+    carga_sugerida: 4,
+    exemplo_nome: "IFA — Robótica, Automação e Cidades Inteligentes",
+    ordem: 1,
   },
-  ELETIVA: {
+  {
     codigo: "ELETIVA",
+    card_id_mobile: "eletiva",
+    sigla: "ELETIVA",
+    label_mobile: "ELETIVA",
     titulo: "Eletiva Orientada",
     subtitulo: "Oficinas semestrais interdisciplinares de livre escolha dos estudantes",
+    descricao_curta: "Projetos práticos semestrais escolhidos pelos estudantes conforme interesses e aptidões.",
+    cor_tema: "sky",
+    icone_emoji: "🎯",
+    icone_mobile: "bulb-outline",
     disciplinaTipo: "ELETIVA",
     agrupamentoTipo: "ELETIVA",
     abrevPrefix: "ELET",
+    carga_sugerida: 2,
+    exemplo_nome: "Eletiva — Educação Financeira e Empreendedorismo Jovem",
+    ordem: 2,
   },
-  PCA: {
+  {
     codigo: "PCA",
+    card_id_mobile: "pca",
+    sigla: "PCA",
+    label_mobile: "PCA",
     titulo: "PCA — Percurso Comum de Aprofundamento",
     subtitulo: "Projetos integradores de contemplação e aprofundamento de área",
+    descricao_curta: "Aprofundamento articulado entre componentes curriculares e resolução de problemas reais.",
+    cor_tema: "emerald",
+    icone_emoji: "🌐",
+    icone_mobile: "flask-outline",
     disciplinaTipo: "PCA",
     agrupamentoTipo: "PCA",
     abrevPrefix: "PCA",
+    carga_sugerida: 2,
+    exemplo_nome: "PCA — Biotecnologia, Saúde Coletiva e Meio Ambiente",
+    ordem: 3,
   },
-  PROJETO_VIDA: {
+  {
     codigo: "PROJETO_VIDA",
+    card_id_mobile: "proj_vida",
+    sigla: "PROJ. VIDA",
+    label_mobile: "PROJ. VIDA",
     titulo: "Projeto de Vida & Protagonismo",
     subtitulo: "Autoconhecimento, planejamento acadêmico, cidadania e mundo do trabalho",
+    descricao_curta: "Eixo estruturante de orientação acadêmica, socioemocional e mundo do trabalho.",
+    cor_tema: "amber",
+    icone_emoji: "🌱",
+    icone_mobile: "ribbon-outline",
     disciplinaTipo: "PROJETO",
     agrupamentoTipo: "PROJETO",
     abrevPrefix: "PV",
+    carga_sugerida: 2,
+    exemplo_nome: "Projeto de Vida — Protagonismo Juvenil e Escolhas de Futuro",
+    ordem: 4,
   },
-  PARTE_DIVERSIFICADA: {
+  {
     codigo: "PARTE_DIVERSIFICADA",
+    card_id_mobile: "part_div",
+    sigla: "PD / LEM",
+    label_mobile: "PART. DIV.",
     titulo: "Parte Diversificada (PD1 / PD2 / PD3 / LEM)",
     subtitulo: "Componentes diversificados da matriz curricular e línguas estrangeiras",
+    descricao_curta: "Organização de PD1, PD2, PD3, Espanhol/LEM e oficinas regionais em turmas específicas.",
+    cor_tema: "slate",
+    icone_emoji: "🧩",
+    icone_mobile: "layers-outline",
     disciplinaTipo: "PARTE_DIVERSIFICADA",
     agrupamentoTipo: "OUTRO",
     abrevPrefix: "PD",
+    carga_sugerida: 2,
+    exemplo_nome: "PD1 — Comunicação, Argumentação e Produção Multimídia",
+    ordem: 5,
   },
-  PROJETO: {
+  {
     codigo: "PROJETO",
+    card_id_mobile: "outros",
+    sigla: "CLUBES",
+    label_mobile: "OUTROS",
     titulo: "Clubes Juvenis & Projetos Científicos",
     subtitulo: "Iniciação científica, robótica, olimpíadas, cultura, artes e desporto",
+    descricao_curta: "Núcleos de protagonismo estudantil, feiras científicas, teatro, música e esportes.",
+    cor_tema: "rose",
+    icone_emoji: "🔬",
+    icone_mobile: "grid-outline",
     disciplinaTipo: "PROJETO",
     agrupamentoTipo: "PROJETO",
     abrevPrefix: "PROJ",
+    carga_sugerida: 2,
+    exemplo_nome: "Clube de Ciências — Olimpíadas de Matemática e Astronomia",
+    ordem: 6,
   },
+];
+
+export const CATEGORIAS_EM = Object.fromEntries(
+  EIXOS_PADRAO_SISTEMA.map((e) => [e.codigo, e])
+);
+
+const CORES_TEMA_VALIDAS = new Set([
+  "purple",
+  "sky",
+  "emerald",
+  "amber",
+  "slate",
+  "rose",
+  "indigo",
+  "teal",
+]);
+
+const ICONES_MOBILE_VALIDOS = new Set([
+  "compass-outline",
+  "bulb-outline",
+  "flask-outline",
+  "ribbon-outline",
+  "layers-outline",
+  "grid-outline",
+  "school-outline",
+  "construct-outline",
+  "code-slash-outline",
+  "globe-outline",
+  "musical-notes-outline",
+  "fitness-outline",
+  "book-outline",
+  "sparkles-outline",
+]);
+
+const DISCIPLINA_TIPOS_VALIDOS = new Set([
+  "IFA",
+  "ELETIVA",
+  "PCA",
+  "PROJETO",
+  "PARTE_DIVERSIFICADA",
+]);
+
+const AGRUPAMENTO_TIPOS_VALIDOS = new Set([
+  "IFA",
+  "PCA",
+  "ELETIVA",
+  "PROJETO",
+  "OUTRO",
+]);
+
+const MAPA_CARD_ID_PADRAO = {
+  IFA: "ifa",
+  ELETIVA: "eletiva",
+  PCA: "pca",
+  PROJETO_VIDA: "proj_vida",
+  PARTE_DIVERSIFICADA: "part_div",
+  PROJETO: "outros",
 };
 
 const TURNOS_VALIDOS = ["Matutino", "Vespertino", "Noturno", "Integral"];
@@ -166,8 +285,56 @@ export async function ensureMatriculasProjetosSchema() {
         });
       }
 
+      // Coluna `ativo_mobile` em `em_projetos` (botão pill ON/OFF individual de cada projeto)
+      const [colsProj] = await pool.query(
+        `SELECT COLUMN_NAME
+           FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'em_projetos'
+            AND COLUMN_NAME = 'ativo_mobile'`
+      );
+      if (!colsProj || colsProj.length === 0) {
+        await pool.query(
+          `ALTER TABLE em_projetos ADD COLUMN ativo_mobile TINYINT(1) NOT NULL DEFAULT 1 AFTER inscricao_aberta`
+        ).catch((e) => {
+          if (!String(e.message || "").includes("Duplicate")) {
+            console.warn("[matriculasProjetos] Aviso ao adicionar em_projetos.ativo_mobile:", e.message);
+          }
+        });
+      }
+
+      // Tabela `em_eixos` — Eixos de Oferta Semestral autônomos por escola
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS em_eixos (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          escola_id INT NOT NULL,
+          codigo VARCHAR(40) NOT NULL,
+          sigla VARCHAR(24) NOT NULL,
+          label_mobile VARCHAR(24) NOT NULL,
+          titulo VARCHAR(120) NOT NULL,
+          subtitulo VARCHAR(180) NULL,
+          descricao_curta VARCHAR(260) NULL,
+          cor_tema VARCHAR(24) NOT NULL DEFAULT 'indigo',
+          icone_emoji VARCHAR(16) NOT NULL DEFAULT '🎓',
+          icone_mobile VARCHAR(40) NOT NULL DEFAULT 'school-outline',
+          disciplina_tipo VARCHAR(30) NOT NULL DEFAULT 'PROJETO',
+          agrupamento_tipo VARCHAR(30) NOT NULL DEFAULT 'PROJETO',
+          abrev_prefix VARCHAR(12) NOT NULL DEFAULT 'PROJ',
+          carga_sugerida INT NOT NULL DEFAULT 2,
+          exemplo_nome VARCHAR(140) NULL,
+          ativo TINYINT(1) NOT NULL DEFAULT 1,
+          padrao_sistema TINYINT(1) NOT NULL DEFAULT 0,
+          ordem INT NOT NULL DEFAULT 10,
+          criado_por INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_em_eixos_escola_codigo (escola_id, codigo),
+          INDEX idx_em_eixos_escola_ordem (escola_id, ativo, ordem)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+
       _schemaReady = true;
-      console.log("[matriculasProjetos] Schema em_projetos + vínculo agrupamentos verificado ✅");
+      console.log("[matriculasProjetos] Schema em_projetos + em_eixos + vínculo agrupamentos verificado ✅");
     } catch (err) {
       console.error("[matriculasProjetos] Erro ao verificar schema:", err.message);
       _schemaPromise = null;
@@ -384,12 +551,146 @@ async function resolverOuCriarDisciplinaProjeto(conn, {
   return ins.insertId;
 }
 
+function podeGerenciarEixos(user) {
+  const perfil = String(user?.perfil || "").toLowerCase().trim();
+  return Boolean(user?.is_super_admin || PERFIS_GESTAO.has(perfil));
+}
+
+function formatarEixoRow(row) {
+  const padraoRef = CATEGORIAS_EM[row.codigo] || null;
+  const cardIdMobile =
+    MAPA_CARD_ID_PADRAO[row.codigo] ||
+    String(row.codigo || "projeto").toLowerCase();
+
+  return {
+    id: row.id || null,
+    codigo: row.codigo,
+    card_id_mobile: cardIdMobile,
+    sigla: row.sigla || padraoRef?.sigla || row.codigo,
+    label_mobile:
+      row.label_mobile || row.sigla || padraoRef?.label_mobile || row.codigo,
+    titulo: row.titulo || padraoRef?.titulo || row.codigo,
+    subtitulo: row.subtitulo || padraoRef?.subtitulo || "",
+    descricao_curta:
+      row.descricao_curta ||
+      row.subtitulo ||
+      padraoRef?.descricao_curta ||
+      "",
+    cor_tema: CORES_TEMA_VALIDAS.has(row.cor_tema)
+      ? row.cor_tema
+      : padraoRef?.cor_tema || "indigo",
+    icone_emoji: row.icone_emoji || padraoRef?.icone_emoji || "🎓",
+    icone_mobile: ICONES_MOBILE_VALIDOS.has(row.icone_mobile)
+      ? row.icone_mobile
+      : padraoRef?.icone_mobile || "school-outline",
+    disciplinaTipo: DISCIPLINA_TIPOS_VALIDOS.has(row.disciplina_tipo)
+      ? row.disciplina_tipo
+      : padraoRef?.disciplinaTipo || "PROJETO",
+    agrupamentoTipo: AGRUPAMENTO_TIPOS_VALIDOS.has(row.agrupamento_tipo)
+      ? row.agrupamento_tipo
+      : padraoRef?.agrupamentoTipo || "PROJETO",
+    abrevPrefix: row.abrev_prefix || padraoRef?.abrevPrefix || "PROJ",
+    carga_sugerida: Number(row.carga_sugerida || padraoRef?.carga_sugerida || 2),
+    exemplo_nome:
+      row.exemplo_nome ||
+      padraoRef?.exemplo_nome ||
+      `${row.sigla || "Projeto"} — Oficina Temática Semestral`,
+    ativo: Number(row.ativo ?? 1) === 1,
+    padrao_sistema: Number(row.padrao_sistema ?? (padraoRef ? 1 : 0)) === 1,
+    ordem: Number(row.ordem ?? padraoRef?.ordem ?? 50),
+  };
+}
+
+/**
+ * Garante o seed inicial idempotente dos 6 eixos base na escola (preservando
+ * integralmente ativações/desativações e edições já salvas) e retorna a lista
+ * ordenada de todos os Eixos de Oferta Semestral da escola (padrão + criados pela Direção).
+ */
+export async function obterEixosEscola(escola_id, executor = pool) {
+  await ensureMatriculasProjetosSchema();
+
+  const valoresSeed = EIXOS_PADRAO_SISTEMA.map((e) => [
+    Number(escola_id),
+    e.codigo,
+    e.sigla,
+    e.label_mobile,
+    e.titulo,
+    e.subtitulo,
+    e.descricao_curta,
+    e.cor_tema,
+    e.icone_emoji,
+    e.icone_mobile,
+    e.disciplinaTipo,
+    e.agrupamentoTipo,
+    e.abrevPrefix,
+    e.carga_sugerida,
+    e.exemplo_nome,
+    1,
+    1,
+    e.ordem,
+  ]);
+
+  await executor.query(
+    `INSERT IGNORE INTO em_eixos
+       (escola_id, codigo, sigla, label_mobile, titulo, subtitulo, descricao_curta,
+        cor_tema, icone_emoji, icone_mobile, disciplina_tipo, agrupamento_tipo,
+        abrev_prefix, carga_sugerida, exemplo_nome, ativo, padrao_sistema, ordem)
+     VALUES ?`,
+    [valoresSeed]
+  );
+
+  const [rows] = await executor.query(
+    `SELECT *
+       FROM em_eixos
+      WHERE escola_id = ?
+      ORDER BY ordem ASC, id ASC`,
+    [Number(escola_id)]
+  );
+
+  return rows.map(formatarEixoRow);
+}
+
+export async function obterMapaEixosEscola(escola_id, executor = pool) {
+  const lista = await obterEixosEscola(escola_id, executor);
+  return new Map(lista.map((e) => [e.codigo, e]));
+}
+
+function sanitizarSlugCodigoEixo(texto) {
+  const base = String(texto || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 26);
+  return base ? `EIXO_${base}` : `EIXO_${Date.now().toString(36).toUpperCase()}`;
+}
+
+async function gerarCodigoEixoUnico(conn, escola_id, textoBase) {
+  const slugBase = sanitizarSlugCodigoEixo(textoBase);
+  let candidato = slugBase;
+  let sufixo = 2;
+  while (sufixo <= 50) {
+    const [[existe]] = await conn.query(
+      `SELECT id FROM em_eixos WHERE escola_id = ? AND codigo = ? LIMIT 1`,
+      [escola_id, candidato]
+    );
+    if (!existe && !CATEGORIAS_EM[candidato]) {
+      return candidato;
+    }
+    candidato = `${slugBase.slice(0, 32)}_${sufixo}`;
+    sufixo += 1;
+  }
+  return `EIXO_${Date.now().toString(36).toUpperCase()}`;
+}
+
 /**
  * Hidrata uma lista de projetos com suas turmas (`agrupamentos`) e contadores de vagas.
  */
-async function hidratarProjetosComTurmas(escola_id, projetosRows, executor = pool) {
+async function hidratarProjetosComTurmas(escola_id, projetosRows, executor = pool, eixosMapPreloaded = null) {
   if (!projetosRows || projetosRows.length === 0) return [];
 
+  const eixosMap = eixosMapPreloaded || (await obterMapaEixosEscola(escola_id, executor));
   const projetoIds = projetosRows.map((p) => p.id);
 
   const [turmasRows] = await executor.query(
@@ -467,13 +768,24 @@ async function hidratarProjetosComTurmas(escola_id, projetosRows, executor = poo
     const totalMatriculados = turmas.reduce((acc, t) => acc + Number(t.matriculados || 0), 0);
     const vagasRestantesTotal = Math.max(0, vagasTotais - totalMatriculados);
 
+    const catInfo =
+      eixosMap.get(p.categoria) ||
+      CATEGORIAS_EM[p.categoria] ||
+      CATEGORIAS_EM.PROJETO;
+    const ativoMobile =
+      p.ativo_mobile === undefined || p.ativo_mobile === null
+        ? true
+        : Number(p.ativo_mobile) === 1;
+
     return {
       id: p.id,
       escola_id: p.escola_id,
       ano_letivo: Number(p.ano_letivo),
       semestre: Number(p.semestre),
       categoria: p.categoria,
-      categoria_info: CATEGORIAS_EM[p.categoria] || CATEGORIAS_EM.PROJETO,
+      categoria_info: catInfo,
+      eixo_ativo: Boolean(catInfo?.ativo !== false),
+      ativo_mobile: ativoMobile,
       nome: p.nome,
       abreviatura: p.abreviatura,
       sinopse: p.sinopse || "",
@@ -501,8 +813,8 @@ async function hidratarProjetosComTurmas(escola_id, projetosRows, executor = poo
 
 // ===========================================================================
 // GET /api/matriculas/projetos
-// Retorna catálogo dos 6 cards (com contadores ao vivo no ano/semestre) + lista
-// de projetos hidratados com suas turmas e vagas.
+// Retorna catálogo dinâmico de Eixos da escola (com estado ON/OFF + contadores
+// ao vivo no ano/semestre) + lista de projetos hidratados com turmas e vagas.
 // ===========================================================================
 router.get("/", async (req, res) => {
   try {
@@ -520,8 +832,11 @@ router.get("/", async (req, res) => {
         : null;
     const busca = String(req.query.q || "").trim().toLowerCase();
 
+    const eixosLista = await obterEixosEscola(escola_id);
+    const eixosMap = new Map(eixosLista.map((e) => [e.codigo, e]));
+
     // Busca todos os projetos do ano (e semestre/turno se filtrados) para calcular
-    // o resumo fiel dos 6 cards do topo mesmo quando 1 card específico está filtrado.
+    // o resumo fiel dos cards de Eixos do topo mesmo quando 1 card específico está filtrado.
     const whereBase = ["p.escola_id = ?", "p.ano_letivo = ?"];
     const paramsBase = [escola_id, anoLetivo];
 
@@ -542,14 +857,20 @@ router.get("/", async (req, res) => {
       paramsBase
     );
 
-    const todosHidratados = await hidratarProjetosComTurmas(escola_id, todosProjetosRows);
+    const todosHidratados = await hidratarProjetosComTurmas(
+      escola_id,
+      todosProjetosRows,
+      pool,
+      eixosMap
+    );
 
-    // Monta estatísticas por categoria para os 6 cards do topo
+    // Monta estatísticas por categoria/eixo para todos os cards do topo
     const resumoCategorias = {};
-    for (const key of Object.keys(CATEGORIAS_EM)) {
-      resumoCategorias[key] = {
-        ...CATEGORIAS_EM[key],
+    for (const eixo of eixosLista) {
+      resumoCategorias[eixo.codigo] = {
+        ...eixo,
         total_projetos: 0,
+        total_projetos_ativos_mobile: 0,
         total_turmas: 0,
         vagas_totais: 0,
         matriculados: 0,
@@ -558,9 +879,32 @@ router.get("/", async (req, res) => {
     }
 
     for (const proj of todosHidratados) {
-      const bucket = resumoCategorias[proj.categoria];
-      if (!bucket) continue;
+      let bucket = resumoCategorias[proj.categoria];
+      if (!bucket) {
+        const fallbackEixo = formatarEixoRow({
+          codigo: proj.categoria,
+          sigla: proj.categoria,
+          label_mobile: proj.categoria.slice(0, 16),
+          titulo: proj.categoria,
+          ativo: 1,
+          padrao_sistema: 0,
+          ordem: 99,
+        });
+        bucket = {
+          ...fallbackEixo,
+          total_projetos: 0,
+          total_projetos_ativos_mobile: 0,
+          total_turmas: 0,
+          vagas_totais: 0,
+          matriculados: 0,
+          vagas_restantes: 0,
+        };
+        resumoCategorias[proj.categoria] = bucket;
+      }
       bucket.total_projetos += 1;
+      if (proj.ativo_mobile && proj.status === "ABERTO") {
+        bucket.total_projetos_ativos_mobile += 1;
+      }
       bucket.total_turmas += proj.resumo_vagas.total_turmas;
       bucket.vagas_totais += proj.resumo_vagas.vagas_totais;
       bucket.matriculados += proj.resumo_vagas.matriculados;
@@ -569,7 +913,7 @@ router.get("/", async (req, res) => {
 
     // Aplica filtro de categoria e busca textual para a listagem de tabelas abaixo
     let projetosFiltrados = todosHidratados;
-    if (categoriaFiltro && CATEGORIAS_EM[categoriaFiltro]) {
+    if (categoriaFiltro && resumoCategorias[categoriaFiltro]) {
       projetosFiltrados = projetosFiltrados.filter((p) => p.categoria === categoriaFiltro);
     }
     if (busca) {
@@ -582,14 +926,353 @@ router.get("/", async (req, res) => {
       );
     }
 
+    const podeGestao = podeGerenciarEixos(req.user);
+
     return res.json({
       ok: true,
       ano_letivo: anoLetivo,
+      permissoes: {
+        pode_gerenciar_eixos: podeGestao,
+        pode_alternar_ativo: podeGestao,
+      },
       categorias: Object.values(resumoCategorias),
       projetos: projetosFiltrados,
     });
   } catch (err) {
     return responderErro(res, err, "Erro ao carregar projetos do Novo Ensino Médio.");
+  }
+});
+
+// ===========================================================================
+// GESTÃO AUTÔNOMA DE EIXOS DE OFERTA SEMESTRAL (Direção / Secretaria)
+// Importante: rotas `/eixos` declaradas ANTES de `/:id`
+// ===========================================================================
+
+// POST /api/matriculas/projetos/eixos — Cria um novo Eixo de Oferta Semestral
+router.post("/eixos", exigirGestao, async (req, res) => {
+  try {
+    const { escola_id, id: usuarioId } = req.user;
+    const body = req.body || {};
+
+    const titulo = String(body.titulo || "").trim();
+    if (!titulo) {
+      throw falha(400, "Informe o título do novo Eixo de Oferta Semestral.");
+    }
+    if (titulo.length > 120) {
+      throw falha(400, "O título do eixo deve ter no máximo 120 caracteres.");
+    }
+
+    const siglaBruta = String(body.sigla || body.label_mobile || "").trim().toUpperCase();
+    const sigla = (
+      siglaBruta ||
+      titulo
+        .split(/[—\-:/]/)[0]
+        .trim()
+        .toUpperCase()
+    ).slice(0, 20);
+
+    const labelMobile = String(body.label_mobile || sigla)
+      .trim()
+      .toUpperCase()
+      .slice(0, 20);
+
+    const subtitulo = body.subtitulo
+      ? String(body.subtitulo).trim().slice(0, 180)
+      : "Eixo de oferta semestral instituído pela unidade escolar";
+
+    const descricaoCurta = body.descricao_curta
+      ? String(body.descricao_curta).trim().slice(0, 260)
+      : subtitulo;
+
+    const corTema = CORES_TEMA_VALIDAS.has(body.cor_tema) ? body.cor_tema : "indigo";
+    const iconeEmoji = String(body.icone_emoji || "🎓").trim().slice(0, 12) || "🎓";
+    const iconeMobile = ICONES_MOBILE_VALIDOS.has(body.icone_mobile)
+      ? body.icone_mobile
+      : "school-outline";
+
+    const disciplinaTipo = DISCIPLINA_TIPOS_VALIDOS.has(
+      String(body.disciplina_tipo || "").toUpperCase()
+    )
+      ? String(body.disciplina_tipo).toUpperCase()
+      : "PROJETO";
+
+    const agrupamentoTipo = AGRUPAMENTO_TIPOS_VALIDOS.has(
+      String(body.agrupamento_tipo || "").toUpperCase()
+    )
+      ? String(body.agrupamento_tipo).toUpperCase()
+      : disciplinaTipo === "PARTE_DIVERSIFICADA"
+      ? "OUTRO"
+      : AGRUPAMENTO_TIPOS_VALIDOS.has(disciplinaTipo)
+      ? disciplinaTipo
+      : "PROJETO";
+
+    const abrevPrefix =
+      sigla.replace(/[^A-Z0-9]/g, "").slice(0, 8) || "PROJ";
+
+    const cargaSugerida = Math.min(
+      Math.max(toInt(body.carga_sugerida, 2) || 2, 1),
+      20
+    );
+
+    const exemploNome = body.exemplo_nome
+      ? String(body.exemplo_nome).trim().slice(0, 140)
+      : `${sigla} — Projeto Temático Semestral`;
+
+    const ativo = body.ativo === false || Number(body.ativo) === 0 ? 0 : 1;
+
+    const novoEixo = await comTransacao(async (conn) => {
+      // Garante que os 6 padrões já estejam semeados antes de calcular a ordem
+      await obterEixosEscola(escola_id, conn);
+
+      const codigo = await gerarCodigoEixoUnico(conn, escola_id, sigla || titulo);
+      const [[{ maxOrdem }]] = await conn.query(
+        `SELECT COALESCE(MAX(ordem), 6) AS maxOrdem FROM em_eixos WHERE escola_id = ?`,
+        [escola_id]
+      );
+
+      const [ins] = await conn.query(
+        `INSERT INTO em_eixos
+           (escola_id, codigo, sigla, label_mobile, titulo, subtitulo, descricao_curta,
+            cor_tema, icone_emoji, icone_mobile, disciplina_tipo, agrupamento_tipo,
+            abrev_prefix, carga_sugerida, exemplo_nome, ativo, padrao_sistema, ordem, criado_por)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          escola_id,
+          codigo,
+          sigla,
+          labelMobile,
+          titulo,
+          subtitulo,
+          descricaoCurta,
+          corTema,
+          iconeEmoji,
+          iconeMobile,
+          disciplinaTipo,
+          agrupamentoTipo,
+          abrevPrefix,
+          cargaSugerida,
+          exemploNome,
+          ativo,
+          Number(maxOrdem || 6) + 1,
+          usuarioId || null,
+        ]
+      );
+
+      const [[criado]] = await conn.query(
+        `SELECT * FROM em_eixos WHERE id = ? AND escola_id = ? LIMIT 1`,
+        [ins.insertId, escola_id]
+      );
+      return formatarEixoRow(criado);
+    });
+
+    return res.status(201).json({
+      ok: true,
+      message: `Eixo "${novoEixo.titulo}" criado com sucesso!`,
+      eixo: novoEixo,
+    });
+  } catch (err) {
+    return responderErro(res, err, "Não foi possível criar o novo eixo semestral.");
+  }
+});
+
+// PUT /api/matriculas/projetos/eixos/:codigo — Edita metadados visuais/pedagógicos do Eixo
+router.put("/eixos/:codigo", exigirGestao, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const codigo = String(req.params.codigo || "").toUpperCase().trim();
+    if (!codigo) throw falha(400, "Código de eixo inválido.");
+
+    const body = req.body || {};
+
+    const eixoAtualizado = await comTransacao(async (conn) => {
+      await obterEixosEscola(escola_id, conn);
+
+      const [[atual]] = await conn.query(
+        `SELECT * FROM em_eixos WHERE escola_id = ? AND codigo = ? FOR UPDATE`,
+        [escola_id, codigo]
+      );
+      if (!atual) throw falha(404, "Eixo semestral não encontrado nesta escola.");
+
+      const titulo =
+        body.titulo !== undefined ? String(body.titulo).trim() : atual.titulo;
+      if (!titulo) throw falha(400, "O título do eixo não pode ficar vazio.");
+      if (titulo.length > 120) throw falha(400, "Título muito longo (máx. 120 caracteres).");
+
+      const sigla =
+        body.sigla !== undefined
+          ? String(body.sigla).trim().toUpperCase().slice(0, 20) || atual.sigla
+          : atual.sigla;
+
+      const labelMobile =
+        body.label_mobile !== undefined
+          ? String(body.label_mobile).trim().toUpperCase().slice(0, 20) || sigla
+          : body.sigla !== undefined
+          ? sigla
+          : atual.label_mobile;
+
+      const subtitulo =
+        body.subtitulo !== undefined
+          ? String(body.subtitulo || "").trim().slice(0, 180)
+          : atual.subtitulo;
+
+      const descricaoCurta =
+        body.descricao_curta !== undefined
+          ? String(body.descricao_curta || "").trim().slice(0, 260)
+          : atual.descricao_curta;
+
+      const corTema =
+        body.cor_tema !== undefined && CORES_TEMA_VALIDAS.has(body.cor_tema)
+          ? body.cor_tema
+          : atual.cor_tema;
+
+      const iconeEmoji =
+        body.icone_emoji !== undefined && String(body.icone_emoji).trim()
+          ? String(body.icone_emoji).trim().slice(0, 12)
+          : atual.icone_emoji;
+
+      const iconeMobile =
+        body.icone_mobile !== undefined && ICONES_MOBILE_VALIDOS.has(body.icone_mobile)
+          ? body.icone_mobile
+          : atual.icone_mobile;
+
+      const cargaSugerida =
+        body.carga_sugerida !== undefined
+          ? Math.min(Math.max(toInt(body.carga_sugerida, atual.carga_sugerida) || 2, 1), 20)
+          : Number(atual.carga_sugerida || 2);
+
+      const ativo =
+        body.ativo !== undefined
+          ? body.ativo === true || Number(body.ativo) === 1
+            ? 1
+            : 0
+          : Number(atual.ativo);
+
+      await conn.query(
+        `UPDATE em_eixos
+            SET sigla = ?, label_mobile = ?, titulo = ?, subtitulo = ?,
+                descricao_curta = ?, cor_tema = ?, icone_emoji = ?,
+                icone_mobile = ?, carga_sugerida = ?, ativo = ?
+          WHERE id = ? AND escola_id = ?`,
+        [
+          sigla,
+          labelMobile,
+          titulo,
+          subtitulo,
+          descricaoCurta,
+          corTema,
+          iconeEmoji,
+          iconeMobile,
+          cargaSugerida,
+          ativo,
+          atual.id,
+          escola_id,
+        ]
+      );
+
+      const [[pos]] = await conn.query(
+        `SELECT * FROM em_eixos WHERE id = ? AND escola_id = ? LIMIT 1`,
+        [atual.id, escola_id]
+      );
+      return formatarEixoRow(pos);
+    });
+
+    return res.json({
+      ok: true,
+      message: `Eixo "${eixoAtualizado.titulo}" atualizado.`,
+      eixo: eixoAtualizado,
+    });
+  } catch (err) {
+    return responderErro(res, err, "Não foi possível atualizar o eixo semestral.");
+  }
+});
+
+// PATCH /api/matriculas/projetos/eixos/:codigo/ativo — Botão Pill (ON/OFF) do Eixo (reflete direto no Educa Mobile)
+router.patch("/eixos/:codigo/ativo", exigirGestao, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const codigo = String(req.params.codigo || "").toUpperCase().trim();
+    if (!codigo) throw falha(400, "Código de eixo inválido.");
+
+    const body = req.body || {};
+    if (body.ativo === undefined) {
+      throw falha(400, "Informe o estado ativo (true/false).");
+    }
+    const novoAtivo = body.ativo === true || Number(body.ativo) === 1 ? 1 : 0;
+
+    await obterEixosEscola(escola_id);
+
+    const [upd] = await pool.query(
+      `UPDATE em_eixos SET ativo = ? WHERE escola_id = ? AND codigo = ?`,
+      [novoAtivo, escola_id, codigo]
+    );
+    if (upd.affectedRows === 0) {
+      throw falha(404, "Eixo semestral não encontrado nesta escola.");
+    }
+
+    const [[row]] = await pool.query(
+      `SELECT * FROM em_eixos WHERE escola_id = ? AND codigo = ? LIMIT 1`,
+      [escola_id, codigo]
+    );
+    const eixo = formatarEixoRow(row);
+
+    return res.json({
+      ok: true,
+      codigo: eixo.codigo,
+      ativo: eixo.ativo,
+      eixo,
+      message: eixo.ativo
+        ? `Eixo "${eixo.sigla}" ATIVADO — card visível no Educa Mobile.`
+        : `Eixo "${eixo.sigla}" DESATIVADO — card oculto no Educa Mobile.`,
+    });
+  } catch (err) {
+    return responderErro(res, err, "Não foi possível alterar o status do eixo.");
+  }
+});
+
+// DELETE /api/matriculas/projetos/eixos/:codigo — Remove eixo personalizado sem projetos vinculados
+router.delete("/eixos/:codigo", exigirGestao, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const codigo = String(req.params.codigo || "").toUpperCase().trim();
+    if (!codigo) throw falha(400, "Código de eixo inválido.");
+
+    await comTransacao(async (conn) => {
+      const [[eixo]] = await conn.query(
+        `SELECT * FROM em_eixos WHERE escola_id = ? AND codigo = ? FOR UPDATE`,
+        [escola_id, codigo]
+      );
+      if (!eixo) throw falha(404, "Eixo não encontrado.");
+
+      if (Number(eixo.padrao_sistema) === 1) {
+        throw falha(
+          409,
+          "Este é um eixo base do Novo Ensino Médio. Utilize o botão ON/OFF no card para desativá-lo e ocultá-lo no Educa Mobile."
+        );
+      }
+
+      const [[{ totalProjetos }]] = await conn.query(
+        `SELECT COUNT(*) AS totalProjetos FROM em_projetos WHERE escola_id = ? AND categoria = ?`,
+        [escola_id, codigo]
+      );
+      if (Number(totalProjetos) > 0) {
+        throw falha(
+          409,
+          `Este eixo possui ${totalProjetos} projeto(s) vinculado(s). Desative o eixo pelo botão ON/OFF ou exclua seus projetos antes de remover o eixo.`
+        );
+      }
+
+      await conn.query(
+        `DELETE FROM em_eixos WHERE id = ? AND escola_id = ?`,
+        [eixo.id, escola_id]
+      );
+    });
+
+    return res.json({
+      ok: true,
+      message: "Eixo personalizado removido com sucesso.",
+    });
+  } catch (err) {
+    return responderErro(res, err, "Não foi possível excluir o eixo semestral.");
   }
 });
 
@@ -602,10 +1285,11 @@ router.post("/", exigirGestao, async (req, res) => {
     const { escola_id, id: usuarioId } = req.user;
     const body = req.body || {};
 
+    const eixosMap = await obterMapaEixosEscola(escola_id);
     const categoria = String(body.categoria || "").toUpperCase().trim();
-    const catInfo = CATEGORIAS_EM[categoria];
+    const catInfo = eixosMap.get(categoria) || CATEGORIAS_EM[categoria];
     if (!catInfo) {
-      throw falha(400, "Categoria de projeto inválida.");
+      throw falha(400, "Eixo/categoria de projeto inválido para esta escola.");
     }
 
     const nome = String(body.nome || "").trim();
@@ -646,6 +1330,7 @@ router.post("/", exigirGestao, async (req, res) => {
       : null;
     const seriesJson = normalizarSeriesInput(body.series);
     const inscricaoAberta = body.inscricao_aberta === false ? 0 : 1;
+    const ativoMobile = body.ativo_mobile === false ? 0 : 1;
     const abrevFinal =
       typeof body.abreviatura === "string" && body.abreviatura.trim()
         ? body.abreviatura.trim().toUpperCase().slice(0, 20)
@@ -667,8 +1352,8 @@ router.post("/", exigirGestao, async (req, res) => {
         `INSERT INTO em_projetos
            (escola_id, ano_letivo, semestre, categoria, nome, abreviatura, sinopse,
             professor_idealizador, turno, series_json, carga_semanal, disciplina_id,
-            qtd_turmas_planejadas, vagas_por_turma, inscricao_aberta, status, criado_por)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABERTO', ?)`,
+            qtd_turmas_planejadas, vagas_por_turma, inscricao_aberta, ativo_mobile, status, criado_por)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABERTO', ?)`,
         [
           escola_id,
           anoLetivo,
@@ -685,6 +1370,7 @@ router.post("/", exigirGestao, async (req, res) => {
           qtdTurmas,
           vagasPorTurma,
           inscricaoAberta,
+          ativoMobile,
           usuarioId || null,
         ]
       );
@@ -764,11 +1450,12 @@ router.put("/:id", exigirGestao, async (req, res) => {
       );
       if (!atual) throw falha(404, "Projeto não encontrado nesta escola.");
 
+      const eixosMap = await obterMapaEixosEscola(escola_id, conn);
       const categoria = body.categoria
         ? String(body.categoria).toUpperCase().trim()
         : atual.categoria;
-      const catInfo = CATEGORIAS_EM[categoria];
-      if (!catInfo) throw falha(400, "Categoria inválida.");
+      const catInfo = eixosMap.get(categoria) || CATEGORIAS_EM[categoria];
+      if (!catInfo) throw falha(400, "Eixo/categoria inválido.");
 
       const nome = body.nome !== undefined ? String(body.nome).trim() : atual.nome;
       if (!nome) throw falha(400, "O nome do projeto não pode ficar vazio.");
@@ -810,6 +1497,12 @@ router.put("/:id", exigirGestao, async (req, res) => {
         body.inscricao_aberta !== undefined
           ? (body.inscricao_aberta ? 1 : 0)
           : Number(atual.inscricao_aberta);
+      const ativoMobile =
+        body.ativo_mobile !== undefined
+          ? (body.ativo_mobile ? 1 : 0)
+          : atual.ativo_mobile === undefined || atual.ativo_mobile === null
+          ? 1
+          : Number(atual.ativo_mobile);
       const abrevFinal =
         body.abreviatura !== undefined
           ? (body.abreviatura.trim()
@@ -872,7 +1565,7 @@ router.put("/:id", exigirGestao, async (req, res) => {
                 professor_idealizador = ?, turno = ?, semestre = ?,
                 series_json = ?, carga_semanal = ?, disciplina_id = ?,
                 qtd_turmas_planejadas = ?, vagas_por_turma = ?,
-                inscricao_aberta = ?, status = ?
+                inscricao_aberta = ?, ativo_mobile = ?, status = ?
           WHERE id = ? AND escola_id = ?`,
         [
           categoria,
@@ -888,6 +1581,7 @@ router.put("/:id", exigirGestao, async (req, res) => {
           qtdTurmasDesejada,
           vagasPorTurma,
           inscricaoAberta,
+          ativoMobile,
           status,
           projetoId,
           escola_id,
@@ -982,6 +1676,48 @@ router.put("/:id", exigirGestao, async (req, res) => {
 });
 
 // ===========================================================================
+// PATCH /api/matriculas/projetos/:id/ativo
+// Botão Pill (ON/OFF) do Projeto / Container individual (controla visibilidade no Educa Mobile)
+// ===========================================================================
+router.patch("/:id/ativo", exigirGestao, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const projetoId = toInt(req.params.id);
+    if (!projetoId) throw falha(400, "Identificador de projeto inválido.");
+
+    const body = req.body || {};
+    if (body.ativo === undefined && body.ativo_mobile === undefined) {
+      throw falha(400, "Informe o estado ativo (true/false).");
+    }
+    const flagInput = body.ativo !== undefined ? body.ativo : body.ativo_mobile;
+    const novoAtivo = flagInput === true || Number(flagInput) === 1 ? 1 : 0;
+
+    const [[proj]] = await pool.query(
+      `SELECT id, nome FROM em_projetos WHERE id = ? AND escola_id = ? LIMIT 1`,
+      [projetoId, escola_id]
+    );
+    if (!proj) throw falha(404, "Projeto não encontrado nesta escola.");
+
+    await pool.query(
+      `UPDATE em_projetos SET ativo_mobile = ? WHERE id = ? AND escola_id = ?`,
+      [novoAtivo, projetoId, escola_id]
+    );
+
+    return res.json({
+      ok: true,
+      id: projetoId,
+      ativo_mobile: novoAtivo === 1,
+      message:
+        novoAtivo === 1
+          ? `Projeto "${proj.nome}" ATIVADO no Educa Mobile.`
+          : `Projeto "${proj.nome}" DESATIVADO (oculto no Educa Mobile).`,
+    });
+  } catch (err) {
+    return responderErro(res, err, "Não foi possível alterar a visibilidade do projeto.");
+  }
+});
+
+// ===========================================================================
 // POST /api/matriculas/projetos/:id/turmas
 // Adiciona +1 turma extra a um projeto já existente (ex.: Turma 04)
 // ===========================================================================
@@ -1011,7 +1747,11 @@ router.post("/:id/turmas", exigirGestao, async (req, res) => {
         throw falha(400, "Capacidade inválida (1 a 500 vagas).");
       }
 
-      const catInfo = CATEGORIAS_EM[proj.categoria] || CATEGORIAS_EM.PROJETO;
+      const eixosMap = await obterMapaEixosEscola(escola_id, conn);
+      const catInfo =
+        eixosMap.get(proj.categoria) ||
+        CATEGORIAS_EM[proj.categoria] ||
+        CATEGORIAS_EM.PROJETO;
       const proxNumero = turmas.length + 1;
       const { nome: nomeAgr, apelido } = await gerarNomeTurmaAgrupamento(conn, {
         escola_id,
