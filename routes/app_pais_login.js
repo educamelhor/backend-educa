@@ -17,6 +17,7 @@ import express from "express";
 import jwt     from "jsonwebtoken";
 import pool    from "../db.js";
 import { pontosEfetivos, calcularEUpsertMerito, calcularEUpsertBonusMedia } from "../utils/disciplinarCalculos.js";
+import { handleGetConteudosDisciplinas, handleGetConteudos } from "../utils/conteudosMobileHelper.js";
 
 const router = express.Router();
 
@@ -960,66 +961,11 @@ function authAppPais(req, res, next) {
 
 
 // ============================================================================
-// GET /conteudos/disciplinas — lista disciplinas vinculadas ao aluno/escola
+// GET /conteudos/disciplinas — lista disciplinas escopadas por aluno/turma e semestre
 // Registrado aqui pois authAppPaisOuAluno está em escopo incorreto em app_pais.js
 // ============================================================================
 router.get("/conteudos/disciplinas", authAppPaisOuAluno, async (req, res) => {
-  const db = pool;
-  const alunoId = Number(req.query.aluno_id);
-
-  if (!alunoId) {
-    return res.status(400).json({ message: "aluno_id é obrigatório." });
-  }
-
-  try {
-    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
-    if (req.appPaisAuth?.cpf === "00000000019") {
-      return res.json({ ok: true, disciplinas: [
-        { id: 1, nome: "Português" },
-        { id: 2, nome: "Matemática" },
-        { id: 3, nome: "Ciências" },
-        { id: 4, nome: "História" },
-        { id: 5, nome: "Geografia" },
-        { id: 6, nome: "Artes" },
-        { id: 7, nome: "Educação Física" },
-      ]});
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // 1) Descobre escola_id a partir do vínculo (garante acesso)
-    let escolaId = null;
-    if (req.alunoAuth) {
-      if (req.alunoAuth.aluno_id !== alunoId)
-        return res.status(403).json({ message: "Acesso negado." });
-      const [[vinc]] = await db.query(
-        `SELECT escola_id FROM alunos WHERE id = ? LIMIT 1`, [alunoId]
-      );
-      if (!vinc) return res.status(403).json({ message: "Acesso negado para este aluno." });
-      escolaId = vinc.escola_id;
-    } else {
-      const { responsavel_id } = req.appPaisAuth;
-      const [vinc] = await db.query(
-        `SELECT ra.escola_id
-         FROM responsaveis_alunos ra
-         WHERE ra.responsavel_id = ? AND ra.aluno_id = ? AND ra.ativo = 1
-         LIMIT 1`,
-        [responsavel_id, alunoId]
-      );
-      if (!vinc.length) return res.status(403).json({ message: "Acesso negado para este aluno." });
-      escolaId = vinc[0].escola_id;
-    }
-
-    // 2) Lista disciplinas da escola
-    const [rows] = await db.query(
-      `SELECT id, nome FROM disciplinas WHERE escola_id = ? ORDER BY nome ASC`,
-      [escolaId]
-    );
-
-    return res.json({ ok: true, disciplinas: rows });
-  } catch (error) {
-    console.error("[APP_PAIS_LOGIN] Erro em GET /conteudos/disciplinas:", error);
-    return res.status(500).json({ message: "Erro ao carregar disciplinas." });
-  }
+  return handleGetConteudosDisciplinas(pool, req, res);
 });
 
 // ============================================================================
@@ -1027,132 +973,7 @@ router.get("/conteudos/disciplinas", authAppPaisOuAluno, async (req, res) => {
 // Registrado aqui pois authAppPaisOuAluno está em escopo incorreto em app_pais.js
 // ============================================================================
 router.get("/conteudos", authAppPaisOuAluno, async (req, res) => {
-  const db = pool;
-  try {
-    const alunoId      = Number(req.query.aluno_id);
-    const disciplinaId = Number(req.query.disciplina_id);
-    const bimestre     = Number(req.query.bimestre);
-    const anoLetivo    = req.query.ano_letivo ? Number(req.query.ano_letivo) : new Date().getFullYear();
-
-    if (!alunoId || Number.isNaN(alunoId))
-      return res.status(400).json({ message: "Parâmetro aluno_id inválido." });
-    if (!disciplinaId || Number.isNaN(disciplinaId))
-      return res.status(400).json({ message: "Parâmetro disciplina_id inválido." });
-
-    // ── DEMO-APPLE bypass ────────────────────────────────────────────────────
-    if (req.appPaisAuth?.cpf === "00000000019") {
-      const DEMO_OBJETIVOS = {
-        1: [{ texto: "Compreender os diferentes gêneros textuais", subitens: ["Narrativo", "Descritivo", "Argumentativo"] }],
-        2: [{ texto: "Dominar as operações fundamentais", subitens: ["Adição e subtração", "Multiplicação e divisão"] }],
-        3: [{ texto: "Analisar fenômenos naturais", subitens: ["Ciclo da água", "Ecossistemas brasileiros"] }],
-        4: [{ texto: "Consolidar os aprendizados do ano letivo", subitens: ["Revisão dos principais conteúdos"] }],
-      };
-      return res.json({
-        ok: true,
-        ref: { escola_id: null, turma_id: null, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-        objetivos: DEMO_OBJETIVOS[bimestre] || DEMO_OBJETIVOS[1],
-      });
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    if (!bimestre || Number.isNaN(bimestre) || bimestre < 1 || bimestre > 4)
-      return res.status(400).json({ message: "Parâmetro bimestre inválido (1..4)." });
-    if (!anoLetivo || Number.isNaN(anoLetivo))
-      return res.status(400).json({ message: "Parâmetro ano_letivo inválido." });
-
-    // 1) Resolve escola_id, turma_id e série com validação do vínculo
-    let ctxResult = [];
-    if (req.alunoAuth) {
-      const { aluno_id } = req.alunoAuth;
-      if (aluno_id !== alunoId) return res.status(403).json({ message: "Acesso negado." });
-      [ctxResult] = await db.query(
-        `SELECT a.escola_id, a.turma_id, t.serie
-         FROM alunos a LEFT JOIN turmas t ON t.id = a.turma_id
-         WHERE a.id = ? LIMIT 1`,
-        [alunoId]
-      );
-    } else {
-      const { responsavel_id } = req.appPaisAuth;
-      [ctxResult] = await db.query(
-        `SELECT ra.escola_id, a.turma_id, t.serie
-         FROM responsaveis_alunos ra
-         INNER JOIN alunos a ON a.id = ra.aluno_id
-         LEFT  JOIN turmas  t ON t.id = a.turma_id
-         WHERE ra.responsavel_id = ? AND ra.aluno_id = ? AND ra.ativo = 1
-         LIMIT 1`,
-        [responsavel_id, alunoId]
-      );
-    }
-
-    if (!ctxResult.length)
-      return res.status(403).json({ message: "Acesso negado para este aluno." });
-
-    const escolaId = ctxResult[0].escola_id;
-    const turmaId  = ctxResult[0].turma_id;
-    const serie    = String(ctxResult[0].serie || "").trim().toUpperCase();
-
-    if (!turmaId || !serie) {
-      return res.json({
-        ok: true,
-        ref: { escola_id: escolaId, turma_id: null, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-        objetivos: [],
-      });
-    }
-
-    // 2) Busca texto em conteudos_objetivos_escola
-    const [itensRows] = await db.query(
-      `SELECT texto as objetivo_texto
-       FROM conteudos_objetivos_escola
-       WHERE escola_id   = ?
-         AND serie       = ?
-         AND disciplina_id = ?
-         AND ano_letivo  = ?
-         AND bimestre    = ?
-         AND texto IS NOT NULL
-         AND TRIM(texto) != ''
-       ORDER BY id ASC
-       LIMIT 100`,
-      [escolaId, serie, disciplinaId, anoLetivo, bimestre]
-    );
-
-    // 3) Parse do texto estruturado
-    function parseObjetivoTexto(texto) {
-      if (!texto) return [];
-      const topicos = [];
-      let atual = null;
-      for (const linha of texto.split("\n")) {
-        const tMatch = linha.match(/^\s*\d+[.)]\s+(.+)/);
-        const sMatch = linha.match(/^\s*[*\-]\s+(.+)/) || linha.match(/^\s*\u2022\s+(.+)/);
-        if (tMatch) {
-          atual = { texto: tMatch[1].trim(), subitens: [] };
-          topicos.push(atual);
-        } else if (sMatch && atual) {
-          const sub = sMatch[1].trim();
-          if (sub) atual.subitens.push(sub);
-        } else {
-          const raw = linha.replace(/^[*\-\u2022]\s*/, "").trim();
-          if (raw && !atual) {
-            atual = { texto: raw, subitens: [] };
-            topicos.push(atual);
-          } else if (raw && atual && raw !== atual.texto && /^\s{2,}/.test(linha)) {
-            atual.subitens.push(raw);
-          }
-        }
-      }
-      return topicos;
-    }
-
-    const objetivos = itensRows.flatMap((row) => parseObjetivoTexto(row.objetivo_texto));
-
-    return res.json({
-      ok: true,
-      ref: { escola_id: escolaId, turma_id: turmaId, disciplina_id: disciplinaId, bimestre, ano_letivo: anoLetivo },
-      objetivos,
-    });
-  } catch (error) {
-    console.error("[APP_PAIS_LOGIN] Erro em GET /conteudos:", error);
-    return res.status(500).json({ message: "Erro ao carregar conteúdos." });
-  }
+  return handleGetConteudos(pool, req, res);
 });
 
 // ============================================================================
