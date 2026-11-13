@@ -1,0 +1,724 @@
+// modules/questoes-ai/sheetSplitter.agent.js
+// EDUCA.STUDIO AI — Fase 2: Importador Inteligente de Listas, Páginas e PDFs
+// Individualiza páginas inteiras de provas/listas (1 ou 2 colunas, PDF renderizado ou foto)
+// e listas em texto bruto nos 7 modelos universais, vinculando textos de apoio compartilhados,
+// recortando figuras independentes no DO Spaces e resolvendo o gabarito passo a passo.
+
+import { SchemaType } from '@google/generative-ai';
+import { processarMidiaQuestao, publicarPaginaOriginalLista } from './smartMediaEngine.js';
+import {
+  DISCIPLINAS_OFICIAIS,
+  SERIES_OFICIAIS,
+  gerarJsonComFailover,
+  sanitizarObjetoIA,
+  bboxIoU,
+  montarEstruturaInicialExtraida,
+} from './visionExtractor.agent.js';
+
+const TIPOS_VALIDOS = [
+  'objetiva',
+  'afirmativas',
+  'verdadeiro_falso',
+  'associacao',
+  'lacuna',
+  'discursiva',
+  'somatoria',
+];
+
+function clampNorm(v, min = 0, max = 1000) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function limparCabecalhoTextoCompartilhado(txt = '') {
+  return String(txt || '')
+    .replace(/^\s*(?:leia|considere|analise|utilize)\s+o\s+texto\s+(?:a\s+seguir|abaixo)\s+para\s+responder\s+[àa]s?\s+quest[õo]es\s+[^\n.:]+[:.]?\s*/i, '')
+    .replace(/^\s*texto\s+(?:base\s+)?para\s+as?\s+quest[õo]es\s+[^\n.:]+[:.]?\s*/i, '')
+    .trim();
+}
+
+// ── Schema enxuto e de baixa profundidade de estado para suportar até 10 questões por página no Gemini ──
+const QUESTAO_ITEM_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    numero_original: {
+      type: SchemaType.STRING,
+      description: 'Número impresso da questão na prova/lista (ex: "01", "2", "Questão 15"). Vazio se sem número.',
+    },
+    questao_bbox: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.INTEGER },
+      description: 'Bounding box [ymin, xmin, ymax, xmax] (0 a 1000) englobando a região visual desta questão na página.',
+    },
+    id_texto_apoio_vinculado: {
+      type: SchemaType.STRING,
+      description: 'ID do texto compartilhado (ex: "T1") caso esta questão dependa de um texto comum da página. Vazio se não houver.',
+    },
+    usa_texto_pagina_anterior: {
+      type: SchemaType.BOOLEAN,
+      description: 'true APENAS se a questão mencionar explicitamente um texto base vindo da página anterior.',
+    },
+    tipo: {
+      type: SchemaType.STRING,
+      description: 'objetiva | afirmativas | verdadeiro_falso | associacao | lacuna | discursiva | somatoria',
+    },
+    disciplina: { type: SchemaType.STRING },
+    serie: { type: SchemaType.STRING },
+    nivel: { type: SchemaType.STRING, description: 'facil | medio | dificil | enem' },
+    fonte: { type: SchemaType.STRING },
+    fonte_confirmada: { type: SchemaType.BOOLEAN },
+    habilidade_bncc: { type: SchemaType.STRING },
+    temas: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    tags: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    texto_apoio: {
+      type: SchemaType.STRING,
+      description: 'Texto de apoio exclusivo desta questão (se não for um texto compartilhado em textos_apoio_compartilhados).',
+    },
+    enunciado: { type: SchemaType.STRING },
+    comando_final: { type: SchemaType.STRING },
+    figuras: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          alvo: { type: SchemaType.STRING, description: 'principal | alt_A | alt_B | alt_C | alt_D | alt_E' },
+          natureza_visual: {
+            type: SchemaType.STRING,
+            description: 'grafico_cartesiano | geometria_desenho | esquema_cientifico | estrutura_quimica_2d | tirinha_charge_mapa | tabela_visual | equacao_puramente_tipografica',
+          },
+          ordem: { type: SchemaType.INTEGER },
+          coluna: { type: SchemaType.STRING, description: 'unica | esquerda | direita' },
+          continuacao_quebra_coluna: { type: SchemaType.BOOLEAN },
+          bbox: { type: SchemaType.ARRAY, items: { type: SchemaType.INTEGER } },
+          posicao_sugerida: { type: SchemaType.STRING },
+          legenda_original: { type: SchemaType.STRING },
+          foto_papel_cinza: { type: SchemaType.BOOLEAN },
+        },
+        required: ['alvo', 'natureza_visual', 'bbox'],
+      },
+    },
+    alternativas: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          letra: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+        },
+        required: ['letra', 'texto'],
+      },
+    },
+    proposicoes_romanas: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          romano: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+          correta: { type: SchemaType.BOOLEAN },
+        },
+        required: ['romano', 'texto', 'correta'],
+      },
+    },
+    comando_fechamento_afirmativas: { type: SchemaType.STRING },
+    vf_submodo: { type: SchemaType.STRING },
+    vf_rotulo: { type: SchemaType.STRING },
+    itens_vf: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          texto: { type: SchemaType.STRING },
+          gabarito: { type: SchemaType.STRING },
+        },
+        required: ['texto', 'gabarito'],
+      },
+    },
+    assoc_submodo: { type: SchemaType.STRING },
+    coluna_a: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          codigo: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+        },
+        required: ['codigo', 'texto'],
+      },
+    },
+    coluna_b: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          texto: { type: SchemaType.STRING },
+          vinculo_codigo: { type: SchemaType.STRING },
+        },
+        required: ['texto', 'vinculo_codigo'],
+      },
+    },
+    lacuna_submodo: { type: SchemaType.STRING },
+    texto_lacunado: { type: SchemaType.STRING },
+    distratores_banco: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    proposicoes_somatoria: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          valor: { type: SchemaType.INTEGER },
+          codigo: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+          correta: { type: SchemaType.BOOLEAN },
+        },
+        required: ['valor', 'codigo', 'texto', 'correta'],
+      },
+    },
+    soma_correta: { type: SchemaType.INTEGER },
+    formato_espaco_discursiva: { type: SchemaType.STRING },
+    linhas_resposta_sugeridas: { type: SchemaType.INTEGER },
+    resposta_aberta: { type: SchemaType.STRING },
+    gabarito_letra: { type: SchemaType.STRING },
+    gabarito_origem: {
+      type: SchemaType.STRING,
+      description: 'marcado_na_imagem | resolvido_pela_ia',
+    },
+    resolucao_passo_a_passo: { type: SchemaType.STRING },
+    confianca: { type: SchemaType.STRING, description: 'alta | media | baixa' },
+  },
+  required: [
+    'numero_original',
+    'tipo',
+    'disciplina',
+    'nivel',
+    'temas',
+    'enunciado',
+    'gabarito_origem',
+    'resolucao_passo_a_passo',
+    'confianca',
+  ],
+};
+
+const SHEET_EXTRACTION_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    layout_pagina: {
+      type: SchemaType.STRING,
+      description: 'coluna_unica | duas_colunas',
+    },
+    coluna_divisao_x: {
+      type: SchemaType.INTEGER,
+      description: 'Coordenada X (0 a 1000) do corredor vertical entre as colunas quando layout_pagina = duas_colunas (0 se coluna_unica).',
+    },
+    disciplina_predominante: { type: SchemaType.STRING },
+    serie_predominante: { type: SchemaType.STRING },
+    fonte_geral: { type: SchemaType.STRING },
+    textos_apoio_compartilhados: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          id_texto: { type: SchemaType.STRING, description: 'Ex: T1, T2' },
+          alcance_questoes: { type: SchemaType.STRING, description: 'Ex: "1 a 3"' },
+          conteudo: { type: SchemaType.STRING },
+        },
+        required: ['id_texto', 'conteudo'],
+      },
+    },
+    questoes: {
+      type: SchemaType.ARRAY,
+      items: QUESTAO_ITEM_SCHEMA,
+    },
+  },
+  required: ['layout_pagina', 'coluna_divisao_x', 'textos_apoio_compartilhados', 'questoes'],
+};
+
+/**
+ * Normaliza um item bruto da lista extraída para o formato canônico do EDUCA.STUDIO AI.
+ */
+function normalizarQuestaoIndividualizada({
+  qRaw,
+  idx,
+  mapaTextosCompartilhados,
+  ultimoTextoApoio,
+  disciplinaFallback,
+  serieFallback,
+  fonteGeral,
+  layoutPagina,
+  paginaOriginalUrl,
+  paginaNumero,
+  midiaPrincipal = null,
+  midiasAlternativas = {},
+  modeloUsado = '',
+}) {
+  const tipo = TIPOS_VALIDOS.includes(qRaw.tipo) ? qRaw.tipo : 'objetiva';
+
+  // Resolve texto de apoio (compartilhado na página > próprio da questão > herdado da página anterior)
+  let textoApoioFinal = String(qRaw.texto_apoio || '').trim();
+  const idVinc = String(qRaw.id_texto_apoio_vinculado || '').trim();
+  if (idVinc && mapaTextosCompartilhados.has(idVinc)) {
+    const compartilhado = mapaTextosCompartilhados.get(idVinc);
+    textoApoioFinal = textoApoioFinal
+      ? `${compartilhado}\n\n${textoApoioFinal}`
+      : compartilhado;
+  } else if (!textoApoioFinal && qRaw.usa_texto_pagina_anterior && ultimoTextoApoio) {
+    textoApoioFinal = limparCabecalhoTextoCompartilhado(ultimoTextoApoio);
+  }
+
+  const discCandidata = qRaw.disciplina || disciplinaFallback || '';
+  const disciplina = DISCIPLINAS_OFICIAIS.includes(discCandidata)
+    ? discCandidata
+    : (DISCIPLINAS_OFICIAIS.includes(disciplinaFallback) ? disciplinaFallback : 'Matemática');
+
+  const serieCandidata = qRaw.serie || serieFallback || '';
+  const serie = SERIES_OFICIAIS.includes(serieCandidata)
+    ? serieCandidata
+    : (SERIES_OFICIAIS.includes(serieFallback) ? serieFallback : '');
+
+  const nivel = ['facil', 'medio', 'dificil', 'enem'].includes(qRaw.nivel) ? qRaw.nivel : 'medio';
+  const fonte = String(qRaw.fonte || fonteGeral || '').trim();
+
+  const temasExtraidos = Array.isArray(qRaw.temas) ? qRaw.temas.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 5) : [];
+  const temas = temasExtraidos.length > 0 ? temasExtraidos : [disciplina];
+  const tags = Array.isArray(qRaw.tags) ? qRaw.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
+
+  const gabaritoUpper = String(qRaw.gabarito_letra || '').toUpperCase().trim();
+  const baseTs = Date.now() + idx * 20;
+  const alternativas = Array.isArray(qRaw.alternativas)
+    ? qRaw.alternativas.map((a, aIdx) => {
+        const letra = String(a.letra || String.fromCharCode(65 + aIdx)).toUpperCase().trim();
+        return {
+          id: baseTs + aIdx,
+          letra,
+          texto: String(a.texto || '').trim(),
+          imagem_url: midiasAlternativas[letra] || null,
+          correta: Boolean(gabaritoUpper && letra === gabaritoUpper),
+        };
+      })
+    : [];
+
+  const estrutura = montarEstruturaInicialExtraida(tipo, qRaw);
+
+  let questaoBbox = null;
+  if (Array.isArray(qRaw.questao_bbox) && qRaw.questao_bbox.length === 4) {
+    const [y1, x1, y2, x2] = qRaw.questao_bbox.map((v) => clampNorm(v, 0, 1000));
+    if (y2 - y1 >= 25 && x2 - x1 >= 40) {
+      questaoBbox = [y1, x1, y2, x2];
+    }
+  }
+
+  return {
+    id_fila: `fila_p${paginaNumero || 1}_q${idx + 1}_${Math.random().toString(36).slice(2, 7)}`,
+    pagina_origem: Number(paginaNumero) || 1,
+    pagina_original_url: paginaOriginalUrl || null,
+    numero_original: String(qRaw.numero_original || `${idx + 1}`).trim(),
+    questao_bbox: questaoBbox,
+    modelo_ia: modeloUsado,
+    layout_origem: layoutPagina,
+    tipo,
+    disciplina,
+    serie,
+    nivel,
+    fonte,
+    fonte_confirmada: Boolean(qRaw.fonte_confirmada),
+    habilidade_bncc: String(qRaw.habilidade_bncc || '').toUpperCase().trim(),
+    temas,
+    tags,
+    texto_apoio: textoApoioFinal,
+    enunciado: tipo === 'lacuna' && qRaw.texto_lacunado ? qRaw.texto_lacunado : (qRaw.enunciado || ''),
+    comando_final: qRaw.comando_final || '',
+    alternativas,
+    estrutura_json: estrutura,
+    midia: midiaPrincipal,
+    imagem_url: midiaPrincipal?.url || null,
+    resposta_aberta: qRaw.resposta_aberta || '',
+    gabarito: gabaritoUpper || null,
+    gabarito_origem: qRaw.gabarito_origem === 'marcado_na_imagem' ? 'marcado_na_imagem' : 'resolvido_pela_ia',
+    explicacao: qRaw.resolucao_passo_a_passo || '',
+    confianca: ['alta', 'media', 'baixa'].includes(qRaw.confianca) ? qRaw.confianca : 'alta',
+  };
+}
+
+/**
+ * Extrai TODAS as questões presentes em uma página (PDF renderizado em alta definição ou foto de prova/lista),
+ * recortando as figuras individuais de cada questão no DO Spaces.
+ */
+export async function extrairListaDePaginaMultimodal(fileBuffer, mimeType, opcoes = {}) {
+  const {
+    disciplinaSugerida = '',
+    serieSugerida = '',
+    paginaNumero = 1,
+    ultimoTextoApoio = '',
+  } = opcoes || {};
+
+  const contextoHints = [
+    disciplinaSugerida ? `- Disciplina informada pelo professor (use como padrão caso a questão não seja claramente de outra área): "${disciplinaSugerida}".` : '',
+    serieSugerida ? `- Série escolar informada pelo professor: "${serieSugerida}".` : '',
+    ultimoTextoApoio
+      ? `- Último texto de apoio da página anterior (caso a 1ª questão desta página continue referenciando-o sem repeti-lo, marque usa_texto_pagina_anterior=true): """${String(ultimoTextoApoio).slice(0, 1200)}"""`
+      : '',
+  ].filter(Boolean).join('\n');
+
+  const prompt = `Você é o Agente Individualizador de Provas e Listas do EDUCA.STUDIO AI.
+Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNumero}) e INDIVIDUALIZE TODAS as questões visíveis com fidelidade editorial absoluta:
+
+1. DIAGRAMAÇÃO DA PÁGINA E ORDEM DE LEITURA ("layout_pagina" e "coluna_divisao_x"):
+   - Se a folha estiver diagramada em 2 colunas lado a lado (padrão ENEM, vestibulares, apostilas), defina layout_pagina="duas_colunas" e informe em "coluna_divisao_x" o X (0..1000, ex: 495) do corredor branco vertical central.
+   - Em duas_colunas, leia ESTRITAMENTE: 1º toda a coluna da esquerda (de cima até embaixo), depois 2º toda a coluna da direita (de cima até embaixo).
+   - Se uma mesma questão começar no fim da coluna esquerda e terminar no topo da coluna direita, UNIFIQUE-A em um único item de "questoes"!
+   - Ignore cabeçalhos institucionais da escola (nome do aluno, data, nota, instruções gerais da capa da prova) que não façam parte de nenhuma questão.
+
+2. TEXTOS DE APOIO COMPARTILHADOS ("textos_apoio_compartilhados"):
+   - Quando houver um texto base, tirinha ou artigo com instrução do tipo "Leia o texto a seguir para responder às questões 1 a 3", registre esse texto em "textos_apoio_compartilhados" com um "id_texto" (ex: "T1") SEM a frase "Texto para as questões 1 a 3", e vincule "id_texto_apoio_vinculado": "T1" em TODAS as questões abrangidas (1, 2 e 3) para que cada questão fique 100% autônoma no banco!
+
+3. CLASSIFICAÇÃO NOS 7 MODELOS UNIVERSAIS ("tipo"):
+   - "objetiva": múltipla escolha clássica (A–D ou A–E).
+   - "afirmativas": proposições romanas (I, II, III...) em "proposicoes_romanas", fechamento em "comando_fechamento_afirmativas" e opções em "alternativas".
+   - "verdadeiro_falso": assertivas V/F ou C/E em "itens_vf" (vf_submodo="sequencia" se houver alternativas A–E abaixo com a sequência, colocando a frase "Assinale a alternativa..." em "comando_final").
+   - "associacao": duas colunas para relacionar ("coluna_a" e "coluna_b" com "vinculo_codigo"). Se houver alternativas A–E com a sequência numérica abaixo, use assoc_submodo="sequencia" e coloque a frase "Assinale a alternativa que apresenta a sequência correta:" em "comando_final".
+   - "lacuna": frase com lacunas substituídas por {{resposta_correta}} em "texto_lacunado".
+   - "somatoria": proposições em potências de 2 (01, 02, 04, 08...) em "proposicoes_somatoria".
+   - "discursiva": questão aberta sem alternativas (preencha "resposta_aberta" com o espelho esperado).
+
+4. LATEX CIENTÍFICO, EQUAÇÕES EM DESTAQUE ($$...$$) E RECORTE ESTRITO DE FIGURAS ("figuras"):
+   - Remova o número original do início de "enunciado" (guarde-o em "numero_original", ex: "01", "Questão 4") e extraia a sigla da banca para "fonte" (ex: "(ENEM 2023)" -> fonte="ENEM 2023"; nunca invente fonte se não estiver impressa).
+   - Remova cursores de edição "|" colados em palavras ("aproxim|arem" -> "aproximarem").
+   - Envolva toda fórmula matemática, física ou química linear em cifrões simples $...$ (ex: $m_0$, $\\frac{a}{b}$, $\\text{H}_2\\text{SO}_4$) ou cifrão duplo \`$$...$$\` em linha própria para equações centralizadas em destaque.
+   - REGRA DE OURO DE FIGURAS: NUNCA inclua equações algébricas tipográficas, frações ou legendas de variáveis em "figuras" (para elas, retorne "figuras": [] ou classifique como "equacao_puramente_tipografica"). Inclua em "figuras" APENAS ilustrações gráficas reais (gráficos, desenhos geométricos, esquemas biológicos/físicos, estruturas químicas 2D com ligações desenhadas, charges/tirinhas, mapas ou tabelas complexas) pertencentes especificamente àquela questão!
+   - Informe também "questao_bbox": [ymin, xmin, ymax, xmax] (0..1000) delimitando onde cada questão aparece na página.
+
+5. GABARITO E RESOLUÇÃO OBJETIVA PASSO A PASSO:
+   - Se houver gabarito marcado/impresso na folha para a questão, use gabarito_origem="marcado_na_imagem"; caso contrário, resolva com rigor científico em 2 a 4 passos objetivos em "resolucao_passo_a_passo" (sempre fechando $...$ em qualquer LaTeX) e defina gabarito_origem="resolvido_pela_ia".
+   - Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
+${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
+
+  const imagePart = {
+    inlineData: {
+      data: fileBuffer.toString('base64'),
+      mimeType: mimeType || 'image/jpeg',
+    },
+  };
+
+  const openAiSchemaHint = `Retorne ESTRITAMENTE um objeto JSON com as chaves:
+{
+  "layout_pagina": "coluna_unica" | "duas_colunas",
+  "coluna_divisao_x": 0,
+  "disciplina_predominante": "Matemática",
+  "serie_predominante": "1º EM",
+  "fonte_geral": "",
+  "textos_apoio_compartilhados": [{ "id_texto": "T1", "alcance_questoes": "1 a 2", "conteudo": "..." }],
+  "questoes": [
+    {
+      "numero_original": "01",
+      "questao_bbox": [ymin, xmin, ymax, xmax],
+      "id_texto_apoio_vinculado": "",
+      "usa_texto_pagina_anterior": false,
+      "tipo": "objetiva",
+      "disciplina": "Matemática",
+      "serie": "1º EM",
+      "nivel": "medio",
+      "fonte": "",
+      "fonte_confirmada": false,
+      "habilidade_bncc": "",
+      "temas": ["..."],
+      "tags": ["..."],
+      "texto_apoio": "",
+      "enunciado": "...",
+      "comando_final": "",
+      "figuras": [{ "alvo": "principal", "natureza_visual": "grafico_cartesiano", "ordem": 1, "coluna": "unica", "continuacao_quebra_coluna": false, "bbox": [ymin, xmin, ymax, xmax], "posicao_sugerida": "entre_enunciado_e_comando", "legenda_original": "", "foto_papel_cinza": false }],
+      "alternativas": [{ "letra": "A", "texto": "..." }],
+      "gabarito_letra": "A",
+      "gabarito_origem": "resolvido_pela_ia",
+      "resolucao_passo_a_passo": "...",
+      "confianca": "alta"
+    }
+  ]
+}`;
+
+  // Executa upload único da página original ao DO Spaces em paralelo com a inferência multimodal
+  const [uploadPagRes, aiRes] = await Promise.all([
+    publicarPaginaOriginalLista(fileBuffer).catch((err) => {
+      console.warn('[sheetSplitter] Aviso: falha ao publicar página original no DO Spaces:', err?.message);
+      return { paginaUrl: null };
+    }),
+    gerarJsonComFailover({
+      contents: [prompt, imagePart],
+      promptTextOnly: prompt,
+      imagePart,
+      responseSchema: SHEET_EXTRACTION_SCHEMA,
+      temperature: 0.15,
+      openAiJsonHint: openAiSchemaHint,
+      maxOutputTokens: 16384,
+      timeoutMs: 65000,
+    }),
+  ]);
+
+  let paginaOriginalUrl = uploadPagRes?.paginaUrl || null;
+  const modeloUsado = aiRes.modeloUsado;
+  const dados = sanitizarObjetoIA(aiRes.parsed || {});
+
+  const layoutPagina = dados.layout_pagina === 'duas_colunas' ? 'duas_colunas' : 'coluna_unica';
+  const colunaDivisaoX = layoutPagina === 'duas_colunas'
+    ? (Number(dados.coluna_divisao_x) >= 280 && Number(dados.coluna_divisao_x) <= 720 ? Number(dados.coluna_divisao_x) : 500)
+    : 0;
+
+  const mapaTextosCompartilhados = new Map();
+  let ultimoTextoDestaPagina = ultimoTextoApoio || '';
+  for (const tc of (Array.isArray(dados.textos_apoio_compartilhados) ? dados.textos_apoio_compartilhados : [])) {
+    const idT = String(tc?.id_texto || '').trim();
+    const conteudoLimpo = limparCabecalhoTextoCompartilhado(tc?.conteudo || '');
+    if (idT && conteudoLimpo) {
+      mapaTextosCompartilhados.set(idT, conteudoLimpo);
+      ultimoTextoDestaPagina = conteudoLimpo;
+    }
+  }
+
+  const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
+  const questoesProcessadas = [];
+
+  for (let i = 0; i < questoesBrutas.length; i++) {
+    const qRaw = questoesBrutas[i];
+    if (!qRaw || (!String(qRaw.enunciado || '').trim() && !String(qRaw.texto_lacunado || '').trim())) {
+      continue;
+    }
+
+    let midiaPrincipal = null;
+    const midiasAlternativas = {};
+
+    const figurasRaw = Array.isArray(qRaw.figuras) ? qRaw.figuras : [];
+    const validFiguras = figurasRaw.filter((f) => {
+      if (String(f?.natureza_visual || '').toLowerCase() === 'equacao_puramente_tipografica') return false;
+      if (!Array.isArray(f?.bbox) || f.bbox.length !== 4) return false;
+      const [y1, x1, y2, x2] = f.bbox.map(Number);
+      return Number.isFinite(y1) && Number.isFinite(x1) && (y2 - y1) >= 14 && (x2 - x1) >= 14;
+    });
+
+    const principaisRaw = validFiguras.filter(
+      (f) => !f.alvo || f.alvo === 'principal' || String(f.alvo).toLowerCase().startsWith('principal')
+    );
+    const alternativasRaw = validFiguras.filter((f) => /^alt_[A-E]$/i.test(String(f.alvo || '')));
+
+    if (principaisRaw.length > 1) {
+      principaisRaw.sort((a, b) => {
+        if (layoutPagina === 'duas_colunas' && colunaDivisaoX > 0) {
+          const cxA = (Number(a.bbox[1]) + Number(a.bbox[3])) / 2;
+          const cxB = (Number(b.bbox[1]) + Number(b.bbox[3])) / 2;
+          const colA = a.coluna === 'esquerda' ? 0 : a.coluna === 'direita' ? 1 : (cxA < colunaDivisaoX ? 0 : 1);
+          const colB = b.coluna === 'esquerda' ? 0 : b.coluna === 'direita' ? 1 : (cxB < colunaDivisaoX ? 0 : 1);
+          if (colA !== colB) return colA - colB;
+          return Number(a.bbox[0]) - Number(b.bbox[0]);
+        }
+        return (Number(a.ordem) || 99) - (Number(b.ordem) || 99) || (Number(a.bbox[0]) - Number(b.bbox[0]));
+      });
+    }
+
+    const principaisUnicas = [];
+    for (const fig of principaisRaw) {
+      const boxNum = fig.bbox.map(Number);
+      const duplicada = principaisUnicas.some((prev) => bboxIoU(prev.bbox, boxNum) > 0.8);
+      if (!duplicada) {
+        const cx = (boxNum[1] + boxNum[3]) / 2;
+        const colInferida = layoutPagina === 'duas_colunas'
+          ? (fig.coluna === 'esquerda' || fig.coluna === 'direita' ? fig.coluna : (cx < colunaDivisaoX ? 'esquerda' : 'direita'))
+          : 'unica';
+        principaisUnicas.push({ ...fig, bbox: boxNum, coluna: colInferida });
+      }
+    }
+
+    // Limites verticais protetores derivados do questao_bbox para nunca capturar tinta da questão vizinha
+    let qMinTop = 0;
+    let qMaxBottom = 1000;
+    if (Array.isArray(qRaw.questao_bbox) && qRaw.questao_bbox.length === 4) {
+      const [qy1, , qy2] = qRaw.questao_bbox.map(Number);
+      const atravessaColunas = principaisUnicas.length > 1
+        && principaisUnicas.some((f) => f.coluna === 'esquerda')
+        && principaisUnicas.some((f) => f.coluna === 'direita');
+      if (!atravessaColunas && Number.isFinite(qy1) && Number.isFinite(qy2) && qy2 - qy1 >= 30) {
+        qMinTop = clampNorm(qy1 - 24, 0, 980);
+        qMaxBottom = clampNorm(qy2 + 24, 20, 1000);
+      }
+    }
+
+    if (principaisUnicas.length > 0) {
+      try {
+        const usarScannerClean = principaisUnicas.some((f) => Boolean(f.foto_papel_cinza));
+        const posicaoSugerida = principaisUnicas[0]?.posicao_sugerida || 'entre_enunciado_e_comando';
+        const legendas = principaisUnicas.map((f) => String(f.legenda_original || '').trim()).filter(Boolean);
+
+        const procPrincipal = await processarMidiaQuestao(fileBuffer, {
+          bboxes: principaisUnicas.map((f) => ({
+            bbox: f.bbox,
+            coluna: f.coluna,
+            coluna_divisao_x: colunaDivisaoX,
+            continuacao_quebra_coluna: Boolean(f.continuacao_quebra_coluna),
+            minTopNorm: qMinTop,
+            maxBottomNorm: qMaxBottom,
+          })),
+          layoutOrigem: layoutPagina,
+          colunaDivisaoX,
+          minTopNorm: qMinTop,
+          maxBottomNorm: qMaxBottom,
+          composicaoLayout: 'auto',
+          autoTrim: true,
+          scannerClean: usarScannerClean,
+          keepOriginal: !paginaOriginalUrl,
+          existingOriginalUrl: paginaOriginalUrl,
+          posicao: posicaoSugerida,
+          legenda: legendas.join(' · '),
+          credito: qRaw.fonte || dados.fonte_geral || '',
+        });
+
+        midiaPrincipal = procPrincipal.midia;
+        if (!paginaOriginalUrl && procPrincipal.midia?.original_url) {
+          paginaOriginalUrl = procPrincipal.midia.original_url;
+        }
+      } catch (cropErr) {
+        console.warn(`[sheetSplitter] Falha ao recortar figura da questão #${i + 1}:`, cropErr?.message);
+      }
+    }
+
+    for (const fig of alternativasRaw) {
+      try {
+        const procAlt = await processarMidiaQuestao(fileBuffer, {
+          bbox: fig.bbox.map(Number),
+          colunaDivisaoX,
+          layoutOrigem: layoutPagina,
+          minTopNorm: qMinTop,
+          maxBottomNorm: qMaxBottom,
+          autoTrim: true,
+          scannerClean: Boolean(fig.foto_papel_cinza),
+          keepOriginal: !paginaOriginalUrl,
+          existingOriginalUrl: paginaOriginalUrl,
+          posicao: 'entre_enunciado_e_comando',
+        });
+        if (!paginaOriginalUrl && procAlt.midia?.original_url) {
+          paginaOriginalUrl = procAlt.midia.original_url;
+        }
+        const letra = String(fig.alvo).split('_')[1].toUpperCase();
+        midiasAlternativas[letra] = procAlt.url;
+      } catch (altErr) {
+        console.warn(`[sheetSplitter] Falha ao recortar alternativa da questão #${i + 1}:`, altErr?.message);
+      }
+    }
+
+    const itemNormalizado = normalizarQuestaoIndividualizada({
+      qRaw,
+      idx: i,
+      mapaTextosCompartilhados,
+      ultimoTextoApoio,
+      disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
+      serieFallback: serieSugerida || dados.serie_predominante || '',
+      fonteGeral: dados.fonte_geral || '',
+      layoutPagina,
+      paginaOriginalUrl,
+      paginaNumero,
+      midiaPrincipal,
+      midiasAlternativas,
+      modeloUsado,
+    });
+
+    if (itemNormalizado.texto_apoio) {
+      ultimoTextoDestaPagina = itemNormalizado.texto_apoio;
+    }
+
+    questoesProcessadas.push(itemNormalizado);
+  }
+
+  return {
+    ok: true,
+    modelo_ia: modeloUsado,
+    pagina_numero: Number(paginaNumero) || 1,
+    pagina_original_url: paginaOriginalUrl,
+    layout_pagina: layoutPagina,
+    ultimo_texto_apoio: ultimoTextoDestaPagina,
+    total_questoes: questoesProcessadas.length,
+    questoes: questoesProcessadas,
+  };
+}
+
+/**
+ * Individualiza uma lista de questões colada em texto bruto (Word, Google Docs, PDF texto)
+ * estruturando cada questão nos 7 modelos universais com LaTeX e gabarito comentado.
+ */
+export async function extrairListaPorTextoIA(textoBruto, opcoes = {}) {
+  const { disciplinaSugerida = '', serieSugerida = '' } = opcoes || {};
+  const textoLimpo = String(textoBruto || '').trim();
+  if (textoLimpo.length < 20) {
+    throw new Error('Cole o texto contendo ao menos uma questão completa.');
+  }
+
+  // Limite seguro de caracteres por requisição para evitar truncamento de saída
+  const trecho = textoLimpo.slice(0, 28000);
+
+  const prompt = `Você é o Agente Individualizador de Listas Educacionais do EDUCA.STUDIO AI.
+Receba o texto bruto abaixo (copiado de prova/lista no Word, Docs ou PDF) e INDIVIDUALIZE cada questão nos 7 modelos universais ("objetiva", "afirmativas", "verdadeiro_falso", "associacao", "lacuna", "somatoria", "discursiva"):
+
+REGRAS OBRIGATÓRIAS:
+1. Separe cada questão individualmente na ordem em que aparece, guardando seu número em "numero_original" (sem deixá-lo colado no início do "enunciado").
+2. Se houver textos de apoio compartilhados ("Texto para as questões 1 a 3"), cadastre em "textos_apoio_compartilhados" (id_texto="T1") e vincule "id_texto_apoio_vinculado": "T1" nas questões correspondentes.
+3. Converta expressões matemáticas, físicas ou químicas informais para LaTeX limpo entre cifrões simples $...$ (ou \`$$...$$\` para equações destacadas em linha própria). Como é texto puro, retorne "figuras": [] em todas as questões.
+4. Se o texto trouxer um bloco de "GABARITO" no final da lista ou marcação explícita (ex: "[X]", "*", "Gabarito: C"), use esse gabarito oficial com gabarito_origem="marcado_na_imagem". Caso a questão não tenha gabarito informado no texto, resolva-a com rigor científico e defina gabarito_origem="resolvido_pela_ia".
+5. Em ambos os casos, escreva a resolução passo a passo objetiva em "resolucao_passo_a_passo".
+6. Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
+${disciplinaSugerida ? `- Disciplina padrão sugerida pelo professor: "${disciplinaSugerida}".` : ''}
+${serieSugerida ? `- Série padrão sugerida pelo professor: "${serieSugerida}".` : ''}
+
+TEXTO BRUTO DA LISTA:
+"""
+${trecho}
+"""`;
+
+  const openAiSchemaHint = `Retorne ESTRITAMENTE um objeto JSON com as chaves: layout_pagina ("coluna_unica"), coluna_divisao_x (0), disciplina_predominante, serie_predominante, fonte_geral, textos_apoio_compartilhados ([{id_texto, conteudo}]), questoes ([{numero_original, id_texto_apoio_vinculado, tipo, disciplina, serie, nivel, fonte, habilidade_bncc, temas, tags, texto_apoio, enunciado, comando_final, alternativas:[{letra, texto}], proposicoes_romanas, comando_fechamento_afirmativas, vf_submodo, vf_rotulo, itens_vf, assoc_submodo, coluna_a, coluna_b, lacuna_submodo, texto_lacunado, distratores_banco, proposicoes_somatoria, soma_correta, formato_espaco_discursiva, linhas_resposta_sugeridas, resposta_aberta, gabarito_letra, gabarito_origem, resolucao_passo_a_passo, confianca}]).`;
+
+  const { parsed: rawParsed, modeloUsado } = await gerarJsonComFailover({
+    contents: prompt,
+    promptTextOnly: prompt,
+    responseSchema: SHEET_EXTRACTION_SCHEMA,
+    temperature: 0.15,
+    openAiJsonHint: openAiSchemaHint,
+    maxOutputTokens: 16384,
+    timeoutMs: 65000,
+  });
+
+  const dados = sanitizarObjetoIA(rawParsed || {});
+  const mapaTextosCompartilhados = new Map();
+  for (const tc of (Array.isArray(dados.textos_apoio_compartilhados) ? dados.textos_apoio_compartilhados : [])) {
+    const idT = String(tc?.id_texto || '').trim();
+    const conteudoLimpo = limparCabecalhoTextoCompartilhado(tc?.conteudo || '');
+    if (idT && conteudoLimpo) mapaTextosCompartilhados.set(idT, conteudoLimpo);
+  }
+
+  const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
+  const questoesProcessadas = [];
+
+  for (let i = 0; i < questoesBrutas.length; i++) {
+    const qRaw = questoesBrutas[i];
+    if (!qRaw || (!String(qRaw.enunciado || '').trim() && !String(qRaw.texto_lacunado || '').trim())) {
+      continue;
+    }
+    questoesProcessadas.push(
+      normalizarQuestaoIndividualizada({
+        qRaw,
+        idx: i,
+        mapaTextosCompartilhados,
+        ultimoTextoApoio: '',
+        disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
+        serieFallback: serieSugerida || dados.serie_predominante || '',
+        fonteGeral: dados.fonte_geral || '',
+        layoutPagina: 'coluna_unica',
+        paginaOriginalUrl: null,
+        paginaNumero: 1,
+        midiaPrincipal: null,
+        midiasAlternativas: {},
+        modeloUsado,
+      })
+    );
+  }
+
+  return {
+    ok: true,
+    modelo_ia: modeloUsado,
+    total_questoes: questoesProcessadas.length,
+    questoes: questoesProcessadas,
+  };
+}

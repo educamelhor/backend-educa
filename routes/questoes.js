@@ -10,6 +10,8 @@ import {
   duplicarQuestao,
   historicoQuestao,
   extrairQuestaoImagem,
+  extrairListaImagem,
+  extrairListaTexto,
   copilotoQuestao,
   uploadImagem,
   // ── Banco Global ────────────────────────────────────────────────────────────
@@ -61,6 +63,8 @@ router.post("/por-texto", verificarEscola, criarQuestoesPorTexto);
 // ── Gemini Vision & Copiloto Pedagógico (EDUCA.STUDIO AI) ─────────────────
 // uploadImagem (multer) processa o multipart ANTES de verificarEscola
 router.post("/extrair-imagem", uploadImagem, verificarEscola, extrairQuestaoImagem);
+router.post("/extrair-lista", uploadImagem, verificarEscola, extrairListaImagem);
+router.post("/extrair-lista-texto", verificarEscola, extrairListaTexto);
 router.post("/copiloto-ia", verificarEscola, copilotoQuestao);
 
 export default router;

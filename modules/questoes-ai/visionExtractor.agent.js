@@ -14,13 +14,13 @@ const MODELOS_GEMINI_CASCATA = [
   'gemini-2.0-flash',
 ];
 
-const DISCIPLINAS_OFICIAIS = [
+export const DISCIPLINAS_OFICIAIS = [
   'Português', 'Matemática', 'Ciências', 'História', 'Geografia',
   'Inglês', 'Artes', 'Educação Física', 'Biologia', 'Física',
   'Química', 'Sociologia', 'Filosofia', 'Redação', 'PD',
 ];
 
-const SERIES_OFICIAIS = [
+export const SERIES_OFICIAIS = [
   '6º Ano EF', '7º Ano EF', '8º Ano EF', '9º Ano EF',
   '1º EM', '2º EM', '3º EM', 'Ensino Superior',
 ];
@@ -54,11 +54,16 @@ export function parseJsonResilienteIA(rawText) {
   let cleaned = String(rawText || '').trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
-  // Caso haja texto lixo antes da primeira chave '{' ou depois da última '}'
+  // Caso haja texto lixo antes da primeira chave '{'/'[' ou depois da última '}'/']'
   const firstBrace = cleaned.indexOf('{');
-  const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  const firstBracket = cleaned.indexOf('[');
+  const useBracket = firstBracket >= 0 && (firstBrace < 0 || firstBracket < firstBrace);
+  if (useBracket) {
+    const lastBracket = cleaned.lastIndexOf(']');
+    if (lastBracket > firstBracket) cleaned = cleaned.slice(firstBracket, lastBracket + 1);
+  } else if (firstBrace >= 0) {
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (lastBrace > firstBrace) cleaned = cleaned.slice(firstBrace, lastBrace + 1);
   }
 
   try {
@@ -106,13 +111,15 @@ export function parseJsonResilienteIA(rawText) {
  * Executa geração estruturada JSON com cascata automática de modelos Gemini
  * + fallback emergencial para OpenAI Vision/JSON (se OPENAI_API_KEY estiver configurada).
  */
-async function gerarJsonComFailover({
+export async function gerarJsonComFailover({
   contents,
   promptTextOnly = '',
   imagePart = null,
   responseSchema = null,
   temperature = 0.15,
   openAiJsonHint = '',
+  maxOutputTokens = 8192,
+  timeoutMs = 55000,
 }) {
   const genAI = getGeminiOrNull();
   const openAIKey = getOpenAIKeyOrNull();
@@ -133,6 +140,7 @@ async function gerarJsonComFailover({
           const generationConfig = {
             responseMimeType: 'application/json',
             temperature,
+            maxOutputTokens,
           };
           let callContents = contents;
           if (usarSchemaEstrito && responseSchema) {
@@ -206,7 +214,7 @@ async function gerarJsonComFailover({
           model: 'gpt-4o-mini',
           response_format: { type: 'json_object' },
           temperature,
-          max_tokens: 4096,
+          max_tokens: Math.min(16384, Math.max(4096, Number(maxOutputTokens) || 8192)),
           messages: [
             {
               role: 'system',
@@ -218,7 +226,7 @@ async function gerarJsonComFailover({
             },
           ],
         }),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!oaResp.ok) {
@@ -304,7 +312,7 @@ export function sanitizarTextoLatexIA(input) {
   return s;
 }
 
-function sanitizarObjetoIA(val) {
+export function sanitizarObjetoIA(val) {
   if (typeof val === 'string') return sanitizarTextoLatexIA(val);
   if (Array.isArray(val)) return val.map(sanitizarObjetoIA);
   if (val && typeof val === 'object') {
@@ -317,7 +325,7 @@ function sanitizarObjetoIA(val) {
   return val;
 }
 
-function bboxIoU(a, b) {
+export function bboxIoU(a, b) {
   const y1 = Math.max(a[0], b[0]);
   const x1 = Math.max(a[1], b[1]);
   const y2 = Math.min(a[2], b[2]);
@@ -835,7 +843,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   };
 }
 
-function montarEstruturaInicialExtraida(tipo, dados) {
+export function montarEstruturaInicialExtraida(tipo, dados) {
   switch (tipo) {
     case 'afirmativas':
       return {

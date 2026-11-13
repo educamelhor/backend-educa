@@ -6,11 +6,12 @@ import * as Questao from "../models/questaoModel.js";
 import { parsePdfFile } from "../utils/pdfParser.js";
 import multer from "multer";
 import { extrairQuestaoMultimodal, executarCopilotoQuestao } from "../modules/questoes-ai/visionExtractor.agent.js";
+import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from "../modules/questoes-ai/sheetSplitter.agent.js";
 
 // ─── Multer — memória (sem gravar em disco) ──────────────────────────────────
 export const uploadImagem = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 12 * 1024 * 1024 }, // 12 MB
+  limits: { fileSize: 18 * 1024 * 1024 }, // 18 MB (suporta fotos A4 em alta resolução)
   fileFilter(_, file, cb) {
     cb(null, /^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype));
   },
@@ -1178,6 +1179,82 @@ export async function copilotoQuestao(req, res) {
       message: statusCode === 429 || statusCode === 503
         ? err.message
         : "Erro ao consultar Copiloto IA.",
+      detail: err.detail || err.message,
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18) POST /questoes/extrair-lista — Fase 2: Individualizador de Páginas / Listas / PDFs
+export async function extrairListaImagem(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: "Nenhuma imagem de página enviada." });
+    }
+
+    const {
+      disciplina = "",
+      serie = "",
+      pagina_numero = "1",
+      ultimo_texto_apoio = "",
+    } = req.body || {};
+
+    const dados = await extrairListaDePaginaMultimodal(req.file.buffer, req.file.mimetype, {
+      disciplinaSugerida: String(disciplina || "").trim(),
+      serieSugerida: String(serie || "").trim(),
+      paginaNumero: Number(pagina_numero) || 1,
+      ultimoTextoApoio: String(ultimo_texto_apoio || "").trim(),
+    });
+
+    console.log(
+      `[extrairListaImagem] OK — pág=${dados.pagina_numero} | layout=${dados.layout_pagina}` +
+      ` | questões=${dados.total_questoes} | modelo=${dados.modelo_ia}`
+    );
+
+    return res.json(dados);
+  } catch (err) {
+    console.error("[extrairListaImagem] Erro:", err);
+    if (err.message?.includes("GEMINI_API_KEY não configurada")) {
+      return res.status(503).json({ ok: false, message: err.message });
+    }
+    const statusCode = err.httpStatus || 500;
+    return res.status(statusCode).json({
+      ok: false,
+      message: statusCode === 429 || statusCode === 503
+        ? err.message
+        : "Erro ao individualizar página de questões com o Agente Multimodal.",
+      detail: err.detail || err.message,
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 19) POST /questoes/extrair-lista-texto — Fase 2: Individualizador de Lista em Texto Bruto via IA
+export async function extrairListaTexto(req, res) {
+  try {
+    const { texto = "", disciplina = "", serie = "" } = req.body || {};
+    if (!String(texto || "").trim() || String(texto).trim().length < 20) {
+      return res.status(400).json({ ok: false, message: "Cole o texto da lista contendo ao menos uma questão." });
+    }
+
+    const dados = await extrairListaPorTextoIA(texto, {
+      disciplinaSugerida: String(disciplina || "").trim(),
+      serieSugerida: String(serie || "").trim(),
+    });
+
+    console.log(`[extrairListaTexto] OK — questões=${dados.total_questoes} | modelo=${dados.modelo_ia}`);
+    return res.json(dados);
+  } catch (err) {
+    console.error("[extrairListaTexto] Erro:", err);
+    if (err.message?.includes("GEMINI_API_KEY não configurada")) {
+      return res.status(503).json({ ok: false, message: err.message });
+    }
+    const statusCode = err.httpStatus || 500;
+    return res.status(statusCode).json({
+      ok: false,
+      message: statusCode === 429 || statusCode === 503
+        ? err.message
+        : "Erro ao estruturar lista de texto com IA.",
       detail: err.detail || err.message,
     });
   }

@@ -773,6 +773,41 @@ async function comporPainelMultiFigura(blocos, modoPreferido = 'auto') {
 }
 
 /**
+ * Publica a página inteira (PDF renderizado ou foto de folha de prova) uma única vez no DO Spaces
+ * para ser compartilhada como `original_url` entre todas as questões/figuras extraídas daquela página.
+ */
+export async function publicarPaginaOriginalLista(inputBuffer) {
+  const normalizedBuf = await sharp(inputBuffer, { failOnError: false })
+    .rotate()
+    .toBuffer();
+
+  const origJpg = await sharp(normalizedBuf)
+    .flatten({ background: '#ffffff' })
+    .resize({ width: 1900, height: 1900, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 88, mozjpeg: true })
+    .toBuffer();
+
+  const meta = await sharp(origJpg).metadata();
+  const tsOrig = Date.now();
+  const randOrig = crypto.randomBytes(4).toString('hex');
+  const objectKey = `uploads/questoes/pag_${tsOrig}_${randOrig}.jpg`;
+
+  const upOrig = await uploadFileBufferToSpaces({
+    buffer: origJpg,
+    contentType: 'image/jpeg',
+    objectKey,
+    cacheControl: 'public, max-age=31536000',
+  });
+
+  return {
+    paginaUrl: upOrig.publicUrl,
+    objectKey,
+    width: meta.width || 1200,
+    height: meta.height || 1600,
+  };
+}
+
+/**
  * Processa um buffer de imagem e publica no DO Spaces retornando o objeto `midia` completo.
  */
 export async function processarMidiaQuestao(inputBuffer, opts = {}) {
@@ -782,6 +817,8 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     composicaoLayout = 'auto',
     colunaDivisaoX = 0,
     layoutOrigem = 'coluna_unica',
+    minTopNorm: globalMinTopNorm = 0,
+    maxBottomNorm: globalMaxBottomNorm = 1000,
     autoTrim = true,
     scannerClean = false,
     keepOriginal = false,
@@ -837,6 +874,8 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
           coluna: item?.coluna || 'unica',
           coluna_divisao_x: Number(item?.coluna_divisao_x || colunaDivisaoX || 0),
           continuacao: Boolean(item?.continuacao ?? item?.continuacao_quebra_coluna),
+          minTopNorm: Number.isFinite(Number(item?.minTopNorm)) ? Number(item.minTopNorm) : globalMinTopNorm,
+          maxBottomNorm: Number.isFinite(Number(item?.maxBottomNorm)) ? Number(item.maxBottomNorm) : globalMaxBottomNorm,
         });
       }
     }
@@ -846,6 +885,8 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
       coluna: 'unica',
       coluna_divisao_x: Number(colunaDivisaoX || 0),
       continuacao: false,
+      minTopNorm: globalMinTopNorm,
+      maxBottomNorm: globalMaxBottomNorm,
     });
   }
 
@@ -864,6 +905,8 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     const single = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, specsList[0], {
       scannerClean,
       autoTrim,
+      minTopNorm: specsList[0].minTopNorm ?? globalMinTopNorm,
+      maxBottomNorm: specsList[0].maxBottomNorm ?? globalMaxBottomNorm,
     });
     workBuf = single.buf;
     appliedBbox = single.appliedBbox;
@@ -889,9 +932,9 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
       const nextIsStitch = i + 1 < specsList.length && specsList[i + 1].continuacao;
       const curIsStitch = i > 0 && curSpec.continuacao;
 
-      // Calcula teto/piso de não-invasão contra outras figuras da mesma coluna
-      let minTopNorm = 0;
-      let maxBottomNorm = 1000;
+      // Calcula teto/piso de não-invasão contra outras figuras da mesma coluna (e limites da questão na página)
+      let minTopNorm = curSpec.minTopNorm ?? globalMinTopNorm;
+      let maxBottomNorm = curSpec.maxBottomNorm ?? globalMaxBottomNorm;
       for (let j = 0; j < specsList.length; j++) {
         if (j === i) continue;
         const other = specsList[j];
