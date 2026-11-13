@@ -1144,13 +1144,16 @@ export async function extrairQuestaoImagem(req, res) {
   } catch (err) {
     console.error("[extrairQuestaoImagem] Erro:", err);
 
-    if (err.message?.includes("GEMINI_API_KEY")) {
+    if (err.message?.includes("GEMINI_API_KEY não configurada")) {
       return res.status(503).json({ ok: false, message: err.message });
     }
-    return res.status(500).json({
+    const statusCode = err.httpStatus || 500;
+    return res.status(statusCode).json({
       ok: false,
-      message: "Erro ao processar imagem com o Agente Multimodal.",
-      detail: err.message,
+      message: statusCode === 429 || statusCode === 503
+        ? err.message
+        : "Erro ao processar imagem com o Agente Multimodal.",
+      detail: err.detail || err.message,
     });
   }
 }
@@ -1166,13 +1169,16 @@ export async function copilotoQuestao(req, res) {
     return res.json({ ok: true, ...resultado });
   } catch (err) {
     console.error("[copilotoQuestao] Erro:", err);
-    if (err.message?.includes("GEMINI_API_KEY")) {
+    if (err.message?.includes("GEMINI_API_KEY não configurada")) {
       return res.status(503).json({ ok: false, message: err.message });
     }
-    return res.status(500).json({
+    const statusCode = err.httpStatus || 500;
+    return res.status(statusCode).json({
       ok: false,
-      message: "Erro ao consultar Copiloto IA.",
-      detail: err.message,
+      message: statusCode === 429 || statusCode === 503
+        ? err.message
+        : "Erro ao consultar Copiloto IA.",
+      detail: err.detail || err.message,
     });
   }
 }

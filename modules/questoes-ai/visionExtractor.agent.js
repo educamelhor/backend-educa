@@ -7,6 +7,13 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { processarMidiaQuestao } from './smartMediaEngine.js';
 
+const MODELOS_GEMINI_CASCATA = [
+  'gemini-2.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+];
+
 const DISCIPLINAS_OFICIAIS = [
   'Português', 'Matemática', 'Ciências', 'História', 'Geografia',
   'Inglês', 'Artes', 'Educação Física', 'Biologia', 'Física',
@@ -19,13 +26,232 @@ const SERIES_OFICIAIS = [
 ];
 
 let _gemini = null;
-function getGemini() {
-  if (!_gemini) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error('GEMINI_API_KEY não configurada no ambiente.');
+let _geminiKeyCached = null;
+function getGeminiOrNull() {
+  const key = (process.env.GEMINI_API_KEY || '').trim();
+  if (!key) return null;
+  if (!_gemini || _geminiKeyCached !== key) {
     _gemini = new GoogleGenerativeAI(key);
+    _geminiKeyCached = key;
   }
   return _gemini;
+}
+
+function getOpenAIKeyOrNull() {
+  const key = (process.env.OPENAI_API_KEY || '').trim();
+  return key || null;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Repara escapes LaTeX inválidos dentro de strings JSON (ex: "\cdot", "\sin", "\alpha", "\leq")
+ * e cercas markdown ```json ... ``` antes do JSON.parse, evitando erro 500 por SyntaxError.
+ */
+export function parseJsonResilienteIA(rawText) {
+  let cleaned = String(rawText || '').trim();
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+  // Caso haja texto lixo antes da primeira chave '{' ou depois da última '}'
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    let repaired = '';
+    let inStr = false;
+    for (let i = 0; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (!inStr) {
+        if (ch === '"') inStr = true;
+        repaired += ch;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = false;
+        repaired += ch;
+        continue;
+      }
+      if (ch === '\n') { repaired += '\\n'; continue; }
+      if (ch === '\r') { repaired += '\\r'; continue; }
+      if (ch === '\t') { repaired += '\\t'; continue; }
+      if (ch === '\\') {
+        const nxt = cleaned[i + 1] || '';
+        if ('"\\/bfnrt'.includes(nxt)) {
+          repaired += '\\' + nxt;
+          i++;
+          continue;
+        }
+        if (nxt === 'u' && /^[0-9a-fA-F]{4}$/.test(cleaned.slice(i + 2, i + 6))) {
+          repaired += cleaned.slice(i, i + 6);
+          i += 5;
+          continue;
+        }
+        repaired += '\\\\';
+        continue;
+      }
+      repaired += ch;
+    }
+    return JSON.parse(repaired);
+  }
+}
+
+/**
+ * Executa geração estruturada JSON com cascata automática de modelos Gemini
+ * + fallback emergencial para OpenAI Vision/JSON (se OPENAI_API_KEY estiver configurada).
+ */
+async function gerarJsonComFailover({
+  contents,
+  promptTextOnly = '',
+  imagePart = null,
+  responseSchema = null,
+  temperature = 0.15,
+  openAiJsonHint = '',
+}) {
+  const genAI = getGeminiOrNull();
+  const openAIKey = getOpenAIKeyOrNull();
+
+  if (!genAI && !openAIKey) {
+    throw new Error('GEMINI_API_KEY não configurada no ambiente.');
+  }
+
+  const errosTentativas = [];
+
+  if (genAI) {
+    let abortGemini = false;
+    for (const nomeModelo of MODELOS_GEMINI_CASCATA) {
+      if (abortGemini) break;
+      const modosSchema = responseSchema ? [true, false] : [false];
+      for (const usarSchemaEstrito of modosSchema) {
+        try {
+          const generationConfig = {
+            responseMimeType: 'application/json',
+            temperature,
+          };
+          let callContents = contents;
+          if (usarSchemaEstrito && responseSchema) {
+            generationConfig.responseSchema = responseSchema;
+          } else if (openAiJsonHint) {
+            callContents = Array.isArray(contents)
+              ? [`${promptTextOnly}\n\n${openAiJsonHint}`, ...contents.slice(1)]
+              : `${promptTextOnly}\n\n${openAiJsonHint}`;
+          }
+
+          const model = genAI.getGenerativeModel({
+            model: nomeModelo,
+            generationConfig,
+          });
+
+          const result = await model.generateContent(callContents);
+          const rawText = result?.response?.text?.() || '';
+          if (!rawText.trim()) {
+            throw new Error(`Resposta vazia do modelo ${nomeModelo}.`);
+          }
+          const parsed = parseJsonResilienteIA(rawText);
+          return { parsed, modeloUsado: nomeModelo };
+        } catch (err) {
+          const msg = String(err?.message || err || '');
+          const status = err?.status || (msg.includes('429') ? 429 : msg.includes('503') ? 503 : msg.includes('404') ? 404 : msg.includes('400') ? 400 : 500);
+          console.warn(`[visionExtractor] Falha no modelo ${nomeModelo} (schema=${usarSchemaEstrito}, status=${status}): ${msg.slice(0, 220)}`);
+
+          // Se falhou por complexidade de schema (400), tenta imediatamente o mesmo modelo sem responseSchema estrito
+          if (usarSchemaEstrito && responseSchema && status === 400 && /schema|state|constraint|property/i.test(msg)) {
+            continue;
+          }
+
+          errosTentativas.push({ modelo: nomeModelo, status, msg });
+
+          if (/API_KEY_INVALID|API key not valid/i.test(msg)) {
+            abortGemini = true;
+            break;
+          }
+          if (status === 503) {
+            await sleep(650);
+          }
+          break; // avança para o próximo modelo da cascata
+        }
+      }
+    }
+  }
+
+  // Fallback multi-provedor automático via OpenAI REST nativa (gpt-4o-mini) se OPENAI_API_KEY estiver configurada
+  if (openAIKey) {
+    try {
+      const userContent = [];
+      const fullPrompt = openAiJsonHint ? `${promptTextOnly}\n\n${openAiJsonHint}` : promptTextOnly;
+      userContent.push({ type: 'text', text: fullPrompt });
+      if (imagePart?.inlineData?.data) {
+        userContent.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${imagePart.inlineData.mimeType || 'image/png'};base64,${imagePart.inlineData.data}`,
+            detail: 'high',
+          },
+        });
+      }
+
+      const oaResp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openAIKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          response_format: { type: 'json_object' },
+          temperature,
+          max_tokens: 4096,
+          messages: [
+            {
+              role: 'system',
+              content: 'Você é um extrator e solucionador educacional científico rigoroso. Responda estritamente em um único objeto JSON válido.',
+            },
+            {
+              role: 'user',
+              content: userContent,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(45000),
+      });
+
+      if (!oaResp.ok) {
+        const errBody = await oaResp.text().catch(() => '');
+        throw new Error(`OpenAI HTTP ${oaResp.status}: ${errBody.slice(0, 180)}`);
+      }
+      const oaJson = await oaResp.json();
+      const rawOpenAi = oaJson?.choices?.[0]?.message?.content || '';
+      const parsed = parseJsonResilienteIA(rawOpenAi);
+      console.log('[visionExtractor] Recuperado automaticamente via fallback OpenAI (gpt-4o-mini)!');
+      return { parsed, modeloUsado: 'gpt-4o-mini (fallback)' };
+    } catch (oaErr) {
+      console.warn('[visionExtractor] Fallback OpenAI também falhou:', oaErr?.message);
+      errosTentativas.push({ modelo: 'gpt-4o-mini', status: 500, msg: String(oaErr?.message || oaErr) });
+    }
+  }
+
+  // Consolida diagnóstico claro p/ o controller e frontend
+  const todosQuota = errosTentativas.length > 0 && errosTentativas.every((e) => e.status === 429 || /quota|exhausted|rate.?limit/i.test(e.msg));
+  const algumQuota = errosTentativas.some((e) => e.status === 429 || /quota|exhausted|rate.?limit/i.test(e.msg));
+  const todosOverload = errosTentativas.length > 0 && errosTentativas.every((e) => e.status === 503 || /overloaded|unavailable/i.test(e.msg));
+  const ultimo = errosTentativas[errosTentativas.length - 1];
+
+  const finalErr = new Error(
+    todosQuota || (algumQuota && ultimo?.status === 404)
+      ? 'Limite de cota da chave GEMINI_API_KEY atingido em todos os modelos disponíveis (429 Quota Exceeded). Aguarde 1 minuto ou ative o faturamento Pay-As-You-Go (Tier 1) no Google AI Studio.'
+      : todosOverload
+        ? 'Os servidores da IA (Google Gemini) estão temporariamente sobrecarregados (503). Tente novamente em alguns segundos.'
+        : `Falha no processamento multimodal (${ultimo?.modelo || 'IA'}): ${String(ultimo?.msg || 'erro desconhecido').slice(0, 200)}`
+  );
+  finalErr.httpStatus = todosQuota || (algumQuota && ultimo?.status === 404) ? 429 : todosOverload ? 503 : 500;
+  finalErr.detail = errosTentativas.map((e) => `${e.modelo}: [${e.status}] ${e.msg.slice(0, 110)}`).join(' | ');
+  throw finalErr;
 }
 
 /**
@@ -351,16 +577,6 @@ const EXTRACTION_SCHEMA = {
  * Extrai, classifica, resolve e recorta automaticamente figuras (1 ou 2 colunas) de um print/foto.
  */
 export async function extrairQuestaoMultimodal(fileBuffer, mimeType) {
-  const genAI = getGemini();
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: EXTRACTION_SCHEMA,
-      temperature: 0.15,
-    },
-  });
-
   const prompt = `Você é o Agente Extrator Multimodal e Solucionador Científico do EDUCA.STUDIO AI.
 Analise a imagem da questão educacional enviada e estruture TODOS os campos com precisão cirúrgica:
 
@@ -406,9 +622,55 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     },
   };
 
-  const result = await model.generateContent([prompt, imagePart]);
-  const rawText = result.response.text().trim();
-  const dados = sanitizarObjetoIA(JSON.parse(rawText));
+  const openAiSchemaHint = `ESTRUTURA EXATA DO OBJETO JSON DE RESPOSTA:
+{
+  "layout_origem": "coluna_unica" | "duas_colunas",
+  "coluna_divisao_x": 0,
+  "tipo": "objetiva" | "afirmativas" | "verdadeiro_falso" | "associacao" | "lacuna" | "discursiva" | "somatoria",
+  "disciplina": "uma entre [${DISCIPLINAS_OFICIAIS.join(', ')}]",
+  "serie": "uma entre [${SERIES_OFICIAIS.join(', ')}]",
+  "nivel": "facil" | "medio" | "dificil" | "enem",
+  "fonte": "",
+  "fonte_confirmada": false,
+  "habilidade_bncc": "",
+  "temas": ["..."],
+  "tags": ["..."],
+  "texto_apoio": "",
+  "enunciado": "...",
+  "comando_final": "",
+  "figuras": [{ "alvo": "principal", "natureza_visual": "esquema_cientifico", "ordem": 1, "coluna": "unica", "continuacao_quebra_coluna": false, "bbox": [ymin, xmin, ymax, xmax], "posicao_sugerida": "entre_enunciado_e_comando", "legenda_original": "", "foto_papel_cinza": false }],
+  "alternativas": [{ "letra": "A", "texto": "..." }],
+  "proposicoes_romanas": [{ "romano": "I", "texto": "...", "correta": true }],
+  "comando_fechamento_afirmativas": "",
+  "vf_submodo": "direto" | "sequencia",
+  "vf_rotulo": "VF" | "CE",
+  "itens_vf": [{ "texto": "...", "gabarito": "V" }],
+  "assoc_submodo": "direto" | "sequencia",
+  "coluna_a": [{ "codigo": "1", "texto": "..." }],
+  "coluna_b": [{ "texto": "...", "vinculo_codigo": "1" }],
+  "lacuna_submodo": "direto" | "banco_palavras" | "alternativas",
+  "texto_lacunado": "",
+  "distratores_banco": [],
+  "proposicoes_somatoria": [{ "valor": 1, "codigo": "01", "texto": "...", "correta": true }],
+  "soma_correta": 0,
+  "formato_espaco_discursiva": "linhas" | "quadro_calculo",
+  "linhas_resposta_sugeridas": 6,
+  "resposta_aberta": "",
+  "gabarito_letra": "A",
+  "gabarito_origem": "marcado_na_imagem" | "resolvido_pela_ia",
+  "resolucao_passo_a_passo": "...",
+  "confianca": "alta" | "media" | "baixa"
+}`;
+
+  const { parsed: rawParsed, modeloUsado } = await gerarJsonComFailover({
+    contents: [prompt, imagePart],
+    promptTextOnly: prompt,
+    imagePart,
+    responseSchema: EXTRACTION_SCHEMA,
+    temperature: 0.15,
+    openAiJsonHint: openAiSchemaHint,
+  });
+  const dados = sanitizarObjetoIA(rawParsed);
 
   // ── Processamento independente das figuras detectadas (1 ou 2 colunas) via Sharp -> DO Spaces ──
   let midiaPrincipal = null;
@@ -547,6 +809,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
 
   return {
     ok: true,
+    modelo_ia: modeloUsado,
     layout_origem: layoutOrigem,
     tipo,
     disciplina: DISCIPLINAS_OFICIAIS.includes(dados.disciplina) ? dados.disciplina : '',
@@ -671,28 +934,19 @@ function montarEstruturaInicialExtraida(tipo, dados) {
  * Copiloto Pedagógico para a Montagem Guiada (sugestão de BNCC/Temas, distratores, resolução e LaTeX).
  */
 export async function executarCopilotoQuestao(acao, payload = {}) {
-  const genAI = getGemini();
-
   if (acao === 'sugerir_metadados') {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            disciplina: { type: SchemaType.STRING },
-            serie: { type: SchemaType.STRING },
-            nivel: { type: SchemaType.STRING },
-            habilidade_bncc: { type: SchemaType.STRING },
-            temas: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-            tags: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          },
-          required: ['disciplina', 'serie', 'nivel', 'habilidade_bncc', 'temas', 'tags'],
-        },
-        temperature: 0.2,
+    const schema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        disciplina: { type: SchemaType.STRING },
+        serie: { type: SchemaType.STRING },
+        nivel: { type: SchemaType.STRING },
+        habilidade_bncc: { type: SchemaType.STRING },
+        temas: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        tags: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
       },
-    });
+      required: ['disciplina', 'serie', 'nivel', 'habilidade_bncc', 'temas', 'tags'],
+    };
     const prompt = `Classifique pedagogicamente a questão abaixo seguindo estritamente:
 - disciplina: uma entre [${DISCIPLINAS_OFICIAIS.join(', ')}]
 - serie: uma entre [${SERIES_OFICIAIS.join(', ')}]
@@ -705,26 +959,25 @@ ENUNCIADO: ${payload.enunciado || ''}
 COMANDO: ${payload.comando_final || ''}
 ITENS/ALTERNATIVAS: ${JSON.stringify(payload.alternativas || payload.estrutura_json || '')}`;
 
-    const res = await model.generateContent(prompt);
-    return sanitizarObjetoIA(JSON.parse(res.response.text()));
+    const { parsed } = await gerarJsonComFailover({
+      contents: prompt,
+      promptTextOnly: prompt,
+      responseSchema: schema,
+      temperature: 0.2,
+      openAiJsonHint: 'Retorne JSON com as chaves: disciplina, serie, nivel, habilidade_bncc, temas (array), tags (array).',
+    });
+    return sanitizarObjetoIA(parsed);
   }
 
   if (acao === 'gerar_distratores') {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            distratores: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-            explicacao: { type: SchemaType.STRING },
-          },
-          required: ['distratores', 'explicacao'],
-        },
-        temperature: 0.45,
+    const schema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        distratores: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        explicacao: { type: SchemaType.STRING },
       },
-    });
+      required: ['distratores', 'explicacao'],
+    };
     const prompt = `Você é especialista em avaliação educacional (TRI/ENEM).
 Dado o enunciado e a alternativa CORRETA abaixo, gere 4 distratores (alternativas incorretas) altamente plausíveis, baseados em erros conceituais ou algébricos reais dos estudantes, no mesmo tamanho e estilo gramatical da resposta correta. Use sempre $...$ ao redor de fórmulas LaTeX quando aplicável. Gere também a resolução comentada.
 
@@ -732,27 +985,26 @@ DISCIPLINA: ${payload.disciplina || ''}
 ENUNCIADO: ${payload.enunciado || ''} ${payload.comando_final || ''}
 RESPOSTA CORRETA: ${payload.resposta_correta || ''}`;
 
-    const res = await model.generateContent(prompt);
-    return sanitizarObjetoIA(JSON.parse(res.response.text()));
+    const { parsed } = await gerarJsonComFailover({
+      contents: prompt,
+      promptTextOnly: prompt,
+      responseSchema: schema,
+      temperature: 0.45,
+      openAiJsonHint: 'Retorne JSON com as chaves: distratores (array de 4 strings), explicacao (string).',
+    });
+    return sanitizarObjetoIA(parsed);
   }
 
   if (acao === 'resolver_e_comentar') {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            resolucao_comentada: { type: SchemaType.STRING },
-            resposta_aberta_espelho: { type: SchemaType.STRING },
-            gabarito_sugerido: { type: SchemaType.STRING },
-          },
-          required: ['resolucao_comentada', 'resposta_aberta_espelho', 'gabarito_sugerido'],
-        },
-        temperature: 0.2,
+    const schema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        resolucao_comentada: { type: SchemaType.STRING },
+        resposta_aberta_espelho: { type: SchemaType.STRING },
+        gabarito_sugerido: { type: SchemaType.STRING },
       },
-    });
+      required: ['resolucao_comentada', 'resposta_aberta_espelho', 'gabarito_sugerido'],
+    };
     const prompt = `Resolva rigorosamente passo a passo a questão abaixo para servir de gabarito comentado ao professor (envolva toda expressão matemática ou química em $...$). Se for questão discursiva, preencha também "resposta_aberta_espelho" com os critérios objetivos de correção.
 
 TIPO: ${payload.tipo || 'objetiva'}
@@ -760,32 +1012,37 @@ ENUNCIADO: ${payload.enunciado || ''}
 COMANDO: ${payload.comando_final || ''}
 ESTRUTURA / ALTERNATIVAS: ${JSON.stringify(payload.alternativas || payload.estrutura_json || '')}`;
 
-    const res = await model.generateContent(prompt);
-    return sanitizarObjetoIA(JSON.parse(res.response.text()));
+    const { parsed } = await gerarJsonComFailover({
+      contents: prompt,
+      promptTextOnly: prompt,
+      responseSchema: schema,
+      temperature: 0.2,
+      openAiJsonHint: 'Retorne JSON com as chaves: resolucao_comentada, resposta_aberta_espelho, gabarito_sugerido.',
+    });
+    return sanitizarObjetoIA(parsed);
   }
 
   if (acao === 'converter_latex') {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            texto_formatado: { type: SchemaType.STRING },
-          },
-          required: ['texto_formatado'],
-        },
-        temperature: 0.1,
+    const schema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        texto_formatado: { type: SchemaType.STRING },
       },
-    });
+      required: ['texto_formatado'],
+    };
     const prompt = `Reescreva o texto educacional abaixo preservando 100% das palavras em português, mas convertendo todas as expressões matemáticas, físicas ou fórmulas químicas informais (ex: "x^2 + 3x/4 = raiz(2)", "H2SO4", "10^-5 m/s^2") para notação LaTeX limpa entre cifrões ($...$). Não altere o sentido do texto.
 
 TEXTO:
 ${payload.texto || ''}`;
 
-    const res = await model.generateContent(prompt);
-    return sanitizarObjetoIA(JSON.parse(res.response.text()));
+    const { parsed } = await gerarJsonComFailover({
+      contents: prompt,
+      promptTextOnly: prompt,
+      responseSchema: schema,
+      temperature: 0.1,
+      openAiJsonHint: 'Retorne JSON com a chave: texto_formatado (string).',
+    });
+    return sanitizarObjetoIA(parsed);
   }
 
   throw new Error(`Ação de copiloto desconhecida: ${acao}`);
