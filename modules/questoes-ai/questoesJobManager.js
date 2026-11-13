@@ -12,6 +12,31 @@ import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from './sheetS
 import { extrairQuestaoMultimodal } from './visionExtractor.agent.js';
 
 const CONCORRENCIA_PAGINAS_POR_JOB = 2;
+const WATCHDOG_PAGINA_TRAVADA_SEGUNDOS = 125;
+
+function serializarContextoPagina(ultimoTextoApoio = '', contextoProximaPagina = null) {
+  if (!contextoProximaPagina) return ultimoTextoApoio || null;
+  return JSON.stringify({
+    __env_v1: true,
+    ultimo_texto_apoio: ultimoTextoApoio || '',
+    contexto_proxima_pagina: contextoProximaPagina,
+  });
+}
+
+function desserializarContextoPagina(raw) {
+  if (!raw) return { ultimo_texto_apoio: '', contexto_proxima_pagina: null };
+  const str = String(raw);
+  if (str.startsWith('{"__env_v1":true')) {
+    try {
+      const parsed = JSON.parse(str);
+      return {
+        ultimo_texto_apoio: parsed.ultimo_texto_apoio || '',
+        contexto_proxima_pagina: parsed.contexto_proxima_pagina || null,
+      };
+    } catch { /* fallback string */ }
+  }
+  return { ultimo_texto_apoio: str, contexto_proxima_pagina: null };
+}
 
 let _tablesReadyPromise = null;
 
@@ -219,7 +244,7 @@ function dispararWorkersLocais(jobId) {
                 WHERE job_id = ? AND ordem_lote = ? LIMIT 1`,
               [jobId, task.ordemLote - 1]
             );
-            textoAnterior = prevRow?.ultimo_texto_apoio || '';
+            textoAnterior = desserializarContextoPagina(prevRow?.ultimo_texto_apoio).ultimo_texto_apoio;
           } catch { /* ignore */ }
         }
 
@@ -257,7 +282,7 @@ function dispararWorkersLocais(jobId) {
             WHERE job_id = ? AND ordem_lote = ?`,
           [
             resultado.modelo_ia || '',
-            resultado.ultimo_texto_apoio || null,
+            serializarContextoPagina(resultado.ultimo_texto_apoio, resultado.contexto_proxima_pagina),
             questoesArr.length,
             JSON.stringify(questoesArr),
             jobId,
@@ -498,6 +523,23 @@ export async function criarJobPrintUnico({ escolaId, usuarioId = null, fileBuffe
 export async function consultarStatusJob({ jobId, escolaId }) {
   await ensureJobTables();
 
+  // Watchdog anti-travamento: se alguma página ficou órfã em 'processando' por > 125s (ex: queda de socket/container),
+  // destrava automaticamente para que o job consolide e entregue todas as páginas concluídas sem prender o professor.
+  const [updStuck] = await pool.query(
+    `UPDATE questoes_ai_job_paginas p
+     INNER JOIN questoes_ai_jobs j ON j.job_id = p.job_id
+        SET p.status_pagina = 'erro',
+            p.etapa_pagina = 'Tempo limite atingido',
+            p.erro_pagina = 'Tempo limite excedido na leitura desta página. As demais páginas foram preservadas.'
+      WHERE p.job_id = ? AND j.escola_id = ?
+        AND p.status_pagina = 'processando'
+        AND TIMESTAMPDIFF(SECOND, p.atualizado_em, NOW()) > ?`,
+    [jobId, Number(escolaId), WATCHDOG_PAGINA_TRAVADA_SEGUNDOS]
+  );
+  if (updStuck?.affectedRows > 0) {
+    await recomputarStatusConsolidadoJob(jobId).catch(() => {});
+  }
+
   const [[job]] = await pool.query(
     `SELECT job_id, modo, status, total_paginas, paginas_recebidas, paginas_concluidas,
             paginas_com_erro, etapa_atual, modelo_ativo, erro_msg, cancelado, iniciado_em
@@ -514,7 +556,8 @@ export async function consultarStatusJob({ jobId, escolaId }) {
   }
 
   const [paginasRows] = await pool.query(
-    `SELECT ordem_lote, pagina_numero, status_pagina, etapa_pagina, modelo_ia, questoes_count, questoes_json, erro_pagina
+    `SELECT ordem_lote, pagina_numero, status_pagina, etapa_pagina, modelo_ia,
+            ultimo_texto_apoio, questoes_count, questoes_json, erro_pagina
        FROM questoes_ai_job_paginas
       WHERE job_id = ?
       ORDER BY ordem_lote ASC`,
@@ -524,6 +567,7 @@ export async function consultarStatusJob({ jobId, escolaId }) {
   const todasQuestoes = [];
   const avisos = [];
   const paginasDetalhe = [];
+  let carryOverDaPaginaAnterior = null;
 
   for (const r of paginasRows) {
     paginasDetalhe.push({
@@ -538,9 +582,30 @@ export async function consultarStatusJob({ jobId, escolaId }) {
     if (r.status_pagina === 'concluida' && r.questoes_json) {
       try {
         const arr = JSON.parse(r.questoes_json);
-        if (Array.isArray(arr)) todasQuestoes.push(...arr);
+        if (Array.isArray(arr)) {
+          // Vincula figura/texto de chamada de fim da página anterior (ex: Pág 5 rodapé -> Q18 no topo da Pág 6)
+          if (carryOverDaPaginaAnterior && arr.length > 0) {
+            const primeira = { ...arr[0] };
+            if (carryOverDaPaginaAnterior.texto) {
+              primeira.texto_apoio = [carryOverDaPaginaAnterior.texto, primeira.texto_apoio]
+                .filter(Boolean)
+                .join('\n\n')
+                .trim();
+            }
+            if (carryOverDaPaginaAnterior.midia && !primeira.midia) {
+              primeira.midia = carryOverDaPaginaAnterior.midia;
+              primeira.imagem_url = carryOverDaPaginaAnterior.midia.url || null;
+            }
+            arr[0] = primeira;
+          }
+          todasQuestoes.push(...arr);
+        }
       } catch { /* ignore */ }
+      carryOverDaPaginaAnterior = desserializarContextoPagina(r.ultimo_texto_apoio).contexto_proxima_pagina;
+    } else {
+      carryOverDaPaginaAnterior = null;
     }
+
     if (r.status_pagina === 'erro' && r.erro_pagina) {
       avisos.push(`Página ${r.pagina_numero}: ${r.erro_pagina}`);
     }

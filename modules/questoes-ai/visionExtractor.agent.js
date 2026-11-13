@@ -47,6 +47,27 @@ function sleep(ms) {
 }
 
 /**
+ * Impõe timeout rígido com AbortController sobre chamadas SDK (evita sockets HTTP/2 meio-abertos
+ * na API do Gemini travarem indefinidamente sem acionar failover para o próximo modelo).
+ */
+function comTimeoutRigido(promiseFactory, timeoutMs, label) {
+  const ac = new AbortController();
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try { ac.abort(); } catch { /* ignore */ }
+      const err = new Error(`Timeout de ${Math.round(timeoutMs / 1000)}s excedido no socket de ${label}`);
+      err.status = 504;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promiseFactory(ac.signal), timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
  * Repara escapes LaTeX inválidos dentro de strings JSON (ex: "\cdot", "\sin", "\alpha", "\leq")
  * e cercas markdown ```json ... ``` antes do JSON.parse, evitando erro 500 por SyntaxError.
  */
@@ -161,7 +182,12 @@ export async function gerarJsonComFailover({
             generationConfig,
           });
 
-          const result = await model.generateContent(callContents);
+          const perAttemptTimeoutMs = Math.min(Math.max(25000, Number(timeoutMs) || 46000), 48000);
+          const result = await comTimeoutRigido(
+            (signal) => model.generateContent(callContents, { timeout: perAttemptTimeoutMs, signal }),
+            perAttemptTimeoutMs + 1500,
+            nomeModelo
+          );
           const rawText = result?.response?.text?.() || '';
           if (!rawText.trim()) {
             throw new Error(`Resposta vazia do modelo ${nomeModelo}.`);

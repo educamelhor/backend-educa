@@ -373,7 +373,10 @@ Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNume
    - Se a folha estiver diagramada em 2 colunas lado a lado (padrão ENEM, vestibulares, apostilas), defina layout_pagina="duas_colunas" e informe em "coluna_divisao_x" o X (0..1000, ex: 495) do corredor branco vertical central.
    - Em duas_colunas, leia ESTRITAMENTE: 1º toda a coluna da esquerda (de cima até embaixo), depois 2º toda a coluna da direita (de cima até embaixo).
    - Se uma mesma questão começar no fim da coluna esquerda e terminar no topo da coluna direita, UNIFIQUE-A em um único item de "questoes"!
-   - Ignore cabeçalhos institucionais da escola (nome do aluno, data, nota, instruções gerais da capa da prova) que não façam parte de nenhuma questão.
+   - ATENÇÃO CRÍTICA A CHAMADAS DE IMAGEM/TEXTO NO FIM DE COLUNA OU DE PÁGINA:
+     * Se no final da coluna esquerda houver uma chamada introdutória (ex: "Observe a imagem do muro... e responda à questão a seguir", "Analise o gráfico:") acompanhada de figura/texto SEM alternativas próprias, VINCULE essa figura e esse texto diretamente à questão que começa no topo da coluna direita! NUNCA crie uma questão falsa/vazia para uma chamada "Observe a imagem"!
+     * Se no final da coluna direita (rodapé da página) houver uma chamada "Observe a imagem:" + figura/texto cuja pergunta só aparecerá na PRÓXIMA página, retorne-a com numero_original="PENDENTE_PROXIMA_PAGINA" para que o sistema a anexe automaticamente à 1ª questão da página seguinte!
+   - Ignore cabeçalhos institucionais da escola e cartões motivacionais/decorativos de fim de prova ("BOA PROVA!", frases filosóficas sem pergunta) que não sejam questões avaliativas.
 
 2. TEXTOS DE APOIO COMPARTILHADOS ("textos_apoio_compartilhados"):
    - Quando houver um texto base, tirinha ou artigo com instrução do tipo "Leia o texto a seguir para responder às questões 1 a 3", registre esse texto em "textos_apoio_compartilhados" com um "id_texto" (ex: "T1") SEM a frase "Texto para as questões 1 a 3", e vincule "id_texto_apoio_vinculado": "T1" em TODAS as questões abrangidas (1, 2 e 3) para que cada questão fique 100% autônoma no banco!
@@ -485,6 +488,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
 
   const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
   const questoesProcessadas = [];
+  let contextoPendenteBuffer = null; // { texto: string, midia: object|null }
 
   report(`Página ${paginaNumero}: ${questoesBrutas.length} questão(ões) identificada(s) · Estruturando itens e recortando figuras...`);
 
@@ -537,7 +541,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       }
     }
 
-    // Limites verticais protetores derivados do questao_bbox para nunca capturar tinta da questão vizinha
+    // Limites verticais protetores derivados do questao_bbox + união das figuras vinculadas
+    // (preserva charges/gráficos compartilhados no topo da página ou no rodapé da coluna anterior sem colapsar o recorte)
     let qMinTop = 0;
     let qMaxBottom = 1000;
     if (Array.isArray(qRaw.questao_bbox) && qRaw.questao_bbox.length === 4) {
@@ -546,8 +551,14 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
         && principaisUnicas.some((f) => f.coluna === 'esquerda')
         && principaisUnicas.some((f) => f.coluna === 'direita');
       if (!atravessaColunas && Number.isFinite(qy1) && Number.isFinite(qy2) && qy2 - qy1 >= 30) {
-        qMinTop = clampNorm(qy1 - 24, 0, 980);
-        qMaxBottom = clampNorm(qy2 + 24, 20, 1000);
+        const todasBoxesY = [qy1, qy2];
+        for (const f of principaisUnicas) {
+          if (Number.isFinite(f.bbox?.[0]) && Number.isFinite(f.bbox?.[2])) {
+            todasBoxesY.push(Number(f.bbox[0]), Number(f.bbox[2]));
+          }
+        }
+        qMinTop = clampNorm(Math.min(...todasBoxesY) - 24, 0, 980);
+        qMaxBottom = clampNorm(Math.max(...todasBoxesY) + 24, 20, 1000);
       }
     }
 
@@ -634,6 +645,48 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       ultimoTextoDestaPagina = itemNormalizado.texto_apoio;
     }
 
+    // Detecta chamadas órfãs de imagem/texto sem pergunta ("Observe a imagem...", "PENDENTE_PROXIMA_PAGINA")
+    const numUpper = String(qRaw.numero_original || '').toUpperCase().trim();
+    const semCorpoEstruturado =
+      itemNormalizado.tipo !== 'discursiva' &&
+      itemNormalizado.tipo !== 'lacuna' &&
+      (!Array.isArray(itemNormalizado.alternativas) || itemNormalizado.alternativas.length === 0) &&
+      (!Array.isArray(qRaw.proposicoes_romanas) || qRaw.proposicoes_romanas.length === 0) &&
+      (!Array.isArray(qRaw.itens_vf) || qRaw.itens_vf.length === 0) &&
+      (!Array.isArray(qRaw.coluna_a) || qRaw.coluna_a.length === 0) &&
+      (!Array.isArray(qRaw.proposicoes_somatoria) || qRaw.proposicoes_somatoria.length === 0);
+
+    const isChamadaPendente = numUpper.includes('PENDENTE') || semCorpoEstruturado;
+
+    if (isChamadaPendente) {
+      const txtTeaser = [itemNormalizado.texto_apoio, itemNormalizado.enunciado]
+        .map((s) => limparCabecalhoTextoCompartilhado(s))
+        .filter((s) => s && !/^observe\s+a\s+(?:imagem|figura|charge|tirinha)\s*:?$/i.test(s.trim()))
+        .join('\n\n')
+        .trim();
+
+      contextoPendenteBuffer = {
+        texto: [contextoPendenteBuffer?.texto, txtTeaser].filter(Boolean).join('\n\n').trim(),
+        midia: itemNormalizado.midia || contextoPendenteBuffer?.midia || null,
+      };
+      continue;
+    }
+
+    // Se havia contexto/figura pendente imediatamente antes desta questão na mesma página (ex: fim da col. 1 -> topo da col. 2), acopla!
+    if (contextoPendenteBuffer) {
+      if (contextoPendenteBuffer.texto) {
+        itemNormalizado.texto_apoio = [contextoPendenteBuffer.texto, itemNormalizado.texto_apoio]
+          .filter(Boolean)
+          .join('\n\n')
+          .trim();
+      }
+      if (contextoPendenteBuffer.midia && !itemNormalizado.midia) {
+        itemNormalizado.midia = contextoPendenteBuffer.midia;
+        itemNormalizado.imagem_url = contextoPendenteBuffer.midia.url || null;
+      }
+      contextoPendenteBuffer = null;
+    }
+
     questoesProcessadas.push(itemNormalizado);
   }
 
@@ -644,6 +697,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
     pagina_original_url: paginaOriginalUrl,
     layout_pagina: layoutPagina,
     ultimo_texto_apoio: ultimoTextoDestaPagina,
+    contexto_proxima_pagina: contextoPendenteBuffer,
     total_questoes: questoesProcessadas.length,
     questoes: questoesProcessadas,
   };
