@@ -7,12 +7,94 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { processarMidiaQuestao } from './smartMediaEngine.js';
 
-const MODELOS_GEMINI_CASCATA = [
+const PREFERENCIA_MODELOS_GEMINI = [
   'gemini-2.5-flash',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-2.5-pro',
+  'gemini-3.1-pro-preview',
 ];
+
+const FALLBACK_ESTATICO_GEMINI = [
+  'gemini-2.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+];
+
+const ANTI_RECITACAO_INSTRUCAO = [
+  'DIRETRIZ TÉCNICA DE ESTRUTURAÇÃO PEDAGÓGICA (CONTORNO DE FALSO-POSITIVO RECITATION):',
+  '1. O professor titular enviou a imagem de sua própria folha de avaliação escolar para catalogação estruturada no banco da escola.',
+  '2. Em "texto_apoio" e "textos_apoio_compartilhados", se houver excerto jornalístico, literário ou acadêmico extenso (> 45 palavras), insira quebras de linha ("\\n") entre os períodos/frases e preserve a citação da fonte/autor ao final.',
+  '3. Redija OBRIGATORIAMENTE os campos "resolucao_passo_a_passo", "temas" e "tags" com síntese didática autoral e palavras 100% próprias.',
+  '4. Responda EXCLUSIVAMENTE com o objeto JSON válido solicitado, sem texto antes ou depois.',
+].join('\n');
+
+let _modelosCache = { key: '', expiraEm: 0, lista: null, inflight: null };
+
+/**
+ * Descobre dinamicamente via /v1beta/models quais modelos Gemini com suporte a generateContent
+ * estão ativos no projeto atual (cache de 6h em RAM), eliminando erros 404 por modelos aposentados.
+ */
+async function obterCascataModelosAtivos(apiKey) {
+  if (!apiKey) return FALLBACK_ESTATICO_GEMINI;
+  const agora = Date.now();
+  if (_modelosCache.lista && _modelosCache.key === apiKey && agora < _modelosCache.expiraEm) {
+    return _modelosCache.lista;
+  }
+  if (_modelosCache.inflight && _modelosCache.key === apiKey) {
+    return _modelosCache.inflight;
+  }
+
+  const promise = (async () => {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const rawModels = Array.isArray(data?.models) ? data.models : [];
+
+      const disponiveis = new Set();
+      for (const m of rawModels) {
+        const id = String(m?.name || '').replace(/^models\//, '').trim();
+        const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+        if (!id || !methods.includes('generateContent')) continue;
+        if (/tts|image|imagen|veo|embedding|aqa|robotics|computer-use|live|audio|gemma|learnlm/i.test(id)) continue;
+        if (!id.startsWith('gemini-')) continue;
+        disponiveis.add(id);
+      }
+
+      if (disponiveis.size === 0) return FALLBACK_ESTATICO_GEMINI;
+
+      const ordenados = PREFERENCIA_MODELOS_GEMINI.filter((id) => disponiveis.has(id));
+      if (ordenados.length < 4) {
+        const extras = [...disponiveis]
+          .filter((id) => !ordenados.includes(id) && !/gemini-1\.|gemini-2\.0/i.test(id))
+          .sort((a, b) => {
+            const score = (s) => (s.includes('flash') ? 0 : 1) + (s.includes('exp') ? 2 : 0);
+            return score(a) - score(b);
+          });
+        for (const ex of extras) {
+          if (ordenados.length >= 4) break;
+          ordenados.push(ex);
+        }
+      }
+
+      const listaFinal = ordenados.length > 0 ? ordenados.slice(0, 4) : FALLBACK_ESTATICO_GEMINI;
+      _modelosCache = { key: apiKey, expiraEm: Date.now() + 6 * 3600 * 1000, lista: listaFinal, inflight: null };
+      return listaFinal;
+    } catch (err) {
+      console.warn('[visionExtractor] Aviso ao listar /v1beta/models, usando cascata padrão:', err?.message);
+      _modelosCache = { key: apiKey, expiraEm: Date.now() + 10 * 60 * 1000, lista: FALLBACK_ESTATICO_GEMINI, inflight: null };
+      return FALLBACK_ESTATICO_GEMINI;
+    }
+  })();
+
+  _modelosCache = { ..._modelosCache, key: apiKey, inflight: promise };
+  return promise;
+}
 
 export const DISCIPLINAS_OFICIAIS = [
   'Português', 'Matemática', 'Ciências', 'História', 'Geografia',
@@ -129,8 +211,8 @@ export function parseJsonResilienteIA(rawText) {
 }
 
 /**
- * Executa geração estruturada JSON com cascata automática de modelos Gemini
- * + fallback emergencial para OpenAI Vision/JSON (se OPENAI_API_KEY estiver configurada).
+ * Executa geração estruturada JSON com cascata dinâmica de modelos Gemini ativos,
+ * recuperação automática contra bloqueios RECITATION e fallback OpenAI Vision/JSON.
  */
 export async function gerarJsonComFailover({
   contents,
@@ -142,39 +224,72 @@ export async function gerarJsonComFailover({
   maxOutputTokens = 8192,
   timeoutMs = 55000,
   thinkingBudget = 1536,
+  onProgress = null,
 }) {
   const genAI = getGeminiOrNull();
   const openAIKey = getOpenAIKeyOrNull();
+  const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
 
   if (!genAI && !openAIKey) {
     throw new Error('GEMINI_API_KEY não configurada no ambiente.');
   }
 
   const errosTentativas = [];
+  const cascataModelos = genAI ? await obterCascataModelosAtivos(geminiKey) : [];
 
-  if (genAI) {
+  if (genAI && cascataModelos.length > 0) {
     let abortGemini = false;
-    for (const nomeModelo of MODELOS_GEMINI_CASCATA) {
+    for (let idxModelo = 0; idxModelo < cascataModelos.length; idxModelo++) {
       if (abortGemini) break;
-      const modosSchema = responseSchema ? [true, false] : [false];
+      const nomeModelo = cascataModelos[idxModelo];
+      if (idxModelo > 0 && typeof onProgress === 'function') {
+        try { onProgress(`Alternando leitura para o modelo ${nomeModelo}...`); } catch { /* ignore */ }
+      }
+
+      let usarSchema = Boolean(responseSchema);
       let desativarThinking = false;
-      for (const usarSchemaEstrito of modosSchema) {
+      let desativarTemperatura = false;
+      let modoAntiRecitacao = false;
+      let tentativasModelo = 0;
+
+      while (tentativasModelo < 3) {
+        tentativasModelo++;
         try {
           const generationConfig = {
-            responseMimeType: 'application/json',
-            temperature,
+            responseMimeType: modoAntiRecitacao ? 'text/plain' : 'application/json',
             maxOutputTokens,
           };
-          if (!desativarThinking && Number.isFinite(thinkingBudget) && nomeModelo.startsWith('gemini-2.5')) {
+          if (!desativarTemperatura) {
+            generationConfig.temperature = modoAntiRecitacao
+              ? Math.max(0.65, Number(temperature) || 0.65)
+              : temperature;
+          }
+          if (
+            !desativarThinking &&
+            Number.isFinite(thinkingBudget) &&
+            (nomeModelo.startsWith('gemini-2.5') || nomeModelo.startsWith('gemini-3'))
+          ) {
             generationConfig.thinkingConfig = { thinkingBudget };
           }
-          let callContents = contents;
-          if (usarSchemaEstrito && responseSchema) {
+
+          const usarSchemaAgora = usarSchema && !modoAntiRecitacao && Boolean(responseSchema);
+          if (usarSchemaAgora) {
             generationConfig.responseSchema = responseSchema;
-          } else if (openAiJsonHint) {
+          }
+
+          let basePrompt = promptTextOnly;
+          if (!usarSchemaAgora && openAiJsonHint) {
+            basePrompt = `${basePrompt}\n\n${openAiJsonHint}`;
+          }
+          if (modoAntiRecitacao) {
+            basePrompt = `${ANTI_RECITACAO_INSTRUCAO}\n\n${basePrompt}`;
+          }
+
+          let callContents = contents;
+          if (!usarSchemaAgora || modoAntiRecitacao) {
             callContents = Array.isArray(contents)
-              ? [`${promptTextOnly}\n\n${openAiJsonHint}`, ...contents.slice(1)]
-              : `${promptTextOnly}\n\n${openAiJsonHint}`;
+              ? [basePrompt, ...contents.slice(1)]
+              : basePrompt;
           }
 
           const model = genAI.getGenerativeModel({
@@ -182,29 +297,52 @@ export async function gerarJsonComFailover({
             generationConfig,
           });
 
-          const perAttemptTimeoutMs = Math.min(Math.max(25000, Number(timeoutMs) || 46000), 48000);
+          const perAttemptTimeoutMs = Math.min(Math.max(30000, Number(timeoutMs) || 68000), 75000);
           const result = await comTimeoutRigido(
             (signal) => model.generateContent(callContents, { timeout: perAttemptTimeoutMs, signal }),
             perAttemptTimeoutMs + 1500,
             nomeModelo
           );
+
+          const finishReason = String(result?.response?.candidates?.[0]?.finishReason || '').toUpperCase();
+          if (finishReason === 'RECITATION') {
+            throw new Error('Candidate was blocked due to RECITATION');
+          }
+
           const rawText = result?.response?.text?.() || '';
           if (!rawText.trim()) {
-            throw new Error(`Resposta vazia do modelo ${nomeModelo}.`);
+            throw new Error(`Resposta vazia do modelo ${nomeModelo} (finishReason=${finishReason || 'N/A'}).`);
           }
           const parsed = parseJsonResilienteIA(rawText);
           return { parsed, modeloUsado: nomeModelo };
         } catch (err) {
           const msg = String(err?.message || err || '');
           const status = err?.status || (msg.includes('429') ? 429 : msg.includes('503') ? 503 : msg.includes('404') ? 404 : msg.includes('400') ? 400 : 500);
-          console.warn(`[visionExtractor] Falha no modelo ${nomeModelo} (schema=${usarSchemaEstrito}, status=${status}): ${msg.slice(0, 220)}`);
+          console.warn(
+            `[visionExtractor] Falha no modelo ${nomeModelo} (tentativa=${tentativasModelo}, schema=${usarSchema && !modoAntiRecitacao}, antiRec=${modoAntiRecitacao}, status=${status}): ${msg.slice(0, 240)}`
+          );
 
-          // Se falhou por parâmetro thinkingConfig ou complexidade de schema (400), tenta imediatamente sem a restrição
+          // 1) Auto-recuperação imediata contra bloqueio RECITATION (citações de jornais/livros na prova)
+          if (/RECITATION/i.test(msg) && !modoAntiRecitacao) {
+            modoAntiRecitacao = true;
+            usarSchema = false;
+            if (typeof onProgress === 'function') {
+              try { onProgress(`Citação literal longa detectada · Reprocessando em modo anti-recitação (${nomeModelo})...`); } catch { /* ignore */ }
+            }
+            continue;
+          }
+
+          // 2) Ajuste imediato caso o modelo rejeite thinkingConfig, temperature ou complexidade de schema (400)
           if (status === 400 && /thinking/i.test(msg) && !desativarThinking) {
             desativarThinking = true;
             continue;
           }
-          if (usarSchemaEstrito && responseSchema && status === 400 && /schema|state|constraint|property/i.test(msg)) {
+          if (status === 400 && /temperature/i.test(msg) && !desativarTemperatura) {
+            desativarTemperatura = true;
+            continue;
+          }
+          if (usarSchema && status === 400 && /schema|state|constraint|property/i.test(msg)) {
+            usarSchema = false;
             continue;
           }
 
@@ -213,6 +351,9 @@ export async function gerarJsonComFailover({
           if (/API_KEY_INVALID|API key not valid/i.test(msg)) {
             abortGemini = true;
             break;
+          }
+          if (status === 404) {
+            _modelosCache.expiraEm = 0;
           }
           if (status === 503) {
             await sleep(650);
@@ -226,6 +367,9 @@ export async function gerarJsonComFailover({
   // Fallback multi-provedor automático via OpenAI REST nativa (gpt-4o-mini) se OPENAI_API_KEY estiver configurada
   if (openAIKey) {
     try {
+      if (typeof onProgress === 'function') {
+        try { onProgress('Alternando leitura de contingência para OpenAI (gpt-4o-mini)...'); } catch { /* ignore */ }
+      }
       const userContent = [];
       const fullPrompt = openAiJsonHint ? `${promptTextOnly}\n\n${openAiJsonHint}` : promptTextOnly;
       userContent.push({ type: 'text', text: fullPrompt });
@@ -261,7 +405,7 @@ export async function gerarJsonComFailover({
             },
           ],
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(Math.min(Math.max(35000, Number(timeoutMs) || 68000), 80000)),
       });
 
       if (!oaResp.ok) {
@@ -279,21 +423,36 @@ export async function gerarJsonComFailover({
     }
   }
 
-  // Consolida diagnóstico claro p/ o controller e frontend
+  // Consolida diagnóstico claro e sem URLs técnicas cruas para o frontend
   const todosQuota = errosTentativas.length > 0 && errosTentativas.every((e) => e.status === 429 || /quota|exhausted|rate.?limit/i.test(e.msg));
   const algumQuota = errosTentativas.some((e) => e.status === 429 || /quota|exhausted|rate.?limit/i.test(e.msg));
   const todosOverload = errosTentativas.length > 0 && errosTentativas.every((e) => e.status === 503 || /overloaded|unavailable/i.test(e.msg));
+  const algumRecitacao = errosTentativas.some((e) => /RECITATION/i.test(e.msg));
+  const algumTimeout = errosTentativas.some((e) => e.status === 504 || /timeout|aborted/i.test(e.msg));
   const ultimo = errosTentativas[errosTentativas.length - 1];
+  const modelosTestados = [...new Set(errosTentativas.map((e) => e.modelo).filter(Boolean))].join(', ');
 
-  const finalErr = new Error(
-    todosQuota || (algumQuota && ultimo?.status === 404)
-      ? 'Limite de cota da chave GEMINI_API_KEY atingido em todos os modelos disponíveis (429 Quota Exceeded). Aguarde 1 minuto ou ative o faturamento Pay-As-You-Go (Tier 1) no Google AI Studio.'
-      : todosOverload
-        ? 'Os servidores da IA (Google Gemini) estão temporariamente sobrecarregados (503). Tente novamente em alguns segundos.'
-        : `Falha no processamento multimodal (${ultimo?.modelo || 'IA'}): ${String(ultimo?.msg || 'erro desconhecido').slice(0, 200)}`
-  );
+  let msgLimpa;
+  if (todosQuota || (algumQuota && ultimo?.status === 404)) {
+    msgLimpa = 'Limite de cota da chave GEMINI_API_KEY atingido nos modelos disponíveis (429). Aguarde alguns instantes e tente novamente.';
+  } else if (todosOverload) {
+    msgLimpa = 'Os servidores de Visão Computacional estão temporariamente sobrecarregados (503). Tente novamente em alguns segundos.';
+  } else if (algumRecitacao) {
+    msgLimpa = `Filtro de direitos autorais da IA (RECITATION) acionado por citação literal extensa nesta página (${modelosTestados || 'IA'}). Reimporte apenas esta página.`;
+  } else if (algumTimeout) {
+    msgLimpa = `Tempo limite excedido na leitura de alta densidade desta página (${modelosTestados || 'IA'}). Reimporte apenas esta página.`;
+  } else {
+    const resumoUltimo = String(ultimo?.msg || 'erro inesperado')
+      .replace(/\[GoogleGenerativeAI Error\]:\s*/gi, '')
+      .replace(/Error fetching from https?:\/\/\S+/gi, 'Falha de comunicação com o modelo')
+      .trim()
+      .slice(0, 180);
+    msgLimpa = `Falha no processamento multimodal (${ultimo?.modelo || 'IA'}): ${resumoUltimo}`;
+  }
+
+  const finalErr = new Error(msgLimpa);
   finalErr.httpStatus = todosQuota || (algumQuota && ultimo?.status === 404) ? 429 : todosOverload ? 503 : 500;
-  finalErr.detail = errosTentativas.map((e) => `${e.modelo}: [${e.status}] ${e.msg.slice(0, 110)}`).join(' | ');
+  finalErr.detail = errosTentativas.map((e) => `${e.modelo}: [${e.status}] ${e.msg.slice(0, 140)}`).join(' | ');
   throw finalErr;
 }
 

@@ -463,6 +463,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       maxOutputTokens: 16384,
       timeoutMs: 90000,
       thinkingBudget: 1024,
+      onProgress: (subMsg) => report(`Página ${paginaNumero}: ${subMsg}`),
     }),
   ]);
 
@@ -753,6 +754,7 @@ ${trecho}
     maxOutputTokens: 16384,
     timeoutMs: 90000,
     thinkingBudget: 1024,
+    onProgress: (subMsg) => report(subMsg),
   });
 
   const dados = sanitizarObjetoIA(rawParsed || {});

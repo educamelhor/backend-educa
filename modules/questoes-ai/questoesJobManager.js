@@ -12,7 +12,15 @@ import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from './sheetS
 import { extrairQuestaoMultimodal } from './visionExtractor.agent.js';
 
 const CONCORRENCIA_PAGINAS_POR_JOB = 2;
-const WATCHDOG_PAGINA_TRAVADA_SEGUNDOS = 125;
+const WATCHDOG_PAGINA_TRAVADA_SEGUNDOS = 195;
+
+function limparMensagemErroParaUsuario(err, padrao = 'Falha ao processar página.') {
+  const base = String(err?.message || padrao)
+    .replace(/\[GoogleGenerativeAI Error\]:\s*/gi, '')
+    .replace(/Error fetching from https?:\/\/\S+/gi, 'Falha de comunicação com o modelo')
+    .trim();
+  return base || padrao;
+}
 
 function serializarContextoPagina(ultimoTextoApoio = '', contextoProximaPagina = null) {
   if (!contextoProximaPagina) return ultimoTextoApoio || null;
@@ -291,8 +299,8 @@ function dispararWorkersLocais(jobId) {
         );
       } catch (err) {
         task.buffer = null;
-        console.error(`[questoesJobManager] Erro na página ${task.paginaNumero} do job ${jobId}:`, err?.message);
-        const msgErro = err?.detail ? `${err.message} (${err.detail})` : (err?.message || 'Falha ao processar página.');
+        console.error(`[questoesJobManager] Erro na página ${task.paginaNumero} do job ${jobId}:`, err?.message, err?.detail || '');
+        const msgErro = limparMensagemErroParaUsuario(err, 'Falha ao processar página.');
         await pool.query(
           `UPDATE questoes_ai_job_paginas
               SET status_pagina = 'erro', etapa_pagina = 'Erro', erro_pagina = ?
@@ -379,7 +387,8 @@ export async function criarJobExtracaoLista({
           [resTexto.modelo_ia || '', questoesArr.length, JSON.stringify(questoesArr), jobId]
         );
       } catch (err) {
-        const msgErro = err?.detail ? `${err.message} (${err.detail})` : (err?.message || 'Erro ao processar texto.');
+        console.error(`[questoesJobManager] Erro no job texto ${jobId}:`, err?.message, err?.detail || '');
+        const msgErro = limparMensagemErroParaUsuario(err, 'Erro ao processar texto.');
         await pool.query(
           `UPDATE questoes_ai_job_paginas
               SET status_pagina = 'erro', erro_pagina = ?
@@ -502,7 +511,8 @@ export async function criarJobPrintUnico({ escolaId, usuarioId = null, fileBuffe
         [dados.modelo_ia || '', jobId]
       );
     } catch (err) {
-      const msgErro = err?.detail ? `${err.message} (${err.detail})` : (err?.message || 'Erro ao processar imagem.');
+      console.error(`[questoesJobManager] Erro no print único ${jobId}:`, err?.message, err?.detail || '');
+      const msgErro = limparMensagemErroParaUsuario(err, 'Erro ao processar imagem.');
       await pool.query(
         `UPDATE questoes_ai_job_paginas SET status_pagina = 'erro', erro_pagina = ? WHERE job_id = ? AND ordem_lote = 1`,
         [msgErro.slice(0, 1000), jobId]
