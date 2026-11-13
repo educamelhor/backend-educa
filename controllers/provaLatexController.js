@@ -228,7 +228,9 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
 
   if (posicao === 'entre_enunciado_e_comando') tex += figTex;
 
-  if (item.comando_final) {
+  const comandoPosCorpo = (tipo === 'associacao' || tipo === 'verdadeiro_falso') && (est.submodo || 'direto') === 'sequencia';
+
+  if (item.comando_final && !comandoPosCorpo) {
     tex += `{\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
   }
 
@@ -251,6 +253,9 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
       tex += `\\noindent \\texttt{(\\hspace{0.45cm})} ${textoParaTex(it.texto || '')}\\\\[3pt]\n`;
     });
     if ((est.submodo || 'direto') === 'sequencia') {
+      if (item.comando_final) {
+        tex += `\\vspace{2pt}\\noindent {\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
+      }
       tex += renderAlternativasTex(alts, imgBundle?.alts || {});
     } else if (est.exigir_justificativa_falsas) {
       const nLin = Math.max(1, Math.min(8, Number(est.linhas_justificativa) || 3));
@@ -262,9 +267,13 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
   } else if (tipo === 'associacao') {
     const colA = Array.isArray(est.coluna_a) ? est.coluna_a : [];
     const colB = Array.isArray(est.coluna_b) ? est.coluna_b : [];
+    const avgA = colA.length ? colA.reduce((s, x) => s + String(x?.texto || '').length, 0) / colA.length : 25;
+    const avgB = colB.length ? colB.reduce((s, x) => s + String(x?.texto || '').length, 0) / colB.length : 45;
+    const wTexA = avgA <= avgB * 0.58 ? '0.35\\linewidth' : '0.44\\linewidth';
+    const wTexB = avgA <= avgB * 0.58 ? '0.57\\linewidth' : '0.48\\linewidth';
     const maxR = Math.max(colA.length, colB.length);
     if (maxR > 0) {
-      tex += `\\noindent\\begin{tabular}{|p{0.45\\linewidth}|p{0.45\\linewidth}|}\\hline\n`;
+      tex += `\\noindent\\begin{tabular}{|>{\\raggedright\\arraybackslash}p{${wTexA}}|>{\\raggedright\\arraybackslash}p{${wTexB}}|}\\hline\n`;
       tex += `\\textbf{${escapeTex(est.titulo_coluna_a || 'Coluna A')}} & \\textbf{${escapeTex(est.titulo_coluna_b || 'Coluna B')}} \\\\ \\hline\n`;
       for (let i = 0; i < maxR; i++) {
         const a = colA[i];
@@ -276,6 +285,9 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
       tex += `\\end{tabular}\n\n`;
     }
     if ((est.submodo || 'direto') === 'sequencia') {
+      if (item.comando_final) {
+        tex += `\\vspace{2pt}\\noindent {\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
+      }
       tex += renderAlternativasTex(alts, imgBundle?.alts || {});
     }
   } else if (tipo === 'lacuna') {
@@ -332,6 +344,7 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comG
   tex += `\\usepackage{times}\n`;
   tex += `\\usepackage[a4paper,lmargin=${margem},tmargin=${margem},bmargin=${margem},rmargin=${margem}]{geometry}\n`;
   tex += `\\usepackage{multicol}\n`;
+  tex += `\\usepackage{array}\n`;
   tex += `\\usepackage{multirow}\n`;
   tex += `\\usepackage{enumerate}\n`;
   tex += `\\usepackage[shortlabels]{enumitem}\n`;

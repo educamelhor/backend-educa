@@ -139,15 +139,22 @@ function renderCorpoModelo(item, template, showGabarito) {
     const justHtml = submodo === 'direto' && est.exigir_justificativa_falsas
       ? `<div class="vf-just-label">Justifique as afirmativas falsas:</div>${renderLinhasResposta(est.linhas_justificativa || 3)}`
       : '';
+    const cmdSeqHtml = submodo === 'sequencia' && item.comando_final
+      ? `<div class="comando-final">${ltx(item.comando_final)}</div>`
+      : '';
     const seqHtml = submodo === 'sequencia'
       ? renderAlternativas(item.alternativas_json, item.correta, showGabarito)
       : '';
-    return `${itensHtml}${justHtml}${seqHtml}`;
+    return `${itensHtml}${justHtml}${cmdSeqHtml}${seqHtml}`;
   }
 
   if (tipo === 'associacao') {
     const colA = Array.isArray(est.coluna_a) ? est.coluna_a : [];
     const colB = Array.isArray(est.coluna_b) ? est.coluna_b : [];
+    const avgA = colA.length ? colA.reduce((s, x) => s + String(x?.texto || '').length, 0) / colA.length : 25;
+    const avgB = colB.length ? colB.reduce((s, x) => s + String(x?.texto || '').length, 0) / colB.length : 45;
+    const wA = avgA <= avgB * 0.58 ? '37%' : '46%';
+    const wB = avgA <= avgB * 0.58 ? '63%' : '54%';
     const submodo = est.submodo || 'direto';
     const maxRows = Math.max(colA.length, colB.length);
     let rowsHtml = '';
@@ -158,24 +165,27 @@ function renderCorpoModelo(item, template, showGabarito) {
         ? `<strong>${txt(b.vinculo_codigo)}</strong>`
         : '&nbsp;&nbsp;&nbsp;';
       rowsHtml += `<tr>
-        <td>${a ? `<strong>(${txt(a.codigo || i + 1)})</strong> ${ltx(a.texto || '')}` : ''}</td>
-        <td>${b ? `<span class="vf-box">( ${gabB} )</span> ${ltx(b.texto || '')}` : ''}</td>
+        <td style="width:${wA};text-align:left;vertical-align:top;">${a ? `<div class="assoc-cell"><strong>(${txt(a.codigo || i + 1)})</strong><span>${ltx(a.texto || '')}</span></div>` : ''}</td>
+        <td style="width:${wB};text-align:left;vertical-align:top;">${b ? `<div class="assoc-cell"><span class="vf-box">( ${gabB} )</span><span>${ltx(b.texto || '')}</span></div>` : ''}</td>
       </tr>`;
     }
     const tabHtml = maxRows > 0 ? `
       <table class="assoc-table">
         <thead>
           <tr>
-            <th>${txt(est.titulo_coluna_a || 'Coluna A')}</th>
-            <th>${txt(est.titulo_coluna_b || 'Coluna B')}</th>
+            <th style="width:${wA};text-align:left;">${txt(est.titulo_coluna_a || 'Coluna A')}</th>
+            <th style="width:${wB};text-align:left;">${txt(est.titulo_coluna_b || 'Coluna B')}</th>
           </tr>
         </thead>
         <tbody>${rowsHtml}</tbody>
       </table>` : '';
+    const cmdSeqHtml = submodo === 'sequencia' && item.comando_final
+      ? `<div class="comando-final">${ltx(item.comando_final)}</div>`
+      : '';
     const seqHtml = submodo === 'sequencia'
       ? renderAlternativas(item.alternativas_json, item.correta, showGabarito)
       : '';
-    return `${tabHtml}${seqHtml}`;
+    return `${tabHtml}${cmdSeqHtml}${seqHtml}`;
   }
 
   if (tipo === 'lacuna') {
@@ -274,8 +284,11 @@ function resumirGabaritoProva(item) {
 
 function renderQuestao(item, idx, template, showGabarito) {
   const num = String(idx + 1).padStart(2, '0');
+  const est = parseJsonObj(item.estrutura_json, {}) || {};
+  const tipo = item.tipo || est.modelo || (template === 'discursiva' ? 'discursiva' : 'objetiva');
+  const comandoPosCorpo = (tipo === 'associacao' || tipo === 'verdadeiro_falso') && (est.submodo || 'direto') === 'sequencia';
   const enunciado = formatarEnunciadoPrincipal(item, showGabarito);
-  const comandoFinal = item.comando_final ? `<div class="comando-final">${ltx(item.comando_final)}</div>` : '';
+  const comandoFinal = item.comando_final && !comandoPosCorpo ? `<div class="comando-final">${ltx(item.comando_final)}</div>` : '';
   const pontos = item.valor_pontos || 1;
   const bncc = item.habilidade_bncc ? `<span class="bncc-tag">${txt(item.habilidade_bncc)}</span>` : '';
 
@@ -370,9 +383,10 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     .vf-box { font-family: monospace; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
     .vf-just-label { font-size: 8.5pt; font-weight: 700; margin-top: 4px; }
 
-    .assoc-table { width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 9pt; }
-    .assoc-table th, .assoc-table td { border: 0.6pt solid #666; padding: 3px 6px; vertical-align: top; text-align: left; width: 50%; }
+    .assoc-table { width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 9pt; text-align: left; }
+    .assoc-table th, .assoc-table td { border: 0.6pt solid #666; padding: 4px 7px; vertical-align: top; text-align: left; }
     .assoc-table th { background: #f3f4f6; font-size: 8.5pt; text-transform: uppercase; }
+    .assoc-cell { display: flex; align-items: baseline; gap: 5px; text-align: left; line-height: 1.45; }
 
     .lacuna-blank { font-weight: 700; letter-spacing: 0.03em; }
     .lacuna-gab { font-weight: 700; color: #166534; text-decoration: underline; padding: 0 3px; }
