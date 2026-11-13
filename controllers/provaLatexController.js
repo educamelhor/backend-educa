@@ -24,14 +24,34 @@ function escapeTex(str = '') {
     .replace(/~/g,   '\\textasciitilde{}')
     .replace(/\{/g,  '\\{')
     .replace(/\}/g,  '\\}')
-    .replace(/_/g,   '\\_');
+    .replace(/_/g,   '\\_')
+    .replace(/→/g,   '$\\rightarrow$')
+    .replace(/⇌/g,   '$\\rightleftharpoons$')
+    .replace(/≥/g,   '$\\geq$')
+    .replace(/≤/g,   '$\\leq$')
+    .replace(/≠/g,   '$\\neq$')
+    .replace(/±/g,   '$\\pm$');
 }
 
 function textoParaTex(str = '') {
   const partes = String(str || '').split(/(\$\$[^$]+\$\$|\$[^$]+\$|\\\[[^\]]+\\\])/g);
-  return partes.map((p) => {
-    if (p.startsWith('$') || p.startsWith('\\[')) return p;
-    return escapeTex(p);
+  return partes.map((p, idx) => {
+    if (p.startsWith('$') || p.startsWith('\\[')) {
+      return p
+        .replace(/→/g, '\\rightarrow ')
+        .replace(/⇌/g, '\\rightleftharpoons ')
+        .replace(/≥/g, '\\geq ')
+        .replace(/≤/g, '\\leq ')
+        .replace(/≠/g, '\\neq ')
+        .replace(/±/g, '\\pm ');
+    }
+    let clean = p;
+    // Remove \n imediatamente colado em bloco display $$...$$ vizinho para evitar parágrafo vazio duplo
+    const prevIsDisplay = idx > 0 && (partes[idx - 1].startsWith('$$') || partes[idx - 1].startsWith('\\['));
+    const nextIsDisplay = idx + 1 < partes.length && (partes[idx + 1].startsWith('$$') || partes[idx + 1].startsWith('\\['));
+    if (prevIsDisplay) clean = clean.replace(/^\r?\n/, '');
+    if (nextIsDisplay) clean = clean.replace(/\r?\n$/, '');
+    return escapeTex(clean).replace(/\r?\n/g, '\n\n\\noindent ');
   }).join('');
 }
 
@@ -209,7 +229,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
   if (posicao === 'entre_enunciado_e_comando') tex += figTex;
 
   if (item.comando_final) {
-    tex += `\\textbf{${textoParaTex(item.comando_final)}}\n\n`;
+    tex += `{\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
   }
 
   if (posicao === 'abaixo_comando') tex += figTex;

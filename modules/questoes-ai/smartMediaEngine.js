@@ -1,11 +1,11 @@
 // modules/questoes-ai/smartMediaEngine.js
-// EDUCA.STUDIO AI — Smart Media Engine (v2.1 — Optical Margin Rescue & 1D Seam Alignment)
+// EDUCA.STUDIO AI — Smart Media Engine (v2.2 — Proportional Column-Occupancy Scale & Optical Rescue)
 // Dá status independente às imagens de questões:
 // - Auto-crop espacial único ou múltiplo (questões em 2 colunas / múltiplas figuras)
 // - Smart Margin Rescue (resgata rótulos periféricos como R2, transmembrana e fórmulas no rodapé sem capturar texto)
 // - Gutter Clamp + Despeckle (trava na calha entre colunas e remove resíduos vizinhos)
 // - Costura de Quebra de Coluna com Alinhamento Óptico 1D por correlação de traços verticais
-// - Composição Editorial HD (Lado a Lado ou Empilhadas) + Scanner Clean + Escala/DPI
+// - Escala Proporcional Relativa à Largura Útil da Coluna (evita esticar recortes pequenos para G/100%)
 
 import crypto from 'crypto';
 import sharp from 'sharp';
@@ -16,14 +16,47 @@ function clamp(val, min, max) {
 }
 
 /**
- * Classifica o preset ideal de largura da figura na questão com base na geometria real.
+ * Classifica o preset ideal de largura da figura ('P'=36%, 'M'=56%, 'G'=84%, '100%')
+ * combinando razão de aspecto com ocupação horizontal real em relação à coluna do print original.
  */
-export function calcularPresetGeometria(width, height) {
+export function calcularPresetGeometria(width, height, opts = {}) {
   if (!width || !height) return 'M';
   const ratio = width / height;
+  const {
+    refColWidth = 0,
+    composicaoLayout = 'unico',
+    hasCrop = false,
+  } = opts || {};
 
+  // Painel composto lado a lado (2 colunas unificadas horizontalmente) precisa de largura editorial ampla
+  if (composicaoLayout === 'horizontal') {
+    return ratio >= 3.2 && width >= 720 ? '100%' : 'G';
+  }
+
+  // Quando a figura veio de um recorte sobre print/página, respeita a proporção real que ela ocupava na coluna!
+  if (hasCrop && refColWidth >= 160) {
+    const relW = width / refColWidth;
+
+    // Recortes compactos (< 38% da largura útil da coluna) nunca devem ser esticados
+    if (relW < 0.38 && height < refColWidth * 0.65) {
+      return 'P';
+    }
+
+    // Recortes intermediários (< 62% da coluna) ficam em P ou M — nunca esticam para G (84%) só por serem baixos!
+    if (relW < 0.62) {
+      return ratio <= 0.68 ? 'P' : 'M';
+    }
+
+    // Figuras realmente largas na coluna original (>= 62% da largura da coluna)
+    if (ratio >= 3.2 && relW >= 0.82 && width >= 640) return '100%';
+    if (ratio >= 1.85) return 'G';
+    if (ratio <= 0.68) return 'P';
+    return 'M';
+  }
+
+  // Upload avulso direto (sem recorte de página inteira)
   if (ratio >= 3.4 && width >= 720) return '100%';
-  if (ratio >= 1.85) return 'G';
+  if (ratio >= 1.95 && width >= 540) return 'G';
   if (ratio <= 0.68) return 'P';
   if (width <= 380 && height <= 380 && ratio >= 0.72 && ratio <= 1.45) return 'P';
   return 'M';
@@ -297,6 +330,36 @@ function medirMargemEsquerdaColuna(fullRgb, origW, origH, xStart, xEnd) {
     }
   }
   return xStart;
+}
+
+/**
+ * Mede a largura útil horizontal real ocupada pelo bloco de texto/conteúdo de uma coluna [xStart..xEnd),
+ * descontando margens brancas laterais de prints largos de navegador/Word.
+ */
+function medirLarguraUtilColuna(fullRgb, origW, origH, xStart, xEnd) {
+  const s = Math.max(0, xStart);
+  const e = Math.min(origW, xEnd);
+  if (e - s < 160) return Math.max(160, e - s);
+
+  const leftEdge = medirMargemEsquerdaColuna(fullRgb, origW, origH, s, e);
+  let rightEdge = e - 1;
+  for (let x = e - 1; x > leftEdge; x--) {
+    let darkRows = 0;
+    for (let y = 0; y < origH; y++) {
+      const idx = (y * origW + x) * 3;
+      if (fullRgb[idx] < 200 || fullRgb[idx + 1] < 200 || fullRgb[idx + 2] < 200) {
+        darkRows++;
+        if (darkRows >= 8) {
+          rightEdge = x;
+          x = leftEdge; // encerra varredura externa
+          break;
+        }
+      }
+    }
+  }
+
+  const span = rightEdge - leftEdge;
+  return span >= 140 ? span : Math.max(180, e - s);
 }
 
 /**
@@ -928,7 +991,27 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     cacheControl: 'public, max-age=31536000',
   });
 
-  const autoPreset = calcularPresetGeometria(finalW, finalH);
+  const hasCrop = specsList.length > 0;
+  let refColWidth = 0;
+  if (hasCrop) {
+    if (layoutOrigem === 'duas_colunas') {
+      const divRefPx = colunaDivisaoX >= 280 && colunaDivisaoX <= 720
+        ? Math.round((colunaDivisaoX / 1000) * origW)
+        : Math.round(origW / 2);
+      const usaColDir = specsList.every((sp) => sp.coluna === 'direita');
+      refColWidth = usaColDir
+        ? medirLarguraUtilColuna(fullRgb, origW, origH, divRefPx, origW)
+        : medirLarguraUtilColuna(fullRgb, origW, origH, 0, divRefPx);
+    } else {
+      refColWidth = medirLarguraUtilColuna(fullRgb, origW, origH, 0, origW);
+    }
+  }
+
+  const autoPreset = calcularPresetGeometria(finalW, finalH, {
+    refColWidth,
+    composicaoLayout: composicaoUsada,
+    hasCrop,
+  });
   const preset = ['P', 'M', 'G', '100%'].includes(presetOverride) ? presetOverride : autoPreset;
   const dpiStatus = calcularStatusNitidez(finalW, finalH);
 

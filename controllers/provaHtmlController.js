@@ -38,14 +38,18 @@ function parseAlts(raw) {
 // Formata expressões LaTeX simples como fallback caso KaTeX não carregue e preserva delimitadores p/ KaTeX
 function ltx(text = '') {
   if (!text) return '';
-  // Escapa HTML primeiro para nunca corromper spans gerados depois
+  // Escapa HTML primeiro para nunca corromper spans/divs gerados depois
   let safe = txt(text);
   safe = safe
     .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
     .replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>')
-    .replace(/\$\$([^$]+)\$\$/g, '<span class="math-block">$$$$$1$$$$</span>')
-    .replace(/\$([^$]+)\$/g, '<span class="math">$$$1$$</span>')
-    .replace(/\n/g, '<br>');
+    .replace(/\$\$([^$]+)\$\$|\$([^$]+)\$/g, (_m, disp, inl) =>
+      disp !== undefined
+        ? `<div class="math-block">$$${disp}$$</div>`
+        : `<span class="math">$${inl}$</span>`
+    )
+    .replace(/\r?\n*(<div class="math-block">[\s\S]*?<\/div>)\r?\n*/g, '$1')
+    .replace(/\r?\n/g, '<br>');
   return safe;
 }
 
@@ -343,6 +347,7 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     .pts-tag  { color: #555; border-color: #999; }
 
     .questao-enunciado { font-size: 10pt; line-height: 1.55; margin-bottom: 4px; text-align: justify; }
+    .math-block { display: block; text-align: center; margin: 6px 0; overflow-x: auto; }
     .comando-final { font-size: 10pt; line-height: 1.5; margin: 4px 0 5px; font-weight: 600; text-align: justify; }
     .texto-apoio { background: #f9f9f9; border-left: 3px solid #555; padding: 5px 8px; margin-bottom: 5px; font-size: 9pt; font-style: italic; color: #222; }
     .texto-apoio footer { font-size: 8pt; font-style: normal; margin-top: 3px; color: #555; }

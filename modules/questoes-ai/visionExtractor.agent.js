@@ -47,24 +47,30 @@ export function sanitizarTextoLatexIA(input) {
   // 3) Carriage Return isolado (\r sem \n) antes de comandos iniciados por \r (\rightarrow, \right, \rho, \rangle, \rceil, \rfloor)
   s = s.replace(/\r(?!\n)(?=(?:ight|ho\b|angle|ceil|floor|aise))/g, '\\r');
 
-  // 4) Dentro de blocos $...$, restaura qualquer \x09 remanescente e \n antes de comandos \n (\nabla, \neq, \nu, \notin, \neg, \nleq, \ngeq)
-  s = s.replace(/\$([^$]+)\$/g, (_full, inner) => {
+  // 4) Dentro de blocos $$...$$ (display) ou $...$ (inline), restaura \x09, \r e \n antes de comandos LaTeX
+  // IMPORTANTE: casar $$...$$ ANTES de $...$ na mesma passada p/ nunca deslocar delimitadores!
+  s = s.replace(/\$\$([^$]+)\$\$|\$([^$]+)\$/g, (_full, dispInner, inlInner) => {
+    const isDisp = dispInner !== undefined;
+    const inner = isDisp ? dispInner : inlInner;
     const fixed = inner
       .replace(/\x09/g, '\\t')
       .replace(/\r(?!\n)/g, '\\r')
       .replace(/\n(?=(?:abla|eq\b|u\b|otin|eg\b|atural|leq|geq|mid\b|parallel|sim\b|cong))/g, '\\n');
-    return `$${fixed}$`;
+    return isDisp ? `$$${fixed}$$` : `$${fixed}$`;
   });
 
-  // 5) Se o modelo escreveu comandos \text{...} ou \frac{...}{...} fora de $...$, envolve automaticamente em $...$
+  // 5) Fora de $...$/$$...$$: limpa cursor de digitação de prints do Word/Docs ("meias-vidas|" -> "meias-vidas")
+  //    e envolve automaticamente comandos LaTeX soltos (\text{...}, \frac{...}{...}, \sqrt{...}) em $...$
   const partes = s.split(/(\$\$[^$]+\$\$|\$[^$]+\$)/g);
   s = partes
     .map((parte) => {
       if (parte.startsWith('$')) return parte;
-      return parte.replace(
-        /(?:-\s*)?(?:(?:\\(?:text|mathrm|mathbf)\{[^{}]+\}|\\frac\{[^{}]+\}\{[^{}]+\}|\\sqrt\{[^{}]+\})(?:[_^](?:\{[^{}]+\}|[A-Za-z0-9+-]+))*)+(?:\s*(?:[-+=→⇌]|\\rightarrow)\s*(?:(?:\\(?:text|mathrm|mathbf)\{[^{}]+\}|\\frac\{[^{}]+\}\{[^{}]+\})(?:[_^](?:\{[^{}]+\}|[A-Za-z0-9+-]+))*)+)*/g,
-        (match) => `$${match.trim()}$`
-      );
+      return parte
+        .replace(/([A-Za-zÀ-ÿ0-9)\]])\|(?=\s|$|[.,;:!?])/g, '$1')
+        .replace(
+          /(?:-\s*)?(?:(?:\\(?:text|mathrm|mathbf)\{[^{}]+\}|\\frac\{[^{}]+\}\{[^{}]+\}|\\sqrt\{[^{}]+\})(?:[_^](?:\{[^{}]+\}|[A-Za-z0-9+-]+))*)+(?:\s*(?:[-+=→⇌]|\\rightarrow)\s*(?:(?:\\(?:text|mathrm|mathbf)\{[^{}]+\}|\\frac\{[^{}]+\}\{[^{}]+\})(?:[_^](?:\{[^{}]+\}|[A-Za-z0-9+-]+))*)+)*/g,
+          (match) => `$${match.trim()}$`
+        );
     })
     .join('');
 
@@ -160,13 +166,17 @@ const EXTRACTION_SCHEMA = {
     },
     figuras: {
       type: SchemaType.ARRAY,
-      description: 'TODAS as ilustrações, esquemas, gráficos, tirinhas, estruturas químicas, mapas ou tabelas visuais da questão. Em questões de 2 colunas ou com mais de 1 esquema, retorne MÚLTIPLOS itens com alvo="principal" na ordem exata de leitura!',
+      description: 'SOMENTE ilustrações gráficas reais (esquemas biológicos/físicos, gráficos cartesianos, figuras geométricas, estruturas químicas 2D com ligações desenhadas, tirinhas, charges, mapas ou tabelas visuais). PROIBIDO incluir equações matemáticas tipográficas, sistemas lineares, matrizes ou legendas de variáveis — esses elementos devem ser transcritos em LaTeX no enunciado com figuras=[].',
       items: {
         type: SchemaType.OBJECT,
         properties: {
           alvo: {
             type: SchemaType.STRING,
-            description: 'principal (para cada figura/esquema/fórmula visual do enunciado — pode haver vários itens "principal") | alt_A | alt_B | alt_C | alt_D | alt_E',
+            description: 'principal (para cada figura/esquema gráfico real do enunciado — pode haver vários itens "principal") | alt_A | alt_B | alt_C | alt_D | alt_E',
+          },
+          natureza_visual: {
+            type: SchemaType.STRING,
+            description: 'Classificação obrigatória: grafico_cartesiano | geometria_desenho | esquema_cientifico | estrutura_quimica_2d | tirinha_charge_mapa | tabela_visual | equacao_puramente_tipografica',
           },
           ordem: {
             type: SchemaType.INTEGER,
@@ -183,7 +193,7 @@ const EXTRACTION_SCHEMA = {
           bbox: {
             type: SchemaType.ARRAY,
             items: { type: SchemaType.INTEGER },
-            description: 'Coordenadas exatas [ymin, xmin, ymax, xmax] de 0 a 1000 englobando APENAS a ilustração/esquema/fórmula estrutural, sem invadir a coluna vizinha nem parágrafos de texto.',
+            description: 'Coordenadas exatas [ymin, xmin, ymax, xmax] de 0 a 1000 englobando APENAS a ilustração/esquema/fórmula estrutural 2D, sem invadir a coluna vizinha nem parágrafos de texto.',
           },
           posicao_sugerida: {
             type: SchemaType.STRING,
@@ -198,7 +208,7 @@ const EXTRACTION_SCHEMA = {
             description: 'true se a imagem aparentar ser foto de celular de papel cinza/amarelado que se beneficia de limpeza de fundo.',
           },
         },
-        required: ['alvo', 'ordem', 'coluna', 'continuacao_quebra_coluna', 'bbox', 'posicao_sugerida', 'foto_papel_cinza'],
+        required: ['alvo', 'natureza_visual', 'ordem', 'coluna', 'continuacao_quebra_coluna', 'bbox', 'posicao_sugerida', 'foto_papel_cinza'],
       },
     },
     alternativas: {
@@ -369,18 +379,20 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
    - "somatoria": proposições numeradas em potências de 2 (01, 02, 04, 08, 16...) cuja resposta é a soma.
    - "discursiva": questão aberta sem alternativas (use formato_espaco_discursiva="quadro_calculo" se exigir conta/desenho ou "linhas" se textual).
 
-2. FIDELIDADE ESPACIAL E FÓRMULAS LATEX:
-   - Remova numeração inicial da prova original (ex: "04.", "Questão 12 -") e remova a sigla da banca do início do enunciado colocando-a em "fonte" (ex: "(UECE)" -> fonte: "UECE").
+2. FIDELIDADE ESPACIAL, EQUAÇÕES EM DESTAQUE ($$...$$) E ARTEFATOS DE EDITOR:
+   - Remova numeração inicial da prova original (ex: "6.", "04.", "Questão 12 -") e remova a sigla da banca do início do enunciado colocando-a em "fonte" (ex: "(UECE)" -> fonte: "UECE").
    - NUNCA invente banca em "fonte": se não houver sigla/cabeçalho explícito, deixe "fonte": "" e "fonte_confirmada": false.
-   - Use notação LaTeX inline SEMPRE envolvida por cifrões ($...$) para fórmulas matemáticas, frações ($\\frac{a}{b}$), raízes ($\\sqrt{x}$), potências ($10^{-3}$) e fórmulas químicas ($\\text{H}_2\\text{O}$, $\\text{CH}_3$). NUNCA escreva \\text{} ou _2 fora de $...$!
-   - Separe o texto que vem ANTES das figuras em "enunciado", e todo o texto/comando que vem DEPOIS das figuras (inclusive parágrafos explicativos pós-figura na 2ª coluna + pergunta final) em "comando_final".
+   - Ignore artefatos de interface de editores de texto (Word/Google Docs) em prints de tela, como barra vertical de cursor de digitação colada no fim de palavras ("meias-vidas|" -> transcreva "meias-vidas") e sublinhados ondulados de corretor ortográfico.
+   - Use notação LaTeX inline SEMPRE envolvida por cifrões simples ($...$) para variáveis ($m_0$, $f(x)$), frações inline ($\\frac{a}{b}$), raízes ($\\sqrt{x}$), potências ($10^{-3}$), setas ($\\rightarrow$) e fórmulas químicas lineares ($\\text{H}_2\\text{O}$, $\\text{CH}_3$). NUNCA escreva \\text{} ou _0 fora de $...$!
+   - EQUAÇÕES EM DESTAQUE E LEGENDAS DE VARIÁVEIS NÃO SÃO FIGURAS: quando a questão apresentar uma função/equação centralizada em destaque (ex: $f(x) = \\frac{m_0}{2^x}$), sistema linear, matriz ou definições de variáveis (ex: "$x \\rightarrow$ quantidade de meias-vidas", "$m_0 \\rightarrow$ massa inicial", "$f(x) \\rightarrow$ massa final"), NUNCA recorte isso em "figuras" (retorne "figuras": [] se não houver ilustração gráfica real!). Transcreva a equação centralizada usando cifrão duplo \`$$...$$\` em linha própria dentro de "enunciado" (ex: \`\\n$$f(x) = \\\\frac{m_0}{2^x}$$\\n\`) seguida em linhas separadas (\`\\n\`) de TODAS as linhas de legenda/significado das variáveis sem omitir nenhuma!
+   - Separe o texto que vem ANTES das figuras reais em "enunciado", e o comando/pergunta de fechamento em "comando_final".
 
 3. DETECÇÃO COMPLETA E RECORTE MULTI-FIGURA ("figuras"):
-   - Retorne em "figuras" CADA bloco visual não-textual da questão (esquemas biológicos, diagramas, gráficos, estruturas químicas desenhadas, circuitos, tirinhas, mapas).
-   - Se a questão possuir 2 ou 3 regiões visuais separadas (ex: um esquema de membrana celular na coluna esquerda + fórmulas estruturais de aminoácidos no rodapé esquerdo e/ou topo da coluna direita), retorne UM ITEM SEPARADO em "figuras" (com alvo="principal") para CADA região visual!
-   - Se na virada da coluna esquerda para a coluna direita uma MESMA fórmula estrutural ou tabela foi partida ao meio (ex: cadeia principal —N—C—C— no rodapé da coluna esquerda e radicais |CH3 alanina, serina, aspartato no topo da coluna direita), retorne o bbox da metade no rodapé esquerdo (coluna="esquerda", continuacao_quebra_coluna=false) E o bbox da metade no topo direito (coluna="direita", continuacao_quebra_coluna=true)!
+   - Retorne em "figuras" SOMENTE blocos visuais genuinamente gráficos/ilustrativos: esquemas biológicos/físicos, gráficos com eixos, desenhos geométricos, estruturas químicas 2D com ligações desenhadas (traços/anéis), circuitos, tirinhas, charges, mapas ou tabelas complexas. NUNCA inclua equações algébricas tipográficas nem texto de variáveis em "figuras"!
+   - Se a questão possuir 2 ou 3 regiões visuais gráficas separadas (ex: um esquema de membrana celular na coluna esquerda + fórmulas estruturais 2D de aminoácidos no rodapé esquerdo e/ou topo da coluna direita), retorne UM ITEM SEPARADO em "figuras" (com alvo="principal") para CADA região visual!
+   - Se na virada da coluna esquerda para a coluna direita uma MESMA fórmula estrutural 2D ou tabela foi partida ao meio (ex: cadeia principal —N—C—C— no rodapé da coluna esquerda e radicais |CH3 alanina, serina, aspartato no topo da coluna direita), retorne o bbox da metade no rodapé esquerdo (coluna="esquerda", continuacao_quebra_coluna=false) E o bbox da metade no topo direito (coluna="direita", continuacao_quebra_coluna=true)!
    - Em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000): englobe 100% dos rótulos periféricos daquela ilustração (ex: siglas nas pontas superiores/inferiores como "R1" e "R2", segundas linhas de legendas com setas como "Proteína / transmembrana" e fórmulas encostadas no limite inferior y=1000 da coluna), mas NÃO invada parágrafos de texto nem ultrapasse "coluna_divisao_x" para a coluna vizinha.
-   - Se a questão for 100% texto puro sem nenhuma figura, retorne "figuras": [].
+   - Se a questão contiver apenas texto e equações matemáticas/químicas tipográficas sem desenho/gráfico/estrutura 2D, retorne OBRIGATORIAMENTE "figuras": [].
 
 4. GABARITO E RESOLUÇÃO PASSO A PASSO:
    - Se o print trouxer gabarito oficial inequívoco destacado, use gabarito_origem="marcado_na_imagem".
@@ -408,6 +420,8 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
 
   const figurasRaw = Array.isArray(dados.figuras) ? dados.figuras : [];
   const validFiguras = figurasRaw.filter((f) => {
+    // Trava determinística v2.2: equações puramente tipográficas pertencem ao LaTeX do enunciado, nunca a recorte JPEG
+    if (String(f?.natureza_visual || '').toLowerCase() === 'equacao_puramente_tipografica') return false;
     if (!Array.isArray(f?.bbox) || f.bbox.length !== 4) return false;
     const [y1, x1, y2, x2] = f.bbox.map(Number);
     return Number.isFinite(y1) && Number.isFinite(x1) && (y2 - y1) >= 16 && (x2 - x1) >= 16;
