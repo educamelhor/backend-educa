@@ -349,7 +349,14 @@ export async function extrairListaDePaginaMultimodal(fileBuffer, mimeType, opcoe
     serieSugerida = '',
     paginaNumero = 1,
     ultimoTextoApoio = '',
+    onProgress = null,
   } = opcoes || {};
+
+  const report = (msg) => {
+    if (typeof onProgress === 'function') {
+      try { onProgress(msg); } catch { /* ignore */ }
+    }
+  };
 
   const contextoHints = [
     disciplinaSugerida ? `- Disciplina informada pelo professor (use como padrão caso a questão não seja claramente de outra área): "${disciplinaSugerida}".` : '',
@@ -435,6 +442,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
   ]
 }`;
 
+  report(`Página ${paginaNumero}: Lendo colunas, textos e questões com Visão Computacional...`);
+
   // Executa upload único da página original ao DO Spaces em paralelo com a inferência multimodal
   const [uploadPagRes, aiRes] = await Promise.all([
     publicarPaginaOriginalLista(fileBuffer).catch((err) => {
@@ -449,7 +458,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       temperature: 0.15,
       openAiJsonHint: openAiSchemaHint,
       maxOutputTokens: 16384,
-      timeoutMs: 65000,
+      timeoutMs: 90000,
+      thinkingBudget: 1024,
     }),
   ]);
 
@@ -475,6 +485,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
 
   const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
   const questoesProcessadas = [];
+
+  report(`Página ${paginaNumero}: ${questoesBrutas.length} questão(ões) identificada(s) · Estruturando itens e recortando figuras...`);
 
   for (let i = 0; i < questoesBrutas.length; i++) {
     const qRaw = questoesBrutas[i];
@@ -541,6 +553,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
 
     if (principaisUnicas.length > 0) {
       try {
+        report(`Página ${paginaNumero}: Recortando figura em alta definição da questão ${qRaw.numero_original || i + 1}...`);
         const usarScannerClean = principaisUnicas.some((f) => Boolean(f.foto_papel_cinza));
         const posicaoSugerida = principaisUnicas[0]?.posicao_sugerida || 'entre_enunciado_e_comando';
         const legendas = principaisUnicas.map((f) => String(f.legenda_original || '').trim()).filter(Boolean);
@@ -641,11 +654,18 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
  * estruturando cada questão nos 7 modelos universais com LaTeX e gabarito comentado.
  */
 export async function extrairListaPorTextoIA(textoBruto, opcoes = {}) {
-  const { disciplinaSugerida = '', serieSugerida = '' } = opcoes || {};
+  const { disciplinaSugerida = '', serieSugerida = '', onProgress = null } = opcoes || {};
+  const report = (msg) => {
+    if (typeof onProgress === 'function') {
+      try { onProgress(msg); } catch { /* ignore */ }
+    }
+  };
   const textoLimpo = String(textoBruto || '').trim();
   if (textoLimpo.length < 20) {
     throw new Error('Cole o texto contendo ao menos uma questão completa.');
   }
+
+  report('Analisando texto bruto da lista e convertendo fórmulas para LaTeX...');
 
   // Limite seguro de caracteres por requisição para evitar truncamento de saída
   const trecho = textoLimpo.slice(0, 28000);
@@ -677,7 +697,8 @@ ${trecho}
     temperature: 0.15,
     openAiJsonHint: openAiSchemaHint,
     maxOutputTokens: 16384,
-    timeoutMs: 65000,
+    timeoutMs: 90000,
+    thinkingBudget: 1024,
   });
 
   const dados = sanitizarObjetoIA(rawParsed || {});
@@ -690,6 +711,8 @@ ${trecho}
 
   const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
   const questoesProcessadas = [];
+
+  report(`Estruturando ${questoesBrutas.length} questão(ões) nos 7 modelos universais...`);
 
   for (let i = 0; i < questoesBrutas.length; i++) {
     const qRaw = questoesBrutas[i];

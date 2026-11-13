@@ -120,6 +120,7 @@ export async function gerarJsonComFailover({
   openAiJsonHint = '',
   maxOutputTokens = 8192,
   timeoutMs = 55000,
+  thinkingBudget = 1536,
 }) {
   const genAI = getGeminiOrNull();
   const openAIKey = getOpenAIKeyOrNull();
@@ -135,6 +136,7 @@ export async function gerarJsonComFailover({
     for (const nomeModelo of MODELOS_GEMINI_CASCATA) {
       if (abortGemini) break;
       const modosSchema = responseSchema ? [true, false] : [false];
+      let desativarThinking = false;
       for (const usarSchemaEstrito of modosSchema) {
         try {
           const generationConfig = {
@@ -142,6 +144,9 @@ export async function gerarJsonComFailover({
             temperature,
             maxOutputTokens,
           };
+          if (!desativarThinking && Number.isFinite(thinkingBudget) && nomeModelo.startsWith('gemini-2.5')) {
+            generationConfig.thinkingConfig = { thinkingBudget };
+          }
           let callContents = contents;
           if (usarSchemaEstrito && responseSchema) {
             generationConfig.responseSchema = responseSchema;
@@ -168,7 +173,11 @@ export async function gerarJsonComFailover({
           const status = err?.status || (msg.includes('429') ? 429 : msg.includes('503') ? 503 : msg.includes('404') ? 404 : msg.includes('400') ? 400 : 500);
           console.warn(`[visionExtractor] Falha no modelo ${nomeModelo} (schema=${usarSchemaEstrito}, status=${status}): ${msg.slice(0, 220)}`);
 
-          // Se falhou por complexidade de schema (400), tenta imediatamente o mesmo modelo sem responseSchema estrito
+          // Se falhou por parâmetro thinkingConfig ou complexidade de schema (400), tenta imediatamente sem a restrição
+          if (status === 400 && /thinking/i.test(msg) && !desativarThinking) {
+            desativarThinking = true;
+            continue;
+          }
           if (usarSchemaEstrito && responseSchema && status === 400 && /schema|state|constraint|property/i.test(msg)) {
             continue;
           }

@@ -14,6 +14,11 @@ import {
   extrairListaTexto,
   copilotoQuestao,
   uploadImagem,
+  iniciarJobQuestoes,
+  enviarPaginaJobQuestoes,
+  iniciarJobPrintUnicoController,
+  obterStatusJobQuestoes,
+  cancelarJobQuestoes,
   // ── Banco Global ────────────────────────────────────────────────────────────
   publicarQuestao,
   buscarBancoGlobal,
@@ -42,6 +47,14 @@ router.get("/global",              verificarEscola, buscarBancoGlobal);
 router.get("/global/:id",          verificarEscola, getQuestaoGlobal);
 router.post("/global/:id/usar",    verificarEscola, registrarUsoGlobal);
 router.delete("/global/:id",       verificarEscola, excluirQuestaoGlobal); // ?hard=1 para exclusão permanente
+
+// ── EDUCA.STUDIO AI — Jobs Assíncronos em Background (Zero Timeout + Telemetria) ──
+// Declarados ANTES de `/:id` para evitar colisão com rotas dinâmicas
+router.post("/jobs",                 verificarEscola, iniciarJobQuestoes);
+router.post("/jobs/print-unico",     uploadImagem, verificarEscola, iniciarJobPrintUnicoController);
+router.post("/jobs/:jobId/pagina",   uploadImagem, verificarEscola, enviarPaginaJobQuestoes);
+router.get("/jobs/:jobId",           verificarEscola, obterStatusJobQuestoes);
+router.post("/jobs/:jobId/cancelar", verificarEscola, cancelarJobQuestoes);
 
 // ── CRUD principal ─────────────────────────────────────────────────────────
 router.get("/",       verificarEscola, listarQuestoes);

@@ -7,6 +7,13 @@ import { parsePdfFile } from "../utils/pdfParser.js";
 import multer from "multer";
 import { extrairQuestaoMultimodal, executarCopilotoQuestao } from "../modules/questoes-ai/visionExtractor.agent.js";
 import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from "../modules/questoes-ai/sheetSplitter.agent.js";
+import {
+  criarJobExtracaoLista,
+  enfileirarPaginaNoJob,
+  criarJobPrintUnico,
+  consultarStatusJob,
+  cancelarJobExtracao,
+} from "../modules/questoes-ai/questoesJobManager.js";
 
 // ─── Multer — memória (sem gravar em disco) ──────────────────────────────────
 export const uploadImagem = multer({
@@ -1256,6 +1263,123 @@ export async function extrairListaTexto(req, res) {
         ? err.message
         : "Erro ao estruturar lista de texto com IA.",
       detail: err.detail || err.message,
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 20) EDUCA.STUDIO AI — Jobs Assíncronos em Background (Zero Timeout + Telemetria)
+//     Espelha a arquitetura assíncrona de Gerar Horários (Urânia) / Agente EDUCA (202 Accepted)
+// ─────────────────────────────────────────────────────────────────────────────
+export async function iniciarJobQuestoes(req, res) {
+  try {
+    const {
+      modo = "visual",
+      total_paginas = 1,
+      disciplina = "",
+      serie = "",
+      texto = "",
+    } = req.body || {};
+
+    if (modo === "texto" && String(texto || "").trim().length < 20) {
+      return res.status(400).json({ ok: false, message: "Cole o texto da lista contendo ao menos uma questão." });
+    }
+
+    const job = await criarJobExtracaoLista({
+      escolaId: req.user.escola_id,
+      usuarioId: req.user.professor_id || req.user.id || null,
+      modo: modo === "texto" ? "texto" : "visual",
+      totalPaginas: Number(total_paginas) || 1,
+      disciplina: String(disciplina || "").trim(),
+      serie: String(serie || "").trim(),
+      texto: String(texto || ""),
+    });
+
+    return res.status(202).json({ ok: true, ...job });
+  } catch (err) {
+    console.error("[iniciarJobQuestoes] Erro:", err);
+    return res.status(err.httpStatus || 500).json({
+      ok: false,
+      message: err.message || "Erro ao iniciar sessão de importação em segundo plano.",
+    });
+  }
+}
+
+export async function enviarPaginaJobQuestoes(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: "Nenhuma imagem de página enviada." });
+    }
+    const { pagina_numero = "1", ordem_lote = "1" } = req.body || {};
+
+    const info = await enfileirarPaginaNoJob({
+      jobId: req.params.jobId,
+      escolaId: req.user.escola_id,
+      fileBuffer: req.file.buffer,
+      mimeType: req.file.mimetype,
+      paginaNumero: Number(pagina_numero) || 1,
+      ordemLote: Number(ordem_lote) || 1,
+    });
+
+    return res.status(202).json({ ok: true, ...info });
+  } catch (err) {
+    console.error("[enviarPaginaJobQuestoes] Erro:", err);
+    return res.status(err.httpStatus || 500).json({
+      ok: false,
+      message: err.message || "Erro ao enfileirar página no job.",
+    });
+  }
+}
+
+export async function iniciarJobPrintUnicoController(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: "Nenhuma imagem enviada." });
+    }
+
+    const job = await criarJobPrintUnico({
+      escolaId: req.user.escola_id,
+      usuarioId: req.user.professor_id || req.user.id || null,
+      fileBuffer: req.file.buffer,
+      mimeType: req.file.mimetype,
+    });
+
+    return res.status(202).json({ ok: true, ...job });
+  } catch (err) {
+    console.error("[iniciarJobPrintUnicoController] Erro:", err);
+    return res.status(err.httpStatus || 500).json({
+      ok: false,
+      message: err.message || "Erro ao iniciar clonagem em segundo plano.",
+    });
+  }
+}
+
+export async function obterStatusJobQuestoes(req, res) {
+  try {
+    const statusObj = await consultarStatusJob({
+      jobId: req.params.jobId,
+      escolaId: req.user.escola_id,
+    });
+    return res.json(statusObj);
+  } catch (err) {
+    return res.status(err.httpStatus || 500).json({
+      ok: false,
+      message: err.message || "Erro ao consultar progresso da importação.",
+    });
+  }
+}
+
+export async function cancelarJobQuestoes(req, res) {
+  try {
+    const statusObj = await cancelarJobExtracao({
+      jobId: req.params.jobId,
+      escolaId: req.user.escola_id,
+    });
+    return res.json(statusObj);
+  } catch (err) {
+    return res.status(err.httpStatus || 500).json({
+      ok: false,
+      message: err.message || "Erro ao interromper importação.",
     });
   }
 }
