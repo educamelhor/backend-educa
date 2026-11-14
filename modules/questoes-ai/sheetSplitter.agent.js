@@ -18,6 +18,9 @@ import {
   normalizarLetraAlternativa,
   reconciliarGabaritoQuestao,
   ehFiguraNaoGraficaIgnorada,
+  extrairAlternativasEmbutidasEmTexto,
+  questaoExigeAlternativasVisiveis,
+  resgatarAlternativasOmitidasDaImagem,
 } from './visionExtractor.agent.js';
 
 const TIPOS_VALIDOS = [
@@ -103,19 +106,9 @@ const QUESTAO_ITEM_SCHEMA = {
         required: ['alvo', 'natureza_visual', 'bbox'],
       },
     },
-    alternativas: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          letra: { type: SchemaType.STRING },
-          texto: { type: SchemaType.STRING },
-        },
-        required: ['letra', 'texto'],
-      },
-    },
     proposicoes_romanas: {
       type: SchemaType.ARRAY,
+      description: 'Proposições em algarismos romanos (I, II, III, IV...) quando tipo = afirmativas.',
       items: {
         type: SchemaType.OBJECT,
         properties: {
@@ -126,7 +119,10 @@ const QUESTAO_ITEM_SCHEMA = {
         required: ['romano', 'texto', 'correta'],
       },
     },
-    comando_fechamento_afirmativas: { type: SchemaType.STRING },
+    comando_fechamento_afirmativas: {
+      type: SchemaType.STRING,
+      description: 'Frase imediatamente antes das opções A–E em tipo = afirmativas (ex: "Está correto apenas o que se afirma em:", "Estão corretas:").',
+    },
     vf_submodo: { type: SchemaType.STRING },
     vf_rotulo: { type: SchemaType.STRING },
     itens_vf: {
@@ -180,6 +176,18 @@ const QUESTAO_ITEM_SCHEMA = {
       },
     },
     soma_correta: { type: SchemaType.INTEGER },
+    alternativas: {
+      type: SchemaType.ARRAY,
+      description: 'Lista OBRIGATÓRIA de todas as alternativas impressas (A, B, C, D, E) em TODAS as questões dos tipos "objetiva", "afirmativas" (ex: "I e II.", "apenas I, II e III."), "verdadeiro_falso" em sequência e "associacao" em sequência. Retorne [] APENAS quando não existirem letras A–E na questão (ex: discursiva ou somatória).',
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          letra: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+        },
+        required: ['letra', 'texto'],
+      },
+    },
     formato_espaco_discursiva: { type: SchemaType.STRING },
     linhas_resposta_sugeridas: { type: SchemaType.INTEGER },
     resposta_aberta: { type: SchemaType.STRING },
@@ -202,6 +210,7 @@ const QUESTAO_ITEM_SCHEMA = {
     'nivel',
     'temas',
     'enunciado',
+    'alternativas',
     'gabarito_origem',
     'resolucao_passo_a_passo',
     'confianca',
@@ -368,7 +377,7 @@ function ordenarQuestoesBrutasGeometricamente(questoesBrutas = [], layoutPagina 
  * Normaliza um item bruto da lista extraída para o formato canônico do EDUCA.STUDIO AI.
  */
 function normalizarQuestaoIndividualizada({
-  qRaw,
+  qRaw: qRawEntrada,
   idx,
   mapaTextosCompartilhados,
   ultimoTextoApoio,
@@ -381,6 +390,7 @@ function normalizarQuestaoIndividualizada({
   midiasAlternativas = {},
   modeloUsado = '',
 }) {
+  const qRaw = extrairAlternativasEmbutidasEmTexto(qRawEntrada || {});
   const tipo = TIPOS_VALIDOS.includes(qRaw.tipo) ? qRaw.tipo : 'objetiva';
 
   // Resolve texto de apoio (compartilhado na página > próprio da questão > herdado da página anterior)
@@ -538,10 +548,10 @@ Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNume
    - PROIBIDO USAR CABEÇALHOS/RODAPÉS DE CADERNO COMO "fonte": ignore cabeçalhos/rodapés escolares genéricos (ex: "HUMANAS-8ºANO", "1º BIMESTRE", "HISTÓRIA"), deixando "fonte": "" e "fonte_geral": "". Preencha "fonte" na questão SOMENTE quando aquela questão específica tiver banca oficial (ex: ENEM 2023, FUVEST) ou crédito bibliográfico próprio impresso nela.
 
 3. CLASSIFICAÇÃO NOS 7 MODELOS UNIVERSAIS ("tipo"):
-   - "objetiva": múltipla escolha clássica (A–D ou A–E).
-   - "afirmativas": proposições romanas (I, II, III...) em "proposicoes_romanas", fechamento em "comando_fechamento_afirmativas" e opções em "alternativas".
-   - "verdadeiro_falso": assertivas V/F ou C/E em "itens_vf" (vf_submodo="sequencia" se houver alternativas A–E abaixo com a sequência, colocando a frase "Assinale a alternativa..." em "comando_final").
-   - "associacao": duas colunas para relacionar ("coluna_a" e "coluna_b" com "vinculo_codigo"). Se houver alternativas A–E com a sequência numérica abaixo, use assoc_submodo="sequencia" e coloque a frase "Assinale a alternativa que apresenta a sequência correta:" em "comando_final".
+   - "objetiva": múltipla escolha clássica (A–D ou A–E) preenchida em "alternativas".
+   - "afirmativas": proposições romanas (I, II, III...) em "proposicoes_romanas", frase de fechamento (ex: "Está correto apenas o que se afirma em:", "Estão corretas:") em "comando_fechamento_afirmativas" E OBRIGATORIAMENTE TODAS as opções de resposta impressas abaixo (ex: "(a) I e II.", "(b) II e III.", "(c) II e IV.", "(d) I e IV." ou "(a) apenas I, II e III.") preenchidas em "alternativas"! NUNCA omita "alternativas" em questões do tipo "afirmativas"!
+   - "verdadeiro_falso": assertivas V/F ou C/E em "itens_vf" (vf_submodo="sequencia" se houver alternativas A–E abaixo com a sequência, preenchendo OBRIGATORIAMENTE "alternativas" e colocando a frase "Assinale a alternativa..." em "comando_final").
+   - "associacao": duas colunas para relacionar ("coluna_a" e "coluna_b" com "vinculo_codigo"). Se houver alternativas A–E com a sequência numérica abaixo, use assoc_submodo="sequencia", preencha OBRIGATORIAMENTE "alternativas" e coloque a frase "Assinale a alternativa que apresenta a sequência correta:" em "comando_final".
    - "lacuna": frase com lacunas substituídas por {{resposta_correta}} em "texto_lacunado".
    - "somatoria": proposições em potências de 2 (01, 02, 04, 08...) em "proposicoes_somatoria".
    - "discursiva": questão aberta sem alternativas (preencha "resposta_aberta" com o espelho esperado).
@@ -605,6 +615,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       "enunciado": "...",
       "comando_final": "",
       "figuras": [{ "alvo": "principal", "natureza_visual": "grafico_cartesiano", "ordem": 1, "coluna": "unica", "continuacao_quebra_coluna": false, "bbox": [ymin, xmin, ymax, xmax], "posicao_sugerida": "entre_enunciado_e_comando", "legenda_original": "", "foto_papel_cinza": false }],
+      "proposicoes_romanas": [{ "romano": "I", "texto": "...", "correta": true }],
+      "comando_fechamento_afirmativas": "",
       "alternativas": [{ "letra": "A", "texto": "..." }],
       "gabarito_letra": "A",
       "gabarito_origem": "resolvido_pela_ia",
@@ -804,8 +816,38 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       }
     }
 
+    let qParaNormalizar = extrairAlternativasEmbutidasEmTexto(qRaw);
+    const tipoPre = TIPOS_VALIDOS.includes(qParaNormalizar.tipo) ? qParaNormalizar.tipo : 'objetiva';
+    const qtdAltsTexto = Array.isArray(qParaNormalizar.alternativas)
+      ? qParaNormalizar.alternativas.filter((a) => String(a?.texto || '').trim()).length
+      : 0;
+
+    if (
+      questaoExigeAlternativasVisiveis(tipoPre, qParaNormalizar, { modoPagina: true }) &&
+      qtdAltsTexto < 2 &&
+      alternativasRaw.length < 2
+    ) {
+      report(`Página ${paginaNumero}: Resgatando alternativas da questão ${qParaNormalizar.numero_original || i + 1}...`);
+      const resgate = await resgatarAlternativasOmitidasDaImagem(fileBuffer, mimeType, {
+        numeroOriginal: qParaNormalizar.numero_original || `${i + 1}`,
+        enunciado: qParaNormalizar.enunciado,
+        comandoFechamento: qParaNormalizar.comando_fechamento_afirmativas || qParaNormalizar.comando_final,
+        proposicoesResumo: Array.isArray(qParaNormalizar.proposicoes_romanas)
+          ? qParaNormalizar.proposicoes_romanas.map((p) => `${p.romano}: ${p.texto}`).join(' | ')
+          : '',
+      });
+      if (resgate && (resgate.alternativas.length >= 2 || (resgate.questao_incompleta_fim_pagina && resgate.alternativas.length >= 1))) {
+        qParaNormalizar = {
+          ...qParaNormalizar,
+          alternativas: resgate.alternativas,
+          questao_incompleta_fim_pagina: Boolean(qParaNormalizar.questao_incompleta_fim_pagina || resgate.questao_incompleta_fim_pagina),
+          gabarito_letra: qParaNormalizar.gabarito_letra || resgate.gabarito_letra || '',
+        };
+      }
+    }
+
     const itemNormalizado = normalizarQuestaoIndividualizada({
-      qRaw,
+      qRaw: qParaNormalizar,
       idx: i,
       mapaTextosCompartilhados,
       ultimoTextoApoio,
@@ -922,7 +964,7 @@ TEXTO BRUTO DA LISTA:
 ${trecho}
 """`;
 
-  const openAiSchemaHint = `Retorne ESTRITAMENTE um objeto JSON com as chaves: layout_pagina ("coluna_unica"), coluna_divisao_x (0), disciplina_predominante, serie_predominante, fonte_geral, textos_apoio_compartilhados ([{id_texto, conteudo}]), questoes ([{numero_original, id_texto_apoio_vinculado, tipo, disciplina, serie, nivel, fonte, habilidade_bncc, temas, tags, texto_apoio, enunciado, comando_final, alternativas:[{letra, texto}], proposicoes_romanas, comando_fechamento_afirmativas, vf_submodo, vf_rotulo, itens_vf, assoc_submodo, coluna_a, coluna_b, lacuna_submodo, texto_lacunado, distratores_banco, proposicoes_somatoria, soma_correta, formato_espaco_discursiva, linhas_resposta_sugeridas, resposta_aberta, gabarito_letra, gabarito_origem, resolucao_passo_a_passo, confianca}]).`;
+  const openAiSchemaHint = `Retorne ESTRITAMENTE um objeto JSON com as chaves: layout_pagina ("coluna_unica"), coluna_divisao_x (0), disciplina_predominante, serie_predominante, fonte_geral, textos_apoio_compartilhados ([{id_texto, conteudo}]), questoes ([{numero_original, id_texto_apoio_vinculado, tipo, disciplina, serie, nivel, fonte, habilidade_bncc, temas, tags, texto_apoio, enunciado, comando_final, proposicoes_romanas, comando_fechamento_afirmativas, vf_submodo, vf_rotulo, itens_vf, assoc_submodo, coluna_a, coluna_b, lacuna_submodo, texto_lacunado, distratores_banco, proposicoes_somatoria, soma_correta, alternativas:[{letra, texto}], formato_espaco_discursiva, linhas_resposta_sugeridas, resposta_aberta, gabarito_letra, gabarito_origem, resolucao_passo_a_passo, confianca}]).`;
 
   const { parsed: rawParsed, modeloUsado } = await gerarJsonComFailover({
     contents: prompt,

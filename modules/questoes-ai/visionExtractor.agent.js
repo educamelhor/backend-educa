@@ -750,6 +750,172 @@ export function ehFiguraNaoGraficaIgnorada(fig) {
   );
 }
 
+/**
+ * Resgata alternativas caso o texto bruto tenha trazido linhas "(a) ...", "(b) ...", "(c) ...", "(d) ..."
+ * coladas ao final de comando_fechamento_afirmativas, comando_final ou enunciado enquanto qRaw.alternativas veio vazio.
+ */
+export function extrairAlternativasEmbutidasEmTexto(qRaw = {}) {
+  const existentes = Array.isArray(qRaw?.alternativas)
+    ? qRaw.alternativas.filter((a) => String(a?.texto || '').trim())
+    : [];
+  if (existentes.length >= 2) return qRaw;
+
+  const campos = ['comando_fechamento_afirmativas', 'comando_final', 'enunciado'];
+  const linhaAltRe = /^\s*(?:\(([A-Ea-e])\)|([A-Ea-e])\s*[).\-–])\s+(.+)$/;
+
+  for (const campo of campos) {
+    const val = String(qRaw?.[campo] || '');
+    if (!val.includes('\n')) continue;
+    const linhas = val.split(/\r?\n/);
+    const altsExtraidas = [];
+    let primeiraLinhaAlt = -1;
+
+    for (let i = linhas.length - 1; i >= 0; i--) {
+      const l = linhas[i].trim();
+      if (!l) continue;
+      const m = l.match(linhaAltRe);
+      if (m) {
+        altsExtraidas.unshift({
+          letra: (m[1] || m[2]).toUpperCase(),
+          texto: m[3].trim(),
+        });
+        primeiraLinhaAlt = i;
+      } else {
+        break;
+      }
+    }
+
+    if (altsExtraidas.length >= 2 && altsExtraidas[0].letra === 'A') {
+      return {
+        ...qRaw,
+        [campo]: linhas.slice(0, primeiraLinhaAlt).join('\n').trim(),
+        alternativas: altsExtraidas,
+      };
+    }
+  }
+
+  return qRaw;
+}
+
+/**
+ * Determina se o modelo estrutural da questão exige alternativas (A–D / A–E) visíveis na página
+ * (exceto quando explicitamente cortada no fim da página ou quando for chamada pendente sem número).
+ */
+export function questaoExigeAlternativasVisiveis(tipo = 'objetiva', qRaw = {}, { modoPagina = false } = {}) {
+  if (Boolean(qRaw?.questao_incompleta_fim_pagina)) return false;
+  const numStr = String(qRaw?.numero_original || '').trim();
+  if (numStr.toUpperCase().includes('PENDENTE')) return false;
+
+  if (tipo === 'afirmativas') {
+    return Array.isArray(qRaw?.proposicoes_romanas) && qRaw.proposicoes_romanas.length > 0;
+  }
+  if (tipo === 'verdadeiro_falso') {
+    return qRaw?.vf_submodo === 'sequencia' && Array.isArray(qRaw?.itens_vf) && qRaw.itens_vf.length > 0;
+  }
+  if (tipo === 'associacao') {
+    return qRaw?.assoc_submodo === 'sequencia' && Array.isArray(qRaw?.coluna_a) && qRaw.coluna_a.length > 0;
+  }
+  if (tipo === 'lacuna') {
+    return qRaw?.lacuna_submodo === 'alternativas';
+  }
+  if (tipo === 'objetiva') {
+    if (!modoPagina) return true;
+    // Em página multi-questão, evita disparar resgate em chamadas órfãs "Observe a imagem:" sem número de questão
+    return /\d/.test(numStr);
+  }
+  return false;
+}
+
+const RESGATE_ALTERNATIVAS_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    questao_incompleta_fim_pagina: {
+      type: SchemaType.BOOLEAN,
+      description: 'true APENAS se as alternativas desta questão foram cortadas pelo limite inferior da página.',
+    },
+    alternativas: {
+      type: SchemaType.ARRAY,
+      description: 'Todas as alternativas impressas (A, B, C, D, E) pertencentes especificamente a esta questão, na ordem exata.',
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          letra: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+        },
+        required: ['letra', 'texto'],
+      },
+    },
+    gabarito_letra: {
+      type: SchemaType.STRING,
+      description: 'Letra da alternativa correta (A, B, C, D ou E) desta questão.',
+    },
+  },
+  required: ['questao_incompleta_fim_pagina', 'alternativas', 'gabarito_letra'],
+};
+
+/**
+ * Auto-recuperação cirúrgica multimodal quando um extrator retorna proposições/enunciado de uma questão
+ * (ex: Questões 5 e 6 do tipo "afirmativas") mas omite o array "alternativas" visível logo abaixo.
+ */
+export async function resgatarAlternativasOmitidasDaImagem(fileBuffer, mimeType, meta = {}) {
+  if (!fileBuffer) return null;
+  const {
+    numeroOriginal = '',
+    enunciado = '',
+    comandoFechamento = '',
+    proposicoesResumo = '',
+  } = meta;
+
+  const identQuestao = [
+    numeroOriginal ? `Questão nº "${numeroOriginal}"` : 'Questão alvo',
+    enunciado ? `Início do enunciado: "${String(enunciado).slice(0, 180)}"` : '',
+    proposicoesResumo ? `Afirmativas/itens: "${String(proposicoesResumo).slice(0, 200)}"` : '',
+    comandoFechamento ? `Fechamento antes das opções: "${String(comandoFechamento).slice(0, 120)}"` : '',
+  ]
+    .filter(Boolean)
+    .join('\n- ');
+
+  const promptResgate = `Localize na imagem enviada ESPECIFICAMENTE a seguinte questão:\n- ${identQuestao}\n\nExtraia TODAS as alternativas impressas (a/A, b/B, c/C, d/D, e/E) pertencentes especificamente a essa questão (ex.: "I e II.", "apenas I, II e III.", etc.), removendo a letra inicial do campo "texto" e preservando a ordem exata.\nSe essa questão estiver no rodapé da página e suas alternativas estiverem cortadas porque continuam na próxima página, marque "questao_incompleta_fim_pagina": true e extraia apenas as alternativas realmente visíveis (nunca invente opções).\nInforme também em "gabarito_letra" ("A" a "E") a alternativa correta desta questão.`;
+
+  const imagePart = {
+    inlineData: {
+      data: fileBuffer.toString('base64'),
+      mimeType: mimeType || 'image/jpeg',
+    },
+  };
+
+  const openAiHint = 'Retorne ESTRITAMENTE um JSON: { "questao_incompleta_fim_pagina": false, "alternativas": [{ "letra": "A", "texto": "..." }], "gabarito_letra": "A" }';
+
+  try {
+    const { parsed } = await gerarJsonComFailover({
+      contents: [promptResgate, imagePart],
+      promptTextOnly: promptResgate,
+      imagePart,
+      responseSchema: RESGATE_ALTERNATIVAS_SCHEMA,
+      temperature: 0.1,
+      openAiJsonHint: openAiHint,
+      maxOutputTokens: 2048,
+      timeoutMs: 35000,
+      thinkingBudget: 256,
+    });
+    const limpo = sanitizarObjetoIA(parsed || {});
+    const alts = (Array.isArray(limpo.alternativas) ? limpo.alternativas : [])
+      .map((a, idx) => ({
+        letra: normalizarLetraAlternativa(a?.letra, idx),
+        texto: String(a?.texto || '').trim(),
+      }))
+      .filter((a) => a.texto);
+    return {
+      questao_incompleta_fim_pagina: Boolean(limpo.questao_incompleta_fim_pagina),
+      alternativas: alts,
+      gabarito_letra: String(limpo.gabarito_letra || '').trim(),
+    };
+  } catch (err) {
+    console.warn(`[visionExtractor] Aviso ao resgatar alternativas da questão ${numeroOriginal || '?'}:`, err?.message);
+    return null;
+  }
+}
+
 // ── Schema Estrito para Extração Multimodal (7 Modelos + 2 Colunas + Multi-BBox) ──
 const EXTRACTION_SCHEMA = {
   type: SchemaType.OBJECT,
@@ -859,17 +1025,6 @@ const EXTRACTION_SCHEMA = {
         required: ['alvo', 'natureza_visual', 'ordem', 'coluna', 'continuacao_quebra_coluna', 'bbox', 'posicao_sugerida', 'foto_papel_cinza'],
       },
     },
-    alternativas: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          letra: { type: SchemaType.STRING },
-          texto: { type: SchemaType.STRING },
-        },
-        required: ['letra', 'texto'],
-      },
-    },
     proposicoes_romanas: {
       type: SchemaType.ARRAY,
       description: 'Preencher quando tipo = afirmativas (itens I, II, III, IV).',
@@ -960,6 +1115,18 @@ const EXTRACTION_SCHEMA = {
     soma_correta: {
       type: SchemaType.INTEGER,
     },
+    alternativas: {
+      type: SchemaType.ARRAY,
+      description: 'Lista OBRIGATÓRIA de todas as alternativas impressas (A, B, C, D, E) em questões "objetiva", "afirmativas" (ex: "I e II.", "apenas I, II e III."), "verdadeiro_falso" em sequência e "associacao" em sequência. Retorne [] APENAS quando não houver opções A–E (ex: discursiva ou somatória).',
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          letra: { type: SchemaType.STRING },
+          texto: { type: SchemaType.STRING },
+        },
+        required: ['letra', 'texto'],
+      },
+    },
     formato_espaco_discursiva: {
       type: SchemaType.STRING,
       description: 'linhas | quadro_calculo (quando tipo = discursiva)',
@@ -990,7 +1157,7 @@ const EXTRACTION_SCHEMA = {
   },
   required: [
     'layout_origem', 'coluna_divisao_x', 'tipo', 'disciplina', 'nivel', 'temas',
-    'enunciado', 'figuras', 'gabarito_origem', 'resolucao_passo_a_passo', 'confianca',
+    'enunciado', 'figuras', 'alternativas', 'gabarito_origem', 'resolucao_passo_a_passo', 'confianca',
   ],
 };
 
@@ -1063,7 +1230,6 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   "enunciado": "...",
   "comando_final": "",
   "figuras": [{ "alvo": "principal", "natureza_visual": "esquema_cientifico", "ordem": 1, "coluna": "unica", "continuacao_quebra_coluna": false, "bbox": [ymin, xmin, ymax, xmax], "posicao_sugerida": "entre_enunciado_e_comando", "legenda_original": "", "foto_papel_cinza": false }],
-  "alternativas": [{ "letra": "A", "texto": "..." }],
   "proposicoes_romanas": [{ "romano": "I", "texto": "...", "correta": true }],
   "comando_fechamento_afirmativas": "",
   "vf_submodo": "direto" | "sequencia",
@@ -1077,6 +1243,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   "distratores_banco": [],
   "proposicoes_somatoria": [{ "valor": 1, "codigo": "01", "texto": "...", "correta": true }],
   "soma_correta": 0,
+  "alternativas": [{ "letra": "A", "texto": "..." }],
   "formato_espaco_discursiva": "linhas" | "quadro_calculo",
   "linhas_resposta_sugeridas": 6,
   "resposta_aberta": "",
@@ -1216,18 +1383,39 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     'associacao', 'lacuna', 'discursiva', 'somatoria',
   ].includes(dados.tipo) ? dados.tipo : 'objetiva';
 
-  const estrutura = montarEstruturaInicialExtraida(tipo, dados);
+  const dadosComAltsTexto = extrairAlternativasEmbutidasEmTexto(dados);
+  const qtdAltsValidas = Array.isArray(dadosComAltsTexto.alternativas)
+    ? dadosComAltsTexto.alternativas.filter((a) => String(a?.texto || '').trim()).length
+    : 0;
 
-  const enunciadoBruto = tipo === 'lacuna' && dados.texto_lacunado ? dados.texto_lacunado : (dados.enunciado || '');
+  if (questaoExigeAlternativasVisiveis(tipo, dadosComAltsTexto, { modoPagina: false }) && qtdAltsValidas < 2 && alternativasRaw.length < 2) {
+    const resgate = await resgatarAlternativasOmitidasDaImagem(fileBuffer, mimeType, {
+      enunciado: dadosComAltsTexto.enunciado,
+      comandoFechamento: dadosComAltsTexto.comando_fechamento_afirmativas || dadosComAltsTexto.comando_final,
+      proposicoesResumo: Array.isArray(dadosComAltsTexto.proposicoes_romanas)
+        ? dadosComAltsTexto.proposicoes_romanas.map((p) => `${p.romano}: ${p.texto}`).join(' | ')
+        : '',
+    });
+    if (resgate && resgate.alternativas.length >= 2) {
+      dadosComAltsTexto.alternativas = resgate.alternativas;
+      if (!dadosComAltsTexto.gabarito_letra && resgate.gabarito_letra) {
+        dadosComAltsTexto.gabarito_letra = resgate.gabarito_letra;
+      }
+    }
+  }
+
+  const estrutura = montarEstruturaInicialExtraida(tipo, dadosComAltsTexto);
+
+  const enunciadoBruto = tipo === 'lacuna' && dadosComAltsTexto.texto_lacunado ? dadosComAltsTexto.texto_lacunado : (dadosComAltsTexto.enunciado || '');
   const { textoApoio: textoApoioLimpo, enunciado: enunciadoLimpo } = deduplicarTextoApoioEnunciado(
-    dados.texto_apoio || '',
+    dadosComAltsTexto.texto_apoio || '',
     enunciadoBruto,
     { temIdCompartilhado: false, fonteLimpa }
   );
 
   // Normaliza alternativas e reconcilia deterministicamente o gabarito (ex: proposições I–IV -> letra D)
-  const alternativasBase = Array.isArray(dados.alternativas)
-    ? dados.alternativas.map((a, idx) => {
+  const alternativasBase = Array.isArray(dadosComAltsTexto.alternativas)
+    ? dadosComAltsTexto.alternativas.map((a, idx) => {
         const letra = normalizarLetraAlternativa(a.letra, idx);
         return {
           id: Date.now() + idx,
@@ -1243,9 +1431,9 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     tipo,
     estrutura,
     alternativas: alternativasBase,
-    gabaritoLetraBruto: dados.gabarito_letra,
-    explicacao: dados.resolucao_passo_a_passo,
-    comandoContexto: `${enunciadoLimpo} ${dados.comando_final || ''}`,
+    gabaritoLetraBruto: dadosComAltsTexto.gabarito_letra,
+    explicacao: dadosComAltsTexto.resolucao_passo_a_passo,
+    comandoContexto: `${enunciadoLimpo} ${dadosComAltsTexto.comando_final || ''}`,
   });
 
   return {
