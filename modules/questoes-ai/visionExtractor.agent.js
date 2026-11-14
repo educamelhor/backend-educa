@@ -531,6 +531,225 @@ export function bboxIoU(a, b) {
   return inter / Math.min(areaA, areaB);
 }
 
+const BANCAS_OFICIAIS_RE = /\b(ENEM|FUVEST|UNICAMP|UNESP|UNB|PAS|CESPE|CEBRASPE|FGV|VUNESP|FCC|PUC|UFMG|UFRGS|UFPR|UFSC|UFPE|UFC|UECE|UERJ|UEMA|UFU|UFG|UFBA|UFPB|UFRN|UFAM|UFPA|UFMS|UFMT|ITA|IME|EPCAR|ESPCEX|AFA|OBMEP|OBA|OBF|OBQ|SAEB|SAEPE|SARESP|SPAECE|SIMAVE|PAEBES|PISA|IBGE|IPEA|ONU|OIM|OMS|UNESCO)\b/i;
+
+/**
+ * Remove falsas "fontes" capturadas de cabeçalhos/rodapés de cadernos escolares (ex: "HUMANAS-8ºANO", "1º BIMESTRE").
+ */
+export function limparFonteFalsaCaderno(rawFonte = '') {
+  const s = String(rawFonte || '').trim();
+  if (!s) return '';
+  if (BANCAS_OFICIAIS_RE.test(s)) return s;
+  if (
+    /^(?:caderno|bloco|[aá]rea|prova|avalia[çc][aã]o|simulado|lista|atividade|exerc[ií]cios?|humanas|ci[êe]ncias(?:\s+humanas|\s+da\s+natureza)?|linguagens|matem[aá]tica|hist[oó]ria|geografia|portugu[êe]s|ingl[êe]s|artes|biologia|f[ií]sica|qu[ií]mica|ensino\s+(?:fundamental|m[eé]dio)|\d+[º°oª]?\s*(?:ano|s[eé]rie|bimestre|trimestre|semestre|em|ef))[\s\-–—_/.,:;()0-9º°ªa-zà-ÿ]*$/i.test(s) &&
+    s.length <= 44
+  ) {
+    return '';
+  }
+  return s;
+}
+
+function normalizarComparacaoTexto(str = '') {
+  return String(str || '')
+    .replace(/[“”«»]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Elimina duplicação quando a IA copia a frase inicial da questão tanto em `texto_apoio` quanto em `enunciado`
+ * (ex: Questão 11 "Se não têm pão, que comam brioches!").
+ */
+export function deduplicarTextoApoioEnunciado(textoApoioRaw = '', enunciadoRaw = '', opts = {}) {
+  const { temIdCompartilhado = false, fonteLimpa = '' } = opts || {};
+  const apoio = String(textoApoioRaw || '').trim();
+  const enunc = String(enunciadoRaw || '').trim();
+  if (!apoio || !enunc) return { textoApoio: apoio, enunciado: enunc };
+
+  const apoioNorm = normalizarComparacaoTexto(apoio);
+  const enuncNorm = normalizarComparacaoTexto(enunc);
+  if (!apoioNorm || !enuncNorm) return { textoApoio: apoio, enunciado: enunc };
+
+  if (apoioNorm === enuncNorm) {
+    return temIdCompartilhado ? { textoApoio: apoio, enunciado: '' } : { textoApoio: '', enunciado: enunc };
+  }
+
+  if (apoioNorm.length >= 20 && enuncNorm.startsWith(apoioNorm)) {
+    // Constrói regex tolerante a aspas/espaços/negrito para remover o prefixo duplicado do enunciado
+    const palavras = apoio
+      .replace(/[“”«»"‘’'*_]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+    let restoEnunc = '';
+    if (palavras.length > 0) {
+      const prefixRe = new RegExp(
+        `^[\\s“”«»"‘’'*_]*${palavras.join('[\\s“”«»"‘’\'*_]+')}[\\s“”«»"‘’'*_.,;:!?-]*`,
+        'i'
+      );
+      restoEnunc = enunc.replace(prefixRe, '').trim();
+    }
+
+    const temReferenciaBibliografica =
+      /\([^()\n]{10,}\)\s*\.?$/.test(apoio) ||
+      /\b(?:dispon[ií]vel\s+em|acesso\s+em|adaptado\s+de|edi[çc][aã]o\s+\d+|in:\s+[A-ZÀ-Ÿ])/i.test(apoio);
+
+    if ((temIdCompartilhado || Boolean(fonteLimpa) || temReferenciaBibliografica) && restoEnunc.length >= 12) {
+      return { textoApoio: apoio, enunciado: restoEnunc };
+    }
+    return { textoApoio: '', enunciado: enunc };
+  }
+
+  if (enuncNorm.length >= 20 && apoioNorm.startsWith(enuncNorm) && !temIdCompartilhado && !fonteLimpa) {
+    return { textoApoio: '', enunciado: apoio };
+  }
+
+  return { textoApoio: apoio, enunciado: enunc };
+}
+
+export function normalizarLetraAlternativa(rawLetra = '', fallbackIdx = 0) {
+  const clean = String(rawLetra || '')
+    .replace(/[^A-Za-z]/g, '')
+    .toUpperCase()
+    .slice(0, 1);
+  return clean || String.fromCharCode(65 + fallbackIdx);
+}
+
+function extrairLetraGabaritoLimpa(rawGab = '', explicacao = '') {
+  const s = String(rawGab || '').trim();
+  if (s) {
+    const mDireto = s.match(/^\(?([A-E])\)?[.)]?$/i) || s.match(/(?:alternativa|letra|op[çc][aã]o|gabarito)\s*\(?([A-E])\)?\b/i);
+    if (mDireto) return mDireto[1].toUpperCase();
+  }
+  const exp = String(explicacao || '').slice(-340);
+  if (exp) {
+    const matches = [
+      ...exp.matchAll(/(?:alternativa|op[çc][aã]o|letra|resposta(?:\s+correta)?|gabarito)\s*(?:correta\s*)?(?:[eé:]|\s)\s*\(?([A-E])\)?(?=[\s.,;:)!\n*]|$)/gi),
+    ];
+    if (matches.length > 0) {
+      return matches[matches.length - 1][1].toUpperCase();
+    }
+  }
+  return '';
+}
+
+/**
+ * Reconcilia e infere deterministicamente a alternativa correta (A–E) a partir das proposições
+ * julgadas (I, II, III... / V-F / Colunas), evitando que questões estruturadas fiquem sem letra marcada (ex: Q2).
+ */
+export function reconciliarGabaritoQuestao({
+  tipo = 'objetiva',
+  estrutura = {},
+  alternativas = [],
+  gabaritoLetraBruto = '',
+  explicacao = '',
+  comandoContexto = '',
+}) {
+  let letraInferidaEstrutura = '';
+
+  if (Array.isArray(alternativas) && alternativas.length >= 2) {
+    if (tipo === 'afirmativas') {
+      const props = Array.isArray(estrutura?.proposicoes) ? estrutura.proposicoes : [];
+      if (props.length >= 2) {
+        const ctx = `${comandoContexto || ''} ${estrutura?.comando_fechamento || ''}`;
+        const pedeIncorretas = /\b(incorreta|incorretas|falsa|falsas|errada|erradas|exceto)\b/i.test(ctx);
+        const todosRomanos = props.map((p) => String(p.romano || '').toUpperCase().trim()).filter(Boolean);
+        const alvoSet = new Set(
+          props
+            .filter((p) => Boolean(p.correta) === !pedeIncorretas)
+            .map((p) => String(p.romano || '').toUpperCase().trim())
+            .filter(Boolean)
+        );
+
+        const candidatas = [];
+        for (const alt of alternativas) {
+          const txtSemSeculo = String(alt.texto || '')
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/\bs[eé]culos?\s+[IVXLCDM]+\b/gi, ' ');
+          let altSet = null;
+          if (/\btodas\b/i.test(txtSemSeculo) && !/\bexceto\b/i.test(txtSemSeculo)) {
+            altSet = new Set(todosRomanos);
+          } else if (/\bnenhuma\b/i.test(txtSemSeculo)) {
+            altSet = new Set();
+          } else {
+            const roms = [...txtSemSeculo.matchAll(/\b(I|II|III|IV|V|VI|VII|VIII)\b/g)].map((m) => m[1].toUpperCase());
+            if (roms.length > 0) altSet = new Set(roms);
+          }
+
+          if (altSet && altSet.size === alvoSet.size && [...alvoSet].every((r) => altSet.has(r))) {
+            candidatas.push(alt.letra);
+          }
+        }
+        if (candidatas.length === 1) {
+          letraInferidaEstrutura = candidatas[0];
+        }
+      }
+    } else if (tipo === 'verdadeiro_falso' && estrutura?.submodo === 'sequencia') {
+      const seqAlvo = (estrutura?.itens || []).map((i) => String(i.gabarito || '').toUpperCase().trim()).filter(Boolean);
+      if (seqAlvo.length >= 2) {
+        const candidatas = [];
+        for (const alt of alternativas) {
+          const tokens = [...String(alt.texto || '').toUpperCase().matchAll(/\b([VFCE])\b/g)].map((m) => m[1]);
+          if (tokens.length === seqAlvo.length && tokens.every((t, k) => t === seqAlvo[k])) {
+            candidatas.push(alt.letra);
+          }
+        }
+        if (candidatas.length === 1) letraInferidaEstrutura = candidatas[0];
+      }
+    } else if (tipo === 'associacao' && estrutura?.submodo === 'sequencia') {
+      const seqAlvo = (estrutura?.coluna_b || []).map((b) => String(b.vinculo_codigo || '').toUpperCase().trim()).filter(Boolean);
+      if (seqAlvo.length >= 2) {
+        const candidatas = [];
+        for (const alt of alternativas) {
+          const tokens = [...String(alt.texto || '').toUpperCase().matchAll(/[A-Z0-9]+/g)].map((m) => m[0]);
+          if (tokens.length === seqAlvo.length && tokens.every((t, k) => t === seqAlvo[k])) {
+            candidatas.push(alt.letra);
+          }
+        }
+        if (candidatas.length === 1) letraInferidaEstrutura = candidatas[0];
+      }
+    }
+  }
+
+  const letraBrutaLimpa = extrairLetraGabaritoLimpa(gabaritoLetraBruto, explicacao);
+  const letrasDisponiveis = new Set((alternativas || []).map((a) => a.letra));
+  const letraFinal =
+    (letraInferidaEstrutura && letrasDisponiveis.has(letraInferidaEstrutura) ? letraInferidaEstrutura : '') ||
+    (letraBrutaLimpa && letrasDisponiveis.has(letraBrutaLimpa) ? letraBrutaLimpa : '') ||
+    letraInferidaEstrutura ||
+    letraBrutaLimpa ||
+    '';
+
+  const alternativasAtualizadas = Array.isArray(alternativas)
+    ? alternativas.map((a) => ({
+        ...a,
+        correta: Boolean(letraFinal && a.letra === letraFinal),
+      }))
+    : [];
+
+  return {
+    gabarito: letraFinal || null,
+    alternativas: alternativasAtualizadas,
+  };
+}
+
+export function ehFiguraNaoGraficaIgnorada(fig) {
+  const nat = String(fig?.natureza_visual || '').toLowerCase().trim();
+  return (
+    nat === 'equacao_puramente_tipografica' ||
+    nat === 'texto_puro' ||
+    nat === 'citacao_textual' ||
+    nat === 'paragrafo_texto' ||
+    nat === 'cabecalho_questao'
+  );
+}
+
 // ── Schema Estrito para Extração Multimodal (7 Modelos + 2 Colunas + Multi-BBox) ──
 const EXTRACTION_SCHEMA = {
   type: SchemaType.OBJECT,
@@ -798,22 +1017,25 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
    - "somatoria": proposições numeradas em potências de 2 (01, 02, 04, 08, 16...) cuja resposta é a soma.
    - "discursiva": questão aberta sem alternativas (use formato_espaco_discursiva="quadro_calculo" se exigir conta/desenho ou "linhas" se textual).
 
-2. FIDELIDADE ESPACIAL, EQUAÇÕES EM DESTAQUE ($$...$$) E ARTEFATOS DE EDITOR:
-   - Remova numeração inicial da prova original (ex: "6.", "04.", "Questão 12 -") e remova a sigla da banca do início do enunciado colocando-a em "fonte" (ex: "(UECE)" -> fonte: "UECE").
-   - NUNCA invente banca em "fonte": se não houver sigla/cabeçalho explícito, deixe "fonte": "" e "fonte_confirmada": false.
+2. FIDELIDADE ESPACIAL, DESTAQUES EM NEGRITO (**...**), EQUAÇÕES ($$...$$) E FONTES:
+   - Remova numeração inicial da prova original (ex: "6.", "04.", "Questão 12 -") e remova a sigla de banca oficial do início do enunciado colocando-a em "fonte" (ex: "(UECE)" -> fonte: "UECE").
+   - NUNCA invente banca em "fonte" e NUNCA use cabeçalhos/rodapés escolares genéricos (ex: "HUMANAS-8ºANO", "1º BIMESTRE", " HISTÓRIA ") como "fonte" — nesses casos deixe "fonte": "" e "fonte_confirmada": false.
+   - PRESERVAÇÃO DE NEGRITO E ITÁLICO ORIGINAIS: quando uma frase, expressão ou pergunta dentro do enunciado, texto de apoio, proposições ou alternativas estiver impressa em **negrito** no original (ex: "...muito elevados. **Qual continente possui o crescimento demográfico mais intenso na atualidade?**" ou "Assinale a alternativa **INCORRETA**:"), preserve exatamente esse destaque usando duplo asterisco \`**trecho em negrito**\` (e \`*trecho*\` para itálico editorial relevante, como títulos de obras). NUNCA coloque o enunciado inteiro em negrito e não aplique negrito ao título removido "QUESTÃO X".
+   - PROIBIDO DUPLICAR TEXTO ENTRE "texto_apoio" E "enunciado": se a questão começa diretamente com uma citação curta ou parágrafo introdutório sem bloco externo separado, mantenha o texto APENAS em "enunciado" (deixando "texto_apoio": ""). Se houver um texto-base separado real em "texto_apoio", NUNCA repita esse mesmo parágrafo no início de "enunciado"!
    - Ignore artefatos de interface de editores de texto (Word/Google Docs) em prints de tela, como barra vertical de cursor de digitação colada no fim de palavras ("meias-vidas|" -> transcreva "meias-vidas") e sublinhados ondulados de corretor ortográfico.
    - Use notação LaTeX inline SEMPRE envolvida por cifrões simples ($...$) para variáveis ($m_0$, $f(x)$), frações inline ($\\frac{a}{b}$), raízes ($\\sqrt{x}$), potências ($10^{-3}$), setas ($\\rightarrow$) e fórmulas químicas lineares ($\\text{H}_2\\text{O}$, $\\text{CH}_3$). NUNCA escreva \\text{} ou _0 fora de $...$!
    - EQUAÇÕES EM DESTAQUE E LEGENDAS DE VARIÁVEIS NÃO SÃO FIGURAS: quando a questão apresentar uma função/equação centralizada em destaque (ex: $f(x) = \\frac{m_0}{2^x}$), sistema linear, matriz ou definições de variáveis (ex: "$x \\rightarrow$ quantidade de meias-vidas", "$m_0 \\rightarrow$ massa inicial", "$f(x) \\rightarrow$ massa final"), NUNCA recorte isso em "figuras" (retorne "figuras": [] se não houver ilustração gráfica real!). Transcreva a equação centralizada usando cifrão duplo \`$$...$$\` em linha própria dentro de "enunciado" (ex: \`\\n$$f(x) = \\\\frac{m_0}{2^x}$$\\n\`) seguida em linhas separadas (\`\\n\`) de TODAS as linhas de legenda/significado das variáveis sem omitir nenhuma!
    - Separe o texto que vem ANTES das figuras reais em "enunciado", e o comando/pergunta de fechamento em "comando_final".
 
-3. DETECÇÃO COMPLETA E RECORTE MULTI-FIGURA ("figuras"):
-   - Retorne em "figuras" SOMENTE blocos visuais genuinamente gráficos/ilustrativos: esquemas biológicos/físicos, gráficos com eixos, desenhos geométricos, estruturas químicas 2D com ligações desenhadas (traços/anéis), circuitos, tirinhas, charges, mapas ou tabelas complexas. NUNCA inclua equações algébricas tipográficas nem texto de variáveis em "figuras"!
+3. DETECÇÃO COMPLETA E RECORTE INTEGRAL MULTI-FIGURA ("figuras"):
+   - Retorne em "figuras" SOMENTE blocos visuais genuinamente gráficos/ilustrativos: gravuras históricas, fotografias, esquemas biológicos/físicos, gráficos com eixos, desenhos geométricos, estruturas químicas 2D com ligações desenhadas (traços/anéis), circuitos, tirinhas, charges, mapas ou tabelas visuais complexas. NUNCA inclua citações em texto puro, parágrafos introdutórios, faixas de título "QUESTÃO X" nem equações algébricas tipográficas em "figuras"!
    - Se a questão possuir 2 ou 3 regiões visuais gráficas separadas (ex: um esquema de membrana celular na coluna esquerda + fórmulas estruturais 2D de aminoácidos no rodapé esquerdo e/ou topo da coluna direita), retorne UM ITEM SEPARADO em "figuras" (com alvo="principal") para CADA região visual!
    - Se na virada da coluna esquerda para a coluna direita uma MESMA fórmula estrutural 2D ou tabela foi partida ao meio (ex: cadeia principal —N—C—C— no rodapé da coluna esquerda e radicais |CH3 alanina, serina, aspartato no topo da coluna direita), retorne o bbox da metade no rodapé esquerdo (coluna="esquerda", continuacao_quebra_coluna=false) E o bbox da metade no topo direito (coluna="direita", continuacao_quebra_coluna=true)!
-   - Em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000): englobe 100% dos rótulos periféricos daquela ilustração (ex: siglas nas pontas superiores/inferiores como "R1" e "R2", segundas linhas de legendas com setas como "Proteína / transmembrana" e fórmulas encostadas no limite inferior y=1000 da coluna), mas NÃO invada parágrafos de texto nem ultrapasse "coluna_divisao_x" para a coluna vizinha.
+   - RECORTE 100% INTEGRAL (DO TOPO À BASE DA ILUSTRAÇÃO): em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000), garanta que \`ymin\` comece ACIMA da borda superior completa da gravura/desenho/foto (nunca corte cabeças de personagens ou metade superior de gravuras!) e que \`ymax\` vá até o limite inferior completo da imagem/rótulos periféricos, sem invadir parágrafos de texto nem ultrapassar "coluna_divisao_x" para a coluna vizinha.
    - Se a questão contiver apenas texto e equações matemáticas/químicas tipográficas sem desenho/gráfico/estrutura 2D, retorne OBRIGATORIAMENTE "figuras": [].
 
-4. GABARITO E RESOLUÇÃO PASSO A PASSO:
+4. GABARITO OBRIGATÓRIO E RESOLUÇÃO PASSO A PASSO:
+   - Sempre que houver "alternativas" (inclusive em questões do tipo "afirmativas" com itens I, II, III, IV, "verdadeiro_falso" em sequência ou "associacao" em sequência), preencha OBRIGATORIAMENTE "gabarito_letra" ("A", "B", "C", "D" ou "E") com a letra exata da alternativa correspondente aos itens corretos!
    - Se o print trouxer gabarito oficial inequívoco destacado, use gabarito_origem="marcado_na_imagem".
    - Caso contrário, resolva com rigor científico passo a passo (quebrando linhas entre Passo 1, Passo 2, Conclusão) em "resolucao_passo_a_passo" e defina gabarito_origem="resolvido_pela_ia".`;
 
@@ -883,10 +1105,12 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     ? (Number(dados.coluna_divisao_x) >= 300 && Number(dados.coluna_divisao_x) <= 700 ? Number(dados.coluna_divisao_x) : 500)
     : 0;
 
+  const fonteLimpa = limparFonteFalsaCaderno(dados.fonte);
+
   const figurasRaw = Array.isArray(dados.figuras) ? dados.figuras : [];
   const validFiguras = figurasRaw.filter((f) => {
-    // Trava determinística v2.2: equações puramente tipográficas pertencem ao LaTeX do enunciado, nunca a recorte JPEG
-    if (String(f?.natureza_visual || '').toLowerCase() === 'equacao_puramente_tipografica') return false;
+    // Trava determinística v2.3: equações tipográficas, citações textuais e cabeçalhos nunca viram recorte JPEG
+    if (ehFiguraNaoGraficaIgnorada(f)) return false;
     if (!Array.isArray(f?.bbox) || f.bbox.length !== 4) return false;
     const [y1, x1, y2, x2] = f.bbox.map(Number);
     return Number.isFinite(y1) && Number.isFinite(x1) && (y2 - y1) >= 16 && (x2 - x1) >= 16;
@@ -956,7 +1180,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
         keepOriginal: true,
         posicao: posicaoSugerida,
         legenda: legendas.join(' · '),
-        credito: dados.fonte || '',
+        credito: fonteLimpa,
       });
 
       midiaPrincipal = procPrincipal.midia;
@@ -986,21 +1210,6 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     }
   }
 
-  // Normaliza alternativas (injetando imagem por alternativa se detectada)
-  const gabaritoUpper = String(dados.gabarito_letra || '').toUpperCase().trim();
-  const alternativas = Array.isArray(dados.alternativas)
-    ? dados.alternativas.map((a, idx) => {
-        const letra = String(a.letra || String.fromCharCode(65 + idx)).toUpperCase().trim();
-        return {
-          id: Date.now() + idx,
-          letra,
-          texto: String(a.texto || '').trim(),
-          imagem_url: midiasAlternativas[letra] || null,
-          correta: Boolean(gabaritoUpper && letra === gabaritoUpper),
-        };
-      })
-    : [];
-
   // Monta estrutura_json canônica conforme o modelo detectado
   const tipo = [
     'objetiva', 'afirmativas', 'verdadeiro_falso',
@@ -1008,6 +1217,36 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   ].includes(dados.tipo) ? dados.tipo : 'objetiva';
 
   const estrutura = montarEstruturaInicialExtraida(tipo, dados);
+
+  const enunciadoBruto = tipo === 'lacuna' && dados.texto_lacunado ? dados.texto_lacunado : (dados.enunciado || '');
+  const { textoApoio: textoApoioLimpo, enunciado: enunciadoLimpo } = deduplicarTextoApoioEnunciado(
+    dados.texto_apoio || '',
+    enunciadoBruto,
+    { temIdCompartilhado: false, fonteLimpa }
+  );
+
+  // Normaliza alternativas e reconcilia deterministicamente o gabarito (ex: proposições I–IV -> letra D)
+  const alternativasBase = Array.isArray(dados.alternativas)
+    ? dados.alternativas.map((a, idx) => {
+        const letra = normalizarLetraAlternativa(a.letra, idx);
+        return {
+          id: Date.now() + idx,
+          letra,
+          texto: String(a.texto || '').trim(),
+          imagem_url: midiasAlternativas[letra] || null,
+          correta: false,
+        };
+      })
+    : [];
+
+  const { gabarito: gabaritoReconciliado, alternativas } = reconciliarGabaritoQuestao({
+    tipo,
+    estrutura,
+    alternativas: alternativasBase,
+    gabaritoLetraBruto: dados.gabarito_letra,
+    explicacao: dados.resolucao_passo_a_passo,
+    comandoContexto: `${enunciadoLimpo} ${dados.comando_final || ''}`,
+  });
 
   return {
     ok: true,
@@ -1017,20 +1256,20 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     disciplina: DISCIPLINAS_OFICIAIS.includes(dados.disciplina) ? dados.disciplina : '',
     serie: SERIES_OFICIAIS.includes(dados.serie) ? dados.serie : '',
     nivel: ['facil', 'medio', 'dificil', 'enem'].includes(dados.nivel) ? dados.nivel : 'medio',
-    fonte: dados.fonte || '',
-    fonte_confirmada: Boolean(dados.fonte_confirmada),
+    fonte: fonteLimpa,
+    fonte_confirmada: Boolean(fonteLimpa && dados.fonte_confirmada),
     habilidade_bncc: String(dados.habilidade_bncc || '').toUpperCase().trim(),
     temas: Array.isArray(dados.temas) ? dados.temas.filter(Boolean).slice(0, 5) : [],
     tags: Array.isArray(dados.tags) ? dados.tags.filter(Boolean).slice(0, 6) : [],
-    texto_apoio: dados.texto_apoio || '',
-    enunciado: tipo === 'lacuna' && dados.texto_lacunado ? dados.texto_lacunado : (dados.enunciado || ''),
+    texto_apoio: textoApoioLimpo,
+    enunciado: enunciadoLimpo,
     comando_final: dados.comando_final || '',
     alternativas,
     estrutura_json: estrutura,
     midia: midiaPrincipal,
     imagem_url: midiaPrincipal?.url || null,
     resposta_aberta: dados.resposta_aberta || '',
-    gabarito: gabaritoUpper || null,
+    gabarito: gabaritoReconciliado,
     gabarito_origem: dados.gabarito_origem === 'marcado_na_imagem' ? 'marcado_na_imagem' : 'resolvido_pela_ia',
     explicacao: dados.resolucao_passo_a_passo || '',
     confianca: ['alta', 'media', 'baixa'].includes(dados.confianca) ? dados.confianca : 'alta',

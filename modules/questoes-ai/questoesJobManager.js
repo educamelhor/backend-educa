@@ -9,7 +9,12 @@
 import crypto from 'crypto';
 import pool from '../../db.js';
 import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from './sheetSplitter.agent.js';
-import { extrairQuestaoMultimodal } from './visionExtractor.agent.js';
+import {
+  extrairQuestaoMultimodal,
+  executarCopilotoQuestao,
+  normalizarLetraAlternativa,
+  reconciliarGabaritoQuestao,
+} from './visionExtractor.agent.js';
 
 const CONCORRENCIA_PAGINAS_POR_JOB = 2;
 const WATCHDOG_PAGINA_TRAVADA_SEGUNDOS = 195;
@@ -22,17 +27,30 @@ function limparMensagemErroParaUsuario(err, padrao = 'Falha ao processar página
   return base || padrao;
 }
 
-function serializarContextoPagina(ultimoTextoApoio = '', contextoProximaPagina = null) {
-  if (!contextoProximaPagina) return ultimoTextoApoio || null;
+function serializarContextoPagina(
+  ultimoTextoApoio = '',
+  contextoProximaPagina = null,
+  continuacaoQuestaoAnterior = null
+) {
+  if (!contextoProximaPagina && !continuacaoQuestaoAnterior) {
+    return ultimoTextoApoio || null;
+  }
   return JSON.stringify({
     __env_v1: true,
     ultimo_texto_apoio: ultimoTextoApoio || '',
-    contexto_proxima_pagina: contextoProximaPagina,
+    contexto_proxima_pagina: contextoProximaPagina || null,
+    continuacao_questao_anterior: continuacaoQuestaoAnterior || null,
   });
 }
 
 function desserializarContextoPagina(raw) {
-  if (!raw) return { ultimo_texto_apoio: '', contexto_proxima_pagina: null };
+  if (!raw) {
+    return {
+      ultimo_texto_apoio: '',
+      contexto_proxima_pagina: null,
+      continuacao_questao_anterior: null,
+    };
+  }
   const str = String(raw);
   if (str.startsWith('{"__env_v1":true')) {
     try {
@@ -40,10 +58,115 @@ function desserializarContextoPagina(raw) {
       return {
         ultimo_texto_apoio: parsed.ultimo_texto_apoio || '',
         contexto_proxima_pagina: parsed.contexto_proxima_pagina || null,
+        continuacao_questao_anterior: parsed.continuacao_questao_anterior || null,
       };
     } catch { /* fallback string */ }
   }
-  return { ultimo_texto_apoio: str, contexto_proxima_pagina: null };
+  return {
+    ultimo_texto_apoio: str,
+    contexto_proxima_pagina: null,
+    continuacao_questao_anterior: null,
+  };
+}
+
+/**
+ * Costura fragmentos do topo da Página (k+1) na última questão da Página (k)
+ * (ex.: Questão 04 com alternativa A na Página 1 e alternativas B, C, D no topo da Página 2).
+ */
+export function mesclarContinuacaoNaUltimaQuestao(ultimaQ, cont) {
+  if (!ultimaQ || !cont?.possui_continuacao) return ultimaQ;
+
+  const q = {
+    ...ultimaQ,
+    questao_incompleta_fim_pagina: false,
+    estrutura_json: ultimaQ.estrutura_json ? { ...ultimaQ.estrutura_json } : {},
+  };
+
+  const txtComp = String(cont.texto_complementar || '').trim();
+  if (txtComp) {
+    const amostra = txtComp.slice(0, 32).toLowerCase();
+    if (!String(q.enunciado || '').toLowerCase().includes(amostra)) {
+      q.enunciado = [q.enunciado, txtComp].filter(Boolean).join('\n').trim();
+    }
+  }
+
+  const cmdComp = String(cont.comando_final || '').trim();
+  if (cmdComp && !String(q.comando_final || '').trim()) {
+    q.comando_final = cmdComp;
+  }
+
+  if (Array.isArray(cont.proposicoes_romanas) && cont.proposicoes_romanas.length > 0 && q.tipo === 'afirmativas') {
+    const ORDEM_ROM = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+    const mapaRom = new Map();
+    for (const p of (q.estrutura_json?.proposicoes || [])) {
+      const r = String(p?.romano || '').toUpperCase().trim();
+      if (r) mapaRom.set(r, { ...p, romano: r });
+    }
+    cont.proposicoes_romanas.forEach((p, idx) => {
+      const r = String(p?.romano || ORDEM_ROM[mapaRom.size + idx] || '').toUpperCase().trim();
+      const texto = String(p?.texto || '').trim();
+      if (r && texto) {
+        mapaRom.set(r, {
+          id: mapaRom.get(r)?.id || (mapaRom.size + 1),
+          romano: r,
+          texto,
+          correta: Boolean(p?.correta),
+        });
+      }
+    });
+    const propsOrdenadas = [...mapaRom.values()].sort((a, b) => {
+      const ia = ORDEM_ROM.indexOf(a.romano);
+      const ib = ORDEM_ROM.indexOf(b.romano);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+    q.estrutura_json = {
+      ...q.estrutura_json,
+      modelo: 'afirmativas',
+      proposicoes: propsOrdenadas,
+    };
+  }
+
+  const novasAltsCont = Array.isArray(cont.alternativas) ? cont.alternativas.filter((a) => String(a?.texto || '').trim()) : [];
+  let altsMescladas = Array.isArray(q.alternativas) ? [...q.alternativas] : [];
+
+  if (novasAltsCont.length > 0) {
+    const mapaAlts = new Map();
+    altsMescladas.forEach((a, idx) => {
+      const letra = normalizarLetraAlternativa(a?.letra, idx);
+      if (String(a?.texto || '').trim() || a?.imagem_url) {
+        mapaAlts.set(letra, { ...a, letra, correta: false });
+      }
+    });
+
+    // As alternativas reais impressas no topo da página seguinte prevalecem sobre qualquer letra repetida/inventada
+    novasAltsCont.forEach((aCont, idx) => {
+      const letra = normalizarLetraAlternativa(aCont.letra, idx + 1);
+      const prev = mapaAlts.get(letra);
+      mapaAlts.set(letra, {
+        id: prev?.id || (Date.now() + 500 + idx),
+        letra,
+        texto: String(aCont.texto || '').trim(),
+        imagem_url: prev?.imagem_url || null,
+        correta: false,
+      });
+    });
+
+    altsMescladas = [...mapaAlts.values()].sort((a, b) => a.letra.localeCompare(b.letra));
+  }
+
+  const entrouAlternativaNova = novasAltsCont.length > 0 && q.gabarito_origem !== 'marcado_na_imagem';
+  const reconciliado = reconciliarGabaritoQuestao({
+    tipo: q.tipo,
+    estrutura: q.estrutura_json,
+    alternativas: altsMescladas,
+    gabaritoLetraBruto: entrouAlternativaNova ? '' : q.gabarito,
+    explicacao: entrouAlternativaNova ? '' : q.explicacao,
+    comandoContexto: `${q.enunciado || ''} ${q.comando_final || ''}`,
+  });
+
+  q.alternativas = reconciliado.alternativas;
+  q.gabarito = reconciliado.gabarito;
+  return q;
 }
 
 let _tablesReadyPromise = null;
@@ -136,7 +259,141 @@ async function isJobCancelado(jobId) {
   return false;
 }
 
+const _stitchingLocks = new Map();
+
+/**
+ * Costura no banco de dados (com lock por jobId) eventuais questões partidas entre páginas consecutivas
+ * já concluídas (ex.: Página 1 terminou na letra A e a Página 2 trouxe as letras B, C e D no topo),
+ * recalculando o gabarito e a explicação com todas as alternativas reais reunidas.
+ */
+async function costurarContinuacoesEntrePaginasNoBanco(jobId) {
+  const prevLock = _stitchingLocks.get(jobId) || Promise.resolve();
+  const nextLock = prevLock
+    .catch(() => {})
+    .then(async () => {
+      const [rows] = await pool.query(
+        `SELECT ordem_lote, pagina_numero, status_pagina, ultimo_texto_apoio, questoes_json
+           FROM questoes_ai_job_paginas
+          WHERE job_id = ?
+          ORDER BY ordem_lote ASC`,
+        [jobId]
+      );
+
+      if (!Array.isArray(rows) || rows.length < 2) return;
+
+      for (let i = 1; i < rows.length; i++) {
+        const prev = rows[i - 1];
+        const curr = rows[i];
+        if (prev.status_pagina !== 'concluida' || curr.status_pagina !== 'concluida') continue;
+        if (Number(curr.ordem_lote) !== Number(prev.ordem_lote) + 1) continue;
+
+        const ctxCurr = desserializarContextoPagina(curr.ultimo_texto_apoio);
+        const cont = ctxCurr.continuacao_questao_anterior;
+        if (!cont?.possui_continuacao || cont.ja_mesclada) continue;
+
+        let arrPrev = [];
+        try {
+          arrPrev = JSON.parse(prev.questoes_json || '[]');
+        } catch {
+          arrPrev = [];
+        }
+        if (!Array.isArray(arrPrev) || arrPrev.length === 0) continue;
+
+        const idxUltima = arrPrev.length - 1;
+        let questaoCosturada = mesclarContinuacaoNaUltimaQuestao(arrPrev[idxUltima], cont);
+
+        // Se entraram alternativas novas (ex: B, C, D vindas da página seguinte) e ainda não há letra resolvida,
+        // aciona o Copiloto Solucionador com a questão 100% completa para obter o gabarito real (ex: letra C na Q4).
+        const precisaResolverIA =
+          Array.isArray(questaoCosturada.alternativas) &&
+          questaoCosturada.alternativas.length >= 2 &&
+          !questaoCosturada.gabarito &&
+          questaoCosturada.gabarito_origem !== 'marcado_na_imagem';
+
+        if (precisaResolverIA) {
+          try {
+            await pool.query(
+              `UPDATE questoes_ai_jobs
+                  SET etapa_atual = ?
+                WHERE job_id = ? AND status = 'processando'`,
+              [
+                `Unificando questão ${questaoCosturada.numero_original || ''} entre as páginas ${prev.pagina_numero} e ${curr.pagina_numero} e validando gabarito...`,
+                jobId,
+              ]
+            ).catch(() => {});
+
+            const solucao = await executarCopilotoQuestao('resolver_e_comentar', {
+              tipo: questaoCosturada.tipo,
+              enunciado: [questaoCosturada.texto_apoio, questaoCosturada.enunciado].filter(Boolean).join('\n\n'),
+              comando_final: questaoCosturada.comando_final || questaoCosturada.estrutura_json?.comando_fechamento || '',
+              alternativas: questaoCosturada.alternativas.map((a) => ({ letra: a.letra, texto: a.texto })),
+              estrutura_json: questaoCosturada.estrutura_json,
+            });
+
+            const recPosIA = reconciliarGabaritoQuestao({
+              tipo: questaoCosturada.tipo,
+              estrutura: questaoCosturada.estrutura_json,
+              alternativas: questaoCosturada.alternativas,
+              gabaritoLetraBruto: solucao?.gabarito_sugerido || '',
+              explicacao: solucao?.resolucao_comentada || '',
+              comandoContexto: `${questaoCosturada.enunciado || ''} ${questaoCosturada.comando_final || ''}`,
+            });
+
+            questaoCosturada = {
+              ...questaoCosturada,
+              alternativas: recPosIA.alternativas,
+              gabarito: recPosIA.gabarito,
+              explicacao: solucao?.resolucao_comentada || questaoCosturada.explicacao,
+            };
+          } catch (solveErr) {
+            console.warn(
+              `[questoesJobManager] Aviso ao recalcular gabarito da questão costurada (pág ${prev.pagina_numero}->${curr.pagina_numero}):`,
+              solveErr?.message
+            );
+          }
+        }
+
+        arrPrev[idxUltima] = questaoCosturada;
+        prev.questoes_json = JSON.stringify(arrPrev);
+
+        const contMarcada = { ...cont, ja_mesclada: true };
+        const novoCtxCurr = serializarContextoPagina(
+          ctxCurr.ultimo_texto_apoio,
+          ctxCurr.contexto_proxima_pagina,
+          contMarcada
+        );
+
+        await pool.query(
+          `UPDATE questoes_ai_job_paginas
+              SET questoes_json = ?, questoes_count = ?
+            WHERE job_id = ? AND ordem_lote = ?`,
+          [prev.questoes_json, arrPrev.length, jobId, prev.ordem_lote]
+        );
+
+        await pool.query(
+          `UPDATE questoes_ai_job_paginas
+              SET ultimo_texto_apoio = ?
+            WHERE job_id = ? AND ordem_lote = ?`,
+          [novoCtxCurr, jobId, curr.ordem_lote]
+        );
+      }
+    });
+
+  _stitchingLocks.set(jobId, nextLock);
+  try {
+    await nextLock;
+  } finally {
+    if (_stitchingLocks.get(jobId) === nextLock) {
+      _stitchingLocks.delete(jobId);
+    }
+  }
+}
+
 async function recomputarStatusConsolidadoJob(jobId) {
+  await costurarContinuacoesEntrePaginasNoBanco(jobId).catch((err) =>
+    console.warn('[questoesJobManager] costurarContinuacoesEntrePaginasNoBanco:', err?.message)
+  );
+
   const [[job]] = await pool.query(
     'SELECT total_paginas, paginas_recebidas, cancelado, status FROM questoes_ai_jobs WHERE job_id = ? LIMIT 1',
     [jobId]
@@ -290,7 +547,11 @@ function dispararWorkersLocais(jobId) {
             WHERE job_id = ? AND ordem_lote = ?`,
           [
             resultado.modelo_ia || '',
-            serializarContextoPagina(resultado.ultimo_texto_apoio, resultado.contexto_proxima_pagina),
+            serializarContextoPagina(
+              resultado.ultimo_texto_apoio,
+              resultado.contexto_proxima_pagina,
+              resultado.continuacao_questao_anterior
+            ),
             questoesArr.length,
             JSON.stringify(questoesArr),
             jobId,
@@ -578,6 +839,7 @@ export async function consultarStatusJob({ jobId, escolaId }) {
   const avisos = [];
   const paginasDetalhe = [];
   let carryOverDaPaginaAnterior = null;
+  let ultimaOrdemConcluida = -999;
 
   for (const r of paginasRows) {
     paginasDetalhe.push({
@@ -590,6 +852,20 @@ export async function consultarStatusJob({ jobId, escolaId }) {
     });
 
     if (r.status_pagina === 'concluida' && r.questoes_json) {
+      const ctxPaginaAtual = desserializarContextoPagina(r.ultimo_texto_apoio);
+      const contNaoPersistida =
+        ctxPaginaAtual.continuacao_questao_anterior?.possui_continuacao &&
+        !ctxPaginaAtual.continuacao_questao_anterior?.ja_mesclada &&
+        Number(r.ordem_lote) === ultimaOrdemConcluida + 1;
+
+      if (contNaoPersistida && todasQuestoes.length > 0) {
+        const idxUlt = todasQuestoes.length - 1;
+        todasQuestoes[idxUlt] = mesclarContinuacaoNaUltimaQuestao(
+          todasQuestoes[idxUlt],
+          ctxPaginaAtual.continuacao_questao_anterior
+        );
+      }
+
       try {
         const arr = JSON.parse(r.questoes_json);
         if (Array.isArray(arr)) {
@@ -611,7 +887,8 @@ export async function consultarStatusJob({ jobId, escolaId }) {
           todasQuestoes.push(...arr);
         }
       } catch { /* ignore */ }
-      carryOverDaPaginaAnterior = desserializarContextoPagina(r.ultimo_texto_apoio).contexto_proxima_pagina;
+      carryOverDaPaginaAnterior = ctxPaginaAtual.contexto_proxima_pagina;
+      ultimaOrdemConcluida = Number(r.ordem_lote);
     } else {
       carryOverDaPaginaAnterior = null;
     }

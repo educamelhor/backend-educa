@@ -13,6 +13,11 @@ import {
   sanitizarObjetoIA,
   bboxIoU,
   montarEstruturaInicialExtraida,
+  limparFonteFalsaCaderno,
+  deduplicarTextoApoioEnunciado,
+  normalizarLetraAlternativa,
+  reconciliarGabaritoQuestao,
+  ehFiguraNaoGraficaIgnorada,
 } from './visionExtractor.agent.js';
 
 const TIPOS_VALIDOS = [
@@ -178,6 +183,10 @@ const QUESTAO_ITEM_SCHEMA = {
     formato_espaco_discursiva: { type: SchemaType.STRING },
     linhas_resposta_sugeridas: { type: SchemaType.INTEGER },
     resposta_aberta: { type: SchemaType.STRING },
+    questao_incompleta_fim_pagina: {
+      type: SchemaType.BOOLEAN,
+      description: 'true APENAS se esta questão no fim da página estiver cortada/incompleta porque suas demais alternativas continuam na próxima página.',
+    },
     gabarito_letra: { type: SchemaType.STRING },
     gabarito_origem: {
       type: SchemaType.STRING,
@@ -213,6 +222,39 @@ const SHEET_EXTRACTION_SCHEMA = {
     disciplina_predominante: { type: SchemaType.STRING },
     serie_predominante: { type: SchemaType.STRING },
     fonte_geral: { type: SchemaType.STRING },
+    continuacao_questao_anterior: {
+      type: SchemaType.OBJECT,
+      description: 'Fragmentos órfãos no TOPO desta página (antes da 1ª questão numerada) que continuam a última questão da página anterior (ex: alternativas B, C, D).',
+      properties: {
+        possui_continuacao: { type: SchemaType.BOOLEAN },
+        texto_complementar: { type: SchemaType.STRING },
+        comando_final: { type: SchemaType.STRING },
+        alternativas: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              letra: { type: SchemaType.STRING },
+              texto: { type: SchemaType.STRING },
+            },
+            required: ['letra', 'texto'],
+          },
+        },
+        proposicoes_romanas: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              romano: { type: SchemaType.STRING },
+              texto: { type: SchemaType.STRING },
+              correta: { type: SchemaType.BOOLEAN },
+            },
+            required: ['romano', 'texto', 'correta'],
+          },
+        },
+      },
+      required: ['possui_continuacao'],
+    },
     textos_apoio_compartilhados: {
       type: SchemaType.ARRAY,
       items: {
@@ -233,6 +275,95 @@ const SHEET_EXTRACTION_SCHEMA = {
   required: ['layout_pagina', 'coluna_divisao_x', 'textos_apoio_compartilhados', 'questoes'],
 };
 
+function normalizarContinuacaoQuestaoAnterior(rawCont) {
+  if (!rawCont || typeof rawCont !== 'object') return null;
+  const altsRaw = Array.isArray(rawCont.alternativas) ? rawCont.alternativas : [];
+  const alternativas = altsRaw
+    .map((a, idx) => ({
+      letra: normalizarLetraAlternativa(a?.letra, idx + 1),
+      texto: String(a?.texto || '').trim(),
+    }))
+    .filter((a) => a.texto);
+
+  const propsRaw = Array.isArray(rawCont.proposicoes_romanas) ? rawCont.proposicoes_romanas : [];
+  const proposicoes_romanas = propsRaw
+    .map((p, idx) => ({
+      romano: String(p?.romano || ['I', 'II', 'III', 'IV', 'V'][idx] || '').trim(),
+      texto: String(p?.texto || '').trim(),
+      correta: Boolean(p?.correta),
+    }))
+    .filter((p) => p.texto);
+
+  const texto_complementar = String(rawCont.texto_complementar || '').trim();
+  const comando_final = String(rawCont.comando_final || '').trim();
+
+  const temConteudoReal =
+    alternativas.length > 0 ||
+    proposicoes_romanas.length > 0 ||
+    Boolean(texto_complementar) ||
+    Boolean(comando_final);
+
+  if (!temConteudoReal) return null;
+
+  return {
+    possui_continuacao: true,
+    texto_complementar,
+    comando_final,
+    alternativas,
+    proposicoes_romanas,
+  };
+}
+
+/**
+ * Ordena geometricamente os itens brutos quando a folha tem 2 colunas,
+ * corrigindo leituras em "Z" da IA (ex: 18, 20, 19, 21 -> 18, 19, [muro], 20, 21, [pirâmide]).
+ */
+function ordenarQuestoesBrutasGeometricamente(questoesBrutas = [], layoutPagina = 'coluna_unica', colunaDivisaoX = 0) {
+  if (layoutPagina !== 'duas_colunas' || colunaDivisaoX <= 0 || questoesBrutas.length < 2) {
+    return questoesBrutas;
+  }
+
+  const extrairCaixa = (q) => {
+    if (Array.isArray(q?.questao_bbox) && q.questao_bbox.length === 4) {
+      const [y1, x1, y2, x2] = q.questao_bbox.map(Number);
+      if (Number.isFinite(y1) && Number.isFinite(x1) && Number.isFinite(y2) && Number.isFinite(x2) && y2 > y1 && x2 > x1) {
+        return [y1, x1, y2, x2];
+      }
+    }
+    const fig0 = Array.isArray(q?.figuras) ? q.figuras[0] : null;
+    if (Array.isArray(fig0?.bbox) && fig0.bbox.length === 4) {
+      const [fy1, fx1, fy2, fx2] = fig0.bbox.map(Number);
+      if (Number.isFinite(fy1) && Number.isFinite(fx1) && Number.isFinite(fy2) && Number.isFinite(fx2) && fy2 > fy1 && fx2 > fx1) {
+        return [fy1, fx1, fy2, fx2];
+      }
+    }
+    return null;
+  };
+
+  const enriquecidas = questoesBrutas.map((q, origIdx) => {
+    const box = extrairCaixa(q);
+    if (!box) return { q, origIdx, hasBox: false, colGroup: 9, yTop: origIdx * 1000 };
+    const [y1, x1, , x2] = box;
+    const cx = (x1 + x2) / 2;
+    const atravessaColunas = x1 < colunaDivisaoX - 70 && x2 > colunaDivisaoX + 70;
+    // colGroup: 0 = coluna esquerda pura | 1 = transição col. esq -> topo col. dir | 2 = coluna direita pura
+    const colGroup = atravessaColunas ? 1 : (cx < colunaDivisaoX ? 0 : 2);
+    return { q, origIdx, hasBox: true, colGroup, yTop: y1 };
+  });
+
+  if (!enriquecidas.every((it) => it.hasBox)) {
+    return questoesBrutas;
+  }
+
+  enriquecidas.sort((a, b) => {
+    if (a.colGroup !== b.colGroup) return a.colGroup - b.colGroup;
+    if (Math.abs(a.yTop - b.yTop) > 12) return a.yTop - b.yTop;
+    return a.origIdx - b.origIdx;
+  });
+
+  return enriquecidas.map((it) => it.q);
+}
+
 /**
  * Normaliza um item bruto da lista extraída para o formato canônico do EDUCA.STUDIO AI.
  */
@@ -243,7 +374,6 @@ function normalizarQuestaoIndividualizada({
   ultimoTextoApoio,
   disciplinaFallback,
   serieFallback,
-  fonteGeral,
   layoutPagina,
   paginaOriginalUrl,
   paginaNumero,
@@ -254,15 +384,16 @@ function normalizarQuestaoIndividualizada({
   const tipo = TIPOS_VALIDOS.includes(qRaw.tipo) ? qRaw.tipo : 'objetiva';
 
   // Resolve texto de apoio (compartilhado na página > próprio da questão > herdado da página anterior)
-  let textoApoioFinal = String(qRaw.texto_apoio || '').trim();
   const idVinc = String(qRaw.id_texto_apoio_vinculado || '').trim();
-  if (idVinc && mapaTextosCompartilhados.has(idVinc)) {
+  const temIdCompartilhado = Boolean(idVinc && mapaTextosCompartilhados.has(idVinc));
+  let textoApoioCandidato = String(qRaw.texto_apoio || '').trim();
+  if (temIdCompartilhado) {
     const compartilhado = mapaTextosCompartilhados.get(idVinc);
-    textoApoioFinal = textoApoioFinal
-      ? `${compartilhado}\n\n${textoApoioFinal}`
+    textoApoioCandidato = textoApoioCandidato
+      ? `${compartilhado}\n\n${textoApoioCandidato}`
       : compartilhado;
-  } else if (!textoApoioFinal && qRaw.usa_texto_pagina_anterior && ultimoTextoApoio) {
-    textoApoioFinal = limparCabecalhoTextoCompartilhado(ultimoTextoApoio);
+  } else if (!textoApoioCandidato && qRaw.usa_texto_pagina_anterior && ultimoTextoApoio) {
+    textoApoioCandidato = limparCabecalhoTextoCompartilhado(ultimoTextoApoio);
   }
 
   const discCandidata = qRaw.disciplina || disciplinaFallback || '';
@@ -276,28 +407,45 @@ function normalizarQuestaoIndividualizada({
     : (SERIES_OFICIAIS.includes(serieFallback) ? serieFallback : '');
 
   const nivel = ['facil', 'medio', 'dificil', 'enem'].includes(qRaw.nivel) ? qRaw.nivel : 'medio';
-  const fonte = String(qRaw.fonte || fonteGeral || '').trim();
+  // Usa estritamente a fonte específica da questão (sem herdar fonte_geral de outra questão nem cabeçalhos de caderno)
+  const fonte = limparFonteFalsaCaderno(qRaw.fonte);
 
   const temasExtraidos = Array.isArray(qRaw.temas) ? qRaw.temas.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 5) : [];
   const temas = temasExtraidos.length > 0 ? temasExtraidos : [disciplina];
   const tags = Array.isArray(qRaw.tags) ? qRaw.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
 
-  const gabaritoUpper = String(qRaw.gabarito_letra || '').toUpperCase().trim();
+  const enunciadoBruto = tipo === 'lacuna' && qRaw.texto_lacunado ? qRaw.texto_lacunado : (qRaw.enunciado || '');
+  const { textoApoio: textoApoioFinal, enunciado: enunciadoFinal } = deduplicarTextoApoioEnunciado(
+    textoApoioCandidato,
+    enunciadoBruto,
+    { temIdCompartilhado, fonteLimpa: fonte }
+  );
+
+  const estrutura = montarEstruturaInicialExtraida(tipo, qRaw);
+
   const baseTs = Date.now() + idx * 20;
-  const alternativas = Array.isArray(qRaw.alternativas)
+  const alternativasBase = Array.isArray(qRaw.alternativas)
     ? qRaw.alternativas.map((a, aIdx) => {
-        const letra = String(a.letra || String.fromCharCode(65 + aIdx)).toUpperCase().trim();
+        const letra = normalizarLetraAlternativa(a.letra, aIdx);
         return {
           id: baseTs + aIdx,
           letra,
           texto: String(a.texto || '').trim(),
           imagem_url: midiasAlternativas[letra] || null,
-          correta: Boolean(gabaritoUpper && letra === gabaritoUpper),
+          correta: false,
         };
       })
     : [];
 
-  const estrutura = montarEstruturaInicialExtraida(tipo, qRaw);
+  const incompletaFimPagina = Boolean(qRaw.questao_incompleta_fim_pagina);
+  const { gabarito: gabaritoReconciliado, alternativas } = reconciliarGabaritoQuestao({
+    tipo,
+    estrutura,
+    alternativas: alternativasBase,
+    gabaritoLetraBruto: incompletaFimPagina && alternativasBase.length < 3 ? '' : qRaw.gabarito_letra,
+    explicacao: incompletaFimPagina && alternativasBase.length < 3 ? '' : qRaw.resolucao_passo_a_passo,
+    comandoContexto: `${enunciadoFinal} ${qRaw.comando_final || ''}`,
+  });
 
   let questaoBbox = null;
   if (Array.isArray(qRaw.questao_bbox) && qRaw.questao_bbox.length === 4) {
@@ -313,6 +461,7 @@ function normalizarQuestaoIndividualizada({
     pagina_original_url: paginaOriginalUrl || null,
     numero_original: String(qRaw.numero_original || `${idx + 1}`).trim(),
     questao_bbox: questaoBbox,
+    questao_incompleta_fim_pagina: incompletaFimPagina,
     modelo_ia: modeloUsado,
     layout_origem: layoutPagina,
     tipo,
@@ -320,19 +469,19 @@ function normalizarQuestaoIndividualizada({
     serie,
     nivel,
     fonte,
-    fonte_confirmada: Boolean(qRaw.fonte_confirmada),
+    fonte_confirmada: Boolean(fonte && qRaw.fonte_confirmada),
     habilidade_bncc: String(qRaw.habilidade_bncc || '').toUpperCase().trim(),
     temas,
     tags,
     texto_apoio: textoApoioFinal,
-    enunciado: tipo === 'lacuna' && qRaw.texto_lacunado ? qRaw.texto_lacunado : (qRaw.enunciado || ''),
+    enunciado: enunciadoFinal,
     comando_final: qRaw.comando_final || '',
     alternativas,
     estrutura_json: estrutura,
     midia: midiaPrincipal,
     imagem_url: midiaPrincipal?.url || null,
     resposta_aberta: qRaw.resposta_aberta || '',
-    gabarito: gabaritoUpper || null,
+    gabarito: gabaritoReconciliado,
     gabarito_origem: qRaw.gabarito_origem === 'marcado_na_imagem' ? 'marcado_na_imagem' : 'resolvido_pela_ia',
     explicacao: qRaw.resolucao_passo_a_passo || '',
     confianca: ['alta', 'media', 'baixa'].includes(qRaw.confianca) ? qRaw.confianca : 'alta',
@@ -369,17 +518,24 @@ export async function extrairListaDePaginaMultimodal(fileBuffer, mimeType, opcoe
   const prompt = `Você é o Agente Individualizador de Provas e Listas do EDUCA.STUDIO AI.
 Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNumero}) e INDIVIDUALIZE TODAS as questões visíveis com fidelidade editorial absoluta:
 
-1. DIAGRAMAÇÃO DA PÁGINA E ORDEM DE LEITURA ("layout_pagina" e "coluna_divisao_x"):
+1. DIAGRAMAÇÃO DA PÁGINA, ORDEM DE COLUNAS E QUESTÕES PARTIDAS ENTRE PÁGINAS:
    - Se a folha estiver diagramada em 2 colunas lado a lado (padrão ENEM, vestibulares, apostilas), defina layout_pagina="duas_colunas" e informe em "coluna_divisao_x" o X (0..1000, ex: 495) do corredor branco vertical central.
-   - Em duas_colunas, leia ESTRITAMENTE: 1º toda a coluna da esquerda (de cima até embaixo), depois 2º toda a coluna da direita (de cima até embaixo).
-   - Se uma mesma questão começar no fim da coluna esquerda e terminar no topo da coluna direita, UNIFIQUE-A em um único item de "questoes"!
+   - Em duas_colunas, leia ESTRITAMENTE: 1º toda a coluna da esquerda (de cima até embaixo), depois 2º toda a coluna da direita (de cima até embaixo). NUNCA alterne esquerda-direita em zigue-zague ("Z")!
+   - Se uma mesma questão começar no fim da coluna esquerda e terminar no topo da coluna direita da MESMA página, UNIFIQUE-A em um único item de "questoes"!
+   - CONTINUAÇÃO NO TOPO DESTA PÁGINA ("continuacao_questao_anterior"):
+     * Se logo no TOPO da página (tipicamente no alto da coluna esquerda, ANTES da primeira questão numerada desta página) houver alternativas órfãs (ex: "b) ...", "c) ...", "d) ..." ou "B)", "C)", "D)", "E)"), proposições romanas finais ou pergunta final pertencentes à última questão da página anterior, capture TODAS elas em "continuacao_questao_anterior" com "possui_continuacao": true!
+     * NUNCA ignore nem descarte alternativas órfãs do topo da página e NUNCA crie um item falso em "questoes" para elas! Se não houver continuação órfã no topo, retorne "continuacao_questao_anterior": { "possui_continuacao": false }.
+   - QUESTÃO CORTADA NO RODAPÉ DA PÁGINA ("questao_incompleta_fim_pagina"):
+     * Se a última questão desta página terminar cortada no fim da página (por exemplo: traz apenas o enunciado ou apenas a alternativa "(a)", porque "(b), (c), (d)" estão na página seguinte), extraia SOMENTE as alternativas literalmente impressas nesta imagem, marque "questao_incompleta_fim_pagina": true e PROIBIDO INVENTAR, COMPLETAR OU REESCREVER ALTERNATIVAS FALTANTES! O sistema unirá automaticamente as alternativas reais vindas da próxima página.
    - ATENÇÃO CRÍTICA A CHAMADAS DE IMAGEM/TEXTO NO FIM DE COLUNA OU DE PÁGINA:
      * Se no final da coluna esquerda houver uma chamada introdutória (ex: "Observe a imagem do muro... e responda à questão a seguir", "Analise o gráfico:") acompanhada de figura/texto SEM alternativas próprias, VINCULE essa figura e esse texto diretamente à questão que começa no topo da coluna direita! NUNCA crie uma questão falsa/vazia para uma chamada "Observe a imagem"!
      * Se no final da coluna direita (rodapé da página) houver uma chamada "Observe a imagem:" + figura/texto cuja pergunta só aparecerá na PRÓXIMA página, retorne-a com numero_original="PENDENTE_PROXIMA_PAGINA" para que o sistema a anexe automaticamente à 1ª questão da página seguinte!
    - Ignore cabeçalhos institucionais da escola e cartões motivacionais/decorativos de fim de prova ("BOA PROVA!", frases filosóficas sem pergunta) que não sejam questões avaliativas.
 
-2. TEXTOS DE APOIO COMPARTILHADOS ("textos_apoio_compartilhados"):
+2. TEXTOS DE APOIO COMPARTILHADOS E PROIBIÇÃO DE DUPLICAÇÃO ("textos_apoio_compartilhados", "texto_apoio", "fonte"):
    - Quando houver um texto base, tirinha ou artigo com instrução do tipo "Leia o texto a seguir para responder às questões 1 a 3", registre esse texto em "textos_apoio_compartilhados" com um "id_texto" (ex: "T1") SEM a frase "Texto para as questões 1 a 3", e vincule "id_texto_apoio_vinculado": "T1" em TODAS as questões abrangidas (1, 2 e 3) para que cada questão fique 100% autônoma no banco!
+   - PROIBIDO DUPLICAR TEXTO ENTRE "texto_apoio" E "enunciado": quando uma questão começar diretamente com uma frase entre aspas ou parágrafo introdutório próprio (ex: "“Se não têm pão, que comam brioches”! A frase... Assinale a alternativa..."), coloque o texto APENAS em "enunciado" e deixe "texto_apoio": "". Só preencha "texto_apoio" individual quando houver um bloco/excerto claramente separado com referência bibliográfica própria, e nesse caso NUNCA repita esse parágrafo dentro de "enunciado"!
+   - PROIBIDO USAR CABEÇALHOS/RODAPÉS DE CADERNO COMO "fonte": ignore cabeçalhos/rodapés escolares genéricos (ex: "HUMANAS-8ºANO", "1º BIMESTRE", "HISTÓRIA"), deixando "fonte": "" e "fonte_geral": "". Preencha "fonte" na questão SOMENTE quando aquela questão específica tiver banca oficial (ex: ENEM 2023, FUVEST) ou crédito bibliográfico próprio impresso nela.
 
 3. CLASSIFICAÇÃO NOS 7 MODELOS UNIVERSAIS ("tipo"):
    - "objetiva": múltipla escolha clássica (A–D ou A–E).
@@ -390,14 +546,19 @@ Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNume
    - "somatoria": proposições em potências de 2 (01, 02, 04, 08...) em "proposicoes_somatoria".
    - "discursiva": questão aberta sem alternativas (preencha "resposta_aberta" com o espelho esperado).
 
-4. LATEX CIENTÍFICO, EQUAÇÕES EM DESTAQUE ($$...$$) E RECORTE ESTRITO DE FIGURAS ("figuras"):
-   - Remova o número original do início de "enunciado" (guarde-o em "numero_original", ex: "01", "Questão 4") e extraia a sigla da banca para "fonte" (ex: "(ENEM 2023)" -> fonte="ENEM 2023"; nunca invente fonte se não estiver impressa).
+4. PRESERVAÇÃO DE NEGRITO (**...**), LATEX CIENTÍFICO E RECORTE INTEGRAL DE FIGURAS ("figuras"):
+   - Remova o número original do início de "enunciado" (guarde-o em "numero_original", ex: "01", "Questão 4") e extraia a sigla da banca oficial para "fonte" se existir.
+   - PRESERVAÇÃO FIEL DE NEGRITO (**...**) E ITÁLICO (*...*): sempre que o documento original tiver uma frase, pergunta final ou palavra destacada em **negrito** dentro do enunciado, texto de apoio, proposições ou alternativas (ex: "...muito elevados. **Qual continente possui o crescimento demográfico mais intenso na atualidade?**" ou "Assinale a opção **INCORRETA**:"), envolva EXATAMENTE esse trecho com duplo asterisco \`**trecho em negrito**\` (e \`*trecho*\` para itálico relevante). NUNCA coloque o enunciado inteiro em negrito se no original apenas uma parte estiver em negrito, e não aplique negrito ao cabeçalho removido "QUESTÃO X".
    - Remova cursores de edição "|" colados em palavras ("aproxim|arem" -> "aproximarem").
    - Envolva toda fórmula matemática, física ou química linear em cifrões simples $...$ (ex: $m_0$, $\\frac{a}{b}$, $\\text{H}_2\\text{SO}_4$) ou cifrão duplo \`$$...$$\` em linha própria para equações centralizadas em destaque.
-   - REGRA DE OURO DE FIGURAS: NUNCA inclua equações algébricas tipográficas, frações ou legendas de variáveis em "figuras" (para elas, retorne "figuras": [] ou classifique como "equacao_puramente_tipografica"). Inclua em "figuras" APENAS ilustrações gráficas reais (gráficos, desenhos geométricos, esquemas biológicos/físicos, estruturas químicas 2D com ligações desenhadas, charges/tirinhas, mapas ou tabelas complexas) pertencentes especificamente àquela questão!
-   - Informe também "questao_bbox": [ymin, xmin, ymax, xmax] (0..1000) delimitando onde cada questão aparece na página.
+   - REGRA DE OURO DE FIGURAS E BBOX 100% INTEGRAL:
+     * NUNCA inclua citações textuais, parágrafos introdutórios, faixas "QUESTÃO X", equações algébricas tipográficas ou legendas de variáveis em "figuras" (para questões apenas textuais, retorne "figuras": []).
+     * Inclua em "figuras" APENAS ilustrações gráficas reais (gravuras históricas, fotografias, charges/tirinhas, mapas, gráficos, desenhos geométricos, esquemas científicos, estruturas químicas 2D ou tabelas visuais complexas) pertencentes especificamente àquela questão!
+     * Em cada "bbox": [ymin, xmin, ymax, xmax] (0..1000), englobe 100% da ilustração do TOPO À BASE — \`ymin\` deve começar ACIMA da borda superior completa da gravura/personagens/título interno da imagem (jamais corte metade superior ou cabeças de gravuras!) e \`ymax\` deve ir até a base completa da figura!
+   - Informe também "questao_bbox": [ymin, xmin, ymax, xmax] (0..1000) delimitando toda a região vertical e horizontal onde cada questão aparece na página.
 
-5. GABARITO E RESOLUÇÃO OBJETIVA PASSO A PASSO:
+5. GABARITO OBRIGATÓRIO ("gabarito_letra") E RESOLUÇÃO OBJETIVA PASSO A PASSO:
+   - Sempre que a questão possuir "alternativas" (e "questao_incompleta_fim_pagina" não for true), inclusive em questões do tipo "afirmativas" (itens I, II, III, IV), "verdadeiro_falso" em sequência e "associacao" em sequência, preencha OBRIGATORIAMENTE "gabarito_letra" ("A", "B", "C", "D" ou "E") com a letra exata da alternativa correspondente aos itens verdadeiros!
    - Se houver gabarito marcado/impresso na folha para a questão, use gabarito_origem="marcado_na_imagem"; caso contrário, resolva com rigor científico em 2 a 4 passos objetivos em "resolucao_passo_a_passo" (sempre fechando $...$ em qualquer LaTeX) e defina gabarito_origem="resolvido_pela_ia".
    - Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
 ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
@@ -416,11 +577,19 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
   "disciplina_predominante": "Matemática",
   "serie_predominante": "1º EM",
   "fonte_geral": "",
+  "continuacao_questao_anterior": {
+    "possui_continuacao": false,
+    "texto_complementar": "",
+    "comando_final": "",
+    "alternativas": [{ "letra": "B", "texto": "..." }],
+    "proposicoes_romanas": []
+  },
   "textos_apoio_compartilhados": [{ "id_texto": "T1", "alcance_questoes": "1 a 2", "conteudo": "..." }],
   "questoes": [
     {
       "numero_original": "01",
       "questao_bbox": [ymin, xmin, ymax, xmax],
+      "questao_incompleta_fim_pagina": false,
       "id_texto_apoio_vinculado": "",
       "usa_texto_pagina_anterior": false,
       "tipo": "objetiva",
@@ -476,6 +645,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
     ? (Number(dados.coluna_divisao_x) >= 280 && Number(dados.coluna_divisao_x) <= 720 ? Number(dados.coluna_divisao_x) : 500)
     : 0;
 
+  const continuacaoAnterior = normalizarContinuacaoQuestaoAnterior(dados.continuacao_questao_anterior);
+
   const mapaTextosCompartilhados = new Map();
   let ultimoTextoDestaPagina = ultimoTextoApoio || '';
   for (const tc of (Array.isArray(dados.textos_apoio_compartilhados) ? dados.textos_apoio_compartilhados : [])) {
@@ -487,7 +658,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
     }
   }
 
-  const questoesBrutas = Array.isArray(dados.questoes) ? dados.questoes : [];
+  const questoesBrutasOrig = Array.isArray(dados.questoes) ? dados.questoes : [];
+  const questoesBrutas = ordenarQuestoesBrutasGeometricamente(questoesBrutasOrig, layoutPagina, colunaDivisaoX);
   const questoesProcessadas = [];
   let contextoPendenteBuffer = null; // { texto: string, midia: object|null }
 
@@ -504,7 +676,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
 
     const figurasRaw = Array.isArray(qRaw.figuras) ? qRaw.figuras : [];
     const validFiguras = figurasRaw.filter((f) => {
-      if (String(f?.natureza_visual || '').toLowerCase() === 'equacao_puramente_tipografica') return false;
+      if (ehFiguraNaoGraficaIgnorada(f)) return false;
       if (!Array.isArray(f?.bbox) || f.bbox.length !== 4) return false;
       const [y1, x1, y2, x2] = f.bbox.map(Number);
       return Number.isFinite(y1) && Number.isFinite(x1) && (y2 - y1) >= 14 && (x2 - x1) >= 14;
@@ -569,6 +741,12 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
         const usarScannerClean = principaisUnicas.some((f) => Boolean(f.foto_papel_cinza));
         const posicaoSugerida = principaisUnicas[0]?.posicao_sugerida || 'entre_enunciado_e_comando';
         const legendas = principaisUnicas.map((f) => String(f.legenda_original || '').trim()).filter(Boolean);
+        const legendaUnificada = legendas.join(' · ');
+        const fonteQuestaoLimpa = limparFonteFalsaCaderno(qRaw.fonte);
+        const creditoFigura =
+          fonteQuestaoLimpa && !legendaUnificada.toLowerCase().includes(fonteQuestaoLimpa.toLowerCase())
+            ? fonteQuestaoLimpa
+            : '';
 
         const procPrincipal = await processarMidiaQuestao(fileBuffer, {
           bboxes: principaisUnicas.map((f) => ({
@@ -589,8 +767,8 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
           keepOriginal: !paginaOriginalUrl,
           existingOriginalUrl: paginaOriginalUrl,
           posicao: posicaoSugerida,
-          legenda: legendas.join(' · '),
-          credito: qRaw.fonte || dados.fonte_geral || '',
+          legenda: legendaUnificada,
+          credito: creditoFigura,
         });
 
         midiaPrincipal = procPrincipal.midia;
@@ -633,7 +811,6 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       ultimoTextoApoio,
       disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
       serieFallback: serieSugerida || dados.serie_predominante || '',
-      fonteGeral: dados.fonte_geral || '',
       layoutPagina,
       paginaOriginalUrl,
       paginaNumero,
@@ -649,6 +826,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
     // Detecta chamadas órfãs de imagem/texto sem pergunta ("Observe a imagem...", "PENDENTE_PROXIMA_PAGINA")
     const numUpper = String(qRaw.numero_original || '').toUpperCase().trim();
     const semCorpoEstruturado =
+      !itemNormalizado.questao_incompleta_fim_pagina &&
       itemNormalizado.tipo !== 'discursiva' &&
       itemNormalizado.tipo !== 'lacuna' &&
       (!Array.isArray(itemNormalizado.alternativas) || itemNormalizado.alternativas.length === 0) &&
@@ -699,6 +877,7 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
     layout_pagina: layoutPagina,
     ultimo_texto_apoio: ultimoTextoDestaPagina,
     contexto_proxima_pagina: contextoPendenteBuffer,
+    continuacao_questao_anterior: continuacaoAnterior,
     total_questoes: questoesProcessadas.length,
     questoes: questoesProcessadas,
   };
@@ -730,9 +909,9 @@ Receba o texto bruto abaixo (copiado de prova/lista no Word, Docs ou PDF) e INDI
 
 REGRAS OBRIGATÓRIAS:
 1. Separe cada questão individualmente na ordem em que aparece, guardando seu número em "numero_original" (sem deixá-lo colado no início do "enunciado").
-2. Se houver textos de apoio compartilhados ("Texto para as questões 1 a 3"), cadastre em "textos_apoio_compartilhados" (id_texto="T1") e vincule "id_texto_apoio_vinculado": "T1" nas questões correspondentes.
-3. Converta expressões matemáticas, físicas ou químicas informais para LaTeX limpo entre cifrões simples $...$ (ou \`$$...$$\` para equações destacadas em linha própria). Como é texto puro, retorne "figuras": [] em todas as questões.
-4. Se o texto trouxer um bloco de "GABARITO" no final da lista ou marcação explícita (ex: "[X]", "*", "Gabarito: C"), use esse gabarito oficial com gabarito_origem="marcado_na_imagem". Caso a questão não tenha gabarito informado no texto, resolva-a com rigor científico e defina gabarito_origem="resolvido_pela_ia".
+2. Se houver textos de apoio compartilhados ("Texto para as questões 1 a 3"), cadastre em "textos_apoio_compartilhados" (id_texto="T1") e vincule "id_texto_apoio_vinculado": "T1" nas questões correspondentes. Nunca repita o mesmo parágrafo simultaneamente em "texto_apoio" e "enunciado".
+3. Converta expressões matemáticas, físicas ou químicas informais para LaTeX limpo entre cifrões simples $...$ (ou \`$$...$$\` para equações destacadas em linha própria) e preserve eventuais trechos em negrito com \`**trecho**\`. Como é texto puro, retorne "figuras": [] em todas as questões.
+4. Se o texto trouxer um bloco de "GABARITO" no final da lista ou marcação explícita (ex: "[X]", "*", "Gabarito: C"), use esse gabarito oficial com gabarito_origem="marcado_na_imagem". Caso a questão não tenha gabarito informado no texto, resolva-a com rigor científico e defina gabarito_origem="resolvido_pela_ia". Sempre que houver "alternativas", preencha OBRIGATORIAMENTE "gabarito_letra" ("A" a "E").
 5. Em ambos os casos, escreva a resolução passo a passo objetiva em "resolucao_passo_a_passo".
 6. Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
 ${disciplinaSugerida ? `- Disciplina padrão sugerida pelo professor: "${disciplinaSugerida}".` : ''}
@@ -783,7 +962,6 @@ ${trecho}
         ultimoTextoApoio: '',
         disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
         serieFallback: serieSugerida || dados.serie_predominante || '',
-        fonteGeral: dados.fonte_geral || '',
         layoutPagina: 'coluna_unica',
         paginaOriginalUrl: null,
         paginaNumero: 1,

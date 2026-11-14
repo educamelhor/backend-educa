@@ -95,7 +95,7 @@ export async function baixarImagemSegura(sourceUrl) {
  * fórmulas coladas no limite y=1000 da coluna), parando imediatamente ao encontrar corredor branco
  * largo ou linhas de parágrafo de texto do enunciado/alternativas.
  */
-function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
+export function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
   const {
     coluna = 'unica',
     divX = 0,
@@ -108,24 +108,65 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
   const [rawYmin, rawXmin, rawYmax, rawXmax] = rawBox.map(Number);
   const hasValidGutter = Number.isFinite(divX) && divX >= 280 && divX <= 720;
 
-  // Limites rígidos horizontais da coluna
-  const colMinX = hasValidGutter && (coluna === 'direita' || rawXmin >= divX - 10)
+  // Limites rígidos horizontais brutos da coluna
+  const rawColMinX = hasValidGutter && (coluna === 'direita' || rawXmin >= divX - 10)
     ? clamp(Math.round((divX / 1000) * origW), 0, origW - 20)
     : 0;
-  const colMaxX = hasValidGutter && (coluna === 'esquerda' || rawXmax <= divX + 10)
-    ? clamp(Math.round((divX / 1000) * origW), colMinX + 20, origW)
+  const rawColMaxX = hasValidGutter && (coluna === 'esquerda' || rawXmax <= divX + 10)
+    ? clamp(Math.round((divX / 1000) * origW), rawColMinX + 20, origW)
     : origW;
-  const colW = Math.max(30, colMaxX - colMinX);
-
-  let topPx = clamp(Math.round((rawYmin / 1000) * origH), 0, origH - 12);
-  let bottomPx = clamp(Math.round((rawYmax / 1000) * origH), topPx + 12, origH);
-  let leftPx = clamp(Math.round((rawXmin / 1000) * origW), colMinX, colMaxX - 12);
-  let rightPx = clamp(Math.round((rawXmax / 1000) * origW), leftPx + 12, colMaxX);
+  const rawColW = Math.max(30, rawColMaxX - rawColMinX);
 
   const isInk = (x, y) => {
     const idx = (y * origW + x) * 3;
     return fullRgb[idx] < 228 || fullRgb[idx + 1] < 228 || fullRgb[idx + 2] < 228;
   };
+
+  // Detecta e exclui molduras verticais externas da página e fios divisórios centrais de coluna
+  // (linhas verticais contínuas com tinta em > 42% da altura total da página)
+  let colMinX = rawColMinX;
+  const maxLeftBorderScan = Math.min(rawColMaxX - 24, rawColMinX + Math.round(rawColW * 0.12));
+  for (let x = rawColMinX; x <= maxLeftBorderScan; x++) {
+    let darkY = 0;
+    for (let y = 0; y < origH; y += 2) {
+      if (isInk(x, y)) darkY++;
+    }
+    if (darkY > (origH / 2) * 0.44) {
+      colMinX = Math.min(rawColMaxX - 24, x + 4);
+    }
+  }
+
+  let colMaxX = rawColMaxX;
+  const minRightBorderScan = Math.max(colMinX + 24, rawColMaxX - Math.round(rawColW * 0.12));
+  for (let x = rawColMaxX - 1; x >= minRightBorderScan; x--) {
+    let darkY = 0;
+    for (let y = 0; y < origH; y += 2) {
+      if (isInk(x, y)) darkY++;
+    }
+    if (darkY > (origH / 2) * 0.42) {
+      colMaxX = Math.max(colMinX + 24, x - 4);
+    }
+  }
+
+  const colW = Math.max(30, colMaxX - colMinX);
+
+  // Mede onde começa a margem esquerda real dos parágrafos de texto dentro da área limpa da coluna
+  let textMarginLeftX = colMinX;
+  for (let x = colMinX; x < colMinX + Math.round(colW * 0.25); x++) {
+    let inkRows = 0;
+    for (let y = 0; y < origH; y += 2) {
+      if (isInk(x, y)) inkRows++;
+    }
+    if (inkRows >= 10 && inkRows < (origH / 2) * 0.40) {
+      textMarginLeftX = x;
+      break;
+    }
+  }
+
+  let topPx = clamp(Math.round((rawYmin / 1000) * origH), 0, origH - 12);
+  let bottomPx = clamp(Math.round((rawYmax / 1000) * origH), topPx + 12, origH);
+  let leftPx = clamp(Math.round((rawXmin / 1000) * origW), colMinX, colMaxX - 12);
+  let rightPx = clamp(Math.round((rawXmax / 1000) * origW), leftPx + 12, colMaxX);
 
   // Caso especial: figura partida na quebra de coluna (rodapé esq -> topo dir)
   if (stitchBottom && rawYmax >= 870) {
@@ -135,7 +176,7 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
     topPx = 0;
   }
 
-  // 1) Resgate horizontal (rótulos laterais como "transmembrana" ou "glicocálice" dentro da mesma coluna)
+  // 1) Resgate horizontal (rótulos laterais como "transmembrana" ou borda de gravura dentro da mesma coluna)
   const maxGapX = Math.max(10, Math.round(colW * 0.026));
   const limitLeft = Math.max(colMinX, leftPx - Math.round(colW * 0.14));
   let rescuedLeft = leftPx;
@@ -173,14 +214,16 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
   }
   rightPx = Math.min(colMaxX, rescuedRight + 6);
 
-  // Helper para agrupar linhas horizontais de tinta em bandas (tolerando 1..4px de espaço intra-palavra/acento)
+  // Helper para agrupar linhas horizontais de tinta em bandas na área útil da coluna (sem molduras externas)
   const scanVerticalBands = (yFrom, yTo, step) => {
+    const xScanMin = colMinX;
+    const xScanMax = colMaxX;
     const rows = [];
     for (let y = yFrom; step > 0 ? y < yTo : y >= yTo; y += step) {
       let ink = 0;
-      let minX = colMaxX;
-      let maxX = colMinX;
-      for (let x = colMinX; x < colMaxX; x++) {
+      let minX = xScanMax;
+      let maxX = xScanMin;
+      for (let x = xScanMin; x < xScanMax; x++) {
         if (isInk(x, y)) {
           ink++;
           if (x < minX) minX = x;
@@ -216,10 +259,12 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
     return bands;
   };
 
-  // 2) Resgate inferior (ex: "R2" e "transmembrana" abaixo do limite inicial ymax)
+  const maxTextLineH = Math.max(24, Math.round(origH * 0.024));
+
+  // 2) Resgate inferior (ex: metade inferior de gravura cortada, legenda de fonte ou "R2"/"transmembrana")
   if (!(stitchBottom && rawYmax >= 870)) {
     const hardBottomPx = clamp(Math.round((maxBottomNorm / 1000) * origH), bottomPx, origH);
-    const limitBottom = Math.min(hardBottomPx, bottomPx + Math.round(origH * 0.12));
+    const limitBottom = Math.min(hardBottomPx, bottomPx + Math.round(origH * 0.24));
     if (limitBottom > bottomPx + 2) {
       const downBands = scanVerticalBands(bottomPx, limitBottom, 1);
       let curBottom = bottomPx;
@@ -228,8 +273,18 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
 
       for (const b of downBands) {
         const gap = b.startY - curBottom;
+        const bandH = Math.abs(b.endY - b.startY) + 1;
         const span = b.maxX - b.minX;
-        const startsAtLeftMargin = (b.minX - colMinX) < colW * 0.13;
+        const isContinuousGraphic = gap <= 2 || (bandH > maxTextLineH && gap <= connectedGapMax);
+
+        if (isContinuousGraphic) {
+          curBottom = b.endY + 1;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+          continue;
+        }
+
+        const startsAtLeftMargin = (b.minX - textMarginLeftX) < colW * 0.08;
         const looksLikeBodyParagraph = startsAtLeftMargin && (span > colW * 0.46 || gap >= connectedGapMax);
 
         if (looksLikeBodyParagraph) break;
@@ -250,10 +305,10 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
     }
   }
 
-  // 3) Resgate superior (ex: seta ou "R1" ou "H  O" levemente acima de ymin)
+  // 3) Resgate superior (ex: gravura/charge cujo ymin começou no meio da imagem, ou rótulo "R1" no topo)
   if (!(stitchTop && rawYmin <= 95)) {
     const hardTopPx = clamp(Math.round((minTopNorm / 1000) * origH), 0, topPx);
-    const limitTop = Math.max(hardTopPx, topPx - Math.round(origH * 0.08));
+    const limitTop = Math.max(hardTopPx, topPx - Math.round(origH * 0.34));
     if (topPx - limitTop > 2) {
       const upBands = scanVerticalBands(topPx - 1, limitTop, -1);
       let curTop = topPx;
@@ -263,8 +318,18 @@ function resgatarMargensInteligente(fullRgb, origW, origH, rawBox, opts = {}) {
       for (const b of upBands) {
         // No sentido reverso (step = -1), b.startY >= b.endY
         const gap = curTop - 1 - b.startY;
+        const bandH = Math.abs(b.startY - b.endY) + 1;
         const span = b.maxX - b.minX;
-        const startsAtLeftMargin = (b.minX - colMinX) < colW * 0.13;
+        const isContinuousGraphic = gap <= 2 || (bandH > maxTextLineH && gap <= connectedGapMax);
+
+        if (isContinuousGraphic) {
+          curTop = b.endY;
+          leftPx = Math.max(colMinX, Math.min(leftPx, b.minX - 6));
+          rightPx = Math.min(colMaxX, Math.max(rightPx, b.maxX + 6));
+          continue;
+        }
+
+        const startsAtLeftMargin = (b.minX - textMarginLeftX) < colW * 0.08;
         const looksLikeBodyParagraph = startsAtLeftMargin && (span > colW * 0.46 || gap >= connectedGapMax);
 
         if (looksLikeBodyParagraph) break;
