@@ -108,6 +108,530 @@ function nomeCorrespondeAoAluno(nomeEntrada, aluno, normFn) {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Motor de Busca Inteligente de Alunos (Secretaria / Disciplinar / Biblioteca)
+// Resolve com precisão cirúrgica:
+//   1. Turmas exatas ("6º ANO A", "6° ANO A", "6 ANO A", "6A", "1ª SÉRIE B", códigos SEEDF)
+//      sem falsos positivos entre letras de turmas ("6º ANO A" nunca vaza para "6º ANO G")
+//   2. Grupos de série/ano ("6º ANO", "6º", "1ª SÉRIE", "ANO A")
+//   3. Turnos ("VESPERTINO", "MATUTINO", "NOTURNO", "INTEGRAL" e prefixos >= 4 letras)
+//   4. Combinações Turma + Turno ("2º ANO B NOTURNO") e Nome + Turma/Turno ("ANA 6º ANO C")
+//   5. Nome de Registro, Nome Social e Nome de Exibição (termos contíguos ou não contíguos
+//      sempre dentro do MESMO campo de nome, impedindo vazamento entre colunas)
+//   6. RE (código), CPF (com ou sem pontuação), Data de Nascimento (DD/MM/AAAA ou ISO),
+//      Ano e atalhos combináveis ("inativo"/"inativos"/"000000", "aee", "nome social")
+// -----------------------------------------------------------------------------
+function escapeSqlLike(str) {
+  return String(str || "").replace(/[\\%_]/g, "\\$&");
+}
+
+function normalizarTextoFiltroAluno(str) {
+  return String(str || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/(\d)\s*[º°ª]/g, "$1")
+    .replace(/[º°ª]/g, " ")
+    .replace(/[^a-z0-9_]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+const TURNOS_CANONICOS = ["matutino", "vespertino", "noturno", "integral"];
+
+function detectarTurnoToken(tokenNorm) {
+  const t = String(tokenNorm || "").replace(/_/g, "").trim();
+  if (t.length < 4) return null;
+  for (const turno of TURNOS_CANONICOS) {
+    if (turno.startsWith(t)) return turno;
+  }
+  return null;
+}
+
+function indexarTurmasEscolaParaBusca(turmasRows = []) {
+  return (turmasRows || []).map((t) => {
+    const nomeNorm = normalizarTextoFiltroAluno(t.nome)
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const oficialNorm = normalizarTextoFiltroAluno(t.nome_oficial);
+    const oficialSpaced = oficialNorm.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+    const turnoNorm = normalizarTextoFiltroAluno(t.turno).replace(/_/g, " ").trim();
+
+    const aliasesExatos = new Set();
+    if (nomeNorm) aliasesExatos.add(nomeNorm);
+    if (oficialNorm) aliasesExatos.add(oficialNorm);
+    if (oficialSpaced) aliasesExatos.add(oficialSpaced);
+
+    // Ex.: "6 ano a", "1 serie b", "3 ano unico", "2 serie a"
+    const mPadrao = nomeNorm.match(
+      /^(\d+)\s+(?:ano|serie|etapa|segmento|bloco|periodo|termo|em|ef)(?:\s+[a-z]+)*\s+([a-z0-9]{1,4})$/
+    );
+    if (mPadrao) {
+      const [, num, sufixo] = mPadrao;
+      aliasesExatos.add(`${num} ${sufixo}`);
+      aliasesExatos.add(`${num}${sufixo}`);
+    }
+
+    // Caso a turma esteja cadastrada de forma curta no banco (ex.: "6A" ou "6º A")
+    const mCurta = nomeNorm.match(/^(\d+)\s*([a-z])$/);
+    if (mCurta) {
+      const [, num, letra] = mCurta;
+      aliasesExatos.add(`${num} ${letra}`);
+      aliasesExatos.add(`${num}${letra}`);
+      aliasesExatos.add(`${num} ano ${letra}`);
+      aliasesExatos.add(`${num} serie ${letra}`);
+    }
+
+    return {
+      id: Number(t.id),
+      nomeRaw: String(t.nome || ""),
+      nomeNorm,
+      oficialNorm,
+      turnoNorm,
+      aliasesExatos,
+    };
+  });
+}
+
+function resolverTurmasPorFrase(fraseSpaced, fraseComUnderscore, rawTeveOrdinal, turmasIdx) {
+  if (!fraseSpaced) {
+    return { matchedIds: null, especificaInexistente: false };
+  }
+
+  // 1. Match exato de turma (ex.: "6 ano a", "6a", "ef_6_v_a")
+  const exatas = turmasIdx.filter(
+    (ti) =>
+      ti.aliasesExatos.has(fraseSpaced) ||
+      (fraseComUnderscore && ti.aliasesExatos.has(fraseComUnderscore))
+  );
+  if (exatas.length > 0) {
+    return {
+      matchedIds: exatas.map((h) => h.id),
+      especificaInexistente: false,
+    };
+  }
+
+  // 2. Designação explícita de turma específica que não existe nesta escola (ex.: "6º ANO I" quando só há A..H)
+  const ehTurmaEspecifica =
+    /^\d+\s+(?:ano|serie|etapa|segmento|bloco|periodo|termo|em|ef)\s+[a-z0-9]{1,3}$/.test(fraseSpaced) ||
+    (rawTeveOrdinal && /^\d+\s*[a-z]$/.test(fraseSpaced));
+  if (ehTurmaEspecifica) {
+    return { matchedIds: [], especificaInexistente: true };
+  }
+
+  // 3. Match de grupo de turmas (ex.: "6º ANO", "1ª SÉRIE", "ANO A", "6º", "EJA")
+  const palavras = fraseSpaced.split(" ").filter(Boolean);
+  if (palavras.length >= 2) {
+    const grupo = turmasIdx.filter(
+      (ti) => ti.nomeNorm && ` ${ti.nomeNorm} `.includes(` ${fraseSpaced} `)
+    );
+    if (grupo.length > 0) {
+      return { matchedIds: grupo.map((h) => h.id), especificaInexistente: false };
+    }
+    if (/^\d+\s+(?:ano|serie|etapa|segmento|bloco|periodo|termo)$/.test(fraseSpaced)) {
+      return { matchedIds: [], especificaInexistente: true };
+    }
+  } else if (palavras.length === 1) {
+    if (/^\d+$/.test(fraseSpaced) && rawTeveOrdinal) {
+      const porSerie = turmasIdx.filter(
+        (ti) => ti.nomeNorm === fraseSpaced || ti.nomeNorm.startsWith(`${fraseSpaced} `)
+      );
+      return {
+        matchedIds: porSerie.map((h) => h.id),
+        especificaInexistente: porSerie.length === 0,
+      };
+    }
+    if (/^[a-z]{3,}$/.test(fraseSpaced)) {
+      const porPalavra = turmasIdx.filter(
+        (ti) => ti.nomeNorm && ` ${ti.nomeNorm} `.includes(` ${fraseSpaced} `)
+      );
+      if (porPalavra.length > 0) {
+        return { matchedIds: porPalavra.map((h) => h.id), especificaInexistente: false };
+      }
+    }
+  }
+
+  return { matchedIds: null, especificaInexistente: false };
+}
+
+function montarSqlNomeEstudante(rawTokens) {
+  const tokensLimpos = (rawTokens || [])
+    .map((t) => String(t || "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(Boolean);
+
+  if (tokensLimpos.length === 0) return null;
+
+  const colunas = [
+    "a.estudante",
+    "COALESCE(a.nome_registro, '')",
+    "COALESCE(a.nome_social, '')",
+  ];
+
+  const orColunas = [];
+  const sqlParams = [];
+
+  for (const col of colunas) {
+    const andTokens = [];
+    for (const tk of tokensLimpos) {
+      if (tk.length === 1) {
+        // Token de 1 caractere (inicial): exige início de palavra dentro do próprio nome
+        andTokens.push(
+          `CONCAT(' ', REPLACE(REPLACE(${col}, '.', ' '), '-', ' ')) COLLATE utf8mb4_unicode_ci LIKE ?`
+        );
+        sqlParams.push(`% ${escapeSqlLike(tk)}%`);
+      } else {
+        andTokens.push(`${col} COLLATE utf8mb4_unicode_ci LIKE ?`);
+        sqlParams.push(`%${escapeSqlLike(tk)}%`);
+      }
+    }
+    orColunas.push(`(${andTokens.join(" AND ")})`);
+  }
+
+  return {
+    sql: `(${orColunas.join(" OR ")})`,
+    params: sqlParams,
+  };
+}
+
+function montarSqlIdentificadoresAluno(rawStr, anoEfetivo) {
+  const s = String(rawStr || "").trim();
+  if (!s) return null;
+
+  const conds = [];
+  const sqlParams = [];
+
+  // RE / Código do estudante (sem espaços)
+  if (!/\s/.test(s)) {
+    conds.push("a.codigo LIKE ?");
+    sqlParams.push(`%${escapeSqlLike(s)}%`);
+  }
+
+  // CPF (com ou sem pontos e traço, sem barras de data)
+  if (/^(?=.*\d)[\d.\-\s]+$/.test(s) && !/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+    const digits = s.replace(/\D/g, "");
+    if (digits.length >= 3) {
+      conds.push("REPLACE(REPLACE(COALESCE(a.cpf, ''), '.', ''), '-', '') LIKE ?");
+      sqlParams.push(`%${digits}%`);
+    }
+  }
+
+  // Data de nascimento em formato brasileiro (DD/MM/AAAA ou DD/MM)
+  if (/^\d{1,2}\/\d{1,2}(\/\d{1,4})?$/.test(s)) {
+    conds.push("DATE_FORMAT(a.data_nascimento, '%d/%m/%Y') LIKE ?");
+    sqlParams.push(`%${escapeSqlLike(s)}%`);
+  }
+
+  // Data de nascimento em formato ISO (AAAA-MM-DD)
+  if (/^\d{4}-\d{1,2}(-\d{1,2})?$/.test(s)) {
+    conds.push("DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') LIKE ?");
+    sqlParams.push(`%${escapeSqlLike(s)}%`);
+  }
+
+  // Ano com 4 dígitos (ano de nascimento ou ano letivo exibido na tabela)
+  if (/^\d{4}$/.test(s)) {
+    const anoNum = Number(s);
+    conds.push("YEAR(a.data_nascimento) = ?");
+    sqlParams.push(anoNum);
+    conds.push(`COALESCE(m.ano_letivo, ${Number(anoEfetivo)}) = ?`);
+    sqlParams.push(anoNum);
+  }
+
+  if (conds.length === 0) return null;
+  return {
+    sql: `(${conds.join(" OR ")})`,
+    params: sqlParams,
+  };
+}
+
+export function construirCondicoesFiltroAlunos({
+  filtroRaw = "",
+  statusParam = "",
+  aeeParam = "",
+  nomeSocialParam = "",
+  anoEfetivo,
+  turmasEscola = [],
+}) {
+  const whereExtra = [];
+  const paramsExtra = [];
+
+  let texto = String(filtroRaw || "").trim();
+  let forcarInativo = false;
+  let forcarAEE = String(aeeParam || "") === "1";
+  let forcarNomeSocial = String(nomeSocialParam || "") === "1";
+
+  // 1. Extrai atalhos especiais preservando eventual complemento (ex.: "inativos 6º ANO A", "aee vespertino")
+  if (texto === "000000") {
+    forcarInativo = true;
+    texto = "";
+  } else if (texto) {
+    if (/(?:^|\s)nome\s+social(?=\s|$)/i.test(texto)) {
+      forcarNomeSocial = true;
+      texto = texto.replace(/(?:^|\s)nome\s+social(?=\s|$)/gi, " ").trim();
+    }
+    if (/(?:^|\s)inativos?(?=\s|$)/i.test(texto)) {
+      forcarInativo = true;
+      texto = texto.replace(/(?:^|\s)inativos?(?=\s|$)/gi, " ").trim();
+    }
+    if (/(?:^|\s)aee(?=\s|$)/i.test(texto)) {
+      forcarAEE = true;
+      texto = texto.replace(/(?:^|\s)aee(?=\s|$)/gi, " ").trim();
+    }
+    texto = texto.replace(/\s+/g, " ").trim();
+  }
+
+  const statusNorm = String(statusParam || "").trim().toLowerCase();
+  const statusEfetivo =
+    statusNorm === "ativo" || statusNorm === "inativo"
+      ? statusNorm
+      : forcarInativo
+      ? "inativo"
+      : "";
+
+  if (statusEfetivo) {
+    whereExtra.push("COALESCE(m.status, a.status, 'ativo') = ?");
+    paramsExtra.push(statusEfetivo);
+  }
+  if (forcarAEE) {
+    whereExtra.push("a.atendimento_diferencial = 1");
+  }
+  if (forcarNomeSocial) {
+    whereExtra.push("a.usa_nome_social = 1");
+  }
+
+  if (!texto) {
+    return { whereExtra, paramsExtra };
+  }
+
+  const turmasIdx = indexarTurmasEscolaParaBusca(turmasEscola);
+  const rawTeveOrdinal = /[º°ª]/.test(texto);
+  const qComUnderscore = normalizarTextoFiltroAluno(texto);
+  const qSpaced = qComUnderscore.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  const rawTokens = texto.split(/\s+/).filter(Boolean);
+  const normWords = qSpaced ? qSpaced.split(" ").filter(Boolean) : [];
+
+  // 2. Detecta token de turno (se presente)
+  let turnoDetectado = null;
+  const normWordsSemTurno = [];
+  const rawTokensSemTurno = [];
+
+  for (let i = 0; i < rawTokens.length; i++) {
+    const rk = rawTokens[i];
+    const nk = normalizarTextoFiltroAluno(rk).replace(/_/g, " ").trim();
+    const tMatch = !nk.includes(" ") ? detectarTurnoToken(nk) : null;
+    if (tMatch && !turnoDetectado) {
+      turnoDetectado = tMatch;
+    } else {
+      rawTokensSemTurno.push(rk);
+      if (nk) normWordsSemTurno.push(...nk.split(" ").filter(Boolean));
+    }
+  }
+
+  const fraseSemTurno = normWordsSemTurno.join(" ");
+  const rawSemTurno = rawTokensSemTurno.join(" ");
+  const rawSemTurnoComUnderscore = normalizarTextoFiltroAluno(rawSemTurno);
+
+  // 3. Verifica se o texto (sem turno) é integralmente uma Turma / Série
+  let resolucaoTurma =
+    fraseSemTurno.length > 0
+      ? resolverTurmasPorFrase(
+          fraseSemTurno,
+          rawSemTurnoComUnderscore,
+          /[º°ª]/.test(rawSemTurno),
+          turmasIdx
+        )
+      : { matchedIds: null, especificaInexistente: false };
+
+  let tokensAlunoRestantes = [];
+
+  // 4. Caso misto: Nome do Aluno + Turma (ex.: "ANA 6º ANO C" ou "6º ANO C ANA")
+  if (
+    resolucaoTurma.matchedIds === null &&
+    !resolucaoTurma.especificaInexistente &&
+    rawTokensSemTurno.length >= 2
+  ) {
+    const tentarFatia = (inicioTurma, tamTurma) => {
+      const fatiaRaw = rawTokensSemTurno
+        .slice(inicioTurma, inicioTurma + tamTurma)
+        .join(" ");
+      const restoRaw = [
+        ...rawTokensSemTurno.slice(0, inicioTurma),
+        ...rawTokensSemTurno.slice(inicioTurma + tamTurma),
+      ];
+      const fatiaNorm = normalizarTextoFiltroAluno(fatiaRaw)
+        .replace(/_/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // Em busca mista, exige dígito na fatia de turma (ex.: "6º ANO C", "6º ANO", "6A")
+      // e tokens de nome com pelo menos 2 letras para jamais confundir iniciais com turma.
+      if (!/\d/.test(fatiaNorm)) return null;
+      const restoValido =
+        restoRaw.length > 0 &&
+        restoRaw.every((tk) => {
+          const limpo = normalizarTextoFiltroAluno(tk).replace(/_/g, "");
+          return limpo.length >= 2;
+        });
+      if (!restoValido) return null;
+
+      const res = resolverTurmasPorFrase(
+        fatiaNorm,
+        normalizarTextoFiltroAluno(fatiaRaw),
+        /[º°ª]/.test(fatiaRaw),
+        turmasIdx
+      );
+      if (res.matchedIds !== null || res.especificaInexistente) {
+        return { res, restoRaw };
+      }
+      return null;
+    };
+
+    outerMix: for (
+      let tam = Math.min(4, rawTokensSemTurno.length - 1);
+      tam >= 1;
+      tam--
+    ) {
+      // Testa sufixo (ex.: "ANA SILVA 6º ANO C") e prefixo (ex.: "6º ANO C ANA SILVA")
+      for (const inicio of [rawTokensSemTurno.length - tam, 0]) {
+        const achado = tentarFatia(inicio, tam);
+        if (achado) {
+          resolucaoTurma = achado.res;
+          tokensAlunoRestantes = achado.restoRaw;
+          break outerMix;
+        }
+      }
+    }
+  } else if (
+    turnoDetectado &&
+    resolucaoTurma.matchedIds === null &&
+    !resolucaoTurma.especificaInexistente &&
+    rawTokensSemTurno.length > 0
+  ) {
+    // Ex.: "ALICE VESPERTINO"
+    tokensAlunoRestantes = rawTokensSemTurno;
+  }
+
+  // Se houve filtro de turno junto com turmas encontradas, refina também pelo turno da turma
+  let idsTurmaFinais = resolucaoTurma.matchedIds;
+  if (Array.isArray(idsTurmaFinais) && idsTurmaFinais.length > 0 && turnoDetectado) {
+    idsTurmaFinais = idsTurmaFinais.filter((id) => {
+      const info = turmasIdx.find((x) => x.id === id);
+      return info && info.turnoNorm.includes(turnoDetectado);
+    });
+  }
+
+  const fullNomeMatch = montarSqlNomeEstudante(rawTokens);
+  const fullIdMatch = montarSqlIdentificadoresAluno(texto, anoEfetivo);
+
+  // Caso A: Usuário digitou uma turma específica que não existe na escola (ex.: "6º ANO I")
+  if (resolucaoTurma.especificaInexistente) {
+    if (fullNomeMatch) {
+      whereExtra.push(fullNomeMatch.sql);
+      paramsExtra.push(...fullNomeMatch.params);
+    } else {
+      whereExtra.push("1 = 0");
+    }
+    return { whereExtra, paramsExtra };
+  }
+
+  // Monta cláusula de Turma / Turno quando aplicável
+  let sqlTurmaTurno = null;
+  const paramsTurmaTurno = [];
+
+  if (idsTurmaFinais !== null) {
+    if (idsTurmaFinais.length === 0) {
+      sqlTurmaTurno = "1 = 0";
+    } else {
+      const ph = idsTurmaFinais.map(() => "?").join(", ");
+      sqlTurmaTurno = `COALESCE(m.turma_id, a.turma_id) IN (${ph})`;
+      paramsTurmaTurno.push(...idsTurmaFinais);
+    }
+  } else if (turnoDetectado) {
+    sqlTurmaTurno = "COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?";
+    paramsTurmaTurno.push(`%${escapeSqlLike(turnoDetectado)}%`);
+  }
+
+  // Caso B: Busca pura por Turma e/ou Turno (ex.: "6º ANO A", "6A", "6º ANO", "VESPERTINO", "2º ANO B NOTURNO")
+  if (sqlTurmaTurno && tokensAlunoRestantes.length === 0) {
+    const alternativas = [sqlTurmaTurno];
+    const altParams = [...paramsTurmaTurno];
+
+    if (fullNomeMatch) {
+      alternativas.push(fullNomeMatch.sql);
+      altParams.push(...fullNomeMatch.params);
+    }
+    if (fullIdMatch && !rawTeveOrdinal) {
+      alternativas.push(fullIdMatch.sql);
+      altParams.push(...fullIdMatch.params);
+    }
+
+    whereExtra.push(`(${alternativas.join(" OR ")})`);
+    paramsExtra.push(...altParams);
+    return { whereExtra, paramsExtra };
+  }
+
+  // Caso C: Busca combinada Nome/RE + Turma/Turno (ex.: "ANA 6º ANO C", "ALICE VESPERTINO")
+  if (sqlTurmaTurno && tokensAlunoRestantes.length > 0) {
+    const subPartes = [];
+    const subParams = [];
+
+    const subNome = montarSqlNomeEstudante(tokensAlunoRestantes);
+    const subId = montarSqlIdentificadoresAluno(tokensAlunoRestantes.join(" "), anoEfetivo);
+    if (subNome) {
+      subPartes.push(subNome.sql);
+      subParams.push(...subNome.params);
+    }
+    if (subId) {
+      subPartes.push(subId.sql);
+      subParams.push(...subId.params);
+    }
+
+    const ramos = [];
+    const ramosParams = [];
+    if (subPartes.length > 0) {
+      ramos.push(`(${sqlTurmaTurno} AND (${subPartes.join(" OR ")}))`);
+      ramosParams.push(...paramsTurmaTurno, ...subParams);
+    }
+    if (fullNomeMatch) {
+      ramos.push(fullNomeMatch.sql);
+      ramosParams.push(...fullNomeMatch.params);
+    }
+
+    whereExtra.push(ramos.length > 0 ? `(${ramos.join(" OR ")})` : "1 = 0");
+    paramsExtra.push(...ramosParams);
+    return { whereExtra, paramsExtra };
+  }
+
+  // Caso D: Busca geral (Nome civil, Nome social, RE, CPF, Data de nascimento ou termo único >= 3 chars em turma/turno)
+  const ramosGerais = [];
+  const paramsGerais = [];
+
+  if (fullNomeMatch) {
+    ramosGerais.push(fullNomeMatch.sql);
+    paramsGerais.push(...fullNomeMatch.params);
+  }
+  if (fullIdMatch) {
+    ramosGerais.push(fullIdMatch.sql);
+    paramsGerais.push(...fullIdMatch.params);
+  }
+
+  // Fallback seguro para 1 único termo de >= 3 caracteres (ex.: pedaço de nome personalizado de turma)
+  if (rawTokens.length === 1 && normWords.length === 1 && normWords[0].length >= 3) {
+    const likeUnico = `%${escapeSqlLike(rawTokens[0])}%`;
+    ramosGerais.push("COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci LIKE ?");
+    paramsGerais.push(likeUnico);
+    ramosGerais.push("COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?");
+    paramsGerais.push(likeUnico);
+  }
+
+  if (ramosGerais.length > 0) {
+    whereExtra.push(`(${ramosGerais.join(" OR ")})`);
+    paramsExtra.push(...paramsGerais);
+  }
+
+  return { whereExtra, paramsExtra };
+}
+
 /* ============================================================================
  * 1) CONFIGURAÃ‡ÃƒO DE UPLOAD DE FOTOS (MULTER)
  * - Grava em /uploads/CEF04_PLAN/alunos (pasta servida pelo server.js)
@@ -174,6 +698,7 @@ router.get("/", verificarEscola, async (req, res) => {
     await ensureNomeSocialReady();
     const {
       turma_id,
+      turma: turmaNomeParam = "",
       filtro = "",
       status = "",
       aee = "",
@@ -198,7 +723,7 @@ router.get("/", verificarEscola, async (req, res) => {
     `, [Number(escola_id)]).catch(e => console.error("Auto-sync escola_id err:", e.message));
 
     // DEBUG: o que chegou do front e do token
-    console.log("🔎 /api/alunos → filtros:", { turma_id, filtro, status, ano_letivo, contexto, limit, offset });
+    console.log("🔎 /api/alunos → filtros:", { turma_id, turmaNomeParam, filtro, status, ano_letivo, contexto, limit, offset });
     console.log("🔎 /api/alunos → req.user:", req.user);
 
     const where = ["(a.escola_id = ? OR m.escola_id = ?)"];
@@ -208,60 +733,37 @@ router.get("/", verificarEscola, async (req, res) => {
     if (turma_id) {
       where.push("COALESCE(m.turma_id, a.turma_id) = ?");
       params.push(Number(turma_id));
+    } else if (String(turmaNomeParam || "").trim()) {
+      where.push("COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci = ?");
+      params.push(String(turmaNomeParam).trim());
     }
 
     const filtroTrim = String(filtro || "").trim();
-    const atalhoNomeSocial =
-      nome_social === "1" ||
-      filtroTrim
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase() === "nome social";
-
-    if (atalhoNomeSocial) {
-      where.push("a.usa_nome_social = 1");
-    } else if (filtroTrim) {
-      // Busca inteligente multi-termo e insensível a acentos:
-      // encontra tanto pelo Nome de Registro (a.nome_registro) quanto pelo Nome Social (a.nome_social / a.estudante),
-      // além de RE (a.codigo), CPF, Turma e Turno.
-      const tokens = filtroTrim.split(/\s+/).filter(Boolean);
-      for (const tk of tokens) {
-        const tkLike = `%${tk}%`;
-        const cpfDigits = tk.replace(/\D/g, "");
-        if (cpfDigits.length >= 3) {
-          where.push(`(
-            a.estudante COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(a.nome_registro, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(a.nome_social, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            a.codigo LIKE ? OR
-            REPLACE(REPLACE(COALESCE(a.cpf, ''), '.', ''), '-', '') LIKE ? OR
-            COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?
-          )`);
-          params.push(tkLike, tkLike, tkLike, tkLike, `%${cpfDigits}%`, tkLike, tkLike);
-        } else {
-          where.push(`(
-            a.estudante COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(a.nome_registro, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(a.nome_social, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            a.codigo LIKE ? OR
-            COALESCE(t.nome, '') COLLATE utf8mb4_unicode_ci LIKE ? OR
-            COALESCE(t.turno, '') COLLATE utf8mb4_unicode_ci LIKE ?
-          )`);
-          params.push(tkLike, tkLike, tkLike, tkLike, tkLike, tkLike);
-        }
-      }
+    let turmasEscola = [];
+    if (filtroTrim) {
+      const [tRows] = await pool.query(
+        `SELECT DISTINCT t.id, t.nome, t.nome_oficial, t.turno, t.serie, t.etapa
+           FROM turmas t
+          WHERE t.escola_id = ?
+             OR t.id IN (SELECT DISTINCT turma_id FROM matriculas WHERE escola_id = ? AND ano_letivo = ?)
+             OR t.id IN (SELECT DISTINCT turma_id FROM alunos WHERE escola_id = ? AND turma_id IS NOT NULL)`,
+        [Number(escola_id), Number(escola_id), anoEfetivo, Number(escola_id)]
+      );
+      turmasEscola = tRows || [];
     }
 
-    const statusNorm = String(status || "").trim().toLowerCase();
-    if (typeof status !== "undefined" && (status === "ativo" || status === "inativo")) {
-      where.push("COALESCE(m.status, a.status, 'ativo') = ?");
-      params.push(statusNorm);
-    }
+    const { whereExtra, paramsExtra } = construirCondicoesFiltroAlunos({
+      filtroRaw: filtroTrim,
+      statusParam: status,
+      aeeParam: aee,
+      nomeSocialParam: nome_social,
+      anoEfetivo,
+      turmasEscola,
+    });
 
-    // Filtro AEE: digitar "aee" no campo de busca retorna apenas alunos com atendimento diferenciado
-    if (aee === "1") {
-      where.push("a.atendimento_diferencial = 1");
+    if (whereExtra.length > 0) {
+      where.push(...whereExtra);
+      params.push(...paramsExtra);
     }
 
     const whereSql = `WHERE ${where.join(" AND ")}`;
