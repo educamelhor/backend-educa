@@ -1957,28 +1957,450 @@ async function upsertResponsavelPdf(pool, e, alunoId, escola_id) {
 
 
 /* ============================================================================
- * 11b) IMPORTAR CSV â€” Formato EDUCADF (portal oficial SEEDF)
-
-
-
-
-
-
+ * 11b) IMPORTAR CSV — Formato EDUCADF (portal oficial SEEDF)
  * POST /api/alunos/importar-csv (arquivo: file)
  *
- * Colunas esperadas (separador ;):
- *   NÂº | RE do Estudante | NOME | MATRÃCULA | DATA_DE_NASCIMENTO | CPF | SEXO |
- *   CONTATO_EMERGENCIAL | STATUS_MATRÃCULA | INÃCIO DA MATRÃCULA | FIM DA MATRÃCULA |
- *   OUTRAS INFORMAÃ‡Ã•ES | NOME FILIAÃ‡ÃƒO 1 | CPF FILIAÃ‡ÃƒO 1 | NOME FILIAÃ‡ÃƒO 2 |
- *   CPF FILIAÃ‡ÃƒO 2 | NOME RESPONSÃVEL | CPF RESPONSÃVEL | ENDEREÃ‡O | ANEES
+ * Padrão atual EDUCADF (11 colunas, separador ;):
+ *   Linha título: "... - Lista de alunos da Turma 6º Ano - A"
+ *   Cabeçalho:    Nº | RE do Estudante | NOME | DATA_DE_NASCIMENTO | CPF | SEXO |
+ *                 CONTATO_EMERGENCIAL | NOME RESPONSÁVEL | CPF RESPONSÁVEL |
+ *                 ENDEREÇO | ANEES
  *
- * Turma: extraÃ­da do nome do arquivo (ex: "7Âº ANO A.csv" â†’ "7Âº ANO A")
- *        confirmada pelo tÃ­tulo da linha 0 do CSV
- * SÃ©rie e Turno: jÃ¡ cadastrados pelo secretÃ¡rio â€” nÃ£o sobrescritos
+ * Também mantém retrocompatibilidade automática com variações do EDUCADF:
+ *   - Cabeçalho em qualquer linha inicial (0..15), com ou sem linha de título
+ *   - Separador ';', ',' ou '\t' e codificação UTF-8 (com/sem BOM) ou Windows-1252 (Excel)
+ *   - Colunas extras opcionais (STATUS_MATRÍCULA, NOME SOCIAL, FILIAÇÃO 1/2, etc.)
+ *   - Deduplicação inteligente de linhas repetidas do mesmo aluno no CSV
+ *   - Ativação automática de `atendimento_diferencial = 1` (AEE) quando `ANEES` vier preenchido
  * ========================================================================== */
+
+let _csvSchemaReadyPromise = null;
+function ensureCsvColumnsReady() {
+  if (!_csvSchemaReadyPromise) {
+    _csvSchemaReadyPromise = (async () => {
+      try {
+        const [colsAlunos] = await pool.query(`
+          SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'alunos'
+             AND COLUMN_NAME IN ('anees', 'atendimento_diferencial')
+        `);
+        const setAlunos = new Set(colsAlunos.map((c) => c.COLUMN_NAME));
+        if (!setAlunos.has("anees")) {
+          await pool.query("ALTER TABLE alunos ADD COLUMN anees TEXT DEFAULT NULL");
+        }
+        if (!setAlunos.has("atendimento_diferencial")) {
+          await pool.query(
+            "ALTER TABLE alunos ADD COLUMN atendimento_diferencial TINYINT(1) NOT NULL DEFAULT 0"
+          );
+        }
+      } catch (e) {
+        console.warn("[importar-csv] ensureCsvColumnsReady warning:", e.message);
+      }
+    })();
+  }
+  return _csvSchemaReadyPromise;
+}
+
+function decodificarBufferCsvEducaDF(buffer) {
+  let texto = "";
+  try {
+    texto = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    try {
+      texto = new TextDecoder("windows-1252").decode(buffer);
+    } catch {
+      texto = buffer.toString("latin1");
+    }
+  }
+  return texto
+    .replace(/^\uFEFF/, "")
+    .replace(/Ã‚Âº/g, "º")
+    .replace(/Ã‚Âª/g, "ª")
+    .replace(/Âº/g, "º")
+    .replace(/Âª/g, "ª");
+}
+
+function limparTextoCsv(valor) {
+  return String(valor ?? "")
+    .replace(/[\u00A0\t\r\n]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function parseLinhaCsvEducaDF(line, delimiter = ";") {
+  const campos = [];
+  let campo = "";
+  let emAspas = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (emAspas && line[i + 1] === '"') {
+        campo += '"';
+        i++;
+        continue;
+      }
+      emAspas = !emAspas;
+      continue;
+    }
+    if (c === delimiter && !emAspas) {
+      campos.push(limparTextoCsv(campo));
+      campo = "";
+      continue;
+    }
+    campo += c;
+  }
+  campos.push(limparTextoCsv(campo));
+  return campos;
+}
+
+function normalizarColunaHeaderCsv(col) {
+  return limparTextoCsv(col)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizarTurmaComparacaoCsv(s) {
+  return limparTextoCsv(s)
+    .replace(/Ã‚Âº|Âº/g, "º")
+    .replace(/Ã‚Âª|Âª/g, "ª")
+    .replace(/\(\d+\)\s*$/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[º°ª]/g, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function validarCpf11Csv(raw) {
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length !== 11 || /^(\d)\1+$/.test(d)) return null;
+  return d;
+}
+
+function extrairDataBrCsv(raw) {
+  const s = limparTextoCsv(raw);
+  const mBr = s.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (mBr) return `${mBr[1]}/${mBr[2]}/${mBr[3]}`;
+  const mIso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (mIso) return `${mIso[3]}/${mIso[2]}/${mIso[1]}`;
+  return "";
+}
+
+function extrairSexoCsv(raw) {
+  const s = limparTextoCsv(raw);
+  if (!s) return null;
+  if (/^(masculino|masc|m)$/i.test(s) || /masculino/i.test(s)) return "Masculino";
+  if (/^(feminino|fem|f)$/i.test(s) || /feminino/i.test(s)) return "Feminino";
+  return null;
+}
+
+function extrairAneesCsv(raw) {
+  const s = limparTextoCsv(raw);
+  if (!s) return { anees: null, temAnees: false };
+  const semAnees =
+    /^(-+|n[aã]o(\s+possui|\s+consta|\s+informado|\s+se\s+aplica)?|nenhum[a]?|sem(\s+necessidade.*|\s+laudo|\s+atendimento)?|n\/?a|null)$/i.test(
+      s
+    );
+  if (semAnees) return { anees: null, temAnees: false };
+  return { anees: s.slice(0, 500), temAnees: true };
+}
+
+function statusMatriculaInativaCsv(raw) {
+  const s = limparTextoCsv(raw);
+  if (!s) return false;
+  return /\b(TRANSFERID|CANCELAD|REMANEJAD|DESISTENT|EVADID|ABANDON|ENCERRAD|INATIV|BAIXAD|FALECID)/i.test(
+    s
+  );
+}
+
+export function parseEducaDfCsvBuffer(buffer, originalname = "") {
+  const raw = decodificarBufferCsvEducaDF(buffer);
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim());
+
+  if (lines.length < 2) {
+    return {
+      ok: false,
+      status: 400,
+      message: "CSV inválido ou vazio.",
+    };
+  }
+
+  const isColRE = (h) =>
+    /^(RE|RE DO ESTUDANTE|RE ESTUDANTE|RE DO ALUNO|RE ALUNO|REGISTRO ESTUDANTIL|COD|CODIGO|CODIGO DO ESTUDANTE|CODIGO ESTUDANTE|CODIGO DO ALUNO)$/.test(
+      h
+    ) || /\bRE\s+DO\s+ESTUDANTE\b|\bREGISTRO\s+ESTUDANTIL\b/.test(h);
+
+  const isColNome = (h) =>
+    /^(NOME|NOME DO ESTUDANTE|NOME ESTUDANTE|NOME DO ALUNO|NOME ALUNO|NOME COMPLETO|NOME CIVIL|NOME DE REGISTRO|ESTUDANTE|ALUNO)$/.test(
+      h
+    );
+
+  let headerLineIndex = -1;
+  let delimiter = ";";
+  let headerCols = [];
+  let headerNorm = [];
+
+  const maxScan = Math.min(lines.length - 1, 15);
+  outer: for (let idx = 0; idx <= maxScan; idx++) {
+    for (const candDelim of [";", ",", "\t"]) {
+      const cols = parseLinhaCsvEducaDF(lines[idx], candDelim);
+      if (cols.length < 2) continue;
+      const norm = cols.map(normalizarColunaHeaderCsv);
+      const rIdx = norm.findIndex(isColRE);
+      const nIdx = norm.findIndex(isColNome);
+      if (rIdx >= 0 && nIdx >= 0 && rIdx !== nIdx) {
+        headerLineIndex = idx;
+        delimiter = candDelim;
+        headerCols = cols;
+        headerNorm = norm;
+        break outer;
+      }
+    }
+  }
+
+  if (headerLineIndex < 0) {
+    return {
+      ok: false,
+      status: 400,
+      message:
+        "CSV fora do formato esperado (colunas de RE e Nome não localizadas). Verifique se é o arquivo exportado pelo portal EDUCADF.",
+    };
+  }
+
+  // Extrai nome da turma das linhas de metadados anteriores ao cabeçalho (ex.: Linha 0)
+  let turmaTituloCsv = "";
+  for (let m = 0; m < headerLineIndex; m++) {
+    const metaLimpa = limparTextoCsv(lines[m].replace(/"/g, "").replace(/;+$/g, ""));
+    const matchLista = metaLimpa.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
+    if (matchLista && matchLista[1]) {
+      turmaTituloCsv = limparTextoCsv(matchLista[1]);
+      break;
+    }
+    const matchGenerico = metaLimpa.match(/\bTurma\s*[:\-]\s*(.+?)$/i);
+    if (matchGenerico && matchGenerico[1]) {
+      turmaTituloCsv = limparTextoCsv(matchGenerico[1]);
+    }
+  }
+
+  const turmaArquivo = limparTextoCsv(
+    String(originalname || "")
+      .replace(/\.csv$/i, "")
+      .replace(/Ã‚Âº|Âº/g, "º")
+      .replace(/Ã‚Âª|Âª/g, "ª")
+      .replace(/\s*\(\d+\)\s*$/g, "")
+  );
+
+  const idxRE = headerNorm.findIndex(isColRE);
+  const idxNome = headerNorm.findIndex(isColNome);
+  const idxNomeSocial = headerNorm.findIndex((h) => /\bNOME\s+SOCIAL\b/.test(h));
+  const idxNasc = headerNorm.findIndex((h) => /DATA.*NASC|NASCIMENTO|^DT\s*NASC/.test(h));
+  const idxCPF = headerNorm.findIndex((h) => /^CPF(\s+DO\s+(ESTUDANTE|ALUNO))?$/.test(h));
+  const idxSexo = headerNorm.findIndex((h) => /^(SEXO|GENERO)$/.test(h));
+  const idxTel = headerNorm.findIndex((h) =>
+    /CONTATO.*EMERGENCIAL|TELEFONE.*RESPONS|CELULAR.*RESPONS|^CONTATO$|^TELEFONE$|^CELULAR$/.test(h)
+  );
+  const idxStatus = headerNorm.findIndex((h) =>
+    /STATUS.*MATR|^SITUACAO(\s+DA\s+MATRICULA)?$/.test(h)
+  );
+  const idxResp = headerNorm.findIndex((h) => /NOME\s+(DO\s+)?RESPONS/.test(h));
+  const idxCPFR = headerNorm.findIndex((h) => /CPF\s+(DO\s+)?RESPONS/.test(h));
+  const idxFil1Nome = headerNorm.findIndex((h) => /NOME\s+(DA\s+)?FILIACAO\s*1|^FILIACAO\s*1$/.test(h));
+  const idxFil1CPF = headerNorm.findIndex((h) => /CPF\s+(DA\s+)?FILIACAO\s*1/.test(h));
+  const idxFil2Nome = headerNorm.findIndex((h) => /NOME\s+(DA\s+)?FILIACAO\s*2|^FILIACAO\s*2$/.test(h));
+  const idxFil2CPF = headerNorm.findIndex((h) => /CPF\s+(DA\s+)?FILIACAO\s*2/.test(h));
+  const idxEnd = headerNorm.findIndex((h) => /^ENDERECO|LOGRADOURO/.test(h));
+  const idxAnees = headerNorm.findIndex((h) =>
+    /^ANEES$|\bANEES\b|\bAEE\b|NECESSIDADES?\s+ESPECIAIS|ATENDIMENTO\s+EDUCACIONAL|ATENDIMENTO\s+DIFERENCIAL/.test(
+      h
+    )
+  );
+
+  const normNomeChave = (s) =>
+    limparTextoCsv(s)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase();
+
+  const entriesByRe = new Map();
+  const reByCpfNome = new Map();
+  let totalLinhasValidas = 0;
+  let duplicadosIgnorados = 0;
+  let ignoradosPorStatus = 0;
+
+  const anexarResponsavelUnico = (lista, cand) => {
+    if (!cand || !cand.cpf) return;
+    const existente = lista.find((r) => r.cpf === cand.cpf);
+    if (existente) {
+      if (!existente.nome && cand.nome) existente.nome = cand.nome;
+      if (!existente.telefone && cand.telefone) existente.telefone = cand.telefone;
+      if (!existente.endereco && cand.endereco) existente.endereco = cand.endereco;
+    } else {
+      lista.push({ ...cand });
+    }
+  };
+
+  for (let i = headerLineIndex + 1; i < lines.length; i++) {
+    const campos = parseLinhaCsvEducaDF(lines[i], delimiter);
+    const re = String(campos[idxRE] || "").replace(/\D/g, "").trim();
+    if (!/^\d{3,12}$/.test(re)) continue;
+
+    const estudante = limparTextoCsv(campos[idxNome]);
+    if (!estudante) continue;
+
+    if (idxStatus >= 0 && statusMatriculaInativaCsv(campos[idxStatus])) {
+      ignoradosPorStatus++;
+      continue;
+    }
+
+    totalLinhasValidas++;
+
+    let nomeSocial = idxNomeSocial >= 0 ? limparTextoCsv(campos[idxNomeSocial]) : "";
+    if (
+      !nomeSocial ||
+      /^(-+|n[aã]o|nenhum[a]?|sem|null|n\/?a)$/i.test(nomeSocial) ||
+      normNomeChave(nomeSocial) === normNomeChave(estudante)
+    ) {
+      nomeSocial = null;
+    }
+
+    const dataBr = idxNasc >= 0 ? extrairDataBrCsv(campos[idxNasc]) : "";
+    const cpfAluno = idxCPF >= 0 ? validarCpf11Csv(campos[idxCPF]) : null;
+    const sexo = idxSexo >= 0 ? extrairSexoCsv(campos[idxSexo]) : null;
+
+    const telDigits = idxTel >= 0 ? String(campos[idxTel] || "").replace(/\D/g, "") : "";
+    const telefone =
+      telDigits.length >= 8 && !/^(\d)\1+$/.test(telDigits)
+        ? telDigits.substring(0, 20)
+        : null;
+
+    const enderecoRaw = idxEnd >= 0 ? limparTextoCsv(campos[idxEnd]) : "";
+    const endereco = enderecoRaw ? enderecoRaw.slice(0, 255) : null;
+
+    const { anees, temAnees } = idxAnees >= 0 ? extrairAneesCsv(campos[idxAnees]) : { anees: null, temAnees: false };
+
+    const responsaveisLinha = [];
+    const nomeRespPrincipal = idxResp >= 0 ? limparTextoCsv(campos[idxResp]).slice(0, 150) || null : null;
+    const cpfRespPrincipal = idxCPFR >= 0 ? validarCpf11Csv(campos[idxCPFR]) : null;
+
+    if (cpfRespPrincipal) {
+      anexarResponsavelUnico(responsaveisLinha, {
+        cpf: cpfRespPrincipal,
+        nome: nomeRespPrincipal,
+        telefone,
+        endereco,
+        relacionamento: "RESPONSAVEL",
+      });
+    } else {
+      // Fallback para Filiação 1 / Filiação 2 caso o CSV não traga CPF RESPONSÁVEL preenchido
+      const cpfFil1 = idxFil1CPF >= 0 ? validarCpf11Csv(campos[idxFil1CPF]) : null;
+      const nomeFil1 = idxFil1Nome >= 0 ? limparTextoCsv(campos[idxFil1Nome]).slice(0, 150) || null : null;
+      if (cpfFil1) {
+        anexarResponsavelUnico(responsaveisLinha, {
+          cpf: cpfFil1,
+          nome: nomeFil1,
+          telefone,
+          endereco,
+          relacionamento: "RESPONSAVEL",
+        });
+      }
+      const cpfFil2 = idxFil2CPF >= 0 ? validarCpf11Csv(campos[idxFil2CPF]) : null;
+      const nomeFil2 = idxFil2Nome >= 0 ? limparTextoCsv(campos[idxFil2Nome]).slice(0, 150) || null : null;
+      if (cpfFil2) {
+        anexarResponsavelUnico(responsaveisLinha, {
+          cpf: cpfFil2,
+          nome: nomeFil2,
+          telefone,
+          endereco,
+          relacionamento: "RESPONSAVEL",
+        });
+      }
+    }
+
+    const chaveCpfNome = cpfAluno ? `${cpfAluno}|${normNomeChave(estudante)}` : null;
+    const reCanonica =
+      entriesByRe.has(re)
+        ? re
+        : chaveCpfNome && reByCpfNome.has(chaveCpfNome)
+        ? reByCpfNome.get(chaveCpfNome)
+        : re;
+
+    if (entriesByRe.has(reCanonica)) {
+      duplicadosIgnorados++;
+      const existente = entriesByRe.get(reCanonica);
+      if (!existente.dataBr && dataBr) existente.dataBr = dataBr;
+      if (!existente.cpfAluno && cpfAluno) existente.cpfAluno = cpfAluno;
+      if (!existente.sexo && sexo) existente.sexo = sexo;
+      if (!existente.nomeSocial && nomeSocial) existente.nomeSocial = nomeSocial;
+      if (!existente.telefone && telefone) existente.telefone = telefone;
+      if (!existente.endereco && endereco) existente.endereco = endereco;
+      if (!existente.cpfResponsavel && responsaveisLinha[0]?.cpf) {
+        existente.cpfResponsavel = responsaveisLinha[0].cpf;
+        existente.responsavel = responsaveisLinha[0].nome || existente.responsavel;
+      }
+      if (temAnees && anees) {
+        existente.temAnees = true;
+        if (!existente.anees) {
+          existente.anees = anees;
+        } else if (!existente.anees.toUpperCase().includes(anees.toUpperCase())) {
+          existente.anees = `${existente.anees}, ${anees}`.slice(0, 500);
+        }
+      }
+      for (const r of responsaveisLinha) {
+        anexarResponsavelUnico(existente.responsaveis, r);
+      }
+      continue;
+    }
+
+    const primeiroResp = responsaveisLinha[0] || null;
+    const novoRegistro = {
+      codigo: re,
+      estudante,
+      nomeSocial,
+      dataBr,
+      cpfAluno,
+      sexo,
+      telefone,
+      responsavel: primeiroResp?.nome || nomeRespPrincipal || null,
+      cpfResponsavel: primeiroResp?.cpf || null,
+      endereco,
+      anees,
+      temAnees,
+      responsaveis: responsaveisLinha,
+    };
+
+    entriesByRe.set(re, novoRegistro);
+    if (chaveCpfNome) reByCpfNome.set(chaveCpfNome, re);
+  }
+
+  const entries = Array.from(entriesByRe.values());
+  const aeeIdentificados = entries.filter((e) => e.temAnees).length;
+
+  return {
+    ok: true,
+    delimiter,
+    headerLineIndex,
+    headerCols,
+    turmaArquivo,
+    turmaTituloCsv,
+    totalLinhasValidas,
+    duplicadosIgnorados,
+    ignoradosPorStatus,
+    aeeIdentificados,
+    entries,
+  };
+}
+
 router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: "CSV nÃ£o enviado." });
+    return res.status(400).json({ message: "CSV não enviado." });
   }
 
   try {
@@ -1988,35 +2410,35 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         ? anoLetivoPadrao()
         : String(new Date().getFullYear());
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // FASE 1: Decodifica CSV (UTF-8 + BOM aware)
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const raw = req.file.buffer.toString("utf8").replace(/^\uFEFF/, "");
-    const lines = raw.split(/\r?\n/).filter((l) => l.trim());
+    await ensureNomeSocialReady();
+    await ensureCsvColumnsReady();
 
-    if (lines.length < 3) {
-      return res.status(400).json({ message: "CSV invÃ¡lido ou vazio." });
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 1 & 3: Decodificação, detecção dinâmica de cabeçalho e deduplicação
+    // ─────────────────────────────────────────────────────────────────
+    const parsed = parseEducaDfCsvBuffer(req.file.buffer, req.file.originalname);
+    if (!parsed.ok) {
+      return res.status(parsed.status || 400).json({ message: parsed.message });
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // FASE 2: IdentificaÃ§Ã£o da turma
-    // Prioridade: turma_id explÃ­cito no body (enviado pelo frontend apÃ³s
-    // o usuÃ¡rio selecionar o turno no modal de conflito) > lookup por nome.
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const normTurma = (s) =>
-      (s || "")
-        .toUpperCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s*-\s*/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+    const {
+      turmaArquivo,
+      turmaTituloCsv,
+      totalLinhasValidas,
+      duplicadosIgnorados,
+      ignoradosPorStatus,
+      aeeIdentificados,
+      entries: pdfEntries,
+    } = parsed;
 
-    let turma;
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 2: Identificação da turma
+    // Prioridade: turma_id explícito no body > nome do arquivo > título interno do CSV
+    // ─────────────────────────────────────────────────────────────────
+    let turma = null;
     const turmaIdExplicito = req.body?.turma_id ? Number(req.body.turma_id) : null;
 
     if (turmaIdExplicito) {
-      // Frontend resolveu o conflito de turno â€” usa o id diretamente
       const [[turmaRow]] = await pool.query(
         "SELECT id, nome, serie, turno FROM turmas WHERE id = ? AND escola_id = ?",
         [turmaIdExplicito, escola_id]
@@ -2024,187 +2446,113 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       if (!turmaRow) {
         return res.status(404).json({
           code: "TURMA_NAO_ENCONTRADA",
-          message: `Turma id=${turmaIdExplicito} nÃ£o encontrada.`,
+          message: `Turma id=${turmaIdExplicito} não encontrada.`,
         });
       }
       turma = turmaRow;
-      console.log(`[importar-csv] Turma via turma_id explÃ­cito: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
+      console.log(
+        `[importar-csv] Turma via turma_id explícito: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`
+      );
     } else {
-      // Lookup por nome do arquivo
-      let turmaNome = (req.file.originalname || "")
-        .replace(/\.csv$/i, "")
-        .replace(/Ã‚Âº/g, "Âº")
-        .replace(/Ã‚Âª/g, "Âª")
-        .trim();
-
-      // Fonte B: linha 0 do CSV contÃ©m "Lista de alunos da Turma 7Âº Ano - A"
-      const linha0 = lines[0].replace(/"/g, "").trim();
-      const matchTitulo = linha0.match(/Lista\s+de\s+alunos\s+da\s+Turma\s+(.+?)$/i);
-      if (matchTitulo) {
-        const turmaTitulo = matchTitulo[1].trim();
-        if (!turmaNome) turmaNome = turmaTitulo;
-        console.log(`[importar-csv] Turma â€” arquivo: "${turmaNome}" | tÃ­tulo CSV: "${turmaTitulo}"`);
-      }
-
-      if (!turmaNome) {
-        return res.status(400).json({ message: "NÃ£o foi possÃ­vel identificar a turma pelo nome do arquivo CSV." });
-      }
-
-      const turmaNomeNorm = normTurma(turmaNome);
-      const [turmasEncontradas] = await pool.query(
-        `SELECT id, nome, serie, turno
-         FROM turmas
-         WHERE UPPER(TRIM(REPLACE(
-           REPLACE(
-             REPLACE(nome COLLATE utf8mb4_general_ci, 'Ã‚', ''),
-             'Âº', 'Âº'
-           ), ' - ', ' '
-         ))) = ? AND escola_id = ? AND ano = ?
-         ORDER BY id DESC`,
-        [turmaNomeNorm, escola_id, anoLetivoAtual]
+      const [todasTurmasEscola] = await pool.query(
+        "SELECT id, nome, serie, turno FROM turmas WHERE escola_id = ? AND ano = ? ORDER BY id DESC",
+        [escola_id, anoLetivoAtual]
       );
 
-      if (turmasEncontradas.length === 0) {
-        return res.status(404).json({
-          code: "TURMA_NAO_ENCONTRADA",
-          message: `Turma "${turmaNome}" nÃ£o encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
-          turmaNaoEncontrada: turmaNome,
+      const candidatosNome = [turmaArquivo, turmaTituloCsv].filter(Boolean);
+      if (candidatosNome.length === 0) {
+        return res.status(400).json({
+          message: "Não foi possível identificar a turma pelo nome ou cabeçalho do arquivo CSV.",
         });
       }
 
-      // Se houver mais de uma (frontend nÃ£o enviou turma_id), usa a primeira
-      // (situaÃ§Ã£o improvÃ¡vel pois o frontend detecta e pede seleÃ§Ã£o)
+      let turmasEncontradas = [];
+      for (const cand of candidatosNome) {
+        const alvoNorm = normalizarTurmaComparacaoCsv(cand);
+        if (!alvoNorm) continue;
+        const matches = todasTurmasEscola.filter(
+          (t) => normalizarTurmaComparacaoCsv(t.nome) === alvoNorm
+        );
+        if (matches.length > 0) {
+          turmasEncontradas = matches;
+          break;
+        }
+      }
+
+      if (turmasEncontradas.length === 0) {
+        const nomeReferencia = turmaTituloCsv || turmaArquivo;
+        return res.status(404).json({
+          code: "TURMA_NAO_ENCONTRADA",
+          message: `Turma "${nomeReferencia}" não encontrada no sistema para o ano letivo ${anoLetivoAtual}.`,
+          turmaNaoEncontrada: nomeReferencia,
+        });
+      }
+
       turma = turmasEncontradas[0];
-      console.log(`[importar-csv] Turma por nome: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`);
+      console.log(
+        `[importar-csv] Turma por nome/título: id=${turma.id} nome="${turma.nome}" turno="${turma.turno}"`
+      );
     }
 
     const turma_id = turma.id;
 
-    // FASE 3: Parse do CSV
-    // Linha 0 = tÃ­tulo escola | Linha 1 = cabeÃ§alho | Linhas 2+ = dados
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    function parseCSVLine(line) {
-      const campos = [];
-      let campo = "";
-      let emAspas = false;
-      for (let i = 0; i < line.length; i++) {
-        const c = line[i];
-        if (c === '"') {
-          if (emAspas && line[i + 1] === '"') {
-            campo += '"';
-            i++;
-            continue;
-          }
-          emAspas = !emAspas;
-          continue;
-        }
-        if (c === ";" && !emAspas) {
-          campos.push(campo.trim());
-          campo = "";
-          continue;
-        }
-        campo += c;
-      }
-      campos.push(campo.trim());
-      return campos;
-    }
-
-    const headerCols = parseCSVLine(lines[1]);
-    const idxRE    = headerCols.findIndex((h) => /RE\s*do\s*Estudante/i.test(h));
-    const idxNome  = headerCols.findIndex((h) => /^NOME$/i.test(h));
-    const idxNasc  = headerCols.findIndex((h) => /DATA.*NASCIMENTO/i.test(h));
-    const idxCPF   = headerCols.findIndex((h) => /^CPF$/i.test(h));
-    const idxSexo  = headerCols.findIndex((h) => /^SEXO$/i.test(h));
-    const idxTel   = headerCols.findIndex((h) => /CONTATO.*EMERGENCIAL/i.test(h));
-    const idxStatus = headerCols.findIndex((h) => /STATUS.*MATR/i.test(h));
-    const idxResp  = headerCols.findIndex((h) => /NOME\s+RESPONS/i.test(h));
-    const idxCPFR  = headerCols.findIndex((h) => /CPF\s+RESPONS/i.test(h));
-    const idxEnd   = headerCols.findIndex((h) => /ENDERE/i.test(h));
-    const idxAnees = headerCols.findIndex((h) => /ANEES|OUTRAS\s+INFORMA/i.test(h));
-
-    if (idxRE < 0 || idxNome < 0) {
-      return res.status(400).json({
-        message:
-          "CSV fora do formato esperado. Verifique se Ã© o arquivo exportado pelo portal EDUCADF.",
-      });
-    }
-
-    const pdfEntries = [];
-    for (let i = 2; i < lines.length; i++) {
-      const campos = parseCSVLine(lines[i]);
-      const re = (campos[idxRE] || "").replace(/\D/g, "").trim();
-      if (!/^\d{4,7}$/.test(re)) continue;
-
-      const estudante = (campos[idxNome] || "").trim();
-      if (!estudante) continue;
-
-      const dataBr = ((campos[idxNasc] || "").match(/(\d{2}\/\d{2}\/\d{4})/) || [])[1] || "";
-      const cpfAlunoRaw = (campos[idxCPF] || "").replace(/\D/g, "");
-      const cpfAluno = cpfAlunoRaw.length === 11 ? cpfAlunoRaw : null;
-      const sexoRaw = (campos[idxSexo] || "").trim();
-      const sexo =
-        /masculino/i.test(sexoRaw)
-          ? "Masculino"
-          : /feminino/i.test(sexoRaw)
-          ? "Feminino"
-          : null;
-      const telefone =
-        idxTel >= 0
-          ? (campos[idxTel] || "").replace(/\D/g, "").substring(0, 20) || null
-          : null;
-      const nomeResp = idxResp >= 0 ? (campos[idxResp] || "").trim() || null : null;
-      const cpfRespRaw = idxCPFR >= 0 ? (campos[idxCPFR] || "").replace(/\D/g, "") : "";
-      const cpfResponsavel = cpfRespRaw.length === 11 ? cpfRespRaw : null;
-      const endereco = idxEnd >= 0 ? (campos[idxEnd] || "").trim() || null : null;
-      const anees = idxAnees >= 0 ? (campos[idxAnees] || "").trim() || null : null;
-
-      pdfEntries.push({
-        codigo: re,
-        estudante,
-        dataBr,
-        cpfAluno,
-        sexo,
-        telefone,
-        responsavel: nomeResp,
-        cpfResponsavel,
-        endereco,
-        anees,
-      });
-    }
-
-    console.log(`[importar-csv] ExtraÃ­dos: ${pdfEntries.length} alunos | Turma: "${turma.nome}"`);
+    console.log(
+      `[importar-csv] Turma "${turma.nome}" | Linhas válidas: ${totalLinhasValidas} | Únicos: ${pdfEntries.length} | Duplicados ignorados: ${duplicadosIgnorados} | AEE: ${aeeIdentificados}`
+    );
 
     if (pdfEntries.length === 0) {
       return res.status(400).json({
-        message: "Nenhum aluno encontrado no CSV. Verifique se o arquivo estÃ¡ no formato correto.",
+        message: "Nenhum aluno ativo encontrado no CSV. Verifique se o arquivo está no formato correto.",
       });
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // FASE 4: SituaÃ§Ã£o atual no BD (duas fontes â€” matrÃ­cula e aluno direto)
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    await ensureNomeSocialReady();
-    const [atuaisMatricula] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, 'ativo' AS status
-       FROM matriculas m
-       INNER JOIN alunos a ON a.id = m.aluno_id
-       WHERE m.turma_id = ? AND m.ano_letivo = ? AND m.escola_id = ? AND m.status = 'ativo'`,
-      [turma_id, anoLetivoAtual, escola_id]
-    );
-    const [atuaisAlunos] = await pool.query(
-      `SELECT a.id, a.codigo, a.estudante, a.nome_registro, a.usa_nome_social, a.nome_social, a.status
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 4: Situação atual no BD (alinhada com GET /api/alunos)
+    // ─────────────────────────────────────────────────────────────────
+    const [atuais] = await pool.query(
+      `SELECT DISTINCT
+         a.id,
+         a.codigo,
+         a.estudante,
+         a.nome_registro,
+         a.usa_nome_social,
+         a.nome_social,
+         'ativo' AS status
        FROM alunos a
-       WHERE a.turma_id = ? AND a.escola_id = ? AND a.status = 'ativo'`,
-      [turma_id, escola_id]
+       LEFT JOIN matriculas m
+         ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ?
+       WHERE (a.escola_id = ? OR m.escola_id = ?)
+         AND COALESCE(m.turma_id, a.turma_id) = ?
+         AND COALESCE(m.status, a.status, 'ativo') = 'ativo'`,
+      [anoLetivoAtual, escola_id, escola_id, escola_id, turma_id]
     );
 
-    const atuaisIdSet = new Set();
-    const atuais = [];
-    for (const a of atuaisMatricula) {
-      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
-    }
-    for (const a of atuaisAlunos) {
-      if (!atuaisIdSet.has(a.id)) { atuaisIdSet.add(a.id); atuais.push(a); }
+    const codigosEntrada = pdfEntries.map((e) => String(e.codigo));
+    const [existentesRows] = await pool.query(
+      `SELECT
+         a.id,
+         a.escola_id,
+         a.codigo,
+         a.estudante,
+         a.nome_registro,
+         a.usa_nome_social,
+         a.nome_social,
+         a.status AS aluno_status,
+         a.turma_id AS aluno_turma_id,
+         m.id AS matricula_id,
+         m.turma_id AS matr_turma_id,
+         m.status AS matr_status
+       FROM alunos a
+       LEFT JOIN matriculas m
+         ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ?
+       WHERE a.codigo IN (?)`,
+      [anoLetivoAtual, escola_id, codigosEntrada]
+    );
+
+    const existentesMap = new Map();
+    for (const r of existentesRows) {
+      const k = String(r.codigo);
+      if (!existentesMap.has(k)) existentesMap.set(k, r);
     }
 
     const normName = (s) =>
@@ -2221,7 +2569,28 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       registrarChavesNomeAluno(atuaisNomeMap, a, normName);
     }
 
-    const entradaSet = new Set(pdfEntries.map((e) => String(e.codigo)));
+    const garantirMatriculaAtiva = async (alunoId) => {
+      if (!alunoId) return;
+      const [matr] = await pool.query(
+        "SELECT id, status, turma_id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+        [alunoId, anoLetivoAtual, escola_id]
+      );
+      if (matr.length > 0) {
+        if (matr[0].status !== "ativo" || Number(matr[0].turma_id) !== Number(turma_id)) {
+          await pool.query(
+            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
+            [turma_id, matr[0].id]
+          );
+        }
+      } else {
+        await pool.query(
+          "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+          [escola_id, alunoId, turma_id, anoLetivoAtual]
+        );
+      }
+    };
+
+    const entradaSet = new Set(codigosEntrada);
     const toInsert = [];
     const toReactivate = [];
     let jaExistiam = 0;
@@ -2230,13 +2599,14 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     for (const e of pdfEntries) {
       const cod = String(e.codigo);
       let atual = atuaisMap.get(cod);
+      const existenteGlobal = existentesMap.get(cod);
 
-      if (!atual) {
+      if (!atual && !existenteGlobal) {
         const nomeKey = normName(e.estudante);
         const porNome = atuaisNomeMap.get(nomeKey);
         if (porNome) {
           console.log(
-            `[importar-csv] Match por nome: "${e.estudante}" â€” cÃ³digo ${porNome.codigo} â†’ ${e.codigo}`
+            `[importar-csv] Match por nome: "${e.estudante}" — código ${porNome.codigo} → ${e.codigo}`
           );
           await pool.query(
             "UPDATE alunos SET codigo = ? WHERE id = ? AND escola_id = ?",
@@ -2250,15 +2620,26 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         }
       }
 
-      if (!atual) {
-        toInsert.push(e);
-      } else if (atual.status === "inativo") {
-        toReactivate.push(e);
-      } else {
-        // Aluno ativo â€” complementa campos NULL sem sobrescrever existentes
+      if (atual) {
+        // Aluno já ativo nesta turma — complementa campos e sincroniza AEE/matrícula/responsável
         jaExistiam++;
-        const sets = [];
-        const params = [];
+        const sets = [
+          "status = 'ativo'",
+          "turma_id = ?",
+          "nome_registro = ?",
+          "estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, ?)",
+        ];
+        const params = [turma_id, e.estudante, e.estudante];
+
+        if (e.nomeSocial) {
+          sets.push(
+            "usa_nome_social = IF(usa_nome_social = 1, 1, 1)",
+            "nome_social = IF(nome_social IS NULL OR TRIM(nome_social) = '', ?, nome_social)",
+            "estudante = IF(nome_social IS NULL OR TRIM(nome_social) = '', ?, estudante)"
+          );
+          params.push(e.nomeSocial, e.nomeSocial);
+        }
+
         const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
         if (dataValida) {
           sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
@@ -2272,69 +2653,106 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
           sets.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
           params.push(e.cpfAluno);
         }
-        if (e.anees) {
-          sets.push("anees = IF(anees IS NULL OR anees = '', ?, anees)");
+        if (e.temAnees && e.anees) {
+          sets.push("anees = ?", "atendimento_diferencial = 1");
           params.push(e.anees);
         }
-        if (sets.length > 0) {
-          params.push(atual.id, escola_id);
-          await pool.query(
-            `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
-            params
-          );
-        }
+
+        params.push(atual.id, escola_id);
+        await pool.query(
+          `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
+          params
+        );
+        await garantirMatriculaAtiva(atual.id);
         await upsertResponsavelCsv(pool, e, atual.id, escola_id);
+      } else if (
+        existenteGlobal &&
+        Number(existenteGlobal.escola_id) === Number(escola_id) &&
+        String(existenteGlobal.matr_status || existenteGlobal.aluno_status || "").toLowerCase() ===
+          "inativo"
+      ) {
+        toReactivate.push({ ...e, existingId: existenteGlobal.id });
+      } else {
+        toInsert.push(e);
       }
     }
 
     if (atualizadosCodigo > 0) {
-      console.log(`[importar-csv] ${atualizadosCodigo} cÃ³digo(s) atualizado(s)`);
+      console.log(`[importar-csv] ${atualizadosCodigo} código(s) atualizado(s)`);
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // FASE 5: Inserir novos alunos
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 5: Inserir novos alunos (ou remanejados para esta turma)
+    // ─────────────────────────────────────────────────────────────────
     let inseridos = 0;
     for (const e of toInsert) {
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+      const usaSocialInicial = e.nomeSocial ? 1 : 0;
+      const nomeExibicaoInicial = e.nomeSocial ? e.nomeSocial : e.estudante;
+      const aeeFlag = e.temAnees ? 1 : 0;
 
       let insertSql, baseParams;
       if (dataValida) {
         insertSql = `INSERT INTO alunos
-          (codigo, estudante, nome_registro, data_nascimento, sexo, cpf, anees, turma_id, escola_id, status)
-          VALUES (?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, 'ativo')
+          (codigo, estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, cpf, anees, atendimento_diferencial, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
             nome_registro = VALUES(nome_registro),
+            usa_nome_social = IF(usa_nome_social = 1, 1, VALUES(usa_nome_social)),
+            nome_social = IF(nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(nome_social)),
             estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             data_nascimento = COALESCE(data_nascimento, VALUES(data_nascimento)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
-            anees = IF(anees IS NULL OR anees = '', VALUES(anees), anees),
+            anees = IF(VALUES(anees) IS NOT NULL AND VALUES(anees) <> '', VALUES(anees), anees),
+            atendimento_diferencial = IF(atendimento_diferencial = 1, 1, VALUES(atendimento_diferencial)),
             turma_id = VALUES(turma_id),
+            escola_id = VALUES(escola_id),
             status = 'ativo'`;
         baseParams = [
-          e.codigo, e.estudante, e.estudante, e.dataBr,
-          e.sexo || null, e.cpfAluno || null, e.anees || null,
-          turma_id, escola_id,
+          e.codigo,
+          nomeExibicaoInicial,
+          e.estudante,
+          usaSocialInicial,
+          e.nomeSocial || null,
+          e.dataBr,
+          e.sexo || null,
+          e.cpfAluno || null,
+          e.anees || null,
+          aeeFlag,
+          turma_id,
+          escola_id,
         ];
       } else {
         insertSql = `INSERT INTO alunos
-          (codigo, estudante, nome_registro, sexo, cpf, anees, turma_id, escola_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
+          (codigo, estudante, nome_registro, usa_nome_social, nome_social, sexo, cpf, anees, atendimento_diferencial, turma_id, escola_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
           ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
             nome_registro = VALUES(nome_registro),
+            usa_nome_social = IF(usa_nome_social = 1, 1, VALUES(usa_nome_social)),
+            nome_social = IF(nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(nome_social)),
             estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, VALUES(estudante)),
             sexo  = IF(sexo  IS NULL OR sexo  = '', VALUES(sexo),  sexo),
             cpf   = IF(cpf   IS NULL OR cpf   = '', VALUES(cpf),   cpf),
-            anees = IF(anees IS NULL OR anees = '', VALUES(anees), anees),
+            anees = IF(VALUES(anees) IS NOT NULL AND VALUES(anees) <> '', VALUES(anees), anees),
+            atendimento_diferencial = IF(atendimento_diferencial = 1, 1, VALUES(atendimento_diferencial)),
             turma_id = VALUES(turma_id),
+            escola_id = VALUES(escola_id),
             status = 'ativo'`;
         baseParams = [
-          e.codigo, e.estudante, e.estudante,
-          e.sexo || null, e.cpfAluno || null, e.anees || null,
-          turma_id, escola_id,
+          e.codigo,
+          nomeExibicaoInicial,
+          e.estudante,
+          usaSocialInicial,
+          e.nomeSocial || null,
+          e.sexo || null,
+          e.cpfAluno || null,
+          e.anees || null,
+          aeeFlag,
+          turma_id,
+          escola_id,
         ];
       }
 
@@ -2342,75 +2760,60 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       const alunoId = result.insertId;
 
       if (alunoId) {
-        const [matr] = await pool.query(
-          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
-          [alunoId, anoLetivoAtual, escola_id]
-        );
-        if (matr.length > 0) {
-          await pool.query(
-            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
-            [turma_id, matr[0].id]
-          );
-        } else {
-          await pool.query(
-            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
-            [escola_id, alunoId, turma_id, anoLetivoAtual]
-          );
-        }
+        await garantirMatriculaAtiva(alunoId);
         await upsertResponsavelCsv(pool, e, alunoId, escola_id);
       }
       inseridos++;
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────
     // FASE 6: Reativar inativos
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────
     let reativados = 0;
     for (const e of toReactivate) {
-      const atualObj = atuaisMap.get(String(e.codigo));
       const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
 
-      const sets = ["status = 'ativo'", "turma_id = ?"];
-      const params = [turma_id];
+      const sets = [
+        "status = 'ativo'",
+        "turma_id = ?",
+        "nome_registro = ?",
+        "estudante = IF(usa_nome_social = 1 AND nome_social IS NOT NULL AND TRIM(nome_social) <> '', nome_social, ?)",
+      ];
+      const params = [turma_id, e.estudante, e.estudante];
+
       if (dataValida) {
         sets.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
         params.push(e.dataBr);
       }
-      if (e.sexo)    { sets.push("sexo  = IF(sexo  IS NULL OR sexo  = '', ?, sexo)");  params.push(e.sexo); }
-      if (e.cpfAluno){ sets.push("cpf   = IF(cpf   IS NULL OR cpf   = '', ?, cpf)");   params.push(e.cpfAluno); }
-      if (e.anees)   { sets.push("anees = IF(anees IS NULL OR anees = '', ?, anees)"); params.push(e.anees); }
-      params.push(e.codigo, escola_id);
+      if (e.sexo) {
+        sets.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+        params.push(e.sexo);
+      }
+      if (e.cpfAluno) {
+        sets.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
+        params.push(e.cpfAluno);
+      }
+      if (e.temAnees && e.anees) {
+        sets.push("anees = ?", "atendimento_diferencial = 1");
+        params.push(e.anees);
+      }
+      params.push(e.existingId, escola_id);
 
       await pool.query(
-        `UPDATE alunos SET ${sets.join(", ")} WHERE codigo = ? AND escola_id = ?`,
+        `UPDATE alunos SET ${sets.join(", ")} WHERE id = ? AND escola_id = ?`,
         params
       );
 
-      const alunoId = atualObj?.id;
-      if (alunoId) {
-        const [matr] = await pool.query(
-          "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
-          [alunoId, anoLetivoAtual, escola_id]
-        );
-        if (matr.length > 0) {
-          await pool.query(
-            "UPDATE matriculas SET status = 'ativo', turma_id = ? WHERE id = ?",
-            [turma_id, matr[0].id]
-          );
-        } else {
-          await pool.query(
-            "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
-            [escola_id, alunoId, turma_id, anoLetivoAtual]
-          );
-        }
-        await upsertResponsavelCsv(pool, e, alunoId, escola_id);
+      if (e.existingId) {
+        await garantirMatriculaAtiva(e.existingId);
+        await upsertResponsavelCsv(pool, e, e.existingId, escola_id);
       }
       reativados++;
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // FASE 7: Detectar ausentes (alunos no BD mas nÃ£o no CSV)
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────
+    // FASE 7: Detectar ausentes (alunos ativos na turma no BD mas não no CSV)
+    // ─────────────────────────────────────────────────────────────────
     const pendentesInativacao = [];
     for (const atual of atuais) {
       if (atual.status !== "ativo") continue;
@@ -2428,16 +2831,20 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
 
     if (pendentesInativacao.length > 0) {
       console.log(
-        `[importar-csv] âš  ${pendentesInativacao.length} aluno(s) ausente(s) â€” pendentes de confirmaÃ§Ã£o`
+        `[importar-csv] ⚠ ${pendentesInativacao.length} aluno(s) ausente(s) — pendentes de confirmação`
       );
     }
 
     console.log(
-      `[importar-csv] localizados:${pdfEntries.length} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} pendentes:${pendentesInativacao.length}`
+      `[importar-csv] localizados:${pdfEntries.length} totalLinhas:${totalLinhasValidas} duplicados:${duplicadosIgnorados} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} aee:${aeeIdentificados} pendentes:${pendentesInativacao.length}`
     );
 
     return res.json({
       localizados: pdfEntries.length,
+      totalLinhasCsv: totalLinhasValidas,
+      duplicadosIgnorados,
+      ignoradosPorStatus,
+      aeeIdentificados,
       inseridos,
       reativados,
       jaExistiam,
@@ -2452,63 +2859,93 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Helper: Upsert de responsÃ¡vel com endereÃ§o e telefone (via CSV)
-// Regra de proteÃ§Ã£o: nÃ£o sobrescreve dados jÃ¡ preenchidos no BD
-// CorreÃ§Ãµes:
-//   1. Salva em telefone_celular (campo "Telefone Principal" no modal)
-//   2. Ignora telefones fictÃ­cios (ex: 99999999999 â€” todos dÃ­gitos iguais)
-//   3. Usa SELECT como fallback quando insertId=0 (ON DUPLICATE KEY)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Upsert de responsável(is) com endereço e telefone (via CSV)
+// Regras de proteção:
+//   1. Suporta 1 ou múltiplos responsáveis deduplicados por CPF de 11 dígitos
+//   2. Garante `nome` NOT NULL (evita falha quando CPF vier sem nome) e substitui
+//      marcadores provisórios ('PENDENTE', 'RESPONSAVEL') pelo nome oficial do EDUCADF
+//   3. Salva em telefone_celular ignorando sequências fictícias (ex.: 99999999999)
+//   4. Preserva dados já cadastrados no BD sem sobrescrevê-los
+// ─────────────────────────────────────────────────────────────────────────────
 async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
-  if (!e.cpfResponsavel) return; // CPF Ã© chave natural obrigatÃ³ria
-  const nomeResp = (e.responsavel || "").trim();
+  const listaResponsaveis =
+    Array.isArray(e.responsaveis) && e.responsaveis.length > 0
+      ? e.responsaveis
+      : e.cpfResponsavel
+      ? [
+          {
+            cpf: e.cpfResponsavel,
+            nome: e.responsavel,
+            telefone: e.telefone,
+            endereco: e.endereco,
+            relacionamento: "RESPONSAVEL",
+          },
+        ]
+      : [];
 
-  // Descarta telefones fictÃ­cios: todos dÃ­gitos iguais (ex: 99999999999, 00000000000)
-  // ou com menos de 8 dÃ­gitos apÃ³s limpar nÃ£o-numÃ©ricos
-  const telDigits = (e.telefone || "").replace(/\D/g, "");
-  const telValido =
-    telDigits.length >= 8 && !/^(\d)\1+$/.test(telDigits)
-      ? telDigits.substring(0, 20)
-      : null;
+  if (listaResponsaveis.length === 0) return;
 
-  try {
-    const [respResult] = await pool.query(
-      `INSERT INTO responsaveis (nome, cpf, telefone_celular, endereco)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         id               = LAST_INSERT_ID(id),
-         nome             = IF(nome             IS NULL OR nome             = '', VALUES(nome),             nome),
-         telefone_celular = IF(telefone_celular IS NULL OR telefone_celular = '', VALUES(telefone_celular), telefone_celular),
-         endereco         = IF(endereco         IS NULL OR endereco         = '', VALUES(endereco),         endereco)`,
-      [nomeResp || null, e.cpfResponsavel, telValido, e.endereco || null]
-    );
+  for (const r of listaResponsaveis) {
+    const cpfLimpo = validarCpf11Csv(r.cpf);
+    if (!cpfLimpo) continue;
 
-    // ON DUPLICATE KEY retorna insertId=0 quando o registro jÃ¡ existe.
-    // Nesse caso fazemos SELECT para obter o id real.
-    let responsavelId = respResult.insertId;
-    if (!responsavelId) {
-      const [[existing]] = await pool.query(
-        "SELECT id FROM responsaveis WHERE cpf = ?",
-        [e.cpfResponsavel]
+    const nomeReal = limparTextoCsv(r.nome || "").slice(0, 150);
+    const nomeInsert = nomeReal || "RESPONSÁVEL";
+
+    const telDigits = String(r.telefone ?? e.telefone ?? "").replace(/\D/g, "");
+    const telValido =
+      telDigits.length >= 8 && !/^(\d)\1+$/.test(telDigits)
+        ? telDigits.substring(0, 20)
+        : null;
+
+    const enderecoValido = limparTextoCsv(r.endereco ?? e.endereco ?? "").slice(0, 255) || null;
+    const relacionamento = r.relacionamento || "RESPONSAVEL";
+
+    try {
+      const [respResult] = await pool.query(
+        `INSERT INTO responsaveis (nome, cpf, telefone_celular, endereco)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           id               = LAST_INSERT_ID(id),
+           nome             = IF(
+                                (nome IS NULL OR TRIM(nome) = '' OR UPPER(TRIM(nome)) IN ('PENDENTE', 'RESPONSAVEL', 'RESPONSÁVEL'))
+                                AND ? <> '',
+                                ?,
+                                nome
+                              ),
+           telefone_celular = IF(telefone_celular IS NULL OR telefone_celular = '', VALUES(telefone_celular), telefone_celular),
+           endereco         = IF(endereco         IS NULL OR endereco         = '', VALUES(endereco),         endereco)`,
+        [nomeInsert, cpfLimpo, telValido, enderecoValido, nomeReal, nomeReal]
       );
-      responsavelId = existing?.id || null;
-    }
 
-    if (responsavelId && alunoId) {
-      const [[vinculo]] = await pool.query(
-        "SELECT id FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
-        [responsavelId, alunoId, escola_id]
-      );
-      if (!vinculo) {
-        await pool.query(
-          "INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo) VALUES (?, ?, ?, 'RESPONSAVEL', 1)",
-          [escola_id, responsavelId, alunoId]
+      let responsavelId = respResult.insertId;
+      if (!responsavelId) {
+        const [[existing]] = await pool.query(
+          "SELECT id FROM responsaveis WHERE cpf = ?",
+          [cpfLimpo]
         );
+        responsavelId = existing?.id || null;
       }
+
+      if (responsavelId && alunoId) {
+        const [[vinculo]] = await pool.query(
+          "SELECT id, ativo FROM responsaveis_alunos WHERE responsavel_id = ? AND aluno_id = ? AND escola_id = ?",
+          [responsavelId, alunoId, escola_id]
+        );
+        if (!vinculo) {
+          await pool.query(
+            "INSERT INTO responsaveis_alunos (escola_id, responsavel_id, aluno_id, relacionamento, ativo) VALUES (?, ?, ?, ?, 1)",
+            [escola_id, responsavelId, alunoId, relacionamento]
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[importar-csv] Falha ao vincular responsável (${cpfLimpo}) do aluno ${e.codigo}:`,
+        err.message
+      );
     }
-  } catch (err) {
-    console.warn(`[importar-csv] Falha ao vincular responsÃ¡vel do aluno ${e.codigo}:`, err.message);
   }
 }
 
