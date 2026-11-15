@@ -62,18 +62,24 @@ function ensureNomeSocialReady() {
             FROM INFORMATION_SCHEMA.COLUMNS
            WHERE TABLE_SCHEMA = DATABASE()
              AND TABLE_NAME = 'alunos'
-             AND COLUMN_NAME IN ('nome_registro', 'usa_nome_social', 'nome_social')
+             AND COLUMN_NAME IN ('nome_registro', 'usa_nome_social', 'nome_social', 'atendimento_diferencial', 'anees')
         `);
         const exist = new Set(cols.map((c) => c.COLUMN_NAME));
         const alters = [];
+        if (!exist.has("atendimento_diferencial")) {
+          alters.push(`ADD COLUMN atendimento_diferencial TINYINT(1) NOT NULL DEFAULT 0`);
+        }
+        if (!exist.has("anees")) {
+          alters.push(`ADD COLUMN anees TEXT DEFAULT NULL`);
+        }
         if (!exist.has("nome_registro")) {
           alters.push(`ADD COLUMN nome_registro VARCHAR(255) DEFAULT NULL AFTER estudante`);
         }
         if (!exist.has("usa_nome_social")) {
-          alters.push(`ADD COLUMN usa_nome_social TINYINT(1) NOT NULL DEFAULT 0 AFTER atendimento_diferencial`);
+          alters.push(`ADD COLUMN usa_nome_social TINYINT(1) NOT NULL DEFAULT 0`);
         }
         if (!exist.has("nome_social")) {
-          alters.push(`ADD COLUMN nome_social VARCHAR(255) DEFAULT NULL AFTER usa_nome_social`);
+          alters.push(`ADD COLUMN nome_social VARCHAR(255) DEFAULT NULL`);
         }
         if (alters.length > 0) {
           await pool.query(`ALTER TABLE alunos ${alters.join(", ")}`);
@@ -795,6 +801,7 @@ router.get("/", verificarEscola, async (req, res) => {
              a.sexo,
              a.cpf,
              a.atendimento_diferencial,
+             a.anees,
              COALESCE(m.status, a.status, 'ativo') AS status,
              a.foto,
 
@@ -891,6 +898,7 @@ router.post("/", verificarEscola, async (req, res) => {
       turma_id,
       cpf,
       atendimento_diferencial,
+      anees,
     } = req.body;
     const { escola_id } = req.user;
 
@@ -908,6 +916,9 @@ router.post("/", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Informe o Nome Social do estudante." });
     }
     const estudanteExibicao = usaSocialFlag ? nomeSocialLimpo : nomeRegistroLimpo;
+    const aeeAtivoFlag = atendimento_diferencial ? 1 : 0;
+    const aneesLimpo =
+      aeeAtivoFlag && anees ? String(anees).trim().slice(0, 500) || null : null;
 
     const anoLetivoAtual = anoLetivoPadrao();
 
@@ -943,6 +954,7 @@ router.post("/", verificarEscola, async (req, res) => {
                 turma_id = ?,
                 cpf = ?,
                 atendimento_diferencial = ?,
+                anees = ?,
                 status = 'ativo'
           WHERE id = ?`,
         [
@@ -954,7 +966,8 @@ router.post("/", verificarEscola, async (req, res) => {
           sexo || null,
           turma_id || null,
           cpf || null,
-          atendimento_diferencial ? 1 : 0,
+          aeeAtivoFlag,
+          aneesLimpo,
           alunoId,
         ]
       );
@@ -963,8 +976,8 @@ router.post("/", verificarEscola, async (req, res) => {
       const [result] = await pool.query(
         `
         INSERT INTO alunos
-          (codigo, estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial, escola_id, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
+          (codigo, estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial, anees, escola_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
         `,
         [
           codigo,
@@ -976,7 +989,8 @@ router.post("/", verificarEscola, async (req, res) => {
           sexo || null,
           turma_id || null,
           cpf || null,
-          atendimento_diferencial ? 1 : 0,
+          aeeAtivoFlag,
+          aneesLimpo,
           escola_id,
         ]
       );
@@ -1021,6 +1035,7 @@ router.put("/:id", verificarEscola, async (req, res) => {
       status,
       cpf,
       atendimento_diferencial,
+      anees,
     } = req.body;
 
     const campos = [];
@@ -1096,6 +1111,12 @@ router.put("/:id", verificarEscola, async (req, res) => {
     if (typeof turma_id !== "undefined") { campos.push("turma_id = ?"); valores.push(turma_id || null); }
     if (typeof cpf !== "undefined") { campos.push("cpf = ?"); valores.push(cpf || null); }
     if (typeof atendimento_diferencial !== "undefined") { campos.push("atendimento_diferencial = ?"); valores.push(atendimento_diferencial ? 1 : 0); }
+    if (typeof anees !== "undefined") {
+      const desmarcouAee = typeof atendimento_diferencial !== "undefined" && !atendimento_diferencial;
+      const aneesAtualizado = desmarcouAee ? null : (anees ? String(anees).trim().slice(0, 500) || null : null);
+      campos.push("anees = ?");
+      valores.push(aneesAtualizado);
+    }
     if (typeof status !== "undefined") { campos.push("status = ?"); valores.push(status); }
 
     if (campos.length === 0) {
@@ -1192,7 +1213,7 @@ router.get("/por-codigo/:codigo", verificarEscola, async (req, res) => {
               COALESCE(NULLIF(TRIM(a.nome_registro), ''), a.estudante) AS nome_registro,
               a.usa_nome_social, a.nome_social,
               DATE_FORMAT(a.data_nascimento, '%Y-%m-%d') AS data_nascimento,
-              a.sexo, a.foto, COALESCE(m.status, a.status, 'ativo') AS status,
+              a.sexo, a.atendimento_diferencial, a.anees, a.foto, COALESCE(m.status, a.status, 'ativo') AS status,
               t.nome AS turma, t.turno
        FROM alunos a
        LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = ? AND m.ano_letivo = ?
@@ -1284,6 +1305,7 @@ router.get("/:id", async (req, res) => {
         a.sexo,
         a.cpf,
         a.atendimento_diferencial,
+        a.anees,
         a.foto,
         a.status,
         t.id AS turma_id,
@@ -2102,15 +2124,175 @@ function extrairSexoCsv(raw) {
   return null;
 }
 
+export function abreviarAneesEducaDF(raw) {
+  const textoLimpo = limparTextoCsv(raw);
+  if (!textoLimpo) {
+    return { siglas: [], textoSiglas: "", itens: [] };
+  }
+
+  const REGRAS_ANEES = [
+    { sigla: "SC", descricao: "Surdocegueira", regex: /SURDOCEGUEIR|\bSC\b/ },
+    {
+      sigla: "TEA",
+      descricao: "Transtorno do Espectro Autista",
+      regex:
+        /\bTEA\b|ESPECTRO AUTISTA|\bAUTISM|\bASPERGER\b|SINDROME DE RETT|DESINTEGRATIVO DA INFANCIA/,
+    },
+    {
+      sigla: "TGD",
+      descricao: "Transtorno Global do Desenvolvimento",
+      regex: /\bTGD\b|GLOBAL DO DESENVOLVIMENTO/,
+    },
+    {
+      sigla: "DF",
+      descricao: "Deficiência Física",
+      regex:
+        /\bDF\b|DEFICIENCIA FISICA|DEFICIENCIA MOTORA|PARALISIA CEREBRAL|OSTOMIA|MOBILIDADE REDUZIDA/,
+    },
+    {
+      sigla: "DI",
+      descricao: "Deficiência Intelectual",
+      regex: /\bDI\b|DEFICIENCIA INTELECTUAL|DEFICIENCIA MENTAL|ATRASO COGNITIVO/,
+    },
+    {
+      sigla: "DA",
+      descricao: "Deficiência Auditiva",
+      regex: /\bDA\b|DEFICIENCIA AUDITIVA|HIPOACUSIA/,
+    },
+    {
+      sigla: "SURDEZ",
+      descricao: "Surdez",
+      regex: /\bSURDEZ\b/,
+      skipIfSurdocegueira: true,
+    },
+    {
+      sigla: "BV",
+      descricao: "Baixa Visão",
+      regex: /\bBV\b|BAIXA VISAO|VISAO SUBNORMAL/,
+    },
+    {
+      sigla: "VM",
+      descricao: "Visão Monocular",
+      regex: /\bVM\b|VISAO MONOCULAR/,
+    },
+    {
+      sigla: "DV",
+      descricao: "Deficiência Visual",
+      regex: /\bDV\b|DEFICIENCIA VISUAL|\bCEGUEIRA\b/,
+      skipIfSurdocegueira: true,
+    },
+    {
+      sigla: "DMU",
+      descricao: "Deficiência Múltipla",
+      regex: /\bDMU\b|DEFICIENCIAS? MULTIPLAS?/,
+    },
+    {
+      sigla: "AH/SD",
+      descricao: "Altas Habilidades / Superdotação",
+      regex: /\bAH\s*\/?\s*SD\b|ALTAS HABILIDADES|SUPERDOTAC/,
+    },
+    {
+      sigla: "SD",
+      descricao: "Síndrome de Down",
+      regex: /\bSD\b|SINDROME DE DOWN|TRISSOMIA DO 21/,
+      stripAhSdFirst: true,
+    },
+    {
+      sigla: "TDAH",
+      descricao: "Transtorno do Déficit de Atenção e Hiperatividade",
+      regex: /\bTDAH\b|\bTDA\b|DEFICIT DE ATENCAO|HIPERATIVIDADE/,
+    },
+    {
+      sigla: "TOD",
+      descricao: "Transtorno Opositivo Desafiador",
+      regex: /\bTOD\b|OPOSITOR DESAFIADOR|OPOSITIVO DESAFIADOR|DESAFIADOR OPOSITIVO/,
+    },
+    {
+      sigla: "TPAC",
+      descricao: "Transtorno do Processamento Auditivo Central",
+      regex: /\bTPAC\b|\bDPAC\b|PROCESSAMENTO AUDITIVO CENTRAL/,
+    },
+    {
+      sigla: "TDL",
+      descricao: "Transtorno do Desenvolvimento da Linguagem",
+      regex: /\bTDL\b|\bDEL\b|DESENVOLVIMENTO DA LINGUAGEM|ESPECIFICO DE LINGUAGEM|TRANSTORNO DE LINGUAGEM/,
+    },
+    { sigla: "DISLEXIA", descricao: "Dislexia", regex: /\bDISLEXIA\b/ },
+    { sigla: "DISCALCULIA", descricao: "Discalculia", regex: /\bDISCALCULIA\b/ },
+    { sigla: "DISGRAFIA", descricao: "Disgrafia", regex: /\bDISGRAFIA\b/ },
+    { sigla: "DISORTOGRAFIA", descricao: "Disortografia", regex: /\bDISORTOGRAFIA\b/ },
+    { sigla: "DISLALIA", descricao: "Dislalia", regex: /\bDISLALIA\b/ },
+    {
+      sigla: "TFE",
+      descricao: "Transtorno Funcional Específico",
+      regex: /\bTFE\b|FUNCIONAL ESPECIFICO|ESPECIFICO DE APRENDIZAGEM/,
+    },
+  ];
+
+  const segmentos = textoLimpo
+    .split(/[,;|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const vistos = new Set();
+  const itens = [];
+
+  for (const seg of segmentos) {
+    const segNorm = seg
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!segNorm) continue;
+
+    const temSurdocegueira = /SURDOCEGUEIR/.test(segNorm);
+    const segSemAhSd = segNorm.replace(/\bAH\s*\/?\s*SD\b/g, " ");
+    let bateuRegra = false;
+
+    for (const r of REGRAS_ANEES) {
+      if (r.skipIfSurdocegueira && temSurdocegueira) continue;
+      const alvo = r.stripAhSdFirst ? segSemAhSd : segNorm;
+      if (r.regex.test(alvo)) {
+        bateuRegra = true;
+        if (!vistos.has(r.sigla)) {
+          vistos.add(r.sigla);
+          itens.push({ sigla: r.sigla, descricao: r.descricao });
+        }
+      }
+    }
+
+    if (!bateuRegra) {
+      const fallback = seg
+        .replace(/\s*[-–]?\s*(BAIXAS?|M[EÉ]DIAS?|ALTAS?)\s+NECESSIDADES?\s+ESPECIAIS?/gi, "")
+        .trim();
+      const siglaFallback = (fallback || seg).toUpperCase();
+      if (siglaFallback && !vistos.has(siglaFallback)) {
+        vistos.add(siglaFallback);
+        itens.push({ sigla: siglaFallback, descricao: seg });
+      }
+    }
+  }
+
+  const siglas = itens.map((i) => i.sigla);
+  return {
+    siglas,
+    textoSiglas: siglas.join(", "),
+    itens,
+  };
+}
+
 function extrairAneesCsv(raw) {
   const s = limparTextoCsv(raw);
-  if (!s) return { anees: null, temAnees: false };
+  if (!s) return { anees: null, aneesSigla: null, temAnees: false };
   const semAnees =
     /^(-+|n[aã]o(\s+possui|\s+consta|\s+informado|\s+se\s+aplica)?|nenhum[a]?|sem(\s+necessidade.*|\s+laudo|\s+atendimento)?|n\/?a|null)$/i.test(
       s
     );
-  if (semAnees) return { anees: null, temAnees: false };
-  return { anees: s.slice(0, 500), temAnees: true };
+  if (semAnees) return { anees: null, aneesSigla: null, temAnees: false };
+  const anees = s.slice(0, 500);
+  const aneesSigla = abreviarAneesEducaDF(anees).textoSiglas || anees;
+  return { anees, aneesSigla, temAnees: true };
 }
 
 function statusMatriculaInativaCsv(raw) {
@@ -2284,7 +2466,10 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
     const enderecoRaw = idxEnd >= 0 ? limparTextoCsv(campos[idxEnd]) : "";
     const endereco = enderecoRaw ? enderecoRaw.slice(0, 255) : null;
 
-    const { anees, temAnees } = idxAnees >= 0 ? extrairAneesCsv(campos[idxAnees]) : { anees: null, temAnees: false };
+    const { anees, aneesSigla, temAnees } =
+      idxAnees >= 0
+        ? extrairAneesCsv(campos[idxAnees])
+        : { anees: null, aneesSigla: null, temAnees: false };
 
     const responsaveisLinha = [];
     const nomeRespPrincipal = idxResp >= 0 ? limparTextoCsv(campos[idxResp]).slice(0, 150) || null : null;
@@ -2352,6 +2537,7 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
         } else if (!existente.anees.toUpperCase().includes(anees.toUpperCase())) {
           existente.anees = `${existente.anees}, ${anees}`.slice(0, 500);
         }
+        existente.aneesSigla = abreviarAneesEducaDF(existente.anees).textoSiglas || existente.anees;
       }
       for (const r of responsaveisLinha) {
         anexarResponsavelUnico(existente.responsaveis, r);
@@ -2372,6 +2558,7 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
       cpfResponsavel: primeiroResp?.cpf || null,
       endereco,
       anees,
+      aneesSigla,
       temAnees,
       responsaveis: responsaveisLinha,
     };
