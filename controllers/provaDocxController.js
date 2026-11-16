@@ -11,6 +11,7 @@
 import zlib from 'zlib';
 import sharp from 'sharp';
 import pool from '../db.js';
+import { ensureProvasSchema, resolveProvaTemplate } from './provasController.js';
 
 const escolaFilter = (escola_id) =>
   escola_id ? '(p.escola_id = ? OR p.escola_id IS NULL)' : '1=1';
@@ -451,17 +452,18 @@ function resumirGabaritoItem(item) {
  * clonando a estrutura do modelo "9º ANO-EXATAS.docx".
  */
 export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
-  const { showGabarito = false } = opcoes;
+  const { showGabarito = false, escolaNome = 'EDUCA.MELHOR' } = opcoes;
   const cfg = parseJsonSafe(prova.config_json, {}) || {};
-  const template = prova.template_slug || 'modelo_01_provao';
-  const is2Col = template !== 'objetiva_1col' && template !== 'discursiva';
+  const template = resolveProvaTemplate(prova);
+  const isModelo01 = template === 'modelo_01_provao';
+  const is2Col = template !== 'objetiva_1col' && template !== 'discursiva' && template !== 'mista';
 
   const hexColorClean = String(cfg.cor_destaque || '#FF7F00').replace(/[^0-9A-Fa-f]/g, '').toUpperCase().slice(0, 6) || 'FF7F00';
   const densidade = cfg.densidade_fonte || '11pt';
   const fontHalfPt = densidade === '10pt' ? 20 : densidade === '12pt' ? 24 : 22;
   const headerHalfPt = densidade === '10pt' ? 22 : 24;
-  const estiloAlt = cfg.estilo_alternativa || 'minuscula_parentese'; // 'minuscula_parentese' -> a) | 'maiuscula_parenteses' -> (A)
-  const mostrarDivisoresDisc = cfg.mostrar_divisores_disciplina ?? true;
+  const estiloAlt = isModelo01 ? (cfg.estilo_alternativa || 'minuscula_parentese') : (cfg.estilo_alternativa || 'maiuscula_parenteses');
+  const mostrarDivisoresDisc = isModelo01 ? (cfg.mostrar_divisores_disciplina ?? true) : Boolean(cfg.mostrar_divisores_disciplina);
   const fechamentoCaderno = cfg.fechamento_caderno || 'nenhum'; // 'nenhum' | 'rascunho' | 'boa_prova'
   const rodapeFinalTexto = gerarRodapePadraoTexto(prova, cfg);
 
@@ -510,6 +512,59 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
   // Monta o corpo XML das questões
   let bodyParts = [];
   let ultimaDisciplina = '';
+
+  // Se for Modelo 02..06 com cabeçalho institucional ativo, renderiza bloco de cabeçalho em largura total antes das colunas
+  if (!isModelo01 && (cfg.com_cabecalho ?? true)) {
+    const tituloUp = String(prova.titulo || 'AVALIAÇÃO').toUpperCase();
+    const escUp = String(escolaNome || 'EDUCA.MELHOR').toUpperCase();
+    const infoLinha = [
+      prova.disciplina ? `Disciplina: ${prova.disciplina}` : '',
+      prova.turma ? `Turma: ${prova.turma}` : '',
+      prova.bimestre ? `${prova.bimestre}º Bimestre` : '',
+      'Data: ___/___/______',
+      'Nota: _________',
+    ].filter(Boolean).join('   |   ');
+
+    bodyParts.push(`<w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="5000" w:type="pct"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/>
+          <w:left w:val="single" w:sz="12" w:space="0" w:color="000000"/>
+          <w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/>
+          <w:right w:val="single" w:sz="12" w:space="0" w:color="000000"/>
+          <w:insideH w:val="single" w:sz="6" w:space="0" w:color="666666"/>
+        </w:tblBorders>
+        <w:tblCellMar><w:top w:w="70" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="70" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tblCellMar>
+      </w:tblPr>
+      <w:tr><w:tc><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="20"/></w:pPr>${textoRicoParaRunsXml(escUp, { fontHalfPt: 24, bold: true })}</w:p><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="20"/></w:pPr>${textoRicoParaRunsXml(tituloUp, { fontHalfPt: 24, bold: true })}</w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:pPr><w:spacing w:after="20"/></w:pPr>${textoRicoParaRunsXml('Nome: ______________________________________________________________________________', { fontHalfPt: 20, bold: true })}</w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:pPr><w:spacing w:after="20"/></w:pPr>${textoRicoParaRunsXml(infoLinha, { fontHalfPt: 19 })}</w:p></w:tc></w:tr>
+    </w:tbl>`);
+
+    if (is2Col) {
+      bodyParts.push(`<w:p>
+        <w:pPr>
+          <w:spacing w:before="80" w:after="80"/>
+          <w:sectPr>
+            <w:footerReference w:type="default" r:id="rIdFooter1"/>
+            <w:type w:val="continuous"/>
+            <w:pgSz w:w="11906" w:h="16838"/>
+            <w:pgMar w:top="720" w:right="720" w:bottom="1020" w:left="851" w:header="0" w:footer="240" w:gutter="0"/>
+            <w:pgBorders w:offsetFrom="page">
+              <w:top w:val="single" w:sz="18" w:space="24" w:color="000000"/>
+              <w:left w:val="single" w:sz="18" w:space="24" w:color="000000"/>
+              <w:bottom w:val="single" w:sz="18" w:space="31" w:color="000000"/>
+              <w:right w:val="single" w:sz="18" w:space="24" w:color="000000"/>
+            </w:pgBorders>
+            <w:cols w:num="1" w:space="709"/>
+          </w:sectPr>
+        </w:pPr>
+      </w:p>`);
+    } else {
+      bodyParts.push('<w:p><w:pPr><w:spacing w:after="100"/></w:pPr></w:p>');
+    }
+  }
 
   for (let idx = 0; idx < itens.length; idx++) {
     const it = itens[idx];
@@ -886,6 +941,7 @@ export async function gerarDocx(req, res) {
   const showGab = req.query.gabarito === '1';
 
   try {
+    await ensureProvasSchema();
     const [[prova]] = await pool.query(
       `SELECT * FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
       [id, ...escolaParam(escola_id)]
@@ -908,7 +964,8 @@ export async function gerarDocx(req, res) {
       [id]
     );
 
-    const docxBuffer = await buildProvaDocxBuffer(prova, itens, { showGabarito: showGab });
+    const escolaNome = req.query.escola || 'EDUCA.MELHOR';
+    const docxBuffer = await buildProvaDocxBuffer(prova, itens, { showGabarito: showGab, escolaNome });
     const slug = (prova.titulo || 'prova')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')

@@ -2,6 +2,7 @@
 // EDUCA.PROVA — Gerador de HTML/PDF via Playwright (compatível com os 7 modelos universais, Smart Media e Modelo 01 Paginado A4)
 
 import pool from '../db.js';
+import { ensureProvasSchema, resolveProvaTemplate } from './provasController.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const escolaFilter = (escola_id) =>
@@ -463,7 +464,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
     /* Cada folha A4 fechada individualmente com moldura preta e rodapé externo fora da margem */
     .a4-sheet {
       width: 210mm;
-      height: 297mm;
+      height: 296.8mm;
       position: relative;
       background: #ffffff;
       page-break-after: always;
@@ -689,7 +690,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
 <body>
   <div id="flow-probe">${flowBlocks.join('')}</div>
   <div id="pages-root"></div>
-  <div id="gabarito-extra">${gabaritoSheetHtml}</div>
+  <template id="gabarito-tpl">${gabaritoSheetHtml}</template>
 
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
@@ -792,6 +793,16 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
           sheet.appendChild(ftr);
           root.appendChild(sheet);
         }
+
+        var gabTpl = document.getElementById('gabarito-tpl');
+        if (gabTpl && gabTpl.innerHTML.trim()) {
+          var tmpWrap = document.createElement('div');
+          tmpWrap.innerHTML = gabTpl.innerHTML.trim();
+          while (tmpWrap.firstElementChild) {
+            root.appendChild(tmpWrap.firstElementChild);
+          }
+        }
+        if (gabTpl && gabTpl.parentNode) gabTpl.parentNode.removeChild(gabTpl);
 
         probe.parentNode.removeChild(probe);
         document.body.dataset.paginated = 'ready';
@@ -998,13 +1009,13 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
 
 // Monta o HTML completo respeitando template_slug e config_json da prova
 export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = false) {
-  const template = prova.template_slug || 'modelo_01_provao';
-
   let cfg = {};
   try {
     const raw = prova.config_json;
     cfg = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
   } catch {}
+
+  const template = resolveProvaTemplate(prova);
 
   const embaralharAlt   = cfg.embaralhar_alternativas ?? prova.embaralhar_alternativas ?? 0;
   const embaralharQuest = cfg.embaralhar_questoes ?? 0;
@@ -1167,11 +1178,13 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
 
 // ── Buscar prova + itens do banco ──────────────────────────────────────────
 async function fetchProvaCompleta(id, escola_id) {
+  await ensureProvasSchema();
   const [[prova]] = await pool.query(
     `SELECT * FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
     [id, ...escolaParam(escola_id)]
   );
   if (!prova) return null;
+  prova.template_slug = resolveProvaTemplate(prova);
 
   const [itens] = await pool.query(
     `SELECT pq.id AS item_id, pq.ordem, pq.valor_pontos,
@@ -1221,7 +1234,7 @@ export async function gerarPdf(req, res) {
     const data = await fetchProvaCompleta(id, escola_id);
     if (!data) return res.status(404).json({ message: 'Prova não encontrada.' });
 
-    const template = data.prova.template_slug || 'modelo_01_provao';
+    const template = resolveProvaTemplate(data.prova);
     const isModelo01Paginado = template === 'modelo_01_provao';
 
     const escolaNome = req.query.escola || 'EDUCA.MELHOR';
@@ -1242,14 +1255,19 @@ export async function gerarPdf(req, res) {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle', timeout: 30_000 });
+    try {
+      await page.setContent(html, { waitUntil: 'load', timeout: 25_000 });
+    } catch {
+      await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    }
 
     if (isModelo01Paginado) {
-      await page.waitForFunction(() => document.body.dataset.paginated === 'ready', { timeout: 12_000 }).catch(() => {});
+      await page.waitForFunction(() => document.body.dataset.paginated === 'ready', { timeout: 15_000 }).catch(() => {});
     }
 
     const pdfBuffer = await page.pdf({
       format: 'A4',
+      preferCSSPageSize: isModelo01Paginado,
       printBackground: true,
       margin: margemPdf,
     });

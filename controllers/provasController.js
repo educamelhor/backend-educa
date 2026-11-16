@@ -1,16 +1,68 @@
 // controllers/provasController.js
 import pool from '../db.js';
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers & migração automática de schema (suporte a todos os modelos de escola) ──
 const escolaFilter = (escola_id) =>
   escola_id ? '(p.escola_id = ? OR p.escola_id IS NULL)' : '1=1';
 const escolaParam  = (escola_id) => (escola_id ? [escola_id] : []);
+
+function parseCfgObj(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return { ...raw };
+  try { return JSON.parse(raw) || {}; } catch { return {}; }
+}
+
+export function resolveProvaTemplate(prova) {
+  if (!prova) return 'modelo_01_provao';
+  const cfg = parseCfgObj(prova.config_json);
+  return cfg.modelo_slug || prova.template_slug || 'modelo_01_provao';
+}
+
+function serializarCfgComModelo(config_json, templateFinal, existingRaw = null) {
+  const base = existingRaw ? parseCfgObj(existingRaw) : {};
+  const incoming = parseCfgObj(config_json);
+  const merged = {
+    ...base,
+    ...incoming,
+    modelo_slug: templateFinal || incoming.modelo_slug || base.modelo_slug || 'modelo_01_provao',
+  };
+  return JSON.stringify(merged);
+}
+
+let schemaReadyPromise = null;
+export function ensureProvasSchema() {
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = (async () => {
+      try {
+        // Converte eventual ENUM legado da Sprint 3 em VARCHAR(64) para suportar modelo_01_provao e futuros modelos
+        await pool.query(
+          "ALTER TABLE provas MODIFY COLUMN template_slug VARCHAR(64) NOT NULL DEFAULT 'modelo_01_provao'"
+        );
+      } catch (err) {
+        console.warn('[ensureProvasSchema] Aviso ao ajustar coluna template_slug:', err.message);
+      }
+      try {
+        // Migra provas criadas antes da conversão do ENUM (onde modelo_slug ainda não era objetiva_2col explícito)
+        await pool.query(
+          `UPDATE provas
+              SET template_slug = 'modelo_01_provao'
+            WHERE (template_slug IS NULL OR template_slug = '' OR template_slug = 'objetiva_2col')
+              AND (config_json IS NULL OR config_json NOT LIKE '%"modelo_slug":"objetiva_2col"%')`
+        );
+      } catch (err) {
+        console.warn('[ensureProvasSchema] Aviso ao normalizar registros existentes:', err.message);
+      }
+    })();
+  }
+  return schemaReadyPromise;
+}
 
 // ── 1) LISTAR provas da escola ────────────────────────────────────────────────
 export async function listarProvas(req, res) {
   const { escola_id } = req.user;
   const { status } = req.query;
   try {
+    await ensureProvasSchema();
     const cond   = [escolaFilter(escola_id)];
     const params = [...escolaParam(escola_id)];
     if (status) { cond.push('p.status = ?'); params.push(status); }
@@ -24,7 +76,7 @@ export async function listarProvas(req, res) {
        ORDER BY p.id DESC`,
       params
     );
-    res.json(provas);
+    res.json(provas.map((p) => ({ ...p, template_slug: resolveProvaTemplate(p) })));
   } catch (err) {
     console.error('listarProvas:', err);
     res.status(500).json({ message: 'Erro no servidor.' });
@@ -36,6 +88,7 @@ export async function obterProva(req, res) {
   const { id } = req.params;
   const { escola_id } = req.user;
   try {
+    await ensureProvasSchema();
     const [[prova]] = await pool.query(
       `SELECT * FROM provas p
        WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
@@ -58,7 +111,7 @@ export async function obterProva(req, res) {
        ORDER BY pq.ordem ASC`,
       [id]
     );
-    res.json({ ...prova, itens });
+    res.json({ ...prova, template_slug: resolveProvaTemplate(prova), itens });
   } catch (err) {
     console.error('obterProva:', err);
     res.status(500).json({ message: 'Erro no servidor.' });
@@ -70,26 +123,43 @@ export async function criarProva(req, res) {
   const { escola_id, professor_id } = req.user;
   const {
     titulo = 'Nova Prova', disciplina, turma, bimestre,
-    ano_letivo, template_slug = 'objetiva_2col', config_json,
+    ano_letivo, template_slug = 'modelo_01_provao', config_json,
   } = req.body;
   try {
-    const cfgSerialized = !config_json
-      ? null
-      : typeof config_json === 'string'
-        ? config_json
-        : JSON.stringify(config_json);
-    const [r] = await pool.query(
-      `INSERT INTO provas
-        (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        escola_id || null, professor_id || null,
-        titulo, disciplina || null, turma || null,
-        bimestre || null, ano_letivo || new Date().getFullYear(),
-        template_slug, cfgSerialized,
-      ]
-    );
-    res.status(201).json({ id: r.insertId, message: 'Prova criada.' });
+    await ensureProvasSchema();
+    const templateFinal = template_slug || 'modelo_01_provao';
+    const cfgSerialized = serializarCfgComModelo(config_json, templateFinal);
+
+    let insertId;
+    try {
+      const [r] = await pool.query(
+        `INSERT INTO provas
+          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          escola_id || null, professor_id || null,
+          titulo, disciplina || null, turma || null,
+          bimestre || null, ano_letivo || new Date().getFullYear(),
+          templateFinal, cfgSerialized,
+        ]
+      );
+      insertId = r.insertId;
+    } catch (dbErr) {
+      // Fallback defensivo caso o banco restrinja DDL em ENUM legado (preserva modelo_slug em config_json)
+      const [rFallback] = await pool.query(
+        `INSERT INTO provas
+          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          escola_id || null, professor_id || null,
+          titulo, disciplina || null, turma || null,
+          bimestre || null, ano_letivo || new Date().getFullYear(),
+          'objetiva_2col', cfgSerialized,
+        ]
+      );
+      insertId = rFallback.insertId;
+    }
+    res.status(201).json({ id: insertId, template_slug: templateFinal, message: 'Prova criada.' });
   } catch (err) {
     console.error('criarProva:', err);
     res.status(500).json({ message: 'Erro ao criar prova.', detail: err.message });
@@ -105,29 +175,49 @@ export async function atualizarProva(req, res) {
     template_slug, config_json, status,
   } = req.body;
   try {
-    const cfgSerialized = !config_json
-      ? null
-      : typeof config_json === 'string'
-        ? config_json
-        : JSON.stringify(config_json);
-    const [r] = await pool.query(
-      `UPDATE provas SET
-        titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
-        template_slug = ?, config_json = COALESCE(?, config_json), status = COALESCE(?, status), atualizada_em = NOW()
-       WHERE id = ? AND ${escolaFilter(escola_id)}`,
-      [
-        titulo, disciplina || null, turma || null, bimestre || null,
-        ano_letivo || null, template_slug || 'modelo_01_provao',
-        cfgSerialized,
-        status || null,
-        id, ...escolaParam(escola_id),
-      ]
+    await ensureProvasSchema();
+    const [[atual]] = await pool.query(
+      `SELECT config_json, template_slug FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
+      [id, ...escolaParam(escola_id)]
     );
-    if (r.affectedRows === 0) return res.status(404).json({ message: 'Prova não encontrada.' });
-    res.json({ message: 'Prova atualizada.' });
+    if (!atual) return res.status(404).json({ message: 'Prova não encontrada.' });
+
+    const templateFinal = template_slug || resolveProvaTemplate(atual);
+    const cfgSerialized = serializarCfgComModelo(config_json, templateFinal, atual.config_json);
+
+    try {
+      await pool.query(
+        `UPDATE provas SET
+          titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
+          template_slug = ?, config_json = ?, status = COALESCE(?, status), atualizada_em = NOW()
+         WHERE id = ? AND ${escolaFilter(escola_id)}`,
+        [
+          titulo, disciplina || null, turma || null, bimestre || null,
+          ano_letivo || null, templateFinal,
+          cfgSerialized,
+          status || null,
+          id, ...escolaParam(escola_id),
+        ]
+      );
+    } catch (dbErr) {
+      await pool.query(
+        `UPDATE provas SET
+          titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
+          template_slug = 'objetiva_2col', config_json = ?, status = COALESCE(?, status), atualizada_em = NOW()
+         WHERE id = ? AND ${escolaFilter(escola_id)}`,
+        [
+          titulo, disciplina || null, turma || null, bimestre || null,
+          ano_letivo || null,
+          cfgSerialized,
+          status || null,
+          id, ...escolaParam(escola_id),
+        ]
+      );
+    }
+    res.json({ message: 'Prova atualizada.', template_slug: templateFinal });
   } catch (err) {
     console.error('atualizarProva:', err);
-    res.status(500).json({ message: 'Erro ao atualizar prova.' });
+    res.status(500).json({ message: 'Erro ao atualizar prova.', detail: err.message });
   }
 }
 

@@ -27,8 +27,12 @@ RUN wget -qO /tmp/tectonic.tar.gz \
     && chmod +x /usr/local/bin/tectonic \
     && rm /tmp/tectonic.tar.gz
 
-# Diretório para jobs de compilação LaTeX temporários
-RUN mkdir -p /tmp/latex-jobs && chmod 777 /tmp/latex-jobs
+# Diretórios para jobs e pré-aquecimento do cache LaTeX/Tectonic (zero download de pacotes em runtime)
+RUN mkdir -p /tmp/latex-jobs /tmp/tectonic-cache \
+    && node -e 'require("fs").writeFileSync("/tmp/warmup.tex", ["\\documentclass{article}","\\usepackage{fontspec}","\\IfFontExistsTF{Liberation Serif}{\\setmainfont{Liberation Serif}}{}","\\usepackage[a4paper,lmargin=1.45cm,rmargin=1.45cm,tmargin=1.35cm,bmargin=1.90cm,headheight=15pt]{geometry}","\\usepackage{multicol,array,tikz,fancyhdr,xcolor,graphicx,amsmath,amssymb,mathtools}","\\usepackage[shortlabels]{enumitem}","\\usetikzlibrary{calc}","\\definecolor{corDestaque}{HTML}{FF7F00}","\\pagestyle{fancy}\\fancyhf{}","\\fancyhead[L]{\\begin{tikzpicture}[overlay, remember picture]\\draw[draw=black, line width=2.25pt] ($(current page.north west) + (0.95cm,-0.85cm)$) rectangle ($(current page.south east) + (-0.95cm,1.40cm)$);\\node[anchor=center] at ($(current page.south) + (0cm,0.68cm)$) {PROVAO - 9o ANO};\\end{tikzpicture}}","\\renewcommand{\\headrulewidth}{0pt}\\renewcommand{\\footrulewidth}{0pt}","\\begin{document}","\\begin{multicols*}{2}","\\leavevmode{\\bfseries QUESTAO 01}\\hspace{0.22cm}{\\color{corDestaque}\\leaders\\hrule height 8.6pt depth 2.0pt\\hfill\\kern0pt}\\par\\vspace{2pt}","Teste LaTeX $\\lambda = \\frac{v}{f}$.","\\begin{enumerate}[label=\\alph*),leftmargin=*]\\item Opcao A\\item Opcao B\\end{enumerate}","\\end{multicols*}","\\end{document}"].join("\n"), "utf8")' \
+    && (TECTONIC_CACHE_DIR=/tmp/tectonic-cache /usr/local/bin/tectonic /tmp/warmup.tex || echo "[WARN] Tectonic warmup adiado para runtime") \
+    && rm -f /tmp/warmup.* \
+    && chmod -R 777 /tmp/latex-jobs /tmp/tectonic-cache
 
 # Diretório da aplicação Node.js
 WORKDIR /app
