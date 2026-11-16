@@ -73,6 +73,11 @@ export async function criarProva(req, res) {
     ano_letivo, template_slug = 'objetiva_2col', config_json,
   } = req.body;
   try {
+    const cfgSerialized = !config_json
+      ? null
+      : typeof config_json === 'string'
+        ? config_json
+        : JSON.stringify(config_json);
     const [r] = await pool.query(
       `INSERT INTO provas
         (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
@@ -81,7 +86,7 @@ export async function criarProva(req, res) {
         escola_id || null, professor_id || null,
         titulo, disciplina || null, turma || null,
         bimestre || null, ano_letivo || new Date().getFullYear(),
-        template_slug, config_json ? JSON.stringify(config_json) : null,
+        template_slug, cfgSerialized,
       ]
     );
     res.status(201).json({ id: r.insertId, message: 'Prova criada.' });
@@ -100,16 +105,21 @@ export async function atualizarProva(req, res) {
     template_slug, config_json, status,
   } = req.body;
   try {
+    const cfgSerialized = !config_json
+      ? null
+      : typeof config_json === 'string'
+        ? config_json
+        : JSON.stringify(config_json);
     const [r] = await pool.query(
       `UPDATE provas SET
         titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
-        template_slug = ?, config_json = ?, status = ?, atualizada_em = NOW()
+        template_slug = ?, config_json = COALESCE(?, config_json), status = COALESCE(?, status), atualizada_em = NOW()
        WHERE id = ? AND ${escolaFilter(escola_id)}`,
       [
         titulo, disciplina || null, turma || null, bimestre || null,
-        ano_letivo || null, template_slug || 'objetiva_2col',
-        config_json ? JSON.stringify(config_json) : null,
-        status || 'montando',
+        ano_letivo || null, template_slug || 'modelo_01_provao',
+        cfgSerialized,
+        status || null,
         id, ...escolaParam(escola_id),
       ]
     );
@@ -225,5 +235,71 @@ export async function reordenarProva(req, res) {
   } catch (err) {
     console.error('reordenarProva:', err);
     res.status(500).json({ message: 'Erro ao reordenar.' });
+  }
+}
+
+// ── 10) SINCRONIZAR lista completa de questões da prova (edição atômica) ──────
+export async function sincronizarQuestoesProva(req, res) {
+  const { id } = req.params;
+  const { escola_id, professor_id } = req.user || {};
+  const { itens } = req.body; // [{ questao_id, valor_pontos }]
+  if (!Array.isArray(itens)) {
+    return res.status(400).json({ message: 'Informe o array itens.' });
+  }
+
+  let conn = null;
+  try {
+    const [[prova]] = await pool.query(
+      `SELECT p.id FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
+      [id, ...escolaParam(escola_id)]
+    );
+    if (!prova) return res.status(404).json({ message: 'Prova não encontrada.' });
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const [atuais] = await conn.query(
+      'SELECT questao_id FROM prova_questoes WHERE prova_id = ?',
+      [id]
+    );
+    const jaExistiamSet = new Set(atuais.map((r) => Number(r.questao_id)));
+
+    await conn.query('DELETE FROM prova_questoes WHERE prova_id = ?', [id]);
+
+    const inseridos = [];
+    for (let idx = 0; idx < itens.length; idx++) {
+      const qid = Number(itens[idx].questao_id);
+      if (!qid) continue;
+      const pts = Number(itens[idx].valor_pontos) || 1.0;
+      const [ins] = await conn.query(
+        'INSERT INTO prova_questoes (prova_id, questao_id, ordem, valor_pontos) VALUES (?, ?, ?, ?)',
+        [id, qid, idx + 1, pts]
+      );
+      inseridos.push({ id: ins.insertId, questao_id: qid, ordem: idx + 1, valor_pontos: pts });
+
+      if (!jaExistiamSet.has(qid)) {
+        await conn.query(
+          'UPDATE questoes SET vezes_utilizada = COALESCE(vezes_utilizada, 0) + 1 WHERE id = ?',
+          [qid]
+        );
+        conn.query(
+          `INSERT IGNORE INTO questoes_historico (questao_id, usuario_id, acao, prova_id, criado_em)
+           VALUES (?, ?, 'usou_em_prova', ?, NOW())`,
+          [qid, professor_id || null, id]
+        ).catch(() => {});
+      }
+    }
+
+    await conn.commit();
+    conn.release();
+    conn = null;
+    res.json({ ok: true, itens: inseridos });
+  } catch (err) {
+    if (conn) {
+      await conn.rollback().catch(() => {});
+      conn.release();
+    }
+    console.error('sincronizarQuestoesProva:', err);
+    res.status(500).json({ message: 'Erro ao sincronizar questões da prova.', detail: err.message });
   }
 }

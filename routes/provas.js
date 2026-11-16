@@ -2,6 +2,7 @@ import express from 'express';
 import {
   listarProvas, obterProva, criarProva, atualizarProva, excluirProva,
   addQuestaoProva, removeQuestaoProva, atualizarItemProva, reordenarProva,
+  sincronizarQuestoesProva,
 } from '../controllers/provasController.js';
 
 const router = express.Router();
@@ -13,6 +14,7 @@ router.put('/:id',                        atualizarProva);
 router.delete('/:id',                     excluirProva);
 
 // Itens da prova
+router.put('/:id/sincronizar-questoes',   sincronizarQuestoesProva);
 router.post('/:id/questoes',              addQuestaoProva);
 router.put('/:id/questoes/:itemId',       atualizarItemProva);
 router.delete('/:id/questoes/:itemId',    removeQuestaoProva);

@@ -33,26 +33,52 @@ function escapeTex(str = '') {
     .replace(/±/g,   '$\\pm$');
 }
 
+function escapeProsaComMarkdownTex(str = '') {
+  const tokens = [];
+  let s = String(str || '');
+  s = s.replace(/\*\*([\s\S]+?)\*\*/g, (_, inner) => {
+    const id = `@@MDTOK${tokens.length}@@`;
+    tokens.push(`\\textbf{${escapeTex(inner)}}`);
+    return id;
+  });
+  s = s.replace(/__([^\s_](?:[\s\S]*?[^\s_])?)__/g, (_, inner) => {
+    const id = `@@MDTOK${tokens.length}@@`;
+    tokens.push(`\\underline{${escapeTex(inner)}}`);
+    return id;
+  });
+  s = s.replace(/\*([^\s*](?:[^*\n]*?[^\s*])?)\*/g, (_, inner) => {
+    const id = `@@MDTOK${tokens.length}@@`;
+    tokens.push(`\\textit{${escapeTex(inner)}}`);
+    return id;
+  });
+  let escaped = escapeTex(s);
+  tokens.forEach((rep, idx) => {
+    escaped = escaped.replace(`@@MDTOK${idx}@@`, () => rep);
+  });
+  return escaped;
+}
+
 function textoParaTex(str = '') {
-  const partes = String(str || '').split(/(\$\$[^$]+\$\$|\$[^$]+\$|\\\[[^\]]+\\\])/g);
-  return partes.map((p, idx) => {
-    if (p.startsWith('$') || p.startsWith('\\[')) {
-      return p
+  const mathTokens = [];
+  let masked = String(str || '').replace(/\$\$[^$]+\$\$|\$[^$]+\$|\\\[[^\]]+\\\]/g, (m) => {
+    const id = `@@MTEX${mathTokens.length}@@`;
+    mathTokens.push(
+      m
         .replace(/→/g, '\\rightarrow ')
         .replace(/⇌/g, '\\rightleftharpoons ')
         .replace(/≥/g, '\\geq ')
         .replace(/≤/g, '\\leq ')
         .replace(/≠/g, '\\neq ')
-        .replace(/±/g, '\\pm ');
-    }
-    let clean = p;
-    // Remove \n imediatamente colado em bloco display $$...$$ vizinho para evitar parágrafo vazio duplo
-    const prevIsDisplay = idx > 0 && (partes[idx - 1].startsWith('$$') || partes[idx - 1].startsWith('\\['));
-    const nextIsDisplay = idx + 1 < partes.length && (partes[idx + 1].startsWith('$$') || partes[idx + 1].startsWith('\\['));
-    if (prevIsDisplay) clean = clean.replace(/^\r?\n/, '');
-    if (nextIsDisplay) clean = clean.replace(/\r?\n$/, '');
-    return escapeTex(clean).replace(/\r?\n/g, '\n\n\\noindent ');
-  }).join('');
+        .replace(/±/g, '\\pm ')
+    );
+    return id;
+  });
+
+  let texOut = escapeProsaComMarkdownTex(masked).replace(/\r?\n/g, '\n\n\\noindent ');
+  mathTokens.forEach((mTex, idx) => {
+    texOut = texOut.replace(`@@MTEX${idx}@@`, () => mTex);
+  });
+  return texOut;
 }
 
 function parseJsonObj(raw, fallback = null) {
@@ -136,19 +162,23 @@ function renderFiguraTex(imgPath, midia, temMuitasAlts) {
   return tex;
 }
 
-function renderAlternativasTex(alts, altImgMap = {}) {
+function renderAlternativasTex(alts, altImgMap = {}, estiloAlt = 'maiuscula_parenteses') {
   if (!alts.length) return '';
   const temImgAlt = alts.some(a => Boolean(altImgMap[a.letra]));
   const numCols = !temImgAlt && alts.length <= 3 ? alts.length : 1;
 
   if (numCols > 1) {
     let tex = `\\begin{tasks}(${numCols})\n`;
-    alts.forEach(a => { tex += `  \\task (${escapeTex(a.letra)}) ${textoParaTex(a.texto || '')}\n`; });
+    alts.forEach(a => {
+      const rot = estiloAlt === 'minuscula_parentese' ? `${escapeTex(String(a.letra || '').toLowerCase())})` : `(${escapeTex(a.letra)})`;
+      tex += `  \\task ${rot} ${textoParaTex(a.texto || '')}\n`;
+    });
     tex += `\\end{tasks}\n`;
     return tex;
   }
 
-  let tex = `\\begin{enumerate}[label=\\textbf{(\\Alph*)}]\n`;
+  const labelEnum = estiloAlt === 'minuscula_parentese' ? '\\alph*)' : '\\textbf{(\\Alph*)}';
+  let tex = `\\begin{enumerate}[label=${labelEnum},leftmargin=*,itemsep=1pt,topsep=2pt]\n`;
   alts.forEach(a => {
     const pImg = altImgMap[a.letra];
     const imgInline = pImg
@@ -185,8 +215,9 @@ function resumirGabaritoTex(item) {
   return altCorreta || '---';
 }
 
-function gerarTexQuestao(item, idx, imgBundle, colunas) {
-  const alts = parseAlts(item.alternativas_json);
+function gerarTexQuestao(item, idx, imgBundle, colunas, opts = {}) {
+  const { isModelo01 = false, estiloAlt = 'maiuscula_parenteses' } = opts;
+  const alts = parseAlts(item.alternativas_json).filter(a => (a?.texto && String(a.texto).trim()) || a?.imagem_url);
   const est  = parseJsonObj(item.estrutura_json, {}) || {};
   const midia = parseJsonObj(item.midia_json, null);
   const tipo = item.tipo || est.modelo || 'objetiva';
@@ -200,7 +231,12 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
 
   let tex = `\\noindent\n`;
   const fonteHdr = item.fonte && !item.texto_apoio ? ` {\\small (${escapeTex(item.fonte)})}` : '';
-  tex += `\\textbf{QUESTÃO-${num}}${fonteHdr} {\\color{laranja}\\rule{${regraW}}{0.3pt}} {\\small\\color{gray}(${pontos} pt)}\n\n`;
+  if (isModelo01) {
+    // Clona exatamente "QUESTÃO 01" seguido do retângulo sólido laranja até a margem direita da coluna
+    tex += `\\textbf{QUESTÃO ${num}}${fonteHdr}\\hspace{0.2cm}{\\color{corDestaque}\\leaders\\hrule height 8.8pt depth 2.2pt\\hfill\\kern0pt}\\par\\vspace{2pt}\n\n`;
+  } else {
+    tex += `\\textbf{QUESTÃO-${num}}${fonteHdr} {\\color{laranja}\\rule{${regraW}}{0.3pt}} {\\small\\color{gray}(${pontos} pt)}\n\n`;
+  }
 
   if (item.texto_apoio) {
     const refFonte = item.fonte ? `\\\\ {\\footnotesize\\normalfont — ${escapeTex(item.fonte)}}` : '';
@@ -246,7 +282,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
     if (est.comando_fechamento) {
       tex += `\\vspace{2pt}\\noindent \\textbf{${textoParaTex(est.comando_fechamento)}}\n\n`;
     }
-    tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+    tex += renderAlternativasTex(alts, imgBundle?.alts || {}, estiloAlt);
   } else if (tipo === 'verdadeiro_falso') {
     const itensVf = Array.isArray(est.itens) ? est.itens : [];
     itensVf.forEach(it => {
@@ -256,7 +292,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
       if (item.comando_final) {
         tex += `\\vspace{2pt}\\noindent {\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
       }
-      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {}, estiloAlt);
     } else if (est.exigir_justificativa_falsas) {
       const nLin = Math.max(1, Math.min(8, Number(est.linhas_justificativa) || 3));
       tex += `\\vspace{2pt}\\noindent{\\small\\textbf{Justifique as falsas:}}\\\\[2pt]\n`;
@@ -288,7 +324,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
       if (item.comando_final) {
         tex += `\\vspace{2pt}\\noindent {\\bfseries ${textoParaTex(item.comando_final)}}\n\n`;
       }
-      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {}, estiloAlt);
     }
   } else if (tipo === 'lacuna') {
     if ((est.submodo || 'direto') === 'banco_palavras') {
@@ -298,7 +334,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
         tex += `\\noindent\\fbox{\\parbox{0.96\\linewidth}{\\small\\textbf{Banco de palavras:} ${banco.map(escapeTex).join(' \\textbullet{} ')}}}\n\n`;
       }
     } else if (est.submodo === 'alternativas') {
-      tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+      tex += renderAlternativasTex(alts, imgBundle?.alts || {}, estiloAlt);
     }
   } else if (tipo === 'somatoria') {
     const props = Array.isArray(est.proposicoes) ? est.proposicoes : [];
@@ -320,29 +356,48 @@ function gerarTexQuestao(item, idx, imgBundle, colunas) {
       }
     }
   } else {
-    tex += renderAlternativasTex(alts, imgBundle?.alts || {});
+    tex += renderAlternativasTex(alts, imgBundle?.alts || {}, estiloAlt);
   }
 
   tex += `\\vspace{0.35cm}\n\n`;
   return tex;
 }
 
-function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito }) {
-  const is2col    = colunas === 2;
-  const comCab    = cfg.com_cabecalho ?? true;
-  const comMarg   = cfg.com_margem   ?? true;
-  const rodapeTxt = cfg.rodape_texto || '';
-  const cab       = cfg.cabecalho_itens ?? {};
-  const sh        = (k) => cab[k] ?? true;
+function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito, template = 'modelo_01_provao' }) {
+  const isModelo01 = template === 'modelo_01_provao';
+  const is2col     = isModelo01 || colunas === 2;
+  const comCab     = isModelo01 ? false : (cfg.com_cabecalho ?? true);
+  const comMarg    = cfg.com_margem ?? true;
+  const rodapeTxt  = cfg.rodape_texto || '';
+  const cab        = cfg.cabecalho_itens ?? {};
+  const sh         = (k) => cab[k] ?? true;
 
-  const margem = comMarg ? '0.7cm' : '0.3cm';
+  const corHexClean = String(cfg.cor_destaque || '#FF7F00').replace(/[^0-9A-Fa-f]/g, '').toUpperCase().slice(0, 6) || 'FF7F00';
+  const estiloAlt = isModelo01 ? (cfg.estilo_alternativa || 'minuscula_parentese') : 'maiuscula_parenteses';
+  const mostrarDivisoresDisc = isModelo01 ? (cfg.mostrar_divisores_disciplina ?? true) : false;
+  const fechamentoCaderno = isModelo01 ? (cfg.fechamento_caderno || 'nenhum') : 'nenhum';
+  const densidade = ['10pt', '11pt', '12pt'].includes(cfg.densidade_fonte) ? cfg.densidade_fonte : '11pt';
+  const fontPt = densidade === '10pt' ? '10pt' : densidade === '12pt' ? '12pt' : '11pt';
+  const linePt = densidade === '10pt' ? '12.4pt' : densidade === '12pt' ? '14.4pt' : '13.4pt';
+
+  const rodapeExternoM01 = rodapeTxt.trim()
+    ? rodapeTxt.trim()
+    : [
+        String(prova.titulo || prova.disciplina || 'AVALIAÇÃO').trim().toUpperCase(),
+        prova.turma ? String(prova.turma).trim().toUpperCase() : '',
+        prova.bimestre ? `${prova.bimestre}º BIMESTRE` : '',
+      ].filter(Boolean).join(' - ');
+
+  const geomOpts = isModelo01
+    ? 'a4paper,lmargin=1.45cm,rmargin=1.45cm,tmargin=1.35cm,bmargin=1.95cm,footskip=0.95cm'
+    : `a4paper,lmargin=${comMarg ? '0.7cm' : '0.3cm'},tmargin=${comMarg ? '0.7cm' : '0.3cm'},bmargin=${comMarg ? '0.7cm' : '0.3cm'},rmargin=${comMarg ? '0.7cm' : '0.3cm'}`;
 
   let tex = `\\documentclass{article}\n`;
   tex += `\\usepackage[brazil]{babel}\n`;
   tex += `\\usepackage[utf8]{inputenc}\n`;
   tex += `\\usepackage[T1]{fontenc}\n`;
   tex += `\\usepackage{times}\n`;
-  tex += `\\usepackage[a4paper,lmargin=${margem},tmargin=${margem},bmargin=${margem},rmargin=${margem}]{geometry}\n`;
+  tex += `\\usepackage[${geomOpts}]{geometry}\n`;
   tex += `\\usepackage{multicol}\n`;
   tex += `\\usepackage{array}\n`;
   tex += `\\usepackage{multirow}\n`;
@@ -357,30 +412,41 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comG
   tex += `\\usepackage{amsmath,amssymb,amsthm,mathtools}\n`;
   tex += `\\usepackage{anyfontsize}\n`;
   tex += `\\usepackage{float}\n`;
-  tex += `\\usepackage[indent=1cm,skip=0.1cm]{parskip}\n`;
+  tex += `\\usepackage[indent=0cm,skip=0.1cm]{parskip}\n`;
 
   tex += `\\definecolor{laranja}{HTML}{FF6600}\n`;
+  tex += `\\definecolor{corDestaque}{HTML}{${corHexClean}}\n`;
   tex += `\\definecolor{azul}{HTML}{0066FF}\n`;
   tex += `\\definecolor{amarelo}{HTML}{FCFB85}\n`;
   tex += `\\definecolor{gray}{HTML}{888888}\n`;
 
   tex += `\n\\pagestyle{fancy}\n`;
-  tex += `\\lhead{\\begin{tikzpicture}[overlay, remember picture]\n`;
-  tex += `  \\draw [draw=laranja, line width=1.5pt]($(current page.north west) + (0.4,-0.4)$) rectangle ($(current page.south east) + (-0.4,0.4)$);\n`;
-  tex += `\\end{tikzpicture}}\n`;
-  tex += `\\chead{} \\rhead{}\n`;
-  tex += `\\lfoot{\\begin{tikzpicture}[overlay, remember picture]\n`;
-  tex += `  \\draw [fill=azul]($(current page.south east) + (-0.5,0.5)$) circle (.35cm);\n`;
-  tex += `  \\node at ($(current page.south east) + (-0.5,0.5)$){\\fontsize{14pt}{14pt}\\selectfont\\color{white}\\textbf{\\thepage}};\n`;
-  tex += `\\end{tikzpicture}}\n`;
-  tex += `\\cfoot{} \\rfoot{}\n`;
-  tex += `\\renewcommand{\\headrulewidth}{0pt}\n\n`;
+  if (isModelo01) {
+    // Moldura preta 2.25pt fechada + rodapé centralizado ESTRITAMENTE ABAIXO (fora) da moldura inferior (y=0.72cm < 1.40cm)
+    tex += `\\lhead{\\begin{tikzpicture}[overlay, remember picture]\n`;
+    tex += `  \\draw [draw=black, line width=2.25pt]($(current page.north west) + (0.95cm,-0.85cm)$) rectangle ($(current page.south east) + (-0.95cm,1.40cm)$);\n`;
+    tex += `  \\node[anchor=center] at ($(current page.south) + (0cm,0.72cm)$) {\\fontsize{11pt}{13pt}\\selectfont ${escapeTex(rodapeExternoM01)}};\n`;
+    tex += `\\end{tikzpicture}}\n`;
+    tex += `\\chead{} \\rhead{}\n`;
+    tex += `\\lfoot{} \\cfoot{} \\rfoot{}\n`;
+  } else {
+    tex += `\\lhead{\\begin{tikzpicture}[overlay, remember picture]\n`;
+    tex += `  \\draw [draw=laranja, line width=1.5pt]($(current page.north west) + (0.4,-0.4)$) rectangle ($(current page.south east) + (-0.4,0.4)$);\n`;
+    tex += `\\end{tikzpicture}}\n`;
+    tex += `\\chead{} \\rhead{}\n`;
+    tex += `\\lfoot{\\begin{tikzpicture}[overlay, remember picture]\n`;
+    tex += `  \\draw [fill=azul]($(current page.south east) + (-0.5,0.5)$) circle (.35cm);\n`;
+    tex += `  \\node at ($(current page.south east) + (-0.5,0.5)$){\\fontsize{14pt}{14pt}\\selectfont\\color{white}\\textbf{\\thepage}};\n`;
+    tex += `\\end{tikzpicture}}\n`;
+    tex += `\\cfoot{} \\rfoot{}\n`;
+  }
+  tex += `\\renewcommand{\\headrulewidth}{0pt}\n\\renewcommand{\\footrulewidth}{0pt}\n\n`;
 
   const totalPts = itens.reduce((s, it) => s + Number(it.valor_pontos || 1), 0).toFixed(1);
   const rodapeStr = rodapeTxt ? `EDUCA.PROVA · ${rodapeTxt}` : 'EDUCA.PROVA';
 
   tex += `\\begin{document}\n`;
-  tex += `\\fontsize{11pt}{13.5pt}\\selectfont\n\n`;
+  tex += `\\fontsize{${fontPt}}{${linePt}}\\selectfont\n\n`;
 
   if (comCab) {
     tex += `\\begin{center}\n`;
@@ -415,20 +481,33 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comG
       tex += `no total de \\textbf{${totalPts} ponto(s)}. `;
       tex += `Leia cada questão com atenção antes de responder.}}\n\n`;
     }
+    tex += `\\vspace{0.3cm}\n\n`;
   }
-
-  tex += `\\vspace{0.3cm}\n\n`;
 
   if (is2col) {
-    tex += `\\begin{multicols}{2}\n\\setlength{\\columnseprule}{0.8pt}\n\n`;
+    const envMulticol = isModelo01 ? 'multicols*' : 'multicols';
+    tex += `\\setlength{\\columnsep}{1.1cm}\n\\setlength{\\columnseprule}{0.85pt}\n\\begin{${envMulticol}}{2}\n\n`;
   }
 
+  let ultimaDisc = '';
   itens.forEach((item, idx) => {
-    tex += gerarTexQuestao(item, idx, imgBundles[idx] || null, colunas);
+    const discUp = String(item.disciplina || '').trim().toUpperCase();
+    if (mostrarDivisoresDisc && discUp && discUp !== ultimaDisc) {
+      ultimaDisc = discUp;
+      tex += `\\begin{center}\\textbf{\\underline{${escapeTex(discUp)}}}\\end{center}\\vspace{0.15cm}\n\n`;
+    }
+    tex += gerarTexQuestao(item, idx, imgBundles[idx] || null, is2col ? 2 : 1, { isModelo01, estiloAlt });
   });
 
+  if (fechamentoCaderno === 'rascunho') {
+    tex += `\\vspace{0.4cm}\\begin{center}\\textbf{\\underline{RASCUNHO}}\\end{center}\\vspace{2.5cm}\n\n`;
+  } else if (fechamentoCaderno === 'boa_prova') {
+    tex += `\\vspace{0.4cm}\\begin{center}\\textbf{BOA PROVA!}\\end{center}\n\n`;
+  }
+
   if (is2col) {
-    tex += `\\end{multicols}\n\n`;
+    const envMulticol = isModelo01 ? 'multicols*' : 'multicols';
+    tex += `\\end{${envMulticol}}\n\n`;
   }
 
   if (comGabarito) {
@@ -448,8 +527,10 @@ function gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comG
     tex += `\\end{center}\n\n`;
   }
 
-  tex += `\\vspace{1cm}\n`;
-  tex += `{\\small\\color{gray}\\centering ${escapeTex(escola)} — ${escapeTex(rodapeStr)}\\par}\n`;
+  if (!isModelo01) {
+    tex += `\\vspace{1cm}\n`;
+    tex += `{\\small\\color{gray}\\centering ${escapeTex(escola)} — ${escapeTex(rodapeStr)}\\par}\n`;
+  }
   tex += `\\end{document}\n`;
 
   return tex;
@@ -497,8 +578,8 @@ export async function exportarPdfLatex(req, res) {
   try {
     const cfg    = (() => { try { return typeof prova.config_json === 'string' ? JSON.parse(prova.config_json) : (prova.config_json || {}); } catch { return {}; } })();
     const escola = req.query.escola || prova.escola_nome || 'EDUCA.MELHOR';
-    const template = prova.template_slug || 'objetiva_2col';
-    const colunas  = ['objetiva_2col', 'enem'].includes(template) ? 2 : 1;
+    const template = prova.template_slug || 'modelo_01_provao';
+    const colunas  = ['modelo_01_provao', 'objetiva_2col', 'enem'].includes(template) ? 2 : 1;
 
     const imgBundles = await Promise.all(
       itens.map(async (it, idx) => {
@@ -517,7 +598,7 @@ export async function exportarPdfLatex(req, res) {
       })
     );
 
-    const texContent = gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito });
+    const texContent = gerarTexCompleto({ prova, itens, cfg, escola, colunas, imgBundles, comGabarito, template });
     const texFile = path.join(jobDir, 'prova.tex');
     fs.writeFileSync(texFile, texContent, 'utf-8');
 
