@@ -89,6 +89,72 @@ function ensureNomeSocialReady() {
              SET nome_registro = estudante
            WHERE nome_registro IS NULL OR TRIM(nome_registro) = ''
         `);
+
+        // Auto-saneamento cirúrgico de registros legados onde `alunos.anees` recebeu
+        // indevidamente Nome de Responsável / Filiação / Endereço / Outras Informações
+        // em importações anteriores ou linhas CSV deslocadas.
+        try {
+          const [poluidosCandidatos] = await pool.query(`
+            SELECT a.id,
+                   a.estudante,
+                   a.nome_registro,
+                   a.nome_social,
+                   a.anees,
+                   a.atendimento_diferencial,
+                   GROUP_CONCAT(DISTINCT r.nome SEPARATOR '|||') AS nomes_responsaveis,
+                   (SELECT COUNT(*) FROM aee_laudos al WHERE al.aluno_id = a.id) AS qtd_laudos,
+                   (SELECT COUNT(*) FROM aee_alunos_config cfg WHERE cfg.aluno_id = a.id) AS qtd_cfg
+              FROM alunos a
+              LEFT JOIN responsaveis_alunos ra ON ra.aluno_id = a.id
+              LEFT JOIN responsaveis r ON r.id = ra.responsavel_id
+             WHERE a.anees IS NOT NULL AND TRIM(a.anees) <> ''
+             GROUP BY a.id
+          `);
+
+          const idsLimparApenasTexto = [];
+          const idsLimparTextoEAee = [];
+
+          for (const row of poluidosCandidatos) {
+            const listaResp = String(row.nomes_responsaveis || "")
+              .split("|||")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const valido = ehValorAneesLegitimo(row.anees, {
+              estudante: row.estudante,
+              nomeRegistro: row.nome_registro,
+              nomeSocial: row.nome_social,
+              responsaveis: listaResp,
+            });
+            if (!valido) {
+              const possuiVinculoSalaRecursos =
+                Number(row.qtd_laudos || 0) > 0 || Number(row.qtd_cfg || 0) > 0;
+              if (possuiVinculoSalaRecursos) {
+                idsLimparApenasTexto.push(row.id);
+              } else {
+                idsLimparTextoEAee.push(row.id);
+              }
+            }
+          }
+
+          if (idsLimparApenasTexto.length > 0) {
+            await pool.query(`UPDATE alunos SET anees = NULL WHERE id IN (?)`, [
+              idsLimparApenasTexto,
+            ]);
+          }
+          if (idsLimparTextoEAee.length > 0) {
+            await pool.query(
+              `UPDATE alunos SET anees = NULL, atendimento_diferencial = 0 WHERE id IN (?)`,
+              [idsLimparTextoEAee]
+            );
+          }
+          if (idsLimparApenasTexto.length > 0 || idsLimparTextoEAee.length > 0) {
+            console.log(
+              `[alunos] Saneamento automático de anees concluído: ${idsLimparTextoEAee.length} limpo(s) integralmente, ${idsLimparApenasTexto.length} preservando Sala de Recursos.`
+            );
+          }
+        } catch (sanErr) {
+          console.warn("[alunos] Aviso ao sanear anees legado:", sanErr.message);
+        }
       } catch (e) {
         console.warn("[alunos] ensureNomeSocialReady warning:", e.message);
       }
@@ -861,8 +927,18 @@ router.get("/", verificarEscola, async (req, res) => {
     const alunosComConsentimento = rows.map((a) => {
       const consentimentoResp = Number(a.consentimento_imagem) === 1;
       const podeExibirFoto = consentimentoResp || (contexto === "conselho" && fotosLiberadasConselhoDirecao);
+      const aneesSanitizado =
+        a.anees &&
+        ehValorAneesLegitimo(a.anees, {
+          estudante: a.estudante,
+          nomeRegistro: a.nome_registro,
+          nomeSocial: a.nome_social,
+        })
+          ? a.anees
+          : null;
       return {
         ...a,
+        anees: aneesSanitizado,
         foto: podeExibirFoto ? a.foto : null,
         foto_url: podeExibirFoto ? a.foto_url : null,
         consentimento_imagem: consentimentoResp,
@@ -1332,8 +1408,18 @@ router.get("/:id", async (req, res) => {
 
     // LGPD/Consentimento: sÃ³ expÃµe a foto se o responsÃ¡vel autorizou
     const consentimento_ok = Number(aluno.consentimento_imagem) === 1;
+    const aneesSanitizado =
+      aluno.anees &&
+      ehValorAneesLegitimo(aluno.anees, {
+        estudante: aluno.estudante,
+        nomeRegistro: aluno.nome_registro,
+        nomeSocial: aluno.nome_social,
+      })
+        ? aluno.anees
+        : null;
     return res.json({
       ...aluno,
+      anees: aneesSanitizado,
       foto: consentimento_ok ? aluno.foto : null,
       consentimento_imagem: consentimento_ok,
     });
@@ -2124,121 +2210,235 @@ function extrairSexoCsv(raw) {
   return null;
 }
 
-export function abreviarAneesEducaDF(raw) {
+export function ehValorAneesLegitimo(raw, contexto = {}) {
+  const s = limparTextoCsv(raw);
+  if (!s) return false;
+
+  const norm = (v) =>
+    limparTextoCsv(v)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase()
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const sNorm = norm(s);
+  if (!sNorm) return false;
+
+  // 1. Marcadores vazios / status cadastrais / sexo
+  if (
+    /^(-+|NAO(\s+POSSUI|\s+CONSTA|\s+INFORMADO|\s+SE\s+APLICA|\s+DECLARADO)?|NENHUM[A]?|SEM(\s+NECESSIDADE.*|\s+LAUDO|\s+ATENDIMENTO|\s+DEFICIENCIA)?|N\/?A|NULL|ATIVO|INATIVO|MATRICULADO|CURSANDO|TRANSFERIDO|MASCULINO|FEMININO|PENDENTE|RESPONSAVEL)$/.test(
+      sNorm
+    )
+  ) {
+    return false;
+  }
+
+  // 2. Números puros, CPF, telefone, CEP ou datas
+  if (
+    /^\d+$/.test(sNorm.replace(/[\s.()/-]+/g, "")) ||
+    /^\d{2}\/\d{2}\/\d{4}$/.test(sNorm) ||
+    /^\d{4}-\d{2}-\d{2}$/.test(sNorm)
+  ) {
+    return false;
+  }
+
+  // 3. Comparação direta com nome do estudante ou de qualquer responsável/filiação
+  const nomesProibidos = [
+    contexto.estudante,
+    contexto.nomeRegistro,
+    contexto.nomeSocial,
+    ...(Array.isArray(contexto.responsaveis) ? contexto.responsaveis : []),
+  ]
+    .map(norm)
+    .filter((n) => n.length >= 3);
+
+  for (const nomeProibido of nomesProibidos) {
+    if (sNorm === nomeProibido) return false;
+  }
+
+  // 4. Padrões típicos de endereço residencial (ex.: Quadra, Conjunto, Lote, Casa, SRL, Arapoanga)
+  if (
+    /\b(QUADRA|QD|CONJUNTO|CONJ|CJ|CASA|LOTE|LT|CHACARA|APTO|APARTAMENTO|BLOCO|AVENIDA|ESTRADA|RODOVIA|CONDOMINIO|RESIDENCIAL|FAZENDA|ESTANCIA|ARAPOANGA|PLANALTINA|JARDIM\s+RORIZ|MESTRE\s+D\s*ARMAS|SRL)\b/.test(
+      sNorm
+    )
+  ) {
+    return false;
+  }
+
+  // 5. Verifica se cada segmento contém sigla oficial isolada, código CID ou termo clínico/educacional AEE
+  const sProtegido = sNorm.replace(/\bAH\s*\/\s*SD\b/g, "AH_SD");
+  const segmentos = sProtegido
+    .split(/[,;|/]+/)
+    .map((seg) => seg.trim())
+    .filter(Boolean);
+
+  if (segmentos.length === 0) return false;
+
+  const REGEX_SIGLA_ISOLADA =
+    /^(TEA|TGD|DF|DI|DA|DV|BV|VM|SC|DMU|AH_SD|AH\s+SD|SD|TDAH|TDA|TOD|TPAC|DPAC|PAC|TDL|DEL|TFE|SURDEZ|CEGUEIRA)(\s*[-–:(].*)?$/;
+
+  const REGEX_CID = /\b(CID\s*[-:]?\s*[A-Z0-9]{2,6}|[FGHQ]\d{2}(\.\d+)?|6A\d{2}(\.\w+)?)\b/;
+
+  const REGEX_CLINICO_AEE =
+    /\b(TRANSTORN|DEFICIEN|AUTISM|ESPECTRO|ASPERGER|SINDROME\s+DE\s+RETT|DESINTEGRATIVO|SURDOCEGUEIR|SURDEZ|SURDO|SURDA|HIPOACUS|AUDITIV|AUDICAO|CEGUEIR|BAIXA\s+VISAO|VISAO\s+SUBNORMAL|VISAO\s+MONOCULAR|VISUAL|INTELECTUAL|MENTAL|FISIC|MOTOR|PARALISIA|OSTOMIA|MOBILIDADE|MULTIPL|ALTAS\s+HABILIDADES|SUPERDOT|SINDROME|TRISSOMIA|HIPERATIV|DEFICIT|ATENCAO|OPOSIT|DESAFIADOR|PROCESSAMENTO|LINGUAGEM|APRENDIZAGEM|DISLEX|DISCALCUL|DISGRAF|DISORTOGRAF|DISLAL|AFASIA|APRAXIA|DISFASIA|DISARTRIA|DISFLUENC|GAGUEIRA|MUTISMO|EPILEPS|CONVULS|ESQUIZOFREN|PSICOS|BIPOLAR|ANSIEDADE|DEPRESS|TOC|TOURETTE|NEURO|COGNITIV|ATRASO\s+(GLOBAL|NEURO|PSICOMOTOR|COGNITIV|DE\s+LINGUAGEM|DO\s+DESENVOLVIMENTO|MENTAL)|CADEIRANTE|CADEIRA\s+DE\s+RODAS|NANISMO|BAIXA\s+ESTATURA|MALFORMAC|AMPUTAC|HIDROCEFAL|MICROCEFAL|MIELOMENINGOCELE|DISTROFIA|ATROFIA|DISPLASIA|ESCLEROSE|FIBROSE|FIBROMIALG|ESCOLIOSE|CIFOSE|ARTRO|OSTEO|PLEGIA|PARESIA|ATAXIA|FISSURA|LABIOPALATIN|CARDIOPAT|NEFROPAT|HEPATOPAT|DIABET|HEMOFIL|FALCIFORME|CELIAC|COCLEAR|PROTESE|ORTESE|LIBRAS|BRAILLE|NECESSIDADES?\s+ESPECIAIS|EDUCACIONAL\s+ESPECIALIZAD|ATENDIMENTO\s+DIFERENCIAL|AEE|ANEE|ANEES)/;
+
+  return segmentos.some(
+    (seg) =>
+      REGEX_SIGLA_ISOLADA.test(seg) ||
+      REGEX_CID.test(seg) ||
+      REGEX_CLINICO_AEE.test(seg)
+  );
+}
+
+export function abreviarAneesEducaDF(raw, opcoes = {}) {
   const textoLimpo = limparTextoCsv(raw);
   if (!textoLimpo) {
-    return { siglas: [], textoSiglas: "", itens: [] };
+    return { siglas: [], textoSiglas: "", itens: [], valido: false };
+  }
+
+  const permitirTextoLivreManual = Boolean(opcoes.permitirTextoLivreManual);
+  const valido = ehValorAneesLegitimo(textoLimpo, opcoes.contexto || {});
+  if (!valido && !permitirTextoLivreManual) {
+    return { siglas: [], textoSiglas: "", itens: [], valido: false };
   }
 
   const REGRAS_ANEES = [
-    { sigla: "SC", descricao: "Surdocegueira", regex: /SURDOCEGUEIR|\bSC\b/ },
+    {
+      sigla: "SC",
+      descricao: "Surdocegueira",
+      regexFrase: /SURDOCEGUEIR/,
+      regexSigla: /^SC(\s*[-–:(].*)?$/,
+    },
     {
       sigla: "TEA",
       descricao: "Transtorno do Espectro Autista",
-      regex:
-        /\bTEA\b|ESPECTRO AUTISTA|\bAUTISM|\bASPERGER\b|SINDROME DE RETT|DESINTEGRATIVO DA INFANCIA/,
+      regexFrase:
+        /ESPECTRO AUTISTA|\bAUTISM|\bASPERGER\b|SINDROME DE RETT|DESINTEGRATIVO DA INFANCIA/,
+      regexSigla: /^TEA(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TGD",
       descricao: "Transtorno Global do Desenvolvimento",
-      regex: /\bTGD\b|GLOBAL DO DESENVOLVIMENTO/,
+      regexFrase: /GLOBAL DO DESENVOLVIMENTO/,
+      regexSigla: /^TGD(\s*[-–:(].*)?$/,
     },
     {
       sigla: "DF",
       descricao: "Deficiência Física",
-      regex:
-        /\bDF\b|DEFICIENCIA FISICA|DEFICIENCIA MOTORA|PARALISIA CEREBRAL|OSTOMIA|MOBILIDADE REDUZIDA/,
+      regexFrase:
+        /DEFICIENCIA FISICA|DEFICIENCIA MOTORA|PARALISIA CEREBRAL|OSTOMIA|MOBILIDADE REDUZIDA|\bCADEIRANTE\b/,
+      regexSigla: /^DF(\s*[-–:(].*)?$/,
     },
     {
       sigla: "DI",
       descricao: "Deficiência Intelectual",
-      regex: /\bDI\b|DEFICIENCIA INTELECTUAL|DEFICIENCIA MENTAL|ATRASO COGNITIVO/,
+      regexFrase: /DEFICIENCIA INTELECTUAL|DEFICIENCIA MENTAL|ATRASO COGNITIVO/,
+      regexSigla: /^DI(\s*[-–:(].*)?$/,
     },
     {
       sigla: "DA",
       descricao: "Deficiência Auditiva",
-      regex: /\bDA\b|DEFICIENCIA AUDITIVA|HIPOACUSIA/,
+      regexFrase: /DEFICIENCIA AUDITIVA|HIPOACUSIA/,
+      regexSigla: /^DA(\s*[-–:(].*)?$/,
     },
     {
       sigla: "SURDEZ",
       descricao: "Surdez",
-      regex: /\bSURDEZ\b/,
+      regexFrase: /\bSURDEZ\b/,
+      regexSigla: /^SURDEZ(\s*[-–:(].*)?$/,
       skipIfSurdocegueira: true,
     },
     {
       sigla: "BV",
       descricao: "Baixa Visão",
-      regex: /\bBV\b|BAIXA VISAO|VISAO SUBNORMAL/,
+      regexFrase: /BAIXA VISAO|VISAO SUBNORMAL/,
+      regexSigla: /^BV(\s*[-–:(].*)?$/,
     },
     {
       sigla: "VM",
       descricao: "Visão Monocular",
-      regex: /\bVM\b|VISAO MONOCULAR/,
+      regexFrase: /VISAO MONOCULAR/,
+      regexSigla: /^VM(\s*[-–:(].*)?$/,
     },
     {
       sigla: "DV",
       descricao: "Deficiência Visual",
-      regex: /\bDV\b|DEFICIENCIA VISUAL|\bCEGUEIRA\b/,
+      regexFrase: /DEFICIENCIA VISUAL|\bCEGUEIRA\b/,
+      regexSigla: /^DV(\s*[-–:(].*)?$/,
       skipIfSurdocegueira: true,
     },
     {
       sigla: "DMU",
       descricao: "Deficiência Múltipla",
-      regex: /\bDMU\b|DEFICIENCIAS? MULTIPLAS?/,
+      regexFrase: /DEFICIENCIAS? MULTIPLAS?/,
+      regexSigla: /^DMU(\s*[-–:(].*)?$/,
     },
     {
       sigla: "AH/SD",
       descricao: "Altas Habilidades / Superdotação",
-      regex: /\bAH\s*\/?\s*SD\b|ALTAS HABILIDADES|SUPERDOTAC/,
+      regexFrase: /ALTAS HABILIDADES|SUPERDOTAC/,
+      regexSigla: /^(AH_SD|AH\s+SD)(\s*[-–:(].*)?$/,
     },
     {
       sigla: "SD",
       descricao: "Síndrome de Down",
-      regex: /\bSD\b|SINDROME DE DOWN|TRISSOMIA DO 21/,
-      stripAhSdFirst: true,
+      regexFrase: /SINDROME DE DOWN|TRISSOMIA DO 21/,
+      regexSigla: /^SD(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TDAH",
       descricao: "Transtorno do Déficit de Atenção e Hiperatividade",
-      regex: /\bTDAH\b|\bTDA\b|DEFICIT DE ATENCAO|HIPERATIVIDADE/,
+      regexFrase: /\bTDAH\b|DEFICIT DE ATENCAO|HIPERATIVIDADE/,
+      regexSigla: /^(TDAH|TDA)(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TOD",
       descricao: "Transtorno Opositivo Desafiador",
-      regex: /\bTOD\b|OPOSITOR DESAFIADOR|OPOSITIVO DESAFIADOR|DESAFIADOR OPOSITIVO/,
+      regexFrase: /\bTOD\b|OPOSITOR DESAFIADOR|OPOSITIVO DESAFIADOR|DESAFIADOR OPOSITIVO/,
+      regexSigla: /^TOD(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TPAC",
       descricao: "Transtorno do Processamento Auditivo Central",
-      regex: /\bTPAC\b|\bDPAC\b|PROCESSAMENTO AUDITIVO CENTRAL/,
+      regexFrase: /\bTPAC\b|\bDPAC\b|PROCESSAMENTO AUDITIVO CENTRAL/,
+      regexSigla: /^(TPAC|DPAC|PAC)(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TDL",
       descricao: "Transtorno do Desenvolvimento da Linguagem",
-      regex: /\bTDL\b|\bDEL\b|DESENVOLVIMENTO DA LINGUAGEM|ESPECIFICO DE LINGUAGEM|TRANSTORNO DE LINGUAGEM/,
+      regexFrase: /DESENVOLVIMENTO DA LINGUAGEM|ESPECIFICO DE LINGUAGEM|TRANSTORNO DE LINGUAGEM/,
+      regexSigla: /^(TDL|DEL)(\s*[-–:(].*)?$/,
     },
-    { sigla: "DISLEXIA", descricao: "Dislexia", regex: /\bDISLEXIA\b/ },
-    { sigla: "DISCALCULIA", descricao: "Discalculia", regex: /\bDISCALCULIA\b/ },
-    { sigla: "DISGRAFIA", descricao: "Disgrafia", regex: /\bDISGRAFIA\b/ },
-    { sigla: "DISORTOGRAFIA", descricao: "Disortografia", regex: /\bDISORTOGRAFIA\b/ },
-    { sigla: "DISLALIA", descricao: "Dislalia", regex: /\bDISLALIA\b/ },
+    { sigla: "DISLEXIA", descricao: "Dislexia", regexFrase: /\bDISLEXIA\b/ },
+    { sigla: "DISCALCULIA", descricao: "Discalculia", regexFrase: /\bDISCALCULIA\b/ },
+    { sigla: "DISGRAFIA", descricao: "Disgrafia", regexFrase: /\bDISGRAFIA\b/ },
+    { sigla: "DISORTOGRAFIA", descricao: "Disortografia", regexFrase: /\bDISORTOGRAFIA\b/ },
+    { sigla: "DISLALIA", descricao: "Dislalia", regexFrase: /\bDISLALIA\b/ },
     {
       sigla: "TFE",
       descricao: "Transtorno Funcional Específico",
-      regex: /\bTFE\b|FUNCIONAL ESPECIFICO|ESPECIFICO DE APRENDIZAGEM/,
+      regexFrase: /FUNCIONAL ESPECIFICO|ESPECIFICO DE APRENDIZAGEM/,
+      regexSigla: /^TFE(\s*[-–:(].*)?$/,
     },
   ];
 
-  const segmentos = textoLimpo
-    .split(/[,;|]+/)
+  // Protege "AH/SD" e "ALTAS HABILIDADES/SUPERDOTAÇÃO" antes de dividir por separadores
+  const textoProtegido = textoLimpo
+    .replace(/\bAH\s*\/\s*SD\b/gi, "AH_SD")
+    .replace(/ALTAS\s+HABILIDADES\s*\/\s*SUPERDOTA/gi, "ALTAS HABILIDADES E SUPERDOTA");
+
+  const segmentos = textoProtegido
+    .split(/[,;|/]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 
   const vistos = new Set();
   const itens = [];
 
-  for (const seg of segmentos) {
-    const segNorm = seg
+  for (const segBruto of segmentos) {
+    const seg = segBruto.replace(/\bAH_SD\b/gi, "AH/SD");
+    const segNorm = segBruto
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .toUpperCase()
@@ -2247,13 +2447,13 @@ export function abreviarAneesEducaDF(raw) {
     if (!segNorm) continue;
 
     const temSurdocegueira = /SURDOCEGUEIR/.test(segNorm);
-    const segSemAhSd = segNorm.replace(/\bAH\s*\/?\s*SD\b/g, " ");
     let bateuRegra = false;
 
     for (const r of REGRAS_ANEES) {
       if (r.skipIfSurdocegueira && temSurdocegueira) continue;
-      const alvo = r.stripAhSdFirst ? segSemAhSd : segNorm;
-      if (r.regex.test(alvo)) {
+      const matchFrase = r.regexFrase ? r.regexFrase.test(segNorm) : false;
+      const matchSigla = r.regexSigla ? r.regexSigla.test(segNorm) : false;
+      if (matchFrase || matchSigla) {
         bateuRegra = true;
         if (!vistos.has(r.sigla)) {
           vistos.add(r.sigla);
@@ -2262,7 +2462,7 @@ export function abreviarAneesEducaDF(raw) {
       }
     }
 
-    if (!bateuRegra) {
+    if (!bateuRegra && (permitirTextoLivreManual || ehValorAneesLegitimo(seg, opcoes.contexto || {}))) {
       const fallback = seg
         .replace(/\s*[-–]?\s*(BAIXAS?|M[EÉ]DIAS?|ALTAS?)\s+NECESSIDADES?\s+ESPECIAIS?/gi, "")
         .trim();
@@ -2279,19 +2479,18 @@ export function abreviarAneesEducaDF(raw) {
     siglas,
     textoSiglas: siglas.join(", "),
     itens,
+    valido: itens.length > 0,
   };
 }
 
-function extrairAneesCsv(raw) {
+function extrairAneesCsv(raw, contexto = {}) {
   const s = limparTextoCsv(raw);
   if (!s) return { anees: null, aneesSigla: null, temAnees: false };
-  const semAnees =
-    /^(-+|n[aã]o(\s+possui|\s+consta|\s+informado|\s+se\s+aplica)?|nenhum[a]?|sem(\s+necessidade.*|\s+laudo|\s+atendimento)?|n\/?a|null)$/i.test(
-      s
-    );
-  if (semAnees) return { anees: null, aneesSigla: null, temAnees: false };
+  if (!ehValorAneesLegitimo(s, contexto)) {
+    return { anees: null, aneesSigla: null, temAnees: false };
+  }
   const anees = s.slice(0, 500);
-  const aneesSigla = abreviarAneesEducaDF(anees).textoSiglas || anees;
+  const aneesSigla = abreviarAneesEducaDF(anees, { contexto }).textoSiglas || anees;
   return { anees, aneesSigla, temAnees: true };
 }
 
@@ -2399,10 +2598,12 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
   const idxFil2Nome = headerNorm.findIndex((h) => /NOME\s+(DA\s+)?FILIACAO\s*2|^FILIACAO\s*2$/.test(h));
   const idxFil2CPF = headerNorm.findIndex((h) => /CPF\s+(DA\s+)?FILIACAO\s*2/.test(h));
   const idxEnd = headerNorm.findIndex((h) => /^ENDERECO|LOGRADOURO/.test(h));
-  const idxAnees = headerNorm.findIndex((h) =>
-    /^ANEES$|\bANEES\b|\bAEE\b|NECESSIDADES?\s+ESPECIAIS|ATENDIMENTO\s+EDUCACIONAL|ATENDIMENTO\s+DIFERENCIAL/.test(
-      h
-    )
+  const idxAnees = headerNorm.findIndex(
+    (h) =>
+      !/RESPONS|FILIACAO|ENDERECO|CONTATO|OUTRAS/.test(h) &&
+      /^ANEES$|\bANEES\b|\bAEE\b|NECESSIDADES?\s+ESPECIAIS|ATENDIMENTO\s+EDUCACIONAL|ATENDIMENTO\s+DIFERENCIAL/.test(
+        h
+      )
   );
 
   const normNomeChave = (s) =>
@@ -2463,18 +2664,56 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
         ? telDigits.substring(0, 20)
         : null;
 
-    const enderecoRaw = idxEnd >= 0 ? limparTextoCsv(campos[idxEnd]) : "";
+    // Proteção contra deslocamento de colunas quando algum campo anterior do CSV
+    // contiver ";" sem aspas (ex.: múltiplos telefones ou complemento de endereço)
+    const houveDeslocamentoColunas = campos.length > headerCols.length;
+    const idxAneesEfetivo =
+      idxAnees >= 0
+        ? houveDeslocamentoColunas && idxAnees === headerCols.length - 1
+          ? campos.length - 1
+          : idxAnees
+        : -1;
+
+    let nomeRespPrincipal =
+      idxResp >= 0 ? limparTextoCsv(campos[idxResp]).slice(0, 150) || null : null;
+    let cpfRespPrincipal = idxCPFR >= 0 ? validarCpf11Csv(campos[idxCPFR]) : null;
+    let enderecoRaw = idxEnd >= 0 ? limparTextoCsv(campos[idxEnd]) : "";
+
+    if (
+      houveDeslocamentoColunas &&
+      idxCPFR >= 0 &&
+      (!cpfRespPrincipal || !/[A-Za-zÀ-ÿ]{2,}/.test(nomeRespPrincipal || ""))
+    ) {
+      const inicioScanCpfResp = Math.max(idxSexo >= 0 ? idxSexo + 1 : 6, idxCPF >= 0 ? idxCPF + 1 : 5, 5);
+      const limiteScanCpfResp = idxAneesEfetivo > 0 ? idxAneesEfetivo - 1 : campos.length - 1;
+      for (let k = limiteScanCpfResp; k >= inicioScanCpfResp; k--) {
+        const candCpf = validarCpf11Csv(campos[k]);
+        const candNome = k - 1 > idxNome ? limparTextoCsv(campos[k - 1]).slice(0, 150) : "";
+        if (candCpf && candCpf !== cpfAluno && /[A-Za-zÀ-ÿ]{2,}/.test(candNome) && !/\d{4,}/.test(candNome)) {
+          cpfRespPrincipal = candCpf;
+          nomeRespPrincipal = candNome;
+          if (idxEnd > idxCPFR && k + 1 < (idxAneesEfetivo > 0 ? idxAneesEfetivo : campos.length)) {
+            const partesEnd = campos
+              .slice(k + 1, idxAneesEfetivo > 0 ? idxAneesEfetivo : campos.length)
+              .map(limparTextoCsv)
+              .filter(Boolean);
+            if (partesEnd.length > 0) {
+              enderecoRaw = partesEnd.join(" - ");
+            }
+          }
+          break;
+        }
+      }
+    }
+
     const endereco = enderecoRaw ? enderecoRaw.slice(0, 255) : null;
 
-    const { anees, aneesSigla, temAnees } =
-      idxAnees >= 0
-        ? extrairAneesCsv(campos[idxAnees])
-        : { anees: null, aneesSigla: null, temAnees: false };
+    const cpfFil1 = idxFil1CPF >= 0 ? validarCpf11Csv(campos[idxFil1CPF]) : null;
+    const nomeFil1 = idxFil1Nome >= 0 ? limparTextoCsv(campos[idxFil1Nome]).slice(0, 150) || null : null;
+    const cpfFil2 = idxFil2CPF >= 0 ? validarCpf11Csv(campos[idxFil2CPF]) : null;
+    const nomeFil2 = idxFil2Nome >= 0 ? limparTextoCsv(campos[idxFil2Nome]).slice(0, 150) || null : null;
 
     const responsaveisLinha = [];
-    const nomeRespPrincipal = idxResp >= 0 ? limparTextoCsv(campos[idxResp]).slice(0, 150) || null : null;
-    const cpfRespPrincipal = idxCPFR >= 0 ? validarCpf11Csv(campos[idxCPFR]) : null;
-
     if (cpfRespPrincipal) {
       anexarResponsavelUnico(responsaveisLinha, {
         cpf: cpfRespPrincipal,
@@ -2485,8 +2724,6 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
       });
     } else {
       // Fallback para Filiação 1 / Filiação 2 caso o CSV não traga CPF RESPONSÁVEL preenchido
-      const cpfFil1 = idxFil1CPF >= 0 ? validarCpf11Csv(campos[idxFil1CPF]) : null;
-      const nomeFil1 = idxFil1Nome >= 0 ? limparTextoCsv(campos[idxFil1Nome]).slice(0, 150) || null : null;
       if (cpfFil1) {
         anexarResponsavelUnico(responsaveisLinha, {
           cpf: cpfFil1,
@@ -2496,8 +2733,6 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
           relacionamento: "RESPONSAVEL",
         });
       }
-      const cpfFil2 = idxFil2CPF >= 0 ? validarCpf11Csv(campos[idxFil2CPF]) : null;
-      const nomeFil2 = idxFil2Nome >= 0 ? limparTextoCsv(campos[idxFil2Nome]).slice(0, 150) || null : null;
       if (cpfFil2) {
         anexarResponsavelUnico(responsaveisLinha, {
           cpf: cpfFil2,
@@ -2508,6 +2743,15 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
         });
       }
     }
+
+    const { anees, aneesSigla, temAnees } =
+      idxAneesEfetivo >= 0
+        ? extrairAneesCsv(campos[idxAneesEfetivo], {
+            estudante,
+            nomeSocial,
+            responsaveis: [nomeRespPrincipal, nomeFil1, nomeFil2].filter(Boolean),
+          })
+        : { anees: null, aneesSigla: null, temAnees: false };
 
     const chaveCpfNome = cpfAluno ? `${cpfAluno}|${normNomeChave(estudante)}` : null;
     const reCanonica =
@@ -2704,6 +2948,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
          a.nome_registro,
          a.usa_nome_social,
          a.nome_social,
+         a.anees,
+         a.atendimento_diferencial,
          'ativo' AS status
        FROM alunos a
        LEFT JOIN matriculas m
@@ -2724,6 +2970,8 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
          a.nome_registro,
          a.usa_nome_social,
          a.nome_social,
+         a.anees,
+         a.atendimento_diferencial,
          a.status AS aluno_status,
          a.turma_id AS aluno_turma_id,
          m.id AS matricula_id,
@@ -2843,6 +3091,19 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         if (e.temAnees && e.anees) {
           sets.push("anees = ?", "atendimento_diferencial = 1");
           params.push(e.anees);
+        } else if (
+          atual.anees &&
+          !ehValorAneesLegitimo(atual.anees, {
+            estudante: e.estudante,
+            nomeRegistro: atual.nome_registro,
+            nomeSocial: atual.nome_social || e.nomeSocial,
+            responsaveis: [
+              e.responsavel,
+              ...((e.responsaveis || []).map((r) => r.nome).filter(Boolean)),
+            ].filter(Boolean),
+          })
+        ) {
+          sets.push("anees = NULL", "atendimento_diferencial = 0");
         }
 
         params.push(atual.id, escola_id);
