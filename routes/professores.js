@@ -1139,11 +1139,12 @@ router.get("/me/disciplinas", autenticarToken, verificarEscola, async (req, res)
 });
 
 // ────────────────────────────────────────────────
-// PROFESSORES + CHAMADA DIGITAL (Multi-Escola + Governança Ano Letivo)
+// PROFESSORES + CHAMADA DIGITAL (Multi-Escola + Governança Ano Letivo + Grade Horária)
 // Integração direta com:
 // - governanca_ano_letivo_periodos (datas de início e término de cada bimestre/semestre)
 // - governanca_ano_letivo_excecoes (feriados/recessos status_letivo=0 e sábados letivos status_letivo=1)
-// - governanca_ano_letivo_horarios (quantidade de aulas e horário início/fim por turno)
+// - governanca_ano_letivo_horarios + grade_base (quantidade de aulas e horário início/fim por turno)
+// - grade_resultado + grade_slot (horário individual do professor: dias da semana, aulas e turmas)
 // - professores_chamada_aulas (persistência das chamadas lançadas pelo professor)
 // ────────────────────────────────────────────────
 let _chamadaTableReady = false;
@@ -1156,6 +1157,7 @@ async function ensureChamadaTable() {
       ano_letivo SMALLINT NOT NULL DEFAULT 2026,
       bimestre VARCHAR(30) NOT NULL,
       turma_id INT NOT NULL,
+      is_agrupamento TINYINT(1) NOT NULL DEFAULT 0,
       disciplina VARCHAR(150) NOT NULL,
       data_aula DATE NOT NULL,
       ordem_aula TINYINT NOT NULL DEFAULT 1,
@@ -1170,6 +1172,17 @@ async function ensureChamadaTable() {
       INDEX idx_chamada_contexto (escola_id, ano_letivo, turma_id, disciplina, bimestre)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  try {
+    await pool.query(
+      `ALTER TABLE professores_chamada_aulas ADD COLUMN IF NOT EXISTS is_agrupamento TINYINT(1) NOT NULL DEFAULT 0 AFTER turma_id`
+    );
+  } catch {
+    try {
+      await pool.query(
+        `ALTER TABLE professores_chamada_aulas ADD COLUMN is_agrupamento TINYINT(1) NOT NULL DEFAULT 0 AFTER turma_id`
+      );
+    } catch (_) {}
+  }
   _chamadaTableReady = true;
 }
 
@@ -1207,6 +1220,7 @@ async function carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo) {
     excecoes = eRows || [];
   } catch (_) {}
 
+  const turnosComGov = new Set();
   try {
     const [hRows] = await pool.query(
       `SELECT id, turno, quantidade_aulas, aulas_json, atualizado_por_nome,
@@ -1223,18 +1237,442 @@ async function carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo) {
       } catch {
         aulas = [];
       }
+      const tNorm = String(r.turno || "").toLowerCase().trim();
+      if (tNorm && Array.isArray(aulas) && aulas.length > 0) {
+        turnosComGov.add(tNorm);
+      }
       return {
         id: r.id,
         turno: r.turno,
         quantidade_aulas: Number(r.quantidade_aulas) || aulas.length,
         aulas: Array.isArray(aulas) ? aulas : [],
+        origem: "governanca",
         atualizado_por_nome: r.atualizado_por_nome,
         atualizado_em_fmt: r.atualizado_em_fmt,
       };
     });
   } catch (_) {}
 
+  // Fallback secundário: grade_base (Secretaria > Horários) para turnos sem registro direto na Governança
+  try {
+    const [gbRows] = await pool.query(
+      `SELECT LOWER(turno) AS turno, periodo_ordem AS numero,
+              TIME_FORMAT(hora_inicio, '%H:%i') AS inicio,
+              TIME_FORMAT(hora_fim, '%H:%i') AS fim
+         FROM grade_base
+        WHERE escola_id = ?
+        ORDER BY turno ASC, dia_semana ASC, periodo_ordem ASC`,
+      [escolaId]
+    );
+    const porTurnoGb = new Map();
+    for (const gb of gbRows || []) {
+      const t = String(gb.turno || "").toLowerCase().trim();
+      const num = Number(gb.numero);
+      if (!t || turnosComGov.has(t) || !num) continue;
+      if (!porTurnoGb.has(t)) porTurnoGb.set(t, new Map());
+      const m = porTurnoGb.get(t);
+      if (!m.has(num) && gb.inicio && gb.fim) {
+        m.set(num, { numero: num, inicio: gb.inicio, fim: gb.fim });
+      }
+    }
+    for (const [t, mapaAulas] of porTurnoGb.entries()) {
+      const aulasArr = Array.from(mapaAulas.values()).sort((a, b) => a.numero - b.numero);
+      if (aulasArr.length > 0) {
+        horarios.push({
+          id: null,
+          turno: t,
+          quantidade_aulas: aulasArr.length,
+          aulas: aulasArr,
+          origem: "grade_base",
+          atualizado_por_nome: "Secretaria > Horários",
+          atualizado_em_fmt: null,
+        });
+      }
+    }
+  } catch (_) {}
+
   return { periodos, excecoes, horarios };
+}
+
+/**
+ * Conecta SECRETARIA + HORÁRIOS (`grade_resultado` + `grade_slot`) direto na CHAMADA.
+ * Retorna todos os slots da grade horária do professor logado (ou da turma/disciplina consultada
+ * pela gestão), incluindo mapeamento automático para Agrupamentos / IFAs / Eletivas.
+ */
+async function carregarGradeHorariaProfessorChamada(
+  escolaId,
+  reqUser,
+  governancaHorarios = [],
+  turmaIdFiltro = 0,
+  disciplinaFiltro = "",
+  isAgrupamentoFiltro = false
+) {
+  const normTexto = (s) =>
+    String(s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  // Mapa rápido de horários por turno e ordem: mapaHorarios[turno][ordem] = { inicio, fim }
+  const mapaHorarios = {};
+  for (const hTurno of governancaHorarios || []) {
+    const tKey = String(hTurno?.turno || "").toLowerCase().trim();
+    if (!tKey) continue;
+    if (!mapaHorarios[tKey]) mapaHorarios[tKey] = {};
+    for (let i = 0; i < (hTurno.aulas || []).length; i++) {
+      const a = hTurno.aulas[i] || {};
+      const ord = Number(a.numero || a.ordem || i + 1);
+      if (ord > 0 && a.inicio) {
+        mapaHorarios[tKey][ord] = {
+          inicio: String(a.inicio).trim().slice(0, 5),
+          fim: a.fim ? String(a.fim).trim().slice(0, 5) : null,
+        };
+      }
+    }
+  }
+
+  // 1) Resolve o(s) ID(s) do professor logado via CPF
+  let cpf = reqUser?.cpf || null;
+  const userId =
+    reqUser?.id ||
+    reqUser?.usuario_id ||
+    reqUser?.userId ||
+    reqUser?.usuarioId ||
+    reqUser?.user_id ||
+    reqUser?.id_usuario ||
+    reqUser?.sub ||
+    null;
+
+  if (!cpf && userId) {
+    try {
+      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      if (urows?.[0]?.cpf) cpf = String(urows[0].cpf);
+    } catch (_) {}
+  }
+
+  const cleanCpf = String(cpf || "").replace(/\D/g, "");
+  let profRows = [];
+  if (cleanCpf) {
+    try {
+      const [byCpf] = await pool.query(
+        `SELECT id, nome, cpf
+           FROM professores
+          WHERE escola_id = ?
+            AND REPLACE(REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?`,
+        [escolaId, cleanCpf]
+      );
+      profRows = byCpf || [];
+    } catch (_) {}
+  }
+
+  // Se o usuário logado for da Gestão e não tiver registro em `professores`, mas selecionou turma_id + disciplina,
+  // descobre o professor titular daquela turma/disciplina na modulação ou na própria grade_slot
+  if (profRows.length === 0 && turmaIdFiltro > 0 && disciplinaFiltro) {
+    try {
+      if (isAgrupamentoFiltro) {
+        const [pAgr] = await pool.query(
+          `SELECT DISTINCT p.id, p.nome, p.cpf
+             FROM agrupamento_modulacao am
+             JOIN professores p ON p.id = am.professor_id
+             JOIN disciplinas d ON d.id = am.disciplina_id
+            WHERE am.agrupamento_id = ? AND p.escola_id = ? AND d.nome = ?
+            LIMIT 5`,
+          [turmaIdFiltro, escolaId, disciplinaFiltro]
+        );
+        if (pAgr?.length) profRows = pAgr;
+      } else {
+        const [pMod] = await pool.query(
+          `SELECT DISTINCT p.id, p.nome, p.cpf
+             FROM modulacao m
+             JOIN professores p ON p.id = m.professor_id
+             JOIN disciplinas d ON d.id = m.disciplina_id
+            WHERE m.turma_id = ? AND m.escola_id = ? AND d.nome = ?
+            LIMIT 5`,
+          [turmaIdFiltro, escolaId, disciplinaFiltro]
+        );
+        if (pMod?.length) profRows = pMod;
+      }
+    } catch (_) {}
+  }
+
+  const profIds = Array.from(new Set(profRows.map((p) => Number(p.id)).filter(Boolean)));
+  const professorNome = profRows[0]?.nome || null;
+
+  // 2) Busca os resultados ativos de grade_resultado por turno (prioriza 'publicado', fallback 'rascunho')
+  let resultadosAtivos = [];
+  try {
+    const [resRows] = await pool.query(
+      `SELECT id, LOWER(turno) AS turno, status, version,
+              DATE_FORMAT(COALESCE(published_at, updated_at), '%d/%m/%Y %H:%i') AS atualizado_em_fmt
+         FROM grade_resultado
+        WHERE escola_id = ? AND status IN ('publicado', 'rascunho')
+        ORDER BY turno ASC, FIELD(status, 'publicado', 'rascunho'), id DESC`,
+      [escolaId]
+    );
+    resultadosAtivos = resRows || [];
+  } catch (_) {
+    return {
+      possui_grade: false,
+      professor_nome: professorNome,
+      slots: [],
+      slots_contexto: [],
+      dias_semana_contexto: [],
+      ordens_por_dia_contexto: {},
+    };
+  }
+
+  if (resultadosAtivos.length === 0) {
+    return {
+      possui_grade: false,
+      professor_nome: professorNome,
+      slots: [],
+      slots_contexto: [],
+      dias_semana_contexto: [],
+      ordens_por_dia_contexto: {},
+    };
+  }
+
+  // Escolhe 1 resultado por turno (o 'publicado' se tiver slots do professor/turma, senão o 'rascunho')
+  const resIds = resultadosAtivos.map((r) => Number(r.id)).filter(Boolean);
+  const phRes = resIds.map(() => "?").join(",");
+
+  let rawSlots = [];
+  try {
+    if (profIds.length > 0) {
+      const phProf = profIds.map(() => "?").join(",");
+      const [sRows] = await pool.query(
+        `SELECT
+           gs.resultado_id,
+           LOWER(gr.turno) AS resultado_turno,
+           gr.status AS status_grade,
+           gs.turma_id,
+           t.nome AS turma_nome,
+           LOWER(COALESCE(t.turno, gr.turno)) AS turma_turno,
+           gs.dia_semana,
+           gs.periodo_ordem,
+           gs.disciplina_id,
+           d.nome AS disciplina_nome,
+           d.abreviatura AS disciplina_sigla,
+           gs.professor_id
+         FROM grade_slot gs
+         JOIN grade_resultado gr ON gr.id = gs.resultado_id
+         LEFT JOIN turmas t ON t.id = gs.turma_id
+         LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+        WHERE gs.resultado_id IN (${phRes})
+          AND gs.professor_id IN (${phProf})
+        ORDER BY gs.dia_semana ASC, gs.periodo_ordem ASC`,
+        [...resIds, ...profIds]
+      );
+      rawSlots = sRows || [];
+    } else if (turmaIdFiltro > 0) {
+      // Gestor visualizando turma sem professor identificado: busca slots da própria turma
+      const [sRows] = await pool.query(
+        `SELECT
+           gs.resultado_id,
+           LOWER(gr.turno) AS resultado_turno,
+           gr.status AS status_grade,
+           gs.turma_id,
+           t.nome AS turma_nome,
+           LOWER(COALESCE(t.turno, gr.turno)) AS turma_turno,
+           gs.dia_semana,
+           gs.periodo_ordem,
+           gs.disciplina_id,
+           d.nome AS disciplina_nome,
+           d.abreviatura AS disciplina_sigla,
+           gs.professor_id
+         FROM grade_slot gs
+         JOIN grade_resultado gr ON gr.id = gs.resultado_id
+         LEFT JOIN turmas t ON t.id = gs.turma_id
+         LEFT JOIN disciplinas d ON d.id = gs.disciplina_id
+        WHERE gs.resultado_id IN (${phRes})
+          AND gs.turma_id = ?
+        ORDER BY gs.dia_semana ASC, gs.periodo_ordem ASC`,
+        [...resIds, turmaIdFiltro]
+      );
+      rawSlots = sRows || [];
+    }
+  } catch (_) {}
+
+  // Filtra para manter apenas o melhor resultado de cada turno (publicado > rascunho)
+  const slotsPorResultado = new Map();
+  for (const s of rawSlots) {
+    const rid = Number(s.resultado_id);
+    if (!slotsPorResultado.has(rid)) slotsPorResultado.set(rid, []);
+    slotsPorResultado.get(rid).push(s);
+  }
+
+  const resultadosPorTurno = new Map();
+  for (const r of resultadosAtivos) {
+    const t = String(r.turno || "").toLowerCase().trim();
+    if (!resultadosPorTurno.has(t)) resultadosPorTurno.set(t, []);
+    resultadosPorTurno.get(t).push(r);
+  }
+
+  const slotsEscolhidos = [];
+  for (const [, cands] of resultadosPorTurno.entries()) {
+    const pub = cands.find((c) => c.status === "publicado" && (slotsPorResultado.get(Number(c.id)) || []).length > 0);
+    const draft = cands.find((c) => c.status === "rascunho" && (slotsPorResultado.get(Number(c.id)) || []).length > 0);
+    const chosen = pub || draft;
+    if (chosen) {
+      slotsEscolhidos.push(...(slotsPorResultado.get(Number(chosen.id)) || []));
+    }
+  }
+
+  // 3) Mapeia Agrupamentos do professor (caso o professor lecione em Agrupamento/IFA cujos slots estão nas turmas_origem)
+  const mapaTurmaOrigemParaAgrupamentos = new Map();
+  if (profIds.length > 0) {
+    try {
+      const phProf = profIds.map(() => "?").join(",");
+      const [agrRows] = await pool.query(
+        `SELECT
+           g.id AS agrupamento_id,
+           g.nome AS agrupamento_nome,
+           LOWER(g.turno) AS agrupamento_turno,
+           am.disciplina_id,
+           d.nome AS disciplina_nome,
+           GROUP_CONCAT(DISTINCT aa.turma_origem_id) AS turmas_origem_csv
+         FROM agrupamentos g
+         JOIN agrupamento_modulacao am ON am.agrupamento_id = g.id
+         LEFT JOIN disciplinas d ON d.id = am.disciplina_id
+         LEFT JOIN agrupamento_alunos aa ON aa.agrupamento_id = g.id AND aa.status = 'ativo'
+        WHERE g.escola_id = ?
+          AND COALESCE(g.status, 'ATIVO') <> 'ENCERRADO'
+          AND am.professor_id IN (${phProf})
+        GROUP BY g.id, am.disciplina_id`,
+        [escolaId, ...profIds]
+      );
+      for (const ar of agrRows || []) {
+        const origens = String(ar.turmas_origem_csv || "")
+          .split(",")
+          .map(Number)
+          .filter((n) => n > 0);
+        for (const tid of origens) {
+          if (!mapaTurmaOrigemParaAgrupamentos.has(tid)) {
+            mapaTurmaOrigemParaAgrupamentos.set(tid, []);
+          }
+          mapaTurmaOrigemParaAgrupamentos.get(tid).push({
+            agrupamento_id: Number(ar.agrupamento_id),
+            agrupamento_nome: ar.agrupamento_nome,
+            agrupamento_turno: ar.agrupamento_turno,
+            disciplina_id: Number(ar.disciplina_id),
+            disciplina_nome: ar.disciplina_nome || "",
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Formata os slots finais (incluindo espelhamento para agrupamento quando aplicável)
+  const slotsFormatados = [];
+  const seenKeys = new Set();
+
+  for (const s of slotsEscolhidos) {
+    const turnoKey = String(s.turma_turno || s.resultado_turno || "matutino").toLowerCase().trim();
+    const dia = Number(s.dia_semana);
+    const ordem = Number(s.periodo_ordem);
+    const hInfo = mapaHorarios[turnoKey]?.[ordem] || null;
+
+    const itemReg = {
+      turma_id: Number(s.turma_id),
+      turma_nome: s.turma_nome || `Turma ${s.turma_id}`,
+      is_agrupamento: false,
+      turno: turnoKey,
+      dia_semana: dia,
+      periodo_ordem: ordem,
+      hora_inicio: hInfo?.inicio || null,
+      hora_fim: hInfo?.fim || null,
+      disciplina_id: Number(s.disciplina_id),
+      disciplina_nome: s.disciplina_nome || "",
+      disciplina_sigla: s.disciplina_sigla || "",
+      status_grade: s.status_grade || "publicado",
+    };
+    const kReg = `reg_${itemReg.turma_id}_${itemReg.disciplina_id}_${dia}_${ordem}`;
+    if (!seenKeys.has(kReg)) {
+      seenKeys.add(kReg);
+      slotsFormatados.push(itemReg);
+    }
+
+    // Se esta turma_id faz parte de um agrupamento do professor na mesma disciplina, espelha para o agrupamento
+    const agrs = mapaTurmaOrigemParaAgrupamentos.get(Number(s.turma_id)) || [];
+    for (const ag of agrs) {
+      if (
+        ag.disciplina_id === Number(s.disciplina_id) ||
+        normTexto(ag.disciplina_nome) === normTexto(s.disciplina_nome)
+      ) {
+        const kAgr = `agr_${ag.agrupamento_id}_${ag.disciplina_id}_${dia}_${ordem}`;
+        if (!seenKeys.has(kAgr)) {
+          seenKeys.add(kAgr);
+          slotsFormatados.push({
+            turma_id: ag.agrupamento_id,
+            turma_nome: ag.agrupamento_nome,
+            is_agrupamento: true,
+            turno: ag.agrupamento_turno || turnoKey,
+            dia_semana: dia,
+            periodo_ordem: ordem,
+            hora_inicio: hInfo?.inicio || null,
+            hora_fim: hInfo?.fim || null,
+            disciplina_id: ag.disciplina_id,
+            disciplina_nome: ag.disciplina_nome || s.disciplina_nome || "",
+            disciplina_sigla: s.disciplina_sigla || "",
+            status_grade: s.status_grade || "publicado",
+          });
+        }
+      }
+    }
+  }
+
+  // 4) Filtra os slots específicos para (turmaIdFiltro + disciplinaFiltro) se fornecidos
+  const discAlvoNorm = normTexto(disciplinaFiltro);
+  let slotsContexto = [];
+  if (turmaIdFiltro > 0) {
+    slotsContexto = slotsFormatados.filter((sl) => {
+      if (Number(sl.turma_id) !== Number(turmaIdFiltro)) return false;
+      if (!discAlvoNorm) return true;
+      const slDiscNorm = normTexto(sl.disciplina_nome);
+      return (
+        slDiscNorm === discAlvoNorm ||
+        slDiscNorm.includes(discAlvoNorm) ||
+        discAlvoNorm.includes(slDiscNorm)
+      );
+    });
+
+    // Fallback: se o professor só leciona 1 disciplina nessa turma na grade, usa os slots dessa turma
+    if (slotsContexto.length === 0) {
+      const daTurma = slotsFormatados.filter((sl) => Number(sl.turma_id) === Number(turmaIdFiltro));
+      const discsDistintas = new Set(daTurma.map((sl) => sl.disciplina_id));
+      if (discsDistintas.size === 1) {
+        slotsContexto = daTurma;
+      }
+    }
+  }
+
+  const diasSemanaContexto = Array.from(
+    new Set(slotsContexto.map((s) => Number(s.dia_semana)).filter((d) => d >= 1 && d <= 6))
+  ).sort((a, b) => a - b);
+
+  const ordensPorDiaContexto = {};
+  for (const s of slotsContexto) {
+    const d = Number(s.dia_semana);
+    if (!ordensPorDiaContexto[d]) ordensPorDiaContexto[d] = [];
+    if (!ordensPorDiaContexto[d].includes(Number(s.periodo_ordem))) {
+      ordensPorDiaContexto[d].push(Number(s.periodo_ordem));
+    }
+  }
+  for (const d of Object.keys(ordensPorDiaContexto)) {
+    ordensPorDiaContexto[d].sort((a, b) => a - b);
+  }
+
+  return {
+    possui_grade: slotsFormatados.length > 0,
+    professor_nome: professorNome,
+    slots: slotsFormatados,
+    slots_contexto: slotsContexto,
+    dias_semana_contexto: diasSemanaContexto,
+    ordens_por_dia_contexto: ordensPorDiaContexto,
+  };
 }
 
 function validarDataLetivaGovernanca(dataIso, bimestreStr, governanca) {
@@ -1295,8 +1733,9 @@ function validarDataLetivaGovernanca(dataIso, bimestreStr, governanca) {
 }
 
 // GET /api/professores/me/chamada
-// Retorna a configuração do Ano Letivo da escola (períodos, exceções e horários por turno)
-// e, se turma_id + disciplina forem informados, retorna os registros de chamada salvos no banco.
+// Retorna a configuração do Ano Letivo da escola (períodos, exceções e horários por turno),
+// a Grade Horária do professor (`grade_horaria` de Secretaria > Horários) e,
+// se turma_id + disciplina forem informados, retorna os registros de chamada salvos no banco.
 router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => {
   try {
     const escolaId = Number(
@@ -1316,11 +1755,24 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
     const turmaId = Number(req.query.turma_id || 0);
     const disciplina = String(req.query.disciplina || "").trim();
     const bimestre = String(req.query.bimestre || "").trim();
+    const isAgrupamento =
+      req.query.is_agrupamento === "1" ||
+      req.query.is_agrupamento === "true" ||
+      req.query.is_agrupamento === true;
+
+    const gradeHoraria = await carregarGradeHorariaProfessorChamada(
+      escolaId,
+      req.user,
+      governanca.horarios,
+      turmaId,
+      disciplina,
+      isAgrupamento
+    );
 
     const registros = {};
     if (turmaId > 0 && disciplina) {
       let sql = `
-        SELECT id, bimestre, turma_id, disciplina,
+        SELECT id, bimestre, turma_id, is_agrupamento, disciplina,
                DATE_FORMAT(data_aula, '%Y-%m-%d') AS data_aula,
                ordem_aula, horario_inicio, horario_fim,
                confirmada, faltas_json, professor_nome,
@@ -1358,6 +1810,7 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
           confirmada: Boolean(Number(r.confirmada)),
           faltas: Array.isArray(faltas) ? faltas : [],
           bimestre: r.bimestre,
+          is_agrupamento: Boolean(Number(r.is_agrupamento || 0)),
           professor_nome: r.professor_nome,
           atualizado_em_fmt: r.atualizado_em_fmt,
         };
@@ -1368,6 +1821,7 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       ok: true,
       ano_letivo: anoLetivo,
       governanca,
+      grade_horaria: gradeHoraria,
       registros,
     });
   } catch (err) {
@@ -1393,6 +1847,7 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
       ano_letivo,
       bimestre,
       turma_id,
+      is_agrupamento,
       disciplina,
       aulas,
       ignorar_validacao_calendario,
@@ -1400,6 +1855,7 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
 
     const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
     const turmaId = Number(turma_id || 0);
+    const isAgrup = is_agrupamento ? 1 : 0;
     const discNorm = String(disciplina || "").trim();
     const bimNorm = String(bimestre || "1º Bimestre").trim();
 
@@ -1447,11 +1903,12 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
 
       await pool.query(
         `INSERT INTO professores_chamada_aulas
-          (escola_id, ano_letivo, bimestre, turma_id, disciplina, data_aula, ordem_aula,
+          (escola_id, ano_letivo, bimestre, turma_id, is_agrupamento, disciplina, data_aula, ordem_aula,
            horario_inicio, horario_fim, confirmada, faltas_json, professor_usuario_id, professor_nome)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            bimestre = VALUES(bimestre),
+           is_agrupamento = VALUES(is_agrupamento),
            horario_inicio = VALUES(horario_inicio),
            horario_fim = VALUES(horario_fim),
            confirmada = VALUES(confirmada),
@@ -1464,6 +1921,7 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
           anoLetivo,
           bimNorm,
           turmaId,
+          isAgrup,
           discNorm,
           a.data,
           ordem,
