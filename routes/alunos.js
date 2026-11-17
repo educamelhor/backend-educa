@@ -1182,9 +1182,28 @@ router.put("/:id", verificarEscola, async (req, res) => {
       );
     }
 
+    let turmaValidada = null;
+    if (typeof turma_id !== "undefined") {
+      const novaTurmaNum = Number(turma_id);
+      if (novaTurmaNum > 0) {
+        const [[tRow]] = await pool.query(
+          "SELECT id, nome, turno, ano FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+          [novaTurmaNum, escola_id]
+        );
+        if (!tRow) {
+          return res.status(400).json({ message: "Turma selecionada não encontrada nesta escola." });
+        }
+        turmaValidada = tRow;
+        campos.push("turma_id = ?");
+        valores.push(novaTurmaNum);
+      } else {
+        campos.push("turma_id = ?");
+        valores.push(null);
+      }
+    }
+
     if (typeof data_nascimento !== "undefined") { campos.push("data_nascimento = ?"); valores.push(data_nascimento || null); }
     if (typeof sexo !== "undefined") { campos.push("sexo = ?"); valores.push(sexo || null); }
-    if (typeof turma_id !== "undefined") { campos.push("turma_id = ?"); valores.push(turma_id || null); }
     if (typeof cpf !== "undefined") { campos.push("cpf = ?"); valores.push(cpf || null); }
     if (typeof atendimento_diferencial !== "undefined") { campos.push("atendimento_diferencial = ?"); valores.push(atendimento_diferencial ? 1 : 0); }
     if (typeof anees !== "undefined") {
@@ -1199,16 +1218,61 @@ router.put("/:id", verificarEscola, async (req, res) => {
       return res.status(400).json({ message: "Nada para atualizar." });
     }
 
-    valores.push(id, escola_id);
+    campos.push("escola_id = COALESCE(NULLIF(escola_id, 0), ?)");
+    valores.push(escola_id);
+
+    valores.push(id, escola_id, escola_id);
     await pool.query(
-      `UPDATE alunos SET ${campos.join(", ")} WHERE id = ? AND escola_id = ?`,
+      `UPDATE alunos
+          SET ${campos.join(", ")}
+        WHERE id = ?
+          AND (escola_id = ? OR id IN (SELECT aluno_id FROM matriculas WHERE escola_id = ?))`,
       valores
     );
 
-    // Quando o status muda para 'ativo' ou 'inativo', propaga também para a matrícula
-    // do ano letivo atual — pois o SELECT agora retorna m.status, não a.status.
-    if (typeof status !== "undefined" && (status === "ativo" || status === "inativo")) {
-      const anoLetivoAtual = anoLetivoPadrao();
+    // Sincroniza turma_id e/ou status na tabela `matriculas` do ano letivo correspondente,
+    // pois GET /api/alunos, diários, chamadas, Sala de Recursos e Educa Mobile leem `COALESCE(m.turma_id, a.turma_id)`.
+    const anoLetivoAtual = anoLetivoPadrao();
+    const anoMatriculaAlvo =
+      turmaValidada?.ano && Number(turmaValidada.ano) > 2000
+        ? Number(turmaValidada.ano)
+        : anoLetivoAtual;
+
+    if (turmaValidada) {
+      const statusNovoMatr =
+        typeof status !== "undefined" && (status === "ativo" || status === "inativo")
+          ? status
+          : null;
+
+      const [matrExistente] = await pool.query(
+        "SELECT id FROM matriculas WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ?",
+        [id, escola_id, anoMatriculaAlvo]
+      );
+
+      if (matrExistente.length > 0) {
+        if (statusNovoMatr) {
+          await pool.query(
+            `UPDATE matriculas
+                SET turma_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?`,
+            [turmaValidada.id, statusNovoMatr, matrExistente[0].id]
+          );
+        } else {
+          await pool.query(
+            `UPDATE matriculas
+                SET turma_id = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?`,
+            [turmaValidada.id, matrExistente[0].id]
+          );
+        }
+      } else {
+        await pool.query(
+          `INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status)
+           VALUES (?, ?, ?, ?, ?)`,
+          [escola_id, id, turmaValidada.id, anoMatriculaAlvo, statusNovoMatr || "ativo"]
+        );
+      }
+    } else if (typeof status !== "undefined" && (status === "ativo" || status === "inativo")) {
       await pool.query(
         `UPDATE matriculas
             SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -1367,6 +1431,7 @@ router.get("/:id", async (req, res) => {
   const { id } = req.params;
   try {
     await ensureNomeSocialReady();
+    const anoLetivoAtual = anoLetivoPadrao();
     const [[aluno]] = await pool.query(
       `
       SELECT
@@ -1383,7 +1448,7 @@ router.get("/:id", async (req, res) => {
         a.atendimento_diferencial,
         a.anees,
         a.foto,
-        a.status,
+        COALESCE(m.status, a.status, 'ativo') AS status,
         t.id AS turma_id,
         t.nome AS turma,
         t.turno,
@@ -1397,10 +1462,11 @@ router.get("/:id", async (req, res) => {
           0
         ) AS consentimento_imagem
       FROM alunos AS a
-      LEFT JOIN turmas AS t ON t.id = a.turma_id
+      LEFT JOIN matriculas AS m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ?
+      LEFT JOIN turmas AS t ON t.id = COALESCE(m.turma_id, a.turma_id)
       WHERE a.codigo = ?
       `,
-      [id]
+      [anoLetivoAtual, id]
     );
     if (!aluno) {
       return res.status(404).json({ message: "Aluno nÃ£o encontrado." });
