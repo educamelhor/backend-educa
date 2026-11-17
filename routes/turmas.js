@@ -173,46 +173,63 @@ router.get("/:id/alunos", verificarEscola, async (req, res) => {
     // Aceita 'ano' OU 'ano_letivo' (frontend pode enviar qualquer um dos dois)
     const anoLetivo = req.query.ano || req.query.ano_letivo || new Date().getFullYear();
 
-    // 1) Verifica se o ID pertence a uma turma de agrupamento
-    try {
-      const [[agr]] = await pool.query(
-        "SELECT id, nome, ano_letivo FROM agrupamentos WHERE id = ? AND escola_id = ?",
-        [id, escola_id]
-      );
+    const rawIsAgr = req.query.is_agrupamento;
+    const forceAgrupamento = rawIsAgr === "1" || rawIsAgr === "true" || rawIsAgr === true;
+    const forceRegular = rawIsAgr === "0" || rawIsAgr === "false" || rawIsAgr === false;
 
-      if (agr) {
-        const [rowsAgr] = await pool.query(
-          `
-          SELECT
-            a.id,
-            a.estudante AS nome,
-            a.codigo    AS matricula,
-            a.atendimento_diferencial,
-            a.foto,
-            aa.turma_origem_id,
-            t_origem.nome AS turma_origem_nome,
-            COALESCE((SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END) FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0) AS consentimento_imagem
-          FROM agrupamento_alunos aa
-          JOIN alunos a ON a.id = aa.aluno_id
-          LEFT JOIN turmas t_origem ON t_origem.id = aa.turma_origem_id
-          WHERE aa.agrupamento_id = ?
-            AND aa.escola_id = ?
-            AND aa.status = 'ativo'
-            AND (a.status = 'ativo' OR a.status IS NULL)
-          ORDER BY t_origem.nome ASC, a.estudante ASC
-          `,
-          [id, escola_id]
-        );
+    // 1) Verifica se o ID pertence a uma turma de agrupamento (respeitando ?is_agrupamento para evitar colisão de ID com turmas)
+    if (!forceRegular) {
+      try {
+        let deveConsultarAgrupamento = forceAgrupamento;
+        if (!deveConsultarAgrupamento) {
+          const [[turmaExiste]] = await pool.query(
+            "SELECT id FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+            [id, escola_id]
+          );
+          if (!turmaExiste) deveConsultarAgrupamento = true;
+        }
 
-        const aplicarLGPD = (lista) => lista.map(al => {
-          const ok = Number(al.consentimento_imagem) === 1;
-          return { ...al, foto: ok ? al.foto : null };
-        });
+        if (deveConsultarAgrupamento) {
+          const [[agr]] = await pool.query(
+            "SELECT id, nome, ano_letivo FROM agrupamentos WHERE id = ? AND escola_id = ?",
+            [id, escola_id]
+          );
 
-        return res.json({ ok: true, alunos: aplicarLGPD(rowsAgr), is_agrupamento: true });
+          if (agr) {
+            const [rowsAgr] = await pool.query(
+              `
+              SELECT
+                a.id,
+                a.estudante AS nome,
+                a.codigo    AS matricula,
+                a.atendimento_diferencial,
+                a.foto,
+                aa.turma_origem_id,
+                t_origem.nome AS turma_origem_nome,
+                COALESCE((SELECT MAX(CASE WHEN ra.consentimento_imagem = 1 AND ra.ativo = 1 THEN 1 ELSE 0 END) FROM responsaveis_alunos ra WHERE ra.aluno_id = a.id AND ra.escola_id = a.escola_id), 0) AS consentimento_imagem
+              FROM agrupamento_alunos aa
+              JOIN alunos a ON a.id = aa.aluno_id
+              LEFT JOIN turmas t_origem ON t_origem.id = aa.turma_origem_id
+              WHERE aa.agrupamento_id = ?
+                AND aa.escola_id = ?
+                AND aa.status = 'ativo'
+                AND (a.status = 'ativo' OR a.status IS NULL)
+              ORDER BY t_origem.nome ASC, a.estudante ASC
+              `,
+              [id, escola_id]
+            );
+
+            const aplicarLGPD = (lista) => lista.map(al => {
+              const ok = Number(al.consentimento_imagem) === 1;
+              return { ...al, foto: ok ? al.foto : null };
+            });
+
+            return res.json({ ok: true, alunos: aplicarLGPD(rowsAgr), is_agrupamento: true });
+          }
+        }
+      } catch (agrErr) {
+        console.warn("[turmas/:id/alunos] Fallback agrupamentos:", agrErr.message);
       }
-    } catch (agrErr) {
-      console.warn("[turmas/:id/alunos] Fallback agrupamentos:", agrErr.message);
     }
 
     // Query principal: status 'ativo' OU 'matriculado'

@@ -74,50 +74,155 @@ router.get('/turma/:turmaId', async (req, res) => {
     const { escola_id } = req.user;
     const turmaId = Number(req.params.turmaId);
     const anoEfetivo = req.query.ano || req.query.ano_letivo ? Number(req.query.ano || req.query.ano_letivo) : anoLetivoPadrao();
+    const isAgrupamento =
+      req.query.is_agrupamento === '1' ||
+      req.query.is_agrupamento === 'true' ||
+      req.query.is_agrupamento === true;
 
     if (!turmaId || Number.isNaN(turmaId)) {
       return res.status(400).json({ ok: false, message: 'ID da turma inválido.' });
     }
 
-    // 1. Dados da turma
-    const [[turma]] = await pool.query(
-      `SELECT id, nome, serie, turno, etapa, ano, COALESCE(regime, 'anual') AS regime
-       FROM turmas
-       WHERE id = ? AND escola_id = ?
-       LIMIT 1`,
-      [turmaId, escola_id]
-    );
+    // 1. Dados da turma regular ou agrupamento (IFA / Eletiva / Projeto)
+    let turma = null;
+    let alunos = [];
+    let idsDisciplinasAgrupamento = null;
 
-    if (!turma) {
-      return res.status(404).json({ ok: false, message: 'Turma não encontrada nesta escola.' });
+    if (isAgrupamento) {
+      const [[agr]] = await pool.query(
+        `SELECT g.id, g.nome, NULL AS serie, g.turno,
+                COALESCE(e.nome, 'MÉDIO') AS etapa,
+                g.ano_letivo AS ano,
+                CASE WHEN COALESCE(g.semestre, 0) IN (1, 2) THEN 'semestral' ELSE 'anual' END AS regime,
+                g.tipo AS agrupamento_tipo,
+                COALESCE(g.semestre, 0) AS semestre
+           FROM agrupamentos g
+           LEFT JOIN etapas e ON e.id = g.etapa_id
+          WHERE g.id = ? AND g.escola_id = ?
+          LIMIT 1`,
+        [turmaId, escola_id]
+      );
+
+      if (!agr) {
+        return res.status(404).json({ ok: false, message: 'Agrupamento não encontrado nesta escola.' });
+      }
+      turma = { ...agr, is_agrupamento: true };
+
+      const [rowsAgr] = await pool.query(
+        `SELECT DISTINCT
+           a.id AS aluno_id,
+           a.codigo,
+           a.estudante AS nome,
+           a.foto,
+           a.status,
+           t_origem.nome AS turma_origem_nome
+          FROM agrupamento_alunos aa
+          JOIN alunos a ON a.id = aa.aluno_id
+          LEFT JOIN turmas t_origem ON t_origem.id = aa.turma_origem_id
+         WHERE aa.agrupamento_id = ?
+           AND aa.escola_id = ?
+           AND aa.status = 'ativo'
+           AND (a.status = 'ativo' OR a.status IS NULL)
+         ORDER BY t_origem.nome ASC, a.estudante ASC`,
+        [turmaId, escola_id]
+      );
+      alunos = rowsAgr || [];
+
+      try {
+        const [discAgrRows] = await pool.query(
+          `SELECT DISTINCT disciplina_id FROM (
+             SELECT disciplina_id FROM agrupamento_modulacao WHERE agrupamento_id = ?
+             UNION
+             SELECT disciplina_id FROM agrupamento_componentes WHERE agrupamento_id = ?
+           ) u WHERE disciplina_id IS NOT NULL`,
+          [turmaId, turmaId]
+        );
+        const ids = (discAgrRows || []).map((r) => Number(r.disciplina_id)).filter(Boolean);
+        if (ids.length > 0) idsDisciplinasAgrupamento = ids;
+      } catch (_) {}
+    } else {
+      const [[tReg]] = await pool.query(
+        `SELECT id, nome, serie, turno, etapa, ano, COALESCE(regime, 'anual') AS regime
+         FROM turmas
+         WHERE id = ? AND escola_id = ?
+         LIMIT 1`,
+        [turmaId, escola_id]
+      );
+
+      if (!tReg) {
+        return res.status(404).json({ ok: false, message: 'Turma não encontrada nesta escola.' });
+      }
+      turma = { ...tReg, is_agrupamento: false };
+
+      const sqlAlunos = `
+        SELECT DISTINCT
+          a.id AS aluno_id,
+          a.codigo,
+          a.estudante AS nome,
+          a.foto,
+          a.status,
+          NULL AS turma_origem_nome
+        FROM alunos a
+        LEFT JOIN matriculas m 
+          ON m.aluno_id = a.id 
+         AND m.escola_id = a.escola_id 
+         AND m.ano_letivo = ?
+         AND m.status IN ('ativo', 'matriculado')
+        WHERE (m.turma_id = ? OR (m.turma_id IS NULL AND a.turma_id = ?))
+          AND a.escola_id = ?
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        ORDER BY a.estudante ASC
+      `;
+      const [rowsReg] = await pool.query(sqlAlunos, [anoEfetivo, turmaId, turmaId, escola_id]);
+      alunos = rowsReg || [];
     }
 
-    // 2. Busca estudantes vinculados à turma (matriculas ativas ou alunos.turma_id)
-    const sqlAlunos = `
-      SELECT DISTINCT
-        a.id AS aluno_id,
-        a.codigo,
-        a.estudante AS nome,
-        a.foto,
-        a.status
-      FROM alunos a
-      LEFT JOIN matriculas m 
-        ON m.aluno_id = a.id 
-       AND m.escola_id = a.escola_id 
-       AND m.ano_letivo = ?
-       AND m.status IN ('ativo', 'matriculado')
-      WHERE (m.turma_id = ? OR (m.turma_id IS NULL AND a.turma_id = ?))
-        AND a.escola_id = ?
-        AND (a.status = 'ativo' OR a.status IS NULL)
-      ORDER BY a.estudante ASC
-    `;
-
-    const [alunos] = await pool.query(sqlAlunos, [anoEfetivo, turmaId, turmaId, escola_id]);
+    // Telemetria da Chamada Digital (`professores_chamada_aulas`) para a turma/agrupamento
+    let chamadaOnline = {
+      total_aulas_lancadas: 0,
+      ultima_atualizacao_fmt: null,
+      por_disciplina: {},
+    };
+    try {
+      const [chRows] = await pool.query(
+        `SELECT disciplina,
+                COUNT(*) AS qtd_aulas,
+                DATE_FORMAT(MAX(atualizado_em), '%d/%m/%Y %H:%i') AS ultima_fmt,
+                MAX(atualizado_em) AS max_ts
+           FROM professores_chamada_aulas
+          WHERE escola_id = ?
+            AND ano_letivo = ?
+            AND turma_id = ?
+            AND COALESCE(is_agrupamento, 0) = ?
+            AND confirmada = 1
+          GROUP BY disciplina`,
+        [escola_id, anoEfetivo, turmaId, isAgrupamento ? 1 : 0]
+      );
+      let maiorTs = null;
+      let maiorFmt = null;
+      let somaAulas = 0;
+      const mapaDisc = {};
+      for (const c of chRows || []) {
+        const q = Number(c.qtd_aulas || 0);
+        somaAulas += q;
+        mapaDisc[norm(c.disciplina)] = q;
+        if (!maiorTs || (c.max_ts && c.max_ts > maiorTs)) {
+          maiorTs = c.max_ts;
+          maiorFmt = c.ultima_fmt;
+        }
+      }
+      chamadaOnline = {
+        total_aulas_lancadas: somaAulas,
+        ultima_atualizacao_fmt: maiorFmt,
+        por_disciplina: mapaDisc,
+      };
+    } catch (_) {}
 
     if (!alunos.length) {
       return res.json({
         ok: true,
         turma,
+        chamada_online: chamadaOnline,
         ano_letivo: anoEfetivo,
         total_alunos: 0,
         estudantes: [],
@@ -127,24 +232,57 @@ router.get('/turma/:turmaId', async (req, res) => {
     const alunoIds = alunos.map((al) => al.aluno_id);
 
     // 3. Busca faltas na tabela notas agrupadas por aluno, disciplina e bimestre
-    const [notasRows] = await pool.query(
-      `SELECT
-         n.aluno_id,
-         n.disciplina_id,
-         d.nome AS disciplina_nome,
-         n.bimestre,
-         COALESCE(n.faltas, 0) AS faltas
-       FROM notas n
-       LEFT JOIN disciplinas d ON d.id = n.disciplina_id
-       WHERE n.aluno_id IN (?)
-         AND n.escola_id = ?
-         AND n.ano = ?
-         AND n.faltas IS NOT NULL
-       ORDER BY d.nome ASC`,
-      [alunoIds, escola_id, anoEfetivo]
-    );
+    let sqlNotas = `
+      SELECT
+        n.aluno_id,
+        n.disciplina_id,
+        d.nome AS disciplina_nome,
+        n.bimestre,
+        COALESCE(n.faltas, 0) AS faltas
+      FROM notas n
+      LEFT JOIN disciplinas d ON d.id = n.disciplina_id
+      WHERE n.aluno_id IN (?)
+        AND n.escola_id = ?
+        AND n.ano = ?
+        AND n.faltas IS NOT NULL
+    `;
+    const paramsNotas = [alunoIds, escola_id, anoEfetivo];
+    if (Array.isArray(idsDisciplinasAgrupamento) && idsDisciplinasAgrupamento.length > 0) {
+      sqlNotas += ` AND n.disciplina_id IN (?)`;
+      paramsNotas.push(idsDisciplinasAgrupamento);
+    }
+    sqlNotas += ` ORDER BY d.nome ASC`;
 
-    // 4. Busca atestados / justificativas de faltas (frequencia_justificativas) com quebra bimestral
+    const [notasRows] = await pool.query(sqlNotas, paramsNotas);
+
+    // 4. Busca períodos oficiais de Governança > Ano Letivo + atestados (frequencia_justificativas)
+    let periodosBimestresGov = [];
+    try {
+      const [pRows] = await pool.query(
+        `SELECT numero,
+                DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio,
+                DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim
+           FROM governanca_ano_letivo_periodos
+          WHERE escola_id = ? AND ano_letivo = ? AND tipo = 'bimestre'
+          ORDER BY numero ASC`,
+        [escola_id, anoEfetivo]
+      );
+      periodosBimestresGov = (pRows || []).filter((p) => p.data_inicio && p.data_fim);
+    } catch (_) {}
+
+    const classificarDataEmBimestre = (isoStr, mesNum) => {
+      if (periodosBimestresGov.length > 0 && isoStr) {
+        const enc = periodosBimestresGov.find(
+          (p) => isoStr >= p.data_inicio && isoStr <= p.data_fim
+        );
+        if (enc) return Number(enc.numero) || 1;
+      }
+      if (mesNum <= 4) return 1;
+      if (mesNum <= 7) return 2;
+      if (mesNum <= 9) return 3;
+      return 4;
+    };
+
     const justificativasMap = {};
     for (const id of alunoIds) {
       justificativasMap[id] = {
@@ -165,6 +303,8 @@ router.get('/turma/:turmaId', async (req, res) => {
            id,
            aluno_id,
            tipo,
+           DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio_iso,
+           DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim_iso,
            data_inicio,
            data_fim,
            COALESCE(dias, 1) AS dias,
@@ -186,44 +326,31 @@ router.get('/turma/:turmaId', async (req, res) => {
         justificativasMap[aId].detalhes.push({
           id: row.id,
           tipo: row.tipo,
-          data_inicio: row.data_inicio,
-          data_fim: row.data_fim,
+          data_inicio: row.data_inicio_iso || row.data_inicio,
+          data_fim: row.data_fim_iso || row.data_fim,
           dias: totalDias,
           observacao: row.observacao,
         });
 
-        // Formata data_inicio YYYY-MM-DD
-        let dtInicioStr = null;
-        if (row.data_inicio) {
-          if (row.data_inicio instanceof Date) {
-            const y = row.data_inicio.getUTCFullYear();
-            const m = String(row.data_inicio.getUTCMonth() + 1).padStart(2, '0');
-            const d = String(row.data_inicio.getUTCDate()).padStart(2, '0');
-            dtInicioStr = `${y}-${m}-${d}`;
-          } else {
-            dtInicioStr = String(row.data_inicio).slice(0, 10);
-          }
-        }
+        const dtInicioStr = row.data_inicio_iso || (row.data_inicio ? String(row.data_inicio).slice(0, 10) : null);
 
         if (dtInicioStr && /^\d{4}-\d{2}-\d{2}$/.test(dtInicioStr)) {
           const [anoPart, mesPart, diaPart] = dtInicioStr.split('-').map(Number);
 
-          // Distribui os dias no calendário bimestral escolar
+          // Distribui os dias no calendário bimestral escolar (priorizando Governança > Ano Letivo)
           for (let step = 0; step < totalDias; step++) {
             const curDate = new Date(Date.UTC(anoPart, mesPart - 1, diaPart + step));
             const cAno = curDate.getUTCFullYear();
-            const cMes = curDate.getUTCMonth() + 1; // 1-12
+            const cMes = curDate.getUTCMonth() + 1;
+            const cDia = curDate.getUTCDate();
+            const cIso = `${cAno}-${String(cMes).padStart(2, '0')}-${String(cDia).padStart(2, '0')}`;
 
             if (cAno === anoEfetivo) {
-              if (cMes <= 4) {
-                justificativasMap[aId].b1 += 1;
-              } else if (cMes <= 7) {
-                justificativasMap[aId].b2 += 1;
-              } else if (cMes <= 9) {
-                justificativasMap[aId].b3 += 1;
-              } else {
-                justificativasMap[aId].b4 += 1;
-              }
+              const bimAlvo = classificarDataEmBimestre(cIso, cMes);
+              if (bimAlvo === 1) justificativasMap[aId].b1 += 1;
+              else if (bimAlvo === 2) justificativasMap[aId].b2 += 1;
+              else if (bimAlvo === 3) justificativasMap[aId].b3 += 1;
+              else justificativasMap[aId].b4 += 1;
               justificativasMap[aId].total += 1;
             }
           }
@@ -239,8 +366,6 @@ router.get('/turma/:turmaId', async (req, res) => {
     }
 
     // 5. Agrega faltas por aluno
-    // Estrutura por aluno:
-    // { b1: 0, b2: 0, b3: 0, b4: 0, total: 0, disciplinas: { [discId]: { nome, b1, b2, b3, b4, total } } }
     const faltasPorAluno = {};
     for (const id of alunoIds) {
       faltasPorAluno[id] = {
@@ -262,18 +387,17 @@ router.get('/turma/:turmaId', async (req, res) => {
 
       if (!faltasPorAluno[aId]) continue;
 
-      // Soma por bimestre global
       if (bNum === 1) faltasPorAluno[aId].b1 += faltasNum;
       else if (bNum === 2) faltasPorAluno[aId].b2 += faltasNum;
       else if (bNum === 3) faltasPorAluno[aId].b3 += faltasNum;
       else if (bNum === 4) faltasPorAluno[aId].b4 += faltasNum;
       faltasPorAluno[aId].total += faltasNum;
 
-      // Detalhamento por disciplina
       if (!faltasPorAluno[aId].disciplinas[dId]) {
         faltasPorAluno[aId].disciplinas[dId] = {
           id: dId,
           nome: dNome,
+          aulas_chamada_ano: chamadaOnline.por_disciplina[norm(dNome)] || 0,
           b1: 0,
           b2: 0,
           b3: 0,
@@ -301,6 +425,7 @@ router.get('/turma/:turmaId', async (req, res) => {
         nome: al.nome,
         foto: al.foto || null,
         status: al.status || 'ativo',
+        turma_origem_nome: al.turma_origem_nome || null,
         faltas: {
           b1: f.b1,
           b2: f.b2,
@@ -316,6 +441,7 @@ router.get('/turma/:turmaId', async (req, res) => {
     return res.json({
       ok: true,
       turma,
+      chamada_online: chamadaOnline,
       ano_letivo: anoEfetivo,
       total_alunos: estudantes.length,
       estudantes,

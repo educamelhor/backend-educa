@@ -105,24 +105,54 @@ router.get("/justificativas", async (req, res) => {
 
       if (cleanCpf) {
         sql += `
-          AND fj.turma_id IN (
-            SELECT DISTINCT t2.id FROM turmas t2
-            WHERE t2.escola_id = ? AND t2.ano = ?
-              AND (
-                t2.id IN (
-                  SELECT p.turma_id FROM professores p
-                  WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
+          AND (
+            fj.turma_id IN (
+              SELECT DISTINCT t2.id FROM turmas t2
+              WHERE t2.escola_id = ? AND t2.ano = ?
+                AND (
+                  t2.id IN (
+                    SELECT p.turma_id FROM professores p
+                    WHERE p.escola_id = ? AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+                  )
+                  OR
+                  t2.id IN (
+                    SELECT m.turma_id FROM modulacao m
+                    JOIN professores p ON p.id = m.professor_id
+                    WHERE p.escola_id = ? AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+                  )
                 )
-                OR
-                t2.id IN (
-                  SELECT m.turma_id FROM modulacao m
-                  JOIN professores p ON p.id = m.professor_id
-                  WHERE p.escola_id = ? AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-                )
-              )
+            )
+            OR fj.aluno_id IN (
+              SELECT m2.aluno_id
+              FROM matriculas m2
+              JOIN modulacao md ON md.turma_id = m2.turma_id AND md.escola_id = m2.escola_id
+              JOIN professores p2 ON p2.id = md.professor_id
+              WHERE m2.escola_id = ? AND m2.ano_letivo = ?
+                AND REPLACE(REPLACE(REPLACE(REPLACE(p2.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+            )
+            OR fj.aluno_id IN (
+              SELECT aa.aluno_id
+              FROM agrupamento_alunos aa
+              JOIN agrupamento_modulacao am ON am.agrupamento_id = aa.agrupamento_id
+              JOIN professores p3 ON p3.id = am.professor_id
+              WHERE aa.escola_id = ? AND aa.status = 'ativo'
+                AND REPLACE(REPLACE(REPLACE(REPLACE(p3.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+            )
           )
         `;
-        params.push(escola_id, anoLetivo, escola_id, cleanCpf, escola_id, cleanCpf);
+        params.push(
+          escola_id,
+          anoLetivo,
+          escola_id,
+          cleanCpf,
+          escola_id,
+          cleanCpf,
+          escola_id,
+          anoLetivo,
+          cleanCpf,
+          escola_id,
+          cleanCpf
+        );
       } else {
         // CPF não encontrado: retorna lista vazia por segurança (LGPD — fail-safe)
         return res.json([]);
@@ -130,8 +160,12 @@ router.get("/justificativas", async (req, res) => {
     }
 
     if (turma_id) {
-      sql += " AND fj.turma_id = ?";
-      params.push(turma_id);
+      sql += ` AND (fj.turma_id = ? OR fj.aluno_id IN (
+        SELECT m_f.aluno_id FROM matriculas m_f WHERE m_f.turma_id = ? AND m_f.escola_id = ?
+        UNION
+        SELECT aa_f.aluno_id FROM agrupamento_alunos aa_f WHERE aa_f.agrupamento_id = ? AND aa_f.escola_id = ? AND aa_f.status = 'ativo'
+      ))`;
+      params.push(turma_id, turma_id, escola_id, turma_id, escola_id);
     }
     if (tipo) {
       sql += " AND fj.tipo = ?";
@@ -407,37 +441,126 @@ router.delete("/busca-ativa/:id", apenasLeituraProfessor, async (req, res) => {
 // GET /api/frequencia/relatorios/faltosos
 router.get("/relatorios/faltosos", async (req, res) => {
   try {
-    const { escola_id, turma_id } = req.query;
+    const { escola_id, turma_id, periodo = "ano_letivo" } = req.query;
     if (!escola_id) return res.status(400).json({ error: "escola_id obrigatório" });
+
+    const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
+
+    // Determina filtro de bimestres conforme período solicitado (conectado à Governança > Ano Letivo)
+    let bimestresFiltro = [1, 2, 3, 4];
+    let cargaAulasReferencia = 1000; // Carga anual de referência (200 dias * 5h-aula)
+    try {
+      const hoje = new Date().toISOString().slice(0, 10);
+      const [pRows] = await req.db.query(
+        `SELECT numero,
+                DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio,
+                DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim
+           FROM governanca_ano_letivo_periodos
+          WHERE escola_id = ? AND ano_letivo = ? AND tipo = 'bimestre'
+          ORDER BY numero ASC`,
+        [escola_id, anoLetivo]
+      );
+      const perVigente = (pRows || []).find(
+        (p) => p.data_inicio && p.data_fim && hoje >= p.data_inicio && hoje <= p.data_fim
+      );
+      const mesAtual = new Date().getMonth() + 1;
+      const bimAtual = perVigente
+        ? Number(perVigente.numero)
+        : mesAtual <= 4
+        ? 1
+        : mesAtual <= 7
+        ? 2
+        : mesAtual <= 9
+        ? 3
+        : 4;
+
+      if (periodo === "bimestre_atual") {
+        bimestresFiltro = [bimAtual];
+        cargaAulasReferencia = 250;
+      } else if (periodo === "semestre") {
+        bimestresFiltro = bimAtual <= 2 ? [1, 2] : [3, 4];
+        cargaAulasReferencia = 500;
+      }
+    } catch (_) {}
+
+    const phBim = bimestresFiltro.map(() => "?").join(",");
 
     let sql = `
       SELECT
         a.id AS aluno_id,
         a.estudante AS aluno_nome,
-        t.nome AS turma_nome,
-        COUNT(fj.id) AS total_faltas,
-        SUM(fj.dias) AS total_dias_falta,
-        SUM(CASE WHEN fj.tipo IS NOT NULL THEN fj.dias ELSE 0 END) AS justificadas,
-        0 AS nao_justificadas,
-        '—' AS percentual_frequencia
+        COALESCE(t_mat.nome, t_al.nome, '—') AS turma_nome,
+        COALESCE(nf.total_faltas, 0) AS total_faltas,
+        COALESCE(jf.dias_justificados, 0) AS justificadas
       FROM alunos a
-      LEFT JOIN turmas t ON a.turma_id = t.id
-      LEFT JOIN frequencia_justificativas fj ON fj.aluno_id = a.id AND fj.escola_id = a.escola_id
-      WHERE a.escola_id = ? AND a.ativo = 1
+      LEFT JOIN matriculas m
+        ON m.aluno_id = a.id
+       AND m.escola_id = a.escola_id
+       AND m.ano_letivo = ?
+       AND m.status IN ('ativo', 'matriculado')
+      LEFT JOIN turmas t_mat ON t_mat.id = m.turma_id
+      LEFT JOIN turmas t_al ON t_al.id = a.turma_id
+      LEFT JOIN (
+        SELECT aluno_id, SUM(COALESCE(faltas, 0)) AS total_faltas
+          FROM notas
+         WHERE escola_id = ? AND ano = ? AND bimestre IN (${phBim})
+         GROUP BY aluno_id
+      ) nf ON nf.aluno_id = a.id
+      LEFT JOIN (
+        SELECT aluno_id, SUM(COALESCE(dias, 1)) AS dias_justificados
+          FROM frequencia_justificativas
+         WHERE escola_id = ? AND (YEAR(data_inicio) = ? OR YEAR(data_fim) = ?)
+         GROUP BY aluno_id
+      ) jf ON jf.aluno_id = a.id
+      WHERE a.escola_id = ?
+        AND (a.status = 'ativo' OR a.status IS NULL)
     `;
-    const params = [escola_id];
 
-    if (turma_id) { sql += " AND a.turma_id = ?"; params.push(turma_id); }
+    const params = [
+      anoLetivo,
+      escola_id,
+      anoLetivo,
+      ...bimestresFiltro,
+      escola_id,
+      anoLetivo,
+      anoLetivo,
+      escola_id,
+    ];
+
+    if (turma_id) {
+      sql += " AND (m.turma_id = ? OR (m.turma_id IS NULL AND a.turma_id = ?))";
+      params.push(turma_id, turma_id);
+    }
 
     sql += `
-      GROUP BY a.id, a.estudante, t.nome
       HAVING total_faltas > 0
-      ORDER BY total_dias_falta DESC
+      ORDER BY total_faltas DESC
       LIMIT 100
     `;
 
     const [rows] = await req.db.query(sql, params);
-    res.json(rows);
+    const formatados = (rows || []).map((r) => {
+      const totalFaltas = Number(r.total_faltas || 0);
+      // Estima aulas justificadas (média de 5 aulas/dia letivo coberto por atestado, limitado a totalFaltas)
+      const aulasJustificadas = Math.min(totalFaltas, Number(r.justificadas || 0) * 5);
+      const naoJustificadas = Math.max(0, totalFaltas - aulasJustificadas);
+      const percFreq = Math.max(
+        0,
+        Math.min(100, Number((((cargaAulasReferencia - totalFaltas) / cargaAulasReferencia) * 100).toFixed(1)))
+      );
+      return {
+        aluno_id: r.aluno_id,
+        aluno_nome: r.aluno_nome,
+        turma_nome: r.turma_nome,
+        total_faltas: totalFaltas,
+        justificadas: aulasJustificadas,
+        dias_atestado: Number(r.justificadas || 0),
+        nao_justificadas: naoJustificadas,
+        percentual_frequencia: percFreq,
+      };
+    });
+
+    res.json(formatados);
   } catch (err) {
     console.error("[FREQUENCIA] Erro ao gerar relatório faltosos:", err.message);
     res.status(500).json({ error: "Erro interno" });
@@ -454,9 +577,18 @@ router.get("/conselho-tutelar/relatorio", async (req, res) => {
     const { escola_id, aluno_id } = req.query;
     if (!escola_id || !aluno_id) return res.status(400).json({ error: "escola_id e aluno_id obrigatórios" });
 
+    const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
+
     const [[aluno]] = await req.db.query(
-      "SELECT a.estudante AS aluno_nome, t.nome AS turma_nome FROM alunos a LEFT JOIN turmas t ON a.turma_id = t.id WHERE a.id = ?",
-      [aluno_id]
+      `SELECT a.estudante AS aluno_nome,
+              COALESCE(t_mat.nome, t.nome) AS turma_nome
+         FROM alunos a
+         LEFT JOIN matriculas m ON m.aluno_id = a.id AND m.escola_id = a.escola_id AND m.ano_letivo = ? AND m.status IN ('ativo', 'matriculado')
+         LEFT JOIN turmas t_mat ON t_mat.id = m.turma_id
+         LEFT JOIN turmas t ON a.turma_id = t.id
+        WHERE a.id = ? AND a.escola_id = ?
+        LIMIT 1`,
+      [anoLetivo, aluno_id, escola_id]
     );
 
     const [justificativas] = await req.db.query(
@@ -469,14 +601,25 @@ router.get("/conselho-tutelar/relatorio", async (req, res) => {
       [aluno_id, escola_id]
     );
 
-    const totalDias = justificativas.reduce((s, j) => s + (j.dias || 1), 0);
+    const [[faltasRow]] = await req.db.query(
+      `SELECT COALESCE(SUM(faltas), 0) AS total_faltas_notas
+         FROM notas
+        WHERE aluno_id = ? AND escola_id = ? AND ano = ?`,
+      [aluno_id, escola_id, anoLetivo]
+    );
+
+    const totalDiasAtestado = justificativas.reduce((s, j) => s + (Number(j.dias) || 1), 0);
+    const totalFaltasReais = Number(faltasRow?.total_faltas_notas || 0);
+    const faltasJustificadas = Math.min(totalFaltasReais, totalDiasAtestado * 5);
+    const faltasNaoJustificadas = Math.max(0, totalFaltasReais - faltasJustificadas);
 
     res.json({
       aluno_nome: aluno?.aluno_nome || "",
       turma_nome: aluno?.turma_nome || "",
-      total_faltas: totalDias,
-      justificadas: totalDias,
-      nao_justificadas: 0,
+      total_faltas: totalFaltasReais,
+      justificadas: faltasJustificadas,
+      dias_atestado: totalDiasAtestado,
+      nao_justificadas: faltasNaoJustificadas,
       busca_ativa_total: buscaAtiva.length,
       justificativas: justificativas.map(j => ({
         ...j,

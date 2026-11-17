@@ -21,7 +21,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 // ✅ auth (garante req.user disponível neste router)
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
-import { resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import { resolverDisciplina, resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
 import { ensureEtapa4Schema } from "../services/gradeEtapa4Service.js";
 import { decrypt } from "../modules/agente/agente.crypt.js";
 import { EducaDFBrowser } from "../modules/agente/educadf/educadf.browser.js";
@@ -1173,8 +1173,8 @@ async function ensureChamadaTable() {
       educadf_exportado_em DATETIME DEFAULT NULL,
       educadf_status VARCHAR(30) DEFAULT NULL,
       atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uk_chamada_aula (escola_id, ano_letivo, turma_id, disciplina, data_aula, ordem_aula),
-      INDEX idx_chamada_contexto (escola_id, ano_letivo, turma_id, disciplina, bimestre)
+      UNIQUE KEY uk_chamada_aula_v2 (escola_id, ano_letivo, turma_id, is_agrupamento, disciplina, data_aula, ordem_aula),
+      INDEX idx_chamada_contexto (escola_id, ano_letivo, turma_id, is_agrupamento, disciplina, bimestre)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   try {
@@ -1210,6 +1210,15 @@ async function ensureChamadaTable() {
       );
     } catch (_) {}
   }
+  // Migra chave única legada (sem is_agrupamento) para uk_chamada_aula_v2 (isolando Turmas Regulares de Agrupamentos com mesmo ID)
+  try {
+    await pool.query(
+      `ALTER TABLE professores_chamada_aulas ADD UNIQUE KEY uk_chamada_aula_v2 (escola_id, ano_letivo, turma_id, is_agrupamento, disciplina, data_aula, ordem_aula)`
+    );
+  } catch (_) {}
+  try {
+    await pool.query(`ALTER TABLE professores_chamada_aulas DROP INDEX uk_chamada_aula`);
+  } catch (_) {}
   _chamadaTableReady = true;
 }
 
@@ -1822,28 +1831,26 @@ async function buscarCredenciaisAgenteChamada(escolaId, usuarioId) {
 }
 
 async function carregarAlunosParaExportacaoChamada(escolaId, turmaId, isAgrupamento, anoLetivo) {
-  // 1) Agrupamento / IFA / Eletiva
-  if (isAgrupamento !== false) {
+  // 1) Agrupamento / IFA / Eletiva (evita colisão de ID com turmas regulares)
+  if (isAgrupamento === true || isAgrupamento === 1 || isAgrupamento === "1" || isAgrupamento === "true") {
     try {
-      const [[agr]] = await pool.query(
-        "SELECT id, nome FROM agrupamentos WHERE id = ? AND escola_id = ?",
+      const [rowsAgr] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante AS nome,
+                aa.turma_origem_id, t_origem.nome AS turma_origem_nome
+           FROM agrupamento_alunos aa
+           JOIN alunos a ON a.id = aa.aluno_id
+           LEFT JOIN turmas t_origem ON t_origem.id = aa.turma_origem_id
+          WHERE aa.agrupamento_id = ?
+            AND aa.escola_id = ?
+            AND aa.status = 'ativo'
+            AND (a.status = 'ativo' OR a.status IS NULL)
+          ORDER BY t_origem.nome ASC, a.estudante ASC`,
         [turmaId, escolaId]
       );
-      if (agr) {
-        const [rowsAgr] = await pool.query(
-          `SELECT a.id, a.codigo, a.estudante AS nome
-             FROM agrupamento_alunos aa
-             JOIN alunos a ON a.id = aa.aluno_id
-            WHERE aa.agrupamento_id = ?
-              AND aa.escola_id = ?
-              AND aa.status = 'ativo'
-              AND (a.status = 'ativo' OR a.status IS NULL)
-            ORDER BY a.estudante ASC`,
-          [turmaId, escolaId]
-        );
-        return rowsAgr || [];
-      }
-    } catch (_) {}
+      return rowsAgr || [];
+    } catch (_) {
+      return [];
+    }
   }
 
   // 2) Turma Regular (matriculas -> fallback sem status -> fallback por nome da turma)
@@ -1894,9 +1901,292 @@ async function carregarAlunosParaExportacaoChamada(escolaId, turmaId, isAgrupame
       );
       if (rowsByNome?.length > 0) return rowsByNome;
     }
+
+    // Fallback final caso isAgrupamento não tenha sido informado explicitamente e o ID não exista em turmas
+    if (isAgrupamento == null && !tRow) {
+      const [rowsAgrFallback] = await pool.query(
+        `SELECT a.id, a.codigo, a.estudante AS nome
+           FROM agrupamento_alunos aa
+           JOIN alunos a ON a.id = aa.aluno_id
+          WHERE aa.agrupamento_id = ?
+            AND aa.escola_id = ?
+            AND aa.status = 'ativo'
+            AND (a.status = 'ativo' OR a.status IS NULL)
+          ORDER BY a.estudante ASC`,
+        [turmaId, escolaId]
+      );
+      if (rowsAgrFallback?.length > 0) return rowsAgrFallback;
+    }
   } catch (_) {}
 
   return [];
+}
+
+/**
+ * Carrega todos os Atestados / Justificativas (`frequencia_justificativas`) dos estudantes ativos
+ * da turma ou agrupamento no ano letivo, garantindo visibilidade imediata na grade da Chamada Digital.
+ */
+async function carregarJustificativasTurmaChamada(escolaId, turmaId, isAgrupamento, anoLetivo) {
+  if (!escolaId || !turmaId) return [];
+  try {
+    const alunos = await carregarAlunosParaExportacaoChamada(
+      escolaId,
+      turmaId,
+      Boolean(isAgrupamento),
+      anoLetivo
+    );
+    const alunoIds = alunos.map((a) => Number(a.id)).filter((id) => id > 0);
+    if (alunoIds.length === 0) return [];
+
+    const ph = alunoIds.map(() => "?").join(",");
+    const [rows] = await pool.query(
+      `SELECT fj.id,
+              fj.aluno_id,
+              a.estudante AS aluno_nome,
+              fj.tipo,
+              DATE_FORMAT(fj.data_inicio, '%Y-%m-%d') AS data_inicio,
+              DATE_FORMAT(fj.data_fim, '%Y-%m-%d') AS data_fim,
+              COALESCE(fj.dias, 1) AS dias,
+              fj.observacao,
+              u.nome AS registrado_por_nome
+         FROM frequencia_justificativas fj
+         LEFT JOIN alunos a ON a.id = fj.aluno_id
+         LEFT JOIN usuarios u ON u.id = fj.registrado_por
+        WHERE fj.escola_id = ?
+          AND fj.aluno_id IN (${ph})
+          AND (YEAR(fj.data_inicio) = ? OR YEAR(fj.data_fim) = ?)
+        ORDER BY fj.data_inicio DESC, fj.id DESC`,
+      [escolaId, ...alunoIds, anoLetivo, anoLetivo]
+    );
+
+    return (rows || []).map((r) => ({
+      id: Number(r.id),
+      aluno_id: Number(r.aluno_id),
+      aluno_nome: r.aluno_nome || "",
+      tipo: r.tipo || "atestado_medico",
+      data_inicio: r.data_inicio || null,
+      data_fim: r.data_fim || r.data_inicio || null,
+      dias: Math.max(1, Number(r.dias || 1)),
+      observacao: r.observacao || null,
+      registrado_por_nome: r.registrado_por_nome || null,
+    }));
+  } catch (err) {
+    console.warn("[CHAMADA][JUSTIFICATIVAS] Aviso ao carregar atestados:", err?.message);
+    return [];
+  }
+}
+
+/**
+ * Elo C — Sincroniza automaticamente o acumulado de faltas das aulas confirmadas na Chamada Digital
+ * (`professores_chamada_aulas`) direto para `notas.faltas` (alimentando em tempo real:
+ * `Secretaria > Faltas`, `Frequência > Relatórios / Conselho Tutelar`, `Professores > Boletim`,
+ * `Boletim Web` e `App EDUCA Mobile`), sem jamais alterar `notas.nota`.
+ */
+async function sincronizarChamadaParaNotasBoletim({
+  escolaId,
+  anoLetivo,
+  bimestreStr,
+  turmaId,
+  isAgrupamento = false,
+  disciplina,
+  disciplinaIdHint = null,
+  zerarSeSemAulas = false,
+}) {
+  try {
+    if (!escolaId || !turmaId || (!disciplina && !disciplinaIdHint)) {
+      return { sincronizado: false, total_aulas_confirmadas: 0 };
+    }
+
+    const mBim = String(bimestreStr || "").match(/([1-4])/);
+    const bimNum = mBim ? Number(mBim[1]) : 0;
+    if (![1, 2, 3, 4].includes(bimNum)) {
+      return { sincronizado: false, total_aulas_confirmadas: 0 };
+    }
+
+    await ensureChamadaTable();
+
+    // 1) Resolve o disciplina_id canônico modulado na turma/agrupamento
+    const [todasDiscs] = await pool.query(
+      "SELECT id, nome, nome_oficial, abreviatura, mesclada_em FROM disciplinas WHERE escola_id = ?",
+      [escolaId]
+    );
+
+    let discObj = null;
+    if (disciplinaIdHint) {
+      discObj = (todasDiscs || []).find((d) => Number(d.id) === Number(disciplinaIdHint)) || null;
+    }
+
+    const isAgr = Boolean(isAgrupamento);
+    if (!discObj && disciplina) {
+      if (isAgr) {
+        try {
+          const [modAgr] = await pool.query(
+            `SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
+               FROM agrupamento_modulacao am
+               JOIN disciplinas d ON d.id = am.disciplina_id
+              WHERE am.agrupamento_id = ?`,
+            [turmaId]
+          );
+          discObj = resolverDisciplina(disciplina, modAgr || []);
+          if (!discObj) {
+            const [compAgr] = await pool.query(
+              `SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
+                 FROM agrupamento_componentes ac
+                 JOIN disciplinas d ON d.id = ac.disciplina_id
+                WHERE ac.agrupamento_id = ?`,
+              [turmaId]
+            );
+            discObj = resolverDisciplina(disciplina, compAgr || []);
+          }
+        } catch (_) {}
+      } else {
+        try {
+          const [modReg] = await pool.query(
+            `SELECT DISTINCT d.id, d.nome, d.nome_oficial, d.abreviatura
+               FROM modulacao m
+               JOIN disciplinas d ON d.id = m.disciplina_id
+              WHERE m.turma_id = ? AND m.escola_id = ?`,
+            [turmaId, escolaId]
+          );
+          discObj = resolverDisciplina(disciplina, modReg || []);
+        } catch (_) {}
+      }
+    }
+
+    if (!discObj && disciplina) {
+      const ordenadas = [...(todasDiscs || [])].sort(
+        (a, b) => (a.mesclada_em ? 1 : 0) - (b.mesclada_em ? 1 : 0)
+      );
+      discObj = resolverDisciplina(disciplina, ordenadas);
+    }
+
+    if (!discObj?.id) {
+      return { sincronizado: false, total_aulas_confirmadas: 0 };
+    }
+
+    const disciplinaId = Number(discObj.id);
+    const eqIds = resolverIdsEquivalentes(discObj, todasDiscs || []);
+    const nomesDisciplinaEquivalentes = [
+      ...new Set(
+        [
+          disciplina ? String(disciplina).trim() : null,
+          discObj.nome ? String(discObj.nome).trim() : null,
+          ...(todasDiscs || [])
+            .filter((d) => eqIds.includes(Number(d.id)) && d.nome)
+            .map((d) => String(d.nome).trim()),
+        ].filter(Boolean)
+      ),
+    ];
+
+    if (nomesDisciplinaEquivalentes.length === 0) {
+      return { sincronizado: false, disciplina_id: disciplinaId, total_aulas_confirmadas: 0 };
+    }
+
+    // 2) Consulta todas as aulas confirmadas do bimestre em professores_chamada_aulas
+    const phNomes = nomesDisciplinaEquivalentes.map(() => "?").join(",");
+    const [aulasConfirmadas] = await pool.query(
+      `SELECT faltas_json
+         FROM professores_chamada_aulas
+        WHERE escola_id = ?
+          AND ano_letivo = ?
+          AND turma_id = ?
+          AND COALESCE(is_agrupamento, 0) = ?
+          AND disciplina IN (${phNomes})
+          AND (bimestre = ? OR bimestre LIKE ?)
+          AND confirmada = 1`,
+      [
+        escolaId,
+        anoLetivo,
+        turmaId,
+        isAgr ? 1 : 0,
+        ...nomesDisciplinaEquivalentes,
+        `${bimNum}º Bimestre`,
+        `%${bimNum}%`,
+      ]
+    );
+
+    const totalAulas = (aulasConfirmadas || []).length;
+    if (totalAulas === 0 && !zerarSeSemAulas) {
+      return {
+        sincronizado: false,
+        disciplina_id: disciplinaId,
+        total_aulas_confirmadas: 0,
+      };
+    }
+
+    // 3) Carrega estudantes ativos da turma/agrupamento e contabiliza faltas acumuladas
+    const alunos = await carregarAlunosParaExportacaoChamada(
+      escolaId,
+      turmaId,
+      isAgr,
+      anoLetivo
+    );
+    if (!alunos.length) {
+      return {
+        sincronizado: false,
+        disciplina_id: disciplinaId,
+        total_aulas_confirmadas: totalAulas,
+      };
+    }
+
+    const faltasPorAluno = new Map();
+    for (const al of alunos) {
+      faltasPorAluno.set(String(al.id), 0);
+    }
+
+    for (const r of aulasConfirmadas || []) {
+      let listaIds = [];
+      try {
+        listaIds =
+          typeof r.faltas_json === "string"
+            ? JSON.parse(r.faltas_json)
+            : Array.isArray(r.faltas_json)
+            ? r.faltas_json
+            : [];
+      } catch {
+        listaIds = [];
+      }
+      if (!Array.isArray(listaIds)) continue;
+      for (const idAl of listaIds) {
+        const k = String(idAl);
+        faltasPorAluno.set(k, (faltasPorAluno.get(k) || 0) + 1);
+      }
+    }
+
+    // 4) Upsert em lote na tabela `notas` preservando integralmente `notas.nota`
+    const valoresInsert = [];
+    const paramsInsert = [];
+    for (const al of alunos) {
+      const aId = Number(al.id);
+      if (!aId) continue;
+      const qtdFaltas = faltasPorAluno.get(String(aId)) || 0;
+      valoresInsert.push("(?, ?, ?, ?, ?, ?, NOW())");
+      paramsInsert.push(escolaId, aId, anoLetivo, bimNum, disciplinaId, qtdFaltas);
+    }
+
+    if (valoresInsert.length > 0) {
+      await pool.query(
+        `INSERT INTO notas
+           (escola_id, aluno_id, ano, bimestre, disciplina_id, faltas, data_lancamento)
+         VALUES ${valoresInsert.join(", ")}
+         ON DUPLICATE KEY UPDATE
+           faltas = VALUES(faltas),
+           data_lancamento = NOW()`,
+        paramsInsert
+      );
+      reconciliarNotasComModulacao(pool, escolaId).catch(() => {});
+    }
+
+    return {
+      sincronizado: true,
+      disciplina_id: disciplinaId,
+      total_aulas_confirmadas: totalAulas,
+      total_alunos_sincronizados: valoresInsert.length,
+    };
+  } catch (err) {
+    console.warn("[CHAMADA->NOTAS] Falha ao sincronizar faltas com boletim:", err?.message);
+    return { sincronizado: false, total_aulas_confirmadas: 0 };
+  }
 }
 
 async function carregarMetadadosEducaDFChamada({
@@ -2110,7 +2400,7 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       req.query.is_agrupamento === "true" ||
       req.query.is_agrupamento === true;
 
-    const [gradeHoraria, cred] = await Promise.all([
+    const [gradeHoraria, cred, justificativas] = await Promise.all([
       carregarGradeHorariaProfessorChamada(
         escolaId,
         req.user,
@@ -2120,6 +2410,9 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
         isAgrupamento
       ),
       buscarCredenciaisAgenteChamada(escolaId, userId),
+      turmaId > 0
+        ? carregarJustificativasTurmaChamada(escolaId, turmaId, isAgrupamento, anoLetivo)
+        : Promise.resolve([]),
     ]);
 
     const registros = {};
@@ -2133,9 +2426,9 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
                DATE_FORMAT(educadf_exportado_em, '%d/%m/%Y %H:%i') AS educadf_exportado_em_fmt,
                DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
         FROM professores_chamada_aulas
-        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND disciplina = ?
+        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND COALESCE(is_agrupamento, 0) = ? AND disciplina = ?
       `;
-      const params = [escolaId, anoLetivo, turmaId, disciplina];
+      const params = [escolaId, anoLetivo, turmaId, isAgrupamento ? 1 : 0, disciplina];
       if (bimestre) {
         sql += ` AND bimestre = ?`;
         params.push(bimestre);
@@ -2186,6 +2479,7 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       ano_letivo: anoLetivo,
       governanca,
       grade_horaria: gradeHoraria,
+      justificativas,
       registros,
       agente_educadf: {
         credencial_configurada: Boolean(cred),
@@ -2314,9 +2608,21 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
       );
     }
 
+    // Elo C: reflete imediatamente as faltas acumuladas em `notas.faltas` (Boletim + Secretaria > Faltas + App Mobile)
+    const syncBoletim = await sincronizarChamadaParaNotasBoletim({
+      escolaId,
+      anoLetivo,
+      bimestreStr: bimNorm,
+      turmaId,
+      isAgrupamento: Boolean(isAgrup),
+      disciplina: discNorm,
+      zerarSeSemAulas: true,
+    });
+
     return res.json({
       ok: true,
       message: "Chamada sincronizada com sucesso.",
+      sincronizacao_boletim: syncBoletim,
     });
   } catch (err) {
     console.error("[PROFESSORES][ME/CHAMADA][POST]", err);
@@ -2365,8 +2671,8 @@ router.get("/me/chamada/exportar-status", autenticarToken, verificarEscola, asyn
               educadf_status,
               DATE_FORMAT(educadf_exportado_em, '%d/%m/%Y %H:%i') AS educadf_exportado_em_fmt
          FROM professores_chamada_aulas
-        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND disciplina = ? AND bimestre = ?`,
-      [escolaId, anoLetivo, turmaId, disciplina, bimestre]
+        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND COALESCE(is_agrupamento, 0) = ? AND disciplina = ? AND bimestre = ?`,
+      [escolaId, anoLetivo, turmaId, isAgrupamento ? 1 : 0, disciplina, bimestre]
     );
     for (const r of rows || []) {
       exportadasMap[`${r.data_aula}#${Number(r.ordem_aula) || 1}`] = {
@@ -2496,6 +2802,15 @@ router.post("/me/chamada/exportar-educadf", autenticarToken, verificarEscola, as
           ]
         );
       }
+
+      await sincronizarChamadaParaNotasBoletim({
+        escolaId,
+        anoLetivo,
+        bimestreStr: bimNorm,
+        turmaId,
+        isAgrupamento: isAgrup,
+        disciplina: discNorm,
+      });
     }
 
     // 3) Valida Credenciais EDUCADF do Usuário Logado (Etapa 0 — Agente EDUCA)
@@ -2535,11 +2850,12 @@ router.post("/me/chamada/exportar-educadf", autenticarToken, verificarEscola, as
         WHERE escola_id = ?
           AND ano_letivo = ?
           AND turma_id = ?
+          AND COALESCE(is_agrupamento, 0) = ?
           AND disciplina = ?
           AND bimestre = ?
           AND confirmada = 1
         ORDER BY data_aula ASC, ordem_aula ASC`,
-      [escolaId, anoLetivo, turmaId, discNorm, bimNorm]
+      [escolaId, anoLetivo, turmaId, isAgrup ? 1 : 0, discNorm, bimNorm]
     );
 
     if (!todasConfirmadas || todasConfirmadas.length === 0) {
@@ -2708,11 +3024,20 @@ router.post("/me/chamada/exportar-educadf", autenticarToken, verificarEscola, as
                             WHERE escola_id = ?
                               AND ano_letivo = ?
                               AND turma_id = ?
+                              AND COALESCE(is_agrupamento, 0) = ?
                               AND disciplina = ?
                               AND data_aula = ?
                               AND ordem_aula IN (${phOrd})
                               AND confirmada = 1`,
-                          [escolaId, anoLetivo, turmaId, discNorm, prog.dataConcluida, ...ordensConcl]
+                          [
+                            escolaId,
+                            anoLetivo,
+                            turmaId,
+                            isAgrup ? 1 : 0,
+                            discNorm,
+                            prog.dataConcluida,
+                            ...ordensConcl,
+                          ]
                         )
                         .catch((e) =>
                           console.warn("[chamada->educadf] Falha ao gravar status da data:", e.message)
@@ -2726,10 +3051,11 @@ router.post("/me/chamada/exportar-educadf", autenticarToken, verificarEscola, as
                             WHERE escola_id = ?
                               AND ano_letivo = ?
                               AND turma_id = ?
+                              AND COALESCE(is_agrupamento, 0) = ?
                               AND disciplina = ?
                               AND data_aula = ?
                               AND confirmada = 1`,
-                          [escolaId, anoLetivo, turmaId, discNorm, prog.dataConcluida]
+                          [escolaId, anoLetivo, turmaId, isAgrup ? 1 : 0, discNorm, prog.dataConcluida]
                         )
                         .catch(() => {});
                     }
@@ -3081,7 +3407,7 @@ router.get("/me/turmas/:turmaId/disciplinas", autenticarToken, verificarEscola, 
 // ────────────────────────────────────────────────
 // GET: Alunos de uma turma com notas/faltas manuais no boletim
 // URL: GET /api/professores/boletim/alunos
-// Query params: turma_id, disciplina_id, bimestre, ano (opcional)
+// Query params: turma_id, is_agrupamento (opcional), disciplina_id, bimestre, ano (opcional)
 // ────────────────────────────────────────────────
 router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res) => {
   try {
@@ -3110,47 +3436,82 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
     }
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
+    const rawIsAgr = req.query.is_agrupamento;
+    const forceAgr = rawIsAgr === "1" || rawIsAgr === "true" || rawIsAgr === true;
+    const forceReg = rawIsAgr === "0" || rawIsAgr === "false" || rawIsAgr === false;
 
-    // 1. Validar se o professor está modulado para esta turma e disciplina
+    // 1. Determina se é turma regular ou agrupamento sem colisão de IDs
     let isAgrupamento = false;
-    try {
-      const [[agr]] = await pool.query(
-        "SELECT id FROM agrupamentos WHERE id = ? AND escola_id = ?",
-        [turmaId, escolaId]
-      );
-      if (agr) isAgrupamento = true;
-    } catch (_) {}
+    if (forceAgr) {
+      isAgrupamento = true;
+    } else if (!forceReg) {
+      try {
+        const [[regRow]] = await pool.query(
+          "SELECT id FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+          [turmaId, escolaId]
+        );
+        if (!regRow) {
+          const [[agr]] = await pool.query(
+            "SELECT id FROM agrupamentos WHERE id = ? AND escola_id = ? LIMIT 1",
+            [turmaId, escolaId]
+          );
+          if (agr) isAgrupamento = true;
+        }
+      } catch (_) {}
+    }
 
-    if (isAgrupamento) {
-      const [[modAgrValidation]] = await pool.query(
-        `SELECT 1
-         FROM professores p
-         JOIN agrupamento_modulacao am ON am.professor_id = p.id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-           AND am.agrupamento_id = ?
-           AND am.disciplina_id = ?
-         LIMIT 1`,
-        [escolaId, cleanCpf, turmaId, disciplinaId]
-      );
-      if (!modAgrValidation) {
-        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para este agrupamento e disciplina." });
-      }
-    } else {
-      const [[modValidation]] = await pool.query(
-        `SELECT 1
-         FROM professores p
-         JOIN modulacao m ON m.professor_id = p.id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
-           AND m.turma_id = ?
-           AND m.disciplina_id = ?
-         LIMIT 1`,
-        [escolaId, cleanCpf, turmaId, disciplinaId]
-      );
+    const perfil = String(req.user?.perfil || "").toLowerCase().trim();
+    const perfisGestao = [
+      "diretor",
+      "direcao",
+      "vice_diretor",
+      "secretaria",
+      "secretario",
+      "coordenacao",
+      "coordenador",
+      "admin",
+      "administrador",
+    ];
+    const isGestor = perfisGestao.includes(perfil);
 
-      if (!modValidation) {
-        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+    if (!isGestor) {
+      if (isAgrupamento) {
+        const [[modAgrValidation]] = await pool.query(
+          `SELECT 1
+           FROM professores p
+           JOIN agrupamento_modulacao am ON am.professor_id = p.id
+           WHERE p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+             AND am.agrupamento_id = ?
+             AND am.disciplina_id = ?
+           LIMIT 1`,
+          [escolaId, cleanCpf, turmaId, disciplinaId]
+        );
+        if (!modAgrValidation) {
+          return res.status(403).json({
+            ok: false,
+            message: "Acesso negado: você não está modulado para este agrupamento e disciplina.",
+          });
+        }
+      } else {
+        const [[modValidation]] = await pool.query(
+          `SELECT 1
+           FROM professores p
+           JOIN modulacao m ON m.professor_id = p.id
+           WHERE p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+             AND m.turma_id = ?
+             AND m.disciplina_id = ?
+           LIMIT 1`,
+          [escolaId, cleanCpf, turmaId, disciplinaId]
+        );
+
+        if (!modValidation) {
+          return res.status(403).json({
+            ok: false,
+            message: "Acesso negado: você não está modulado para esta turma e disciplina.",
+          });
+        }
       }
     }
 
@@ -3168,6 +3529,18 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
       );
       equivalentDiscIds = resolverIdsEquivalentes(targetDisc, allDiscs);
     }
+
+    // 2.5. Elo C: Sincroniza automaticamente as faltas confirmadas na Chamada Digital para `notas` (se houver aulas confirmadas)
+    const resumoChamada = await sincronizarChamadaParaNotasBoletim({
+      escolaId,
+      anoLetivo: ano,
+      bimestreStr: `${bimestre}º Bimestre`,
+      turmaId,
+      isAgrupamento,
+      disciplina: targetDisc?.nome || "",
+      disciplinaIdHint: disciplinaId,
+      zerarSeSemAulas: false,
+    });
 
     // 3. Buscar alunos ativos com suas respectivas notas e faltas se existirem
     let rows = [];
@@ -3220,7 +3593,7 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
         WHERE m.turma_id = ?
           AND m.escola_id = ?
           AND m.ano_letivo = ?
-          AND m.status = 'ativo'
+          AND m.status IN ('ativo', 'matriculado')
           AND (a.status = 'ativo' OR a.status IS NULL)
         GROUP BY a.id, a.estudante, a.codigo, a.foto
         ORDER BY a.estudante ASC`,
@@ -3229,7 +3602,65 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
       rows = rowsReg;
     }
 
-    return res.json({ ok: true, alunos: rows });
+    // 4. Anexa contagem de atestados / justificativas do bimestre por aluno (Elo C)
+    const alunoIds = (rows || []).map((r) => Number(r.aluno_id)).filter(Boolean);
+    const justPorAluno = new Map();
+    if (alunoIds.length > 0) {
+      try {
+        const governanca = await carregarGovernancaAnoLetivoEscola(escolaId, ano);
+        const perBim = (governanca?.periodos || []).find(
+          (p) => p.tipo === "bimestre" && Number(p.numero) === bimestre && p.data_inicio && p.data_fim
+        );
+        const phAl = alunoIds.map(() => "?").join(",");
+        const [jRows] = await pool.query(
+          `SELECT aluno_id,
+                  tipo,
+                  DATE_FORMAT(data_inicio, '%Y-%m-%d') AS data_inicio,
+                  DATE_FORMAT(data_fim, '%Y-%m-%d') AS data_fim,
+                  COALESCE(dias, 1) AS dias
+             FROM frequencia_justificativas
+            WHERE escola_id = ?
+              AND aluno_id IN (${phAl})
+              AND (YEAR(data_inicio) = ? OR YEAR(data_fim) = ?)`,
+          [escolaId, ...alunoIds, ano, ano]
+        );
+        for (const j of jRows || []) {
+          const dIni = j.data_inicio;
+          const dFim = j.data_fim || j.data_inicio;
+          if (!dIni) continue;
+          let pertenceAoBimestre = false;
+          if (perBim) {
+            pertenceAoBimestre = dIni <= perBim.data_fim && dFim >= perBim.data_inicio;
+          } else {
+            const mes = Number(dIni.split("-")[1] || 1);
+            const bimMes = mes <= 4 ? 1 : mes <= 7 ? 2 : mes <= 9 ? 3 : 4;
+            pertenceAoBimestre = bimMes === bimestre;
+          }
+          if (pertenceAoBimestre) {
+            const prev = justPorAluno.get(Number(j.aluno_id)) || { qtd: 0, dias: 0 };
+            prev.qtd += 1;
+            prev.dias += Math.max(1, Number(j.dias || 1));
+            justPorAluno.set(Number(j.aluno_id), prev);
+          }
+        }
+      } catch (_) {}
+    }
+
+    const alunosEnriquecidos = (rows || []).map((r) => {
+      const jInfo = justPorAluno.get(Number(r.aluno_id)) || { qtd: 0, dias: 0 };
+      return {
+        ...r,
+        atestados_bimestre_qtd: jInfo.qtd,
+        dias_justificados_bimestre: jInfo.dias,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      is_agrupamento: isAgrupamento,
+      resumo_chamada: resumoChamada,
+      alunos: alunosEnriquecidos,
+    });
   } catch (err) {
     console.error("Erro ao buscar alunos com notas do boletim:", err);
     return res.status(500).json({ ok: false, message: "Erro ao carregar lista de alunos." });
@@ -3239,13 +3670,20 @@ router.get("/boletim/alunos", autenticarToken, verificarEscola, async (req, res)
 // ────────────────────────────────────────────────
 // POST: Salvar/atualizar notas e faltas do boletim em lote
 // URL: POST /api/professores/boletim/salvar
-// Body: turma_id, disciplina_id, bimestre, ano, lancamentos: [{ aluno_id, nota, faltas }]
+// Body: turma_id, is_agrupamento (opcional), disciplina_id, bimestre, ano, lancamentos: [{ aluno_id, nota, faltas }]
 // ────────────────────────────────────────────────
 router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const escolaId = req.user?.escola_id;
-    const { turma_id, disciplina_id, bimestre, ano = new Date().getFullYear(), lancamentos } = req.body;
+    const {
+      turma_id,
+      is_agrupamento,
+      disciplina_id,
+      bimestre,
+      ano = new Date().getFullYear(),
+      lancamentos,
+    } = req.body;
 
     let cpf = req.user?.cpf;
     const userId =
@@ -3267,25 +3705,73 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
 
     const cleanCpf = String(cpf).replace(/\D/g, "");
     const perfil = String(req.user?.perfil || "").toLowerCase().trim();
-    const perfisGestao = ["diretor", "direcao", "vice_diretor", "secretaria", "secretario", "coordenacao", "coordenador", "admin", "administrador"];
+    const perfisGestao = [
+      "diretor",
+      "direcao",
+      "vice_diretor",
+      "secretaria",
+      "secretario",
+      "coordenacao",
+      "coordenador",
+      "admin",
+      "administrador",
+    ];
     const isGestor = perfisGestao.includes(perfil);
 
-    if (!isGestor) {
-      // 1. Validar se o professor está modulado para esta turma e disciplina
-      const [[modValidation]] = await pool.query(
-        `SELECT 1
-         FROM professores p
-         JOIN modulacao m ON m.professor_id = p.id
-         WHERE p.escola_id = ?
-           AND REPLACE(REPLACE(p.cpf, '.', ''), '-', '') = ?
-           AND m.turma_id = ?
-           AND m.disciplina_id = ?
-         LIMIT 1`,
-        [escolaId, cleanCpf, turma_id, disciplina_id]
+    let isAgr = is_agrupamento === 1 || is_agrupamento === true || is_agrupamento === "1" || is_agrupamento === "true";
+    if (!isAgr && is_agrupamento == null) {
+      const [[regRow]] = await pool.query(
+        "SELECT id FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+        [turma_id, escolaId]
       );
+      if (!regRow) {
+        const [[agrRow]] = await pool.query(
+          "SELECT id FROM agrupamentos WHERE id = ? AND escola_id = ? LIMIT 1",
+          [turma_id, escolaId]
+        );
+        if (agrRow) isAgr = true;
+      }
+    }
 
-      if (!modValidation) {
-        return res.status(403).json({ ok: false, message: "Acesso negado: você não está modulado para esta turma e disciplina." });
+    if (!isGestor) {
+      if (isAgr) {
+        const [[modAgrValidation]] = await pool.query(
+          `SELECT 1
+           FROM professores p
+           JOIN agrupamento_modulacao am ON am.professor_id = p.id
+           WHERE p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+             AND am.agrupamento_id = ?
+             AND am.disciplina_id = ?
+           LIMIT 1`,
+          [escolaId, cleanCpf, turma_id, disciplina_id]
+        );
+        if (!modAgrValidation) {
+          return res.status(403).json({
+            ok: false,
+            message: "Acesso negado: você não está modulado para este agrupamento e disciplina.",
+          });
+        }
+      } else {
+        // 1. Validar se o professor está modulado para esta turma regular e disciplina
+        const [[modValidation]] = await pool.query(
+          `SELECT 1
+           FROM professores p
+           JOIN modulacao m ON m.professor_id = p.id
+           WHERE p.escola_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(p.cpf, '.', ''), '-', ''), ' ', ''), '/', '') = ?
+             AND m.turma_id = ?
+             AND m.disciplina_id = ?
+           LIMIT 1`,
+          [escolaId, cleanCpf, turma_id, disciplina_id]
+        );
+
+        if (!modValidation) {
+          return res.status(403).json({
+            ok: false,
+            message: "Acesso negado: você não está modulado para esta turma e disciplina.",
+          });
+        }
       }
     }
 
