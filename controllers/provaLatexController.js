@@ -307,7 +307,7 @@ function gerarTexQuestao(item, idx, imgBundle, colunas, opts = {}) {
   const pontos = Number(item.valor_pontos || 1).toFixed(1);
   const regraW = colunas === 2 ? '5.8cm' : '13.5cm';
 
-  let tex = `\\par\\vspace{4pt}\\noindent\n`;
+  let tex = idx > 0 ? `\\filbreak\\vspace{4pt}\\noindent\n` : `\\par\\vspace{2pt}\\noindent\n`;
   const fonteHdr = item.fonte && !item.texto_apoio ? ` {\\small (${escapeTex(item.fonte)})}` : '';
   if (isModelo01) {
     // Clona exatamente "QUESTÃO 01" + retângulo sólido laranja (#FF7F00) até o limite direito da coluna
@@ -489,6 +489,9 @@ export function gerarTexCompleto({ prova, itens, cfg = {}, escola = 'EDUCA.MELHO
   tex += `\\usepackage{amsmath,amssymb,mathtools}\n`;
   tex += `\\setlength{\\parindent}{0pt}\n`;
   tex += `\\setlength{\\parskip}{2pt}\n`;
+  tex += `\\widowpenalty=10000\n\\clubpenalty=10000\n`;
+  tex += `\\makeatletter\\@ifundefined{l@portuguese}{\\@ifundefined{l@portuges}{}{\\language=\\l@portuges}}{\\language=\\l@portuguese}\\makeatother\n`;
+  tex += `\\lefthyphenmin=2\\righthyphenmin=3\n`;
 
   tex += `\\definecolor{laranja}{HTML}{FF6600}\n`;
   tex += `\\definecolor{corDestaque}{HTML}{${corHexClean}}\n`;
@@ -670,10 +673,9 @@ export async function exportarPdfLatex(req, res) {
     fs.writeFileSync(texFile, texContent, 'utf-8');
 
     await execFileAsync('tectonic', [
+      texFile,
       '--outdir', jobDir,
       '--keep-logs',
-      '--synctex', '0',
-      texFile,
     ], {
       timeout: 90000,
       maxBuffer: 10 * 1024 * 1024,
