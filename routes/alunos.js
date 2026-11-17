@@ -2276,7 +2276,7 @@ export function ehValorAneesLegitimo(raw, contexto = {}) {
   if (segmentos.length === 0) return false;
 
   const REGEX_SIGLA_ISOLADA =
-    /^(TEA|TGD|DF|DI|DA|DV|BV|VM|SC|DMU|AH_SD|AH\s+SD|SD|TDAH|TDA|TOD|TPAC|DPAC|PAC|TDL|DEL|TFE|SURDEZ|CEGUEIRA)(\s*[-–:(].*)?$/;
+    /^(TEA|TGD|DF|DI|DA|DV|BV|VM|SC|DMU|AH_SD|AH\s+SD|SD|TDAH|TDA|TOD|TC|TPAC|DPAC|PAC|TDL|DEL|TFE|SURDEZ|CEGUEIRA)(\s*[-–:(].*)?$/;
 
   const REGEX_CID = /\b(CID\s*[-:]?\s*[A-Z0-9]{2,6}|[FGHQ]\d{2}(\.\d+)?|6A\d{2}(\.\w+)?)\b/;
 
@@ -2397,6 +2397,12 @@ export function abreviarAneesEducaDF(raw, opcoes = {}) {
       descricao: "Transtorno Opositivo Desafiador",
       regexFrase: /\bTOD\b|OPOSITOR DESAFIADOR|OPOSITIVO DESAFIADOR|DESAFIADOR OPOSITIVO/,
       regexSigla: /^TOD(\s*[-–:(].*)?$/,
+    },
+    {
+      sigla: "TC",
+      descricao: "Transtorno de Conduta",
+      regexFrase: /TRANSTORNO DE CONDUTA/,
+      regexSigla: /^TC(\s*[-–:(].*)?$/,
     },
     {
       sigla: "TPAC",
@@ -2976,12 +2982,19 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
          a.turma_id AS aluno_turma_id,
          m.id AS matricula_id,
          m.turma_id AS matr_turma_id,
-         m.status AS matr_status
+         m.status AS matr_status,
+         t_atual.id AS turma_efetiva_id,
+         t_atual.nome AS turma_atual_nome,
+         t_atual.turno AS turma_atual_turno,
+         t_atual.ano AS turma_atual_ano
        FROM alunos a
        LEFT JOIN matriculas m
          ON m.aluno_id = a.id AND m.ano_letivo = ? AND m.escola_id = ?
-       WHERE a.codigo IN (?)`,
-      [anoLetivoAtual, escola_id, codigosEntrada]
+       LEFT JOIN turmas t_atual
+         ON t_atual.id = COALESCE(m.turma_id, a.turma_id)
+       WHERE a.codigo IN (?)
+       ORDER BY (a.escola_id = ?) DESC, (m.id IS NOT NULL) DESC`,
+      [anoLetivoAtual, escola_id, codigosEntrada, escola_id]
     );
 
     const existentesMap = new Map();
@@ -3028,6 +3041,7 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
     const entradaSet = new Set(codigosEntrada);
     const toInsert = [];
     const toReactivate = [];
+    const conflitosOutraTurma = [];
     let jaExistiam = 0;
     let atualizadosCodigo = 0;
 
@@ -3113,12 +3127,74 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
         );
         await garantirMatriculaAtiva(atual.id);
         await upsertResponsavelCsv(pool, e, atual.id, escola_id);
-      } else if (
-        existenteGlobal &&
-        Number(existenteGlobal.escola_id) === Number(escola_id) &&
-        String(existenteGlobal.matr_status || existenteGlobal.aluno_status || "").toLowerCase() ===
-          "inativo"
+        continue;
+      }
+
+      const pertenceMesmaEscola =
+        existenteGlobal && Number(existenteGlobal.escola_id) === Number(escola_id);
+      const statusEfetivoExistente = pertenceMesmaEscola
+        ? String(existenteGlobal.matr_status || existenteGlobal.aluno_status || "ativo").toLowerCase()
+        : "";
+      const turmaEfetivaExistenteId = pertenceMesmaEscola
+        ? Number(existenteGlobal.matr_turma_id || existenteGlobal.aluno_turma_id || 0)
+        : 0;
+      const enturmadoNoAnoCorrente =
+        pertenceMesmaEscola &&
+        (Boolean(existenteGlobal.matricula_id) ||
+          Number(existenteGlobal.turma_atual_ano) === Number(anoLetivoAtual));
+
+      // PROTEÇÃO CRÍTICA CONTRA CONFLITO ENTRE TURMAS (ex.: 9º ANO A ↔ 9º ANO B):
+      // Se o estudante já está ATIVO em OUTRA turma desta escola no ano letivo corrente,
+      // NÃO sobrescreve `turma_id` silenciosamente! Complementa apenas dados cadastrais
+      // vazios e retorna em `conflitosOutraTurma` para decisão explícita da secretaria.
+      if (
+        pertenceMesmaEscola &&
+        statusEfetivoExistente === "ativo" &&
+        enturmadoNoAnoCorrente &&
+        turmaEfetivaExistenteId > 0 &&
+        turmaEfetivaExistenteId !== Number(turma_id)
       ) {
+        const setsComp = [];
+        const paramsComp = [];
+        const dataValida = e.dataBr && /^\d{2}\/\d{2}\/\d{4}$/.test(e.dataBr);
+        if (dataValida) {
+          setsComp.push("data_nascimento = COALESCE(data_nascimento, STR_TO_DATE(?, '%d/%m/%Y'))");
+          paramsComp.push(e.dataBr);
+        }
+        if (e.sexo) {
+          setsComp.push("sexo = IF(sexo IS NULL OR sexo = '', ?, sexo)");
+          paramsComp.push(e.sexo);
+        }
+        if (e.cpfAluno) {
+          setsComp.push("cpf = IF(cpf IS NULL OR cpf = '', ?, cpf)");
+          paramsComp.push(e.cpfAluno);
+        }
+        if (e.temAnees && e.anees) {
+          setsComp.push("anees = ?", "atendimento_diferencial = 1");
+          paramsComp.push(e.anees);
+        }
+        if (setsComp.length > 0) {
+          paramsComp.push(existenteGlobal.id, escola_id);
+          await pool.query(
+            `UPDATE alunos SET ${setsComp.join(", ")} WHERE id = ? AND escola_id = ?`,
+            paramsComp
+          );
+        }
+        await upsertResponsavelCsv(pool, e, existenteGlobal.id, escola_id);
+
+        conflitosOutraTurma.push({
+          id: existenteGlobal.id,
+          codigo: e.codigo,
+          estudante: existenteGlobal.estudante || e.estudante,
+          turmaAtualId: turmaEfetivaExistenteId,
+          turmaAtualNome:
+            existenteGlobal.turma_atual_nome || `Turma #${turmaEfetivaExistenteId}`,
+          turmaAtualTurno: existenteGlobal.turma_atual_turno || "",
+        });
+        continue;
+      }
+
+      if (pertenceMesmaEscola && statusEfetivoExistente === "inativo") {
         toReactivate.push({ ...e, existingId: existenteGlobal.id });
       } else {
         toInsert.push(e);
@@ -3283,8 +3359,14 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       );
     }
 
+    if (conflitosOutraTurma.length > 0) {
+      console.log(
+        `[importar-csv] ⚠ ${conflitosOutraTurma.length} aluno(s) já ativo(s) em outra turma — protegidos contra remanejamento silencioso`
+      );
+    }
+
     console.log(
-      `[importar-csv] localizados:${pdfEntries.length} totalLinhas:${totalLinhasValidas} duplicados:${duplicadosIgnorados} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} aee:${aeeIdentificados} pendentes:${pendentesInativacao.length}`
+      `[importar-csv] localizados:${pdfEntries.length} totalLinhas:${totalLinhasValidas} duplicados:${duplicadosIgnorados} inseridos:${inseridos} reativados:${reativados} jaExistiam:${jaExistiam} conflitosOutraTurma:${conflitosOutraTurma.length} aee:${aeeIdentificados} pendentes:${pendentesInativacao.length}`
     );
 
     return res.json({
@@ -3296,6 +3378,9 @@ router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
       inseridos,
       reativados,
       jaExistiam,
+      conflitosOutraTurma,
+      conflitosCount: conflitosOutraTurma.length,
+      remanejados: 0,
       codigosAtualizados: atualizadosCodigo,
       inativados: 0,
       pendentesInativacao,
@@ -3442,6 +3527,91 @@ router.post("/inativar-lote", async (req, res) => {
   } catch (err) {
     console.error("Erro ao inativar em lote:", err);
     return res.status(500).json({ message: "Erro ao inativar alunos.", error: err.message });
+  }
+});
+
+/* ============================================================================
+ * 11d) REMANEJAR EM LOTE (confirmação explícita pela secretaria)
+ * POST /api/alunos/remanejar-lote
+ * Body: { turmaDestinoId: number, alunoIds: [1, 2, ...] }
+ *
+ * Move apenas os alunos explicitamente confirmados pela secretaria quando um
+ * CSV do EDUCADF contém alunos que já estavam ativos em outra turma da escola.
+ * ========================================================================== */
+router.post("/remanejar-lote", verificarEscola, async (req, res) => {
+  try {
+    const { escola_id } = req.user;
+    const { turmaDestinoId, alunoIds } = req.body || {};
+
+    const destinoId = Number(turmaDestinoId || 0);
+    if (!destinoId) {
+      return res.status(400).json({ message: "Turma de destino inválida." });
+    }
+    if (!Array.isArray(alunoIds) || alunoIds.length === 0) {
+      return res.status(400).json({ message: "Nenhum estudante selecionado para remanejamento." });
+    }
+
+    const ids = [...new Set(alunoIds.map(Number).filter((n) => n > 0))];
+    if (ids.length === 0) {
+      return res.status(400).json({ message: "IDs de estudantes inválidos." });
+    }
+
+    const [[turmaDestino]] = await pool.query(
+      "SELECT id, nome, turno FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+      [destinoId, escola_id]
+    );
+    if (!turmaDestino) {
+      return res.status(404).json({ message: "Turma de destino não encontrada nesta escola." });
+    }
+
+    const anoLetivoAtual =
+      typeof anoLetivoPadrao === "function" ? anoLetivoPadrao() : Number(new Date().getFullYear());
+
+    const [alunosValidos] = await pool.query(
+      "SELECT id FROM alunos WHERE id IN (?) AND escola_id = ?",
+      [ids, escola_id]
+    );
+    const idsValidos = alunosValidos.map((a) => Number(a.id));
+    if (idsValidos.length === 0) {
+      return res.status(404).json({ message: "Estudantes não encontrados nesta escola." });
+    }
+
+    await pool.query(
+      "UPDATE alunos SET turma_id = ?, status = 'ativo' WHERE id IN (?) AND escola_id = ?",
+      [destinoId, idsValidos, escola_id]
+    );
+
+    for (const alunoId of idsValidos) {
+      const [matr] = await pool.query(
+        "SELECT id FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
+        [alunoId, anoLetivoAtual, escola_id]
+      );
+      if (matr.length > 0) {
+        await pool.query(
+          "UPDATE matriculas SET turma_id = ?, status = 'ativo', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [destinoId, matr[0].id]
+        );
+      } else {
+        await pool.query(
+          "INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status) VALUES (?, ?, ?, ?, 'ativo')",
+          [escola_id, alunoId, destinoId, anoLetivoAtual]
+        );
+      }
+    }
+
+    console.log(
+      `[remanejar-lote] ${idsValidos.length} aluno(s) remanejado(s) para turma id=${destinoId} ("${turmaDestino.nome}") (escola_id=${escola_id})`
+    );
+
+    return res.json({
+      ok: true,
+      remanejados: idsValidos.length,
+      turmaDestino: turmaDestino.nome,
+      message: `${idsValidos.length} estudante(s) remanejado(s) para ${turmaDestino.nome}.`,
+    });
+  } catch (err) {
+    console.error("Erro ao remanejar em lote:", err);
+    return res.status(500).json({ message: "Erro ao remanejar estudantes.", error: err.message });
   }
 });
 
