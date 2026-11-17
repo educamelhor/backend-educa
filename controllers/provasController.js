@@ -123,38 +123,46 @@ export async function criarProva(req, res) {
   const { escola_id, professor_id } = req.user;
   const {
     titulo = 'Nova Prova', disciplina, turma, bimestre,
-    ano_letivo, template_slug = 'modelo_01_provao', config_json,
+    ano_letivo, template_slug = 'modelo_01_provao', config_json, status,
   } = req.body;
   try {
     await ensureProvasSchema();
+    const tituloFinal = String(titulo || 'Nova Prova').trim().slice(0, 200) || 'Nova Prova';
+    const discFinal = disciplina ? String(disciplina).trim().slice(0, 100) : null;
+    const turmaFinal = turma ? String(turma).trim().slice(0, 80) : null;
+    const bimNum = Number(bimestre);
+    const bimFinal = bimNum >= 1 && bimNum <= 4 ? bimNum : null;
+    const anoNum = Number(ano_letivo);
+    const anoFinal = anoNum >= 1901 && anoNum <= 2155 ? anoNum : new Date().getFullYear();
+    const statusFinal = ['montando', 'pronta', 'impressa', 'aplicada'].includes(status) ? status : 'montando';
     const templateFinal = template_slug || 'modelo_01_provao';
     const cfgSerialized = serializarCfgComModelo(config_json, templateFinal);
+    const embaralharAlt = parseCfgObj(cfgSerialized).embaralhar_alternativas ? 1 : 0;
 
     let insertId;
     try {
       const [r] = await pool.query(
         `INSERT INTO provas
-          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json, status, embaralhar_alternativas)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           escola_id || null, professor_id || null,
-          titulo, disciplina || null, turma || null,
-          bimestre || null, ano_letivo || new Date().getFullYear(),
-          templateFinal, cfgSerialized,
+          tituloFinal, discFinal, turmaFinal,
+          bimFinal, anoFinal,
+          templateFinal, cfgSerialized, statusFinal, embaralharAlt,
         ]
       );
       insertId = r.insertId;
     } catch (dbErr) {
-      // Fallback defensivo caso o banco restrinja DDL em ENUM legado (preserva modelo_slug em config_json)
       const [rFallback] = await pool.query(
         `INSERT INTO provas
-          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (escola_id, professor_id, titulo, disciplina, turma, bimestre, ano_letivo, template_slug, config_json, status, embaralhar_alternativas)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           escola_id || null, professor_id || null,
-          titulo, disciplina || null, turma || null,
-          bimestre || null, ano_letivo || new Date().getFullYear(),
-          'objetiva_2col', cfgSerialized,
+          tituloFinal, discFinal, turmaFinal,
+          bimFinal, anoFinal,
+          'objetiva_2col', cfgSerialized, statusFinal, embaralharAlt,
         ]
       );
       insertId = rFallback.insertId;
@@ -177,39 +185,53 @@ export async function atualizarProva(req, res) {
   try {
     await ensureProvasSchema();
     const [[atual]] = await pool.query(
-      `SELECT config_json, template_slug FROM provas p WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
+      `SELECT p.id, p.titulo, p.disciplina, p.turma, p.bimestre, p.ano_letivo, p.status, p.config_json, p.template_slug
+         FROM provas p
+        WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
       [id, ...escolaParam(escola_id)]
     );
     if (!atual) return res.status(404).json({ message: 'Prova não encontrada.' });
 
+    const tituloFinal = String(titulo ?? atual.titulo ?? 'Nova Prova').trim().slice(0, 200) || 'Nova Prova';
+    const discFinal = disciplina !== undefined
+      ? (disciplina ? String(disciplina).trim().slice(0, 100) : null)
+      : atual.disciplina;
+    const turmaFinal = turma !== undefined
+      ? (turma ? String(turma).trim().slice(0, 80) : null)
+      : atual.turma;
+    const bimNum = bimestre !== undefined ? Number(bimestre) : Number(atual.bimestre);
+    const bimFinal = bimNum >= 1 && bimNum <= 4 ? bimNum : null;
+    const anoNum = ano_letivo !== undefined ? Number(ano_letivo) : Number(atual.ano_letivo);
+    const anoFinal = anoNum >= 1901 && anoNum <= 2155 ? anoNum : (atual.ano_letivo || new Date().getFullYear());
+    const statusFinal = ['montando', 'pronta', 'impressa', 'aplicada'].includes(status)
+      ? status
+      : (atual.status || 'montando');
+
     const templateFinal = template_slug || resolveProvaTemplate(atual);
     const cfgSerialized = serializarCfgComModelo(config_json, templateFinal, atual.config_json);
+    const embaralharAlt = parseCfgObj(cfgSerialized).embaralhar_alternativas ? 1 : 0;
 
     try {
       await pool.query(
-        `UPDATE provas SET
-          titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
-          template_slug = ?, config_json = ?, status = COALESCE(?, status), atualizada_em = NOW()
-         WHERE id = ? AND ${escolaFilter(escola_id)}`,
+        `UPDATE provas p SET
+          p.titulo = ?, p.disciplina = ?, p.turma = ?, p.bimestre = ?, p.ano_letivo = ?,
+          p.template_slug = ?, p.config_json = ?, p.status = ?, p.embaralhar_alternativas = ?, p.atualizada_em = NOW()
+         WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
         [
-          titulo, disciplina || null, turma || null, bimestre || null,
-          ano_letivo || null, templateFinal,
-          cfgSerialized,
-          status || null,
+          tituloFinal, discFinal, turmaFinal, bimFinal, anoFinal,
+          templateFinal, cfgSerialized, statusFinal, embaralharAlt,
           id, ...escolaParam(escola_id),
         ]
       );
     } catch (dbErr) {
       await pool.query(
-        `UPDATE provas SET
-          titulo = ?, disciplina = ?, turma = ?, bimestre = ?, ano_letivo = ?,
-          template_slug = 'objetiva_2col', config_json = ?, status = COALESCE(?, status), atualizada_em = NOW()
-         WHERE id = ? AND ${escolaFilter(escola_id)}`,
+        `UPDATE provas p SET
+          p.titulo = ?, p.disciplina = ?, p.turma = ?, p.bimestre = ?, p.ano_letivo = ?,
+          p.template_slug = 'objetiva_2col', p.config_json = ?, p.status = ?, p.embaralhar_alternativas = ?, p.atualizada_em = NOW()
+         WHERE p.id = ? AND ${escolaFilter(escola_id)}`,
         [
-          titulo, disciplina || null, turma || null, bimestre || null,
-          ano_letivo || null,
-          cfgSerialized,
-          status || null,
+          tituloFinal, discFinal, turmaFinal, bimFinal, anoFinal,
+          cfgSerialized, statusFinal, embaralharAlt,
           id, ...escolaParam(escola_id),
         ]
       );
