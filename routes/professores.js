@@ -23,6 +23,9 @@ import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
 import { resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
 import { ensureEtapa4Schema } from "../services/gradeEtapa4Service.js";
+import { decrypt } from "../modules/agente/agente.crypt.js";
+import { EducaDFBrowser } from "../modules/agente/educadf/educadf.browser.js";
+import { exportarFrequenciaEducaDF } from "../modules/agente/educadf/educadf.frequencia.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1167,6 +1170,8 @@ async function ensureChamadaTable() {
       faltas_json JSON DEFAULT NULL,
       professor_usuario_id INT DEFAULT NULL,
       professor_nome VARCHAR(200) DEFAULT NULL,
+      educadf_exportado_em DATETIME DEFAULT NULL,
+      educadf_status VARCHAR(30) DEFAULT NULL,
       atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uk_chamada_aula (escola_id, ano_letivo, turma_id, disciplina, data_aula, ordem_aula),
       INDEX idx_chamada_contexto (escola_id, ano_letivo, turma_id, disciplina, bimestre)
@@ -1180,6 +1185,28 @@ async function ensureChamadaTable() {
     try {
       await pool.query(
         `ALTER TABLE professores_chamada_aulas ADD COLUMN is_agrupamento TINYINT(1) NOT NULL DEFAULT 0 AFTER turma_id`
+      );
+    } catch (_) {}
+  }
+  try {
+    await pool.query(
+      `ALTER TABLE professores_chamada_aulas ADD COLUMN IF NOT EXISTS educadf_exportado_em DATETIME DEFAULT NULL AFTER professor_nome`
+    );
+  } catch {
+    try {
+      await pool.query(
+        `ALTER TABLE professores_chamada_aulas ADD COLUMN educadf_exportado_em DATETIME DEFAULT NULL AFTER professor_nome`
+      );
+    } catch (_) {}
+  }
+  try {
+    await pool.query(
+      `ALTER TABLE professores_chamada_aulas ADD COLUMN IF NOT EXISTS educadf_status VARCHAR(30) DEFAULT NULL AFTER educadf_exportado_em`
+    );
+  } catch {
+    try {
+      await pool.query(
+        `ALTER TABLE professores_chamada_aulas ADD COLUMN educadf_status VARCHAR(30) DEFAULT NULL AFTER educadf_exportado_em`
       );
     } catch (_) {}
   }
@@ -1732,9 +1759,331 @@ function validarDataLetivaGovernanca(dataIso, bimestreStr, governanca) {
   return { valido: true, motivo: null };
 }
 
+// ── Controle em Memória de Jobs de Migração de Frequência (Chamada → EDUCADF) ──
+const CHAMADA_EXPORT_LOCK_TTL_MS = 15 * 60 * 1000; // 15 min
+const _chamadaExportJobs = new Map();
+
+function getChamadaUserId(req) {
+  return Number(
+    req?.user?.id ??
+      req?.user?.usuario_id ??
+      req?.user?.userId ??
+      req?.user?.usuarioId ??
+      req?.user?.user_id ??
+      req?.user?.id_usuario ??
+      req?.user?.sub ??
+      0
+  );
+}
+
+function buildChamadaExportJobKey(escolaId, userId, turmaId, isAgrupamento, disciplina, bimestre) {
+  const dKey = String(disciplina || "").trim().toUpperCase();
+  const bNum = String(bimestre || "").replace(/\D/g, "") || "1";
+  const agrKey = isAgrupamento ? "agr" : "reg";
+  return `${Number(escolaId)}:${Number(userId || 0)}:${agrKey}_${Number(turmaId)}:${dKey}:B${bNum}`;
+}
+
+function obterJobExportacaoChamada(jobKey) {
+  const job = _chamadaExportJobs.get(jobKey);
+  if (!job) return null;
+  if (job.status === "running" && Date.now() - (job.startedAtMs || 0) >= CHAMADA_EXPORT_LOCK_TTL_MS) {
+    job.status = "error";
+    job.message = "Tempo limite excedido na migração para o EDUCADF. Tente novamente.";
+    job.finishedAt = new Date().toISOString();
+  }
+  return { ...job };
+}
+
+async function buscarCredenciaisAgenteChamada(escolaId, usuarioId) {
+  if (!escolaId || !usuarioId) return null;
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ultimo_teste_em
+         FROM agente_credenciais
+        WHERE escola_id = ? AND usuario_id = ? AND ativo = 1
+        ORDER BY updated_at DESC LIMIT 1`,
+      [escolaId, usuarioId]
+    );
+    return rows?.[0] || null;
+  } catch {
+    try {
+      const [rows] = await pool.query(
+        `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id, ultimo_teste_em
+           FROM agente_credenciais
+          WHERE escola_id = ? AND professor_id = ? AND ativo = 1
+          ORDER BY updated_at DESC LIMIT 1`,
+        [escolaId, usuarioId]
+      );
+      return rows?.[0] || null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function carregarAlunosParaExportacaoChamada(escolaId, turmaId, isAgrupamento, anoLetivo) {
+  // 1) Agrupamento / IFA / Eletiva
+  if (isAgrupamento !== false) {
+    try {
+      const [[agr]] = await pool.query(
+        "SELECT id, nome FROM agrupamentos WHERE id = ? AND escola_id = ?",
+        [turmaId, escolaId]
+      );
+      if (agr) {
+        const [rowsAgr] = await pool.query(
+          `SELECT a.id, a.codigo, a.estudante AS nome
+             FROM agrupamento_alunos aa
+             JOIN alunos a ON a.id = aa.aluno_id
+            WHERE aa.agrupamento_id = ?
+              AND aa.escola_id = ?
+              AND aa.status = 'ativo'
+              AND (a.status = 'ativo' OR a.status IS NULL)
+            ORDER BY a.estudante ASC`,
+          [turmaId, escolaId]
+        );
+        return rowsAgr || [];
+      }
+    } catch (_) {}
+  }
+
+  // 2) Turma Regular (matriculas -> fallback sem status -> fallback por nome da turma)
+  try {
+    const [rows] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante AS nome
+         FROM matriculas m
+         INNER JOIN alunos a ON a.id = m.aluno_id
+        WHERE m.turma_id = ?
+          AND m.escola_id = ?
+          AND m.ano_letivo = ?
+          AND m.status IN ('ativo', 'matriculado')
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        ORDER BY a.estudante ASC`,
+      [turmaId, escolaId, anoLetivo]
+    );
+    if (rows?.length > 0) return rows;
+
+    const [rowsFallback] = await pool.query(
+      `SELECT a.id, a.codigo, a.estudante AS nome
+         FROM matriculas m
+         INNER JOIN alunos a ON a.id = m.aluno_id
+        WHERE m.turma_id = ?
+          AND m.escola_id = ?
+          AND m.ano_letivo = ?
+          AND (a.status = 'ativo' OR a.status IS NULL)
+        ORDER BY a.estudante ASC`,
+      [turmaId, escolaId, anoLetivo]
+    );
+    if (rowsFallback?.length > 0) return rowsFallback;
+
+    const [[tRow]] = await pool.query(
+      "SELECT nome FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+      [turmaId, escolaId]
+    );
+    if (tRow?.nome) {
+      const [rowsByNome] = await pool.query(
+        `SELECT DISTINCT a.id, a.codigo, a.estudante AS nome
+           FROM matriculas m
+           INNER JOIN alunos a ON a.id = m.aluno_id
+           INNER JOIN turmas t ON t.id = m.turma_id
+          WHERE t.nome = ?
+            AND m.escola_id = ?
+            AND m.ano_letivo = ?
+            AND (a.status = 'ativo' OR a.status IS NULL)
+          ORDER BY a.estudante ASC`,
+        [tRow.nome, escolaId, anoLetivo]
+      );
+      if (rowsByNome?.length > 0) return rowsByNome;
+    }
+  } catch (_) {}
+
+  return [];
+}
+
+async function carregarMetadadosEducaDFChamada({
+  escolaId,
+  userId,
+  reqUser,
+  perfilCredencial,
+  turmaId,
+  isAgrupamento,
+  disciplina,
+  anoLetivo,
+  bimestre,
+  governanca,
+}) {
+  let turmaNome = `Turma ${turmaId}`;
+  let turnoTurma = "";
+  let turmasOficiais = [];
+
+  // 1) Turma ou Agrupamento (sempre sem LIMIT 1 na busca de nome_oficial, priorizando turno — Regra Governança EDUCADF)
+  let resolveuAgrupamento = false;
+  if (isAgrupamento) {
+    try {
+      const [[agr]] = await pool.query(
+        "SELECT id, nome, turno FROM agrupamentos WHERE id = ? AND escola_id = ? LIMIT 1",
+        [turmaId, escolaId]
+      );
+      if (agr) {
+        resolveuAgrupamento = true;
+        turmaNome = String(agr.nome || turmaNome).trim();
+        turnoTurma = String(agr.turno || "").trim();
+        const [tHom] = await pool.query(
+          `SELECT nome_oficial, turno
+             FROM turmas
+            WHERE nome = ? AND escola_id = ?
+            ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
+                     (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
+                     ano DESC, id DESC`,
+          [turmaNome, escolaId, turnoTurma]
+        );
+        turmasOficiais = [
+          ...new Set((tHom || []).map((r) => String(r.nome_oficial || "").trim()).filter(Boolean)),
+        ];
+      }
+    } catch (_) {}
+  }
+
+  if (!resolveuAgrupamento) {
+    try {
+      const [[tAlvo]] = await pool.query(
+        "SELECT id, nome, nome_oficial, turno FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+        [turmaId, escolaId]
+      );
+      if (tAlvo) {
+        turmaNome = String(tAlvo.nome || turmaNome).trim();
+        turnoTurma = String(tAlvo.turno || "").trim();
+        const [turmasRows] = await pool.query(
+          `SELECT id, nome_oficial, turno
+             FROM turmas
+            WHERE nome = ? AND escola_id = ?
+            ORDER BY (id = ?) DESC,
+                     (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
+                     (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
+                     ano DESC, id DESC`,
+          [turmaNome, escolaId, turmaId, turnoTurma]
+        );
+        turmasOficiais = [
+          ...new Set(
+            (turmasRows || []).map((r) => String(r.nome_oficial || "").trim()).filter(Boolean)
+          ),
+        ];
+      }
+    } catch (_) {}
+  }
+
+  // 2) Nome oficial da Disciplina (respeitando disciplinas mescladas)
+  let disciplinaOficial = null;
+  try {
+    const [[discDb]] = await pool.query(
+      `SELECT COALESCE(NULLIF(TRIM(d_ativa.nome_oficial), ''), NULLIF(TRIM(d.nome_oficial), '')) AS nome_oficial
+         FROM disciplinas d
+         LEFT JOIN disciplinas d_ativa ON d_ativa.id = d.mesclada_em
+        WHERE d.nome = ? AND d.escola_id = ?
+        ORDER BY (d.mesclada_em IS NULL) DESC, (TRIM(COALESCE(d.nome_oficial, '')) <> '') DESC, d.id DESC
+        LIMIT 1`,
+      [disciplina, escolaId]
+    );
+    disciplinaOficial = discDb?.nome_oficial || null;
+  } catch (_) {}
+
+  // 3) Configuração da Escola no Agente EDUCADF
+  let escolaNomeBusca = "";
+  let escolaNomeOficial = "";
+  try {
+    const [cfgRows] = await pool.query(
+      `SELECT chave, valor FROM configuracoes_escola
+        WHERE escola_id = ? AND chave IN ('agente.educadf.escola_nome_busca', 'agente.educadf.escola_nome_oficial')`,
+      [escolaId]
+    );
+    const cfg = Object.fromEntries((cfgRows || []).map((r) => [r.chave, r.valor]));
+    escolaNomeBusca = cfg["agente.educadf.escola_nome_busca"] || "";
+    escolaNomeOficial = cfg["agente.educadf.escola_nome_oficial"] || "";
+  } catch (_) {}
+
+  // 4) Nome do Professor (se perfil 'professor', usa identidade do logado; se gestor, prioriza titular da turma/disciplina)
+  let professorNome = String(reqUser?.nome || "").trim();
+  if (perfilCredencial !== "professor") {
+    try {
+      if (resolveuAgrupamento) {
+        const [[pAgr]] = await pool.query(
+          `SELECT p.nome
+             FROM agrupamento_modulacao am
+             JOIN professores p ON p.id = am.professor_id
+             JOIN disciplinas d ON d.id = am.disciplina_id
+            WHERE am.agrupamento_id = ? AND p.escola_id = ? AND d.nome = ?
+            LIMIT 1`,
+          [turmaId, escolaId, disciplina]
+        );
+        if (pAgr?.nome) professorNome = String(pAgr.nome).trim();
+      } else {
+        const [[pMod]] = await pool.query(
+          `SELECT p.nome
+             FROM modulacao m
+             JOIN professores p ON p.id = m.professor_id
+             JOIN disciplinas d ON d.id = m.disciplina_id
+            WHERE m.turma_id = ? AND m.escola_id = ? AND d.nome = ?
+            LIMIT 1`,
+          [turmaId, escolaId, disciplina]
+        );
+        if (pMod?.nome) professorNome = String(pMod.nome).trim();
+      }
+    } catch (_) {}
+  }
+  if (!professorNome && userId) {
+    try {
+      const [[uRow]] = await pool.query("SELECT nome FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      if (uRow?.nome) professorNome = String(uRow.nome).trim();
+    } catch (_) {}
+  }
+
+  // 5) Semestre da Governança por interseção de dias do bimestre
+  const bimNum = parseInt(String(bimestre || "").replace(/\D/g, ""), 10) || 1;
+  let semestreNumero = bimNum >= 3 ? 2 : 1;
+  const periodos = Array.isArray(governanca?.periodos) ? governanca.periodos : [];
+  const perBim = periodos.find(
+    (p) => p.tipo === "bimestre" && Number(p.numero) === bimNum && p.data_inicio && p.data_fim
+  );
+  const semestres = periodos.filter((p) => p.tipo === "semestre" && p.data_inicio && p.data_fim);
+  if (perBim && semestres.length > 0) {
+    const bIni = new Date(`${perBim.data_inicio}T00:00:00Z`).getTime();
+    const bFim = new Date(`${perBim.data_fim}T00:00:00Z`).getTime();
+    let melhorOverlap = -1;
+    for (const s of semestres) {
+      const sIni = new Date(`${s.data_inicio}T00:00:00Z`).getTime();
+      const sFim = new Date(`${s.data_fim}T00:00:00Z`).getTime();
+      const overlap = Math.min(bFim, sFim) - Math.max(bIni, sIni);
+      if (overlap >= 0 && overlap > melhorOverlap) {
+        melhorOverlap = overlap;
+        semestreNumero = Number(s.numero) || semestreNumero;
+      }
+    }
+  }
+
+  return {
+    turmas: turmaNome,
+    turno: turnoTurma,
+    turmaOficial: turmasOficiais[0] || turmaNome,
+    turmasOficiais,
+    disciplina,
+    disciplinaOficial,
+    bimestre,
+    ano: anoLetivo,
+    professorNome,
+    escola: { nomeBusca: escolaNomeBusca, nomeOficial: escolaNomeOficial },
+    governanca: {
+      anoLetivo,
+      bimestreNumero: bimNum,
+      semestreNumero,
+      periodoBimestre: perBim
+        ? { dataInicio: perBim.data_inicio, dataFim: perBim.data_fim }
+        : null,
+    },
+  };
+}
+
 // GET /api/professores/me/chamada
 // Retorna a configuração do Ano Letivo da escola (períodos, exceções e horários por turno),
-// a Grade Horária do professor (`grade_horaria` de Secretaria > Horários) e,
+// a Grade Horária do professor (`grade_horaria` de Secretaria > Horários), status do Agente EDUCADF e,
 // se turma_id + disciplina forem informados, retorna os registros de chamada salvos no banco.
 router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => {
   try {
@@ -1747,6 +2096,7 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       return res.status(400).json({ ok: false, message: "escola_id não identificado." });
     }
 
+    const userId = getChamadaUserId(req);
     const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
     await ensureChamadaTable();
 
@@ -1760,14 +2110,17 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       req.query.is_agrupamento === "true" ||
       req.query.is_agrupamento === true;
 
-    const gradeHoraria = await carregarGradeHorariaProfessorChamada(
-      escolaId,
-      req.user,
-      governanca.horarios,
-      turmaId,
-      disciplina,
-      isAgrupamento
-    );
+    const [gradeHoraria, cred] = await Promise.all([
+      carregarGradeHorariaProfessorChamada(
+        escolaId,
+        req.user,
+        governanca.horarios,
+        turmaId,
+        disciplina,
+        isAgrupamento
+      ),
+      buscarCredenciaisAgenteChamada(escolaId, userId),
+    ]);
 
     const registros = {};
     if (turmaId > 0 && disciplina) {
@@ -1776,6 +2129,8 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
                DATE_FORMAT(data_aula, '%Y-%m-%d') AS data_aula,
                ordem_aula, horario_inicio, horario_fim,
                confirmada, faltas_json, professor_nome,
+               educadf_status,
+               DATE_FORMAT(educadf_exportado_em, '%d/%m/%Y %H:%i') AS educadf_exportado_em_fmt,
                DATE_FORMAT(atualizado_em, '%d/%m/%Y %H:%i') AS atualizado_em_fmt
         FROM professores_chamada_aulas
         WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND disciplina = ?
@@ -1812,10 +2167,19 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
           bimestre: r.bimestre,
           is_agrupamento: Boolean(Number(r.is_agrupamento || 0)),
           professor_nome: r.professor_nome,
+          educadf_status: r.educadf_status || null,
+          educadf_exportado_em_fmt: r.educadf_exportado_em_fmt || null,
           atualizado_em_fmt: r.atualizado_em_fmt,
         };
       }
     }
+
+    const jobAtivo =
+      turmaId > 0 && disciplina && bimestre
+        ? obterJobExportacaoChamada(
+            buildChamadaExportJobKey(escolaId, userId, turmaId, isAgrupamento, disciplina, bimestre)
+          )
+        : null;
 
     return res.json({
       ok: true,
@@ -1823,6 +2187,12 @@ router.get("/me/chamada", autenticarToken, verificarEscola, async (req, res) => 
       governanca,
       grade_horaria: gradeHoraria,
       registros,
+      agente_educadf: {
+        credencial_configurada: Boolean(cred),
+        login: cred?.educadf_login || null,
+        conectado: Boolean(cred?.ultimo_teste_em),
+        job: jobAtivo,
+      },
     });
   } catch (err) {
     console.error("[PROFESSORES][ME/CHAMADA][GET]", err);
@@ -1885,12 +2255,7 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
       }
     }
 
-    const userId =
-      req.user?.id ||
-      req.user?.usuario_id ||
-      req.user?.userId ||
-      req.user?.usuarioId ||
-      null;
+    const userId = getChamadaUserId(req) || null;
     const profNome = req.user?.nome || req.body?.professor_nome || null;
 
     for (const a of aulas) {
@@ -1899,7 +2264,11 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
       const horarioIni = String(a.horario || "07:30").trim().slice(0, 10);
       const horarioFim = a.horario_fim ? String(a.horario_fim).trim().slice(0, 10) : null;
       const confirmada = a.confirmada ? 1 : 0;
-      const faltasArr = Array.isArray(a.faltas) ? a.faltas : [];
+      const faltasArr = Array.isArray(a.faltas)
+        ? [...new Set(a.faltas.map((x) => Number(x) || x).filter(Boolean))].sort((x, y) =>
+            String(x).localeCompare(String(y), undefined, { numeric: true })
+          )
+        : [];
 
       await pool.query(
         `INSERT INTO professores_chamada_aulas
@@ -1911,6 +2280,16 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
            is_agrupamento = VALUES(is_agrupamento),
            horario_inicio = VALUES(horario_inicio),
            horario_fim = VALUES(horario_fim),
+           educadf_status = CASE
+             WHEN VALUES(confirmada) = 0 THEN NULL
+             WHEN educadf_exportado_em IS NOT NULL AND CAST(faltas_json AS CHAR) <> CAST(VALUES(faltas_json) AS CHAR) THEN 'PENDENTE_ATUALIZACAO'
+             ELSE educadf_status
+           END,
+           educadf_exportado_em = CASE
+             WHEN VALUES(confirmada) = 0 THEN NULL
+             WHEN educadf_exportado_em IS NOT NULL AND CAST(faltas_json AS CHAR) <> CAST(VALUES(faltas_json) AS CHAR) THEN NULL
+             ELSE educadf_exportado_em
+           END,
            confirmada = VALUES(confirmada),
            faltas_json = VALUES(faltas_json),
            professor_usuario_id = VALUES(professor_usuario_id),
@@ -1942,6 +2321,496 @@ router.post("/me/chamada", autenticarToken, verificarEscola, async (req, res) =>
   } catch (err) {
     console.error("[PROFESSORES][ME/CHAMADA][POST]", err);
     return res.status(500).json({ ok: false, message: "Erro ao salvar chamada no servidor." });
+  }
+});
+
+// GET /api/professores/me/chamada/exportar-status
+// Retorna o status em tempo real da migração Playwright de frequência para o EDUCADF + mapa atualizado de aulas exportadas.
+router.get("/me/chamada/exportar-status", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = Number(
+      req.escola_id ||
+        req.user?.escola_id ||
+        (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : 0)
+    );
+    const userId = getChamadaUserId(req);
+    const anoLetivo = Number(req.query.ano) || new Date().getFullYear();
+    const turmaId = Number(req.query.turma_id || 0);
+    const disciplina = String(req.query.disciplina || "").trim();
+    const bimestre = String(req.query.bimestre || "1º Bimestre").trim();
+    const isAgrupamento =
+      req.query.is_agrupamento === "1" ||
+      req.query.is_agrupamento === "true" ||
+      req.query.is_agrupamento === true;
+
+    if (!escolaId || !turmaId || !disciplina) {
+      return res.status(400).json({ ok: false, message: "Parâmetros inválidos." });
+    }
+
+    await ensureChamadaTable();
+    const jobKey = buildChamadaExportJobKey(
+      escolaId,
+      userId,
+      turmaId,
+      isAgrupamento,
+      disciplina,
+      bimestre
+    );
+    const job = obterJobExportacaoChamada(jobKey);
+
+    const exportadasMap = {};
+    const [rows] = await pool.query(
+      `SELECT DATE_FORMAT(data_aula, '%Y-%m-%d') AS data_aula,
+              ordem_aula,
+              educadf_status,
+              DATE_FORMAT(educadf_exportado_em, '%d/%m/%Y %H:%i') AS educadf_exportado_em_fmt
+         FROM professores_chamada_aulas
+        WHERE escola_id = ? AND ano_letivo = ? AND turma_id = ? AND disciplina = ? AND bimestre = ?`,
+      [escolaId, anoLetivo, turmaId, disciplina, bimestre]
+    );
+    for (const r of rows || []) {
+      exportadasMap[`${r.data_aula}#${Number(r.ordem_aula) || 1}`] = {
+        educadf_status: r.educadf_status || null,
+        educadf_exportado_em_fmt: r.educadf_exportado_em_fmt || null,
+      };
+    }
+
+    return res.json({
+      ok: true,
+      job,
+      exportadas_map: exportadasMap,
+    });
+  } catch (err) {
+    console.error("[PROFESSORES][ME/CHAMADA/EXPORTAR-STATUS][GET]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao consultar status da migração." });
+  }
+});
+
+// POST /api/professores/me/chamada/exportar-educadf
+// Executa a migração automatizada real de frequência para o Portal EDUCADF via Playwright (Agente EDUCA).
+router.post("/me/chamada/exportar-educadf", autenticarToken, verificarEscola, async (req, res) => {
+  try {
+    const escolaId = Number(
+      req.escola_id ||
+        req.user?.escola_id ||
+        (req.headers?.["x-escola-id"] ? Number(req.headers["x-escola-id"]) : 0)
+    );
+    const userId = getChamadaUserId(req);
+    if (!escolaId || !userId) {
+      return res.status(400).json({ ok: false, message: "Usuário ou escola não identificados." });
+    }
+
+    const {
+      ano_letivo,
+      bimestre,
+      turma_id,
+      is_agrupamento,
+      disciplina,
+      apenas_pendentes = true,
+      datas = null,
+      aulas = null,
+    } = req.body || {};
+
+    const anoLetivo = Number(ano_letivo) || new Date().getFullYear();
+    const turmaId = Number(turma_id || 0);
+    const isAgrup = Boolean(is_agrupamento);
+    const discNorm = String(disciplina || "").trim();
+    const bimNorm = String(bimestre || "1º Bimestre").trim();
+
+    if (!turmaId || !discNorm) {
+      return res.status(400).json({
+        ok: false,
+        message: "Selecione a turma e a disciplina antes de migrar a frequência para o EDUCADF.",
+      });
+    }
+
+    await ensureChamadaTable();
+
+    // 1) Verifica lock de concorrência para este contexto
+    const jobKey = buildChamadaExportJobKey(escolaId, userId, turmaId, isAgrup, discNorm, bimNorm);
+    const jobExistente = obterJobExportacaoChamada(jobKey);
+    if (jobExistente?.status === "running") {
+      return res.status(423).json({
+        ok: false,
+        codigo: "EM_EXECUCAO",
+        message: "A migração de frequência desta turma já está em andamento. Acompanhe o progresso na tela.",
+        job: jobExistente,
+      });
+    }
+
+    const governanca = await carregarGovernancaAnoLetivoEscola(escolaId, anoLetivo);
+
+    // 2) Se o frontend enviou aulas locais pendentes de sincronização, persiste antes de exportar
+    if (Array.isArray(aulas) && aulas.length > 0) {
+      const profNome = req.user?.nome || null;
+      for (const a of aulas) {
+        if (!a || !a.data || !a.confirmada) continue;
+        const check = validarDataLetivaGovernanca(a.data, bimNorm, governanca);
+        if (!check.valido) continue;
+        const ordem = Number(a.ordem) || 1;
+        const horarioIni = String(a.horario || "07:30").trim().slice(0, 10);
+        const horarioFim = a.horario_fim ? String(a.horario_fim).trim().slice(0, 10) : null;
+        const faltasArr = Array.isArray(a.faltas)
+          ? [...new Set(a.faltas.map((x) => Number(x) || x).filter(Boolean))].sort((x, y) =>
+              String(x).localeCompare(String(y), undefined, { numeric: true })
+            )
+          : [];
+
+        await pool.query(
+          `INSERT INTO professores_chamada_aulas
+            (escola_id, ano_letivo, bimestre, turma_id, is_agrupamento, disciplina, data_aula, ordem_aula,
+             horario_inicio, horario_fim, confirmada, faltas_json, professor_usuario_id, professor_nome)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             bimestre = VALUES(bimestre),
+             is_agrupamento = VALUES(is_agrupamento),
+             horario_inicio = VALUES(horario_inicio),
+             horario_fim = VALUES(horario_fim),
+             educadf_status = CASE
+               WHEN educadf_exportado_em IS NOT NULL AND CAST(faltas_json AS CHAR) <> CAST(VALUES(faltas_json) AS CHAR) THEN 'PENDENTE_ATUALIZACAO'
+               ELSE educadf_status
+             END,
+             educadf_exportado_em = CASE
+               WHEN educadf_exportado_em IS NOT NULL AND CAST(faltas_json AS CHAR) <> CAST(VALUES(faltas_json) AS CHAR) THEN NULL
+               ELSE educadf_exportado_em
+             END,
+             confirmada = 1,
+             faltas_json = VALUES(faltas_json),
+             professor_usuario_id = VALUES(professor_usuario_id),
+             professor_nome = VALUES(professor_nome),
+             atualizado_em = CURRENT_TIMESTAMP`,
+          [
+            escolaId,
+            anoLetivo,
+            bimNorm,
+            turmaId,
+            isAgrup ? 1 : 0,
+            discNorm,
+            a.data,
+            ordem,
+            horarioIni,
+            horarioFim,
+            JSON.stringify(faltasArr),
+            userId,
+            profNome,
+          ]
+        );
+      }
+    }
+
+    // 3) Valida Credenciais EDUCADF do Usuário Logado (Etapa 0 — Agente EDUCA)
+    const cred = await buscarCredenciaisAgenteChamada(escolaId, userId);
+    if (!cred) {
+      return res.status(422).json({
+        ok: false,
+        codigo: "SEM_CREDENCIAIS",
+        message:
+          "Suas credenciais do portal EDUCADF ainda não estão configuradas. Conecte sua matrícula e senha em Agente EDUCA > Credenciais antes de migrar.",
+      });
+    }
+
+    let senhaPlain = "";
+    try {
+      senhaPlain = decrypt(cred.educadf_senha_enc, cred.educadf_senha_iv, cred.educadf_senha_tag);
+    } catch {
+      return res.status(422).json({
+        ok: false,
+        codigo: "CREDENCIAIS_CORROMPIDAS",
+        message:
+          "Suas credenciais do EDUCADF precisam ser atualizadas. Salve sua senha novamente em Agente EDUCA > Credenciais.",
+      });
+    }
+
+    // 4) Consulta aulas confirmadas do bimestre no banco
+    const [todasConfirmadas] = await pool.query(
+      `SELECT id,
+              DATE_FORMAT(data_aula, '%Y-%m-%d') AS data_aula,
+              ordem_aula,
+              horario_inicio,
+              horario_fim,
+              faltas_json,
+              educadf_exportado_em,
+              educadf_status
+         FROM professores_chamada_aulas
+        WHERE escola_id = ?
+          AND ano_letivo = ?
+          AND turma_id = ?
+          AND disciplina = ?
+          AND bimestre = ?
+          AND confirmada = 1
+        ORDER BY data_aula ASC, ordem_aula ASC`,
+      [escolaId, anoLetivo, turmaId, discNorm, bimNorm]
+    );
+
+    if (!todasConfirmadas || todasConfirmadas.length === 0) {
+      return res.status(422).json({
+        ok: false,
+        codigo: "SEM_AULAS_CONFIRMADAS",
+        message:
+          "Nenhuma aula confirmada encontrada neste bimestre. Clique em '✓ Dei esta aula' ou 'Salvar Chamada' antes de migrar para o EDUCADF.",
+      });
+    }
+
+    const datasFiltroSet =
+      Array.isArray(datas) && datas.length > 0
+        ? new Set(datas.map((d) => String(d || "").slice(0, 10)).filter(Boolean))
+        : null;
+
+    const aulasSelecionadasDb = todasConfirmadas.filter((r) => {
+      if (datasFiltroSet) return datasFiltroSet.has(r.data_aula);
+      if (apenas_pendentes) return !r.educadf_exportado_em;
+      return true;
+    });
+
+    if (aulasSelecionadasDb.length === 0) {
+      return res.status(422).json({
+        ok: false,
+        codigo: "TUDO_JA_EXPORTADO",
+        message:
+          "Todas as aulas confirmadas deste bimestre já foram migradas para o EDUCADF! Caso queira reenviar todas as datas, use 'Re-migrar Todo o Bimestre'.",
+      });
+    }
+
+    // 5) Carrega estudantes da turma para resolver IDs -> { codigo (RE), nome }
+    const alunosTurma = await carregarAlunosParaExportacaoChamada(
+      escolaId,
+      turmaId,
+      isAgrup,
+      anoLetivo
+    );
+    const alunoPorId = new Map();
+    for (const al of alunosTurma) {
+      alunoPorId.set(String(al.id), {
+        id: al.id,
+        codigo: String(al.codigo || "").trim(),
+        nome: String(al.nome || "").trim(),
+      });
+    }
+
+    const aulasParaPlaywright = aulasSelecionadasDb.map((r) => {
+      let idsFaltas = [];
+      try {
+        idsFaltas =
+          typeof r.faltas_json === "string"
+            ? JSON.parse(r.faltas_json)
+            : Array.isArray(r.faltas_json)
+            ? r.faltas_json
+            : [];
+      } catch {
+        idsFaltas = [];
+      }
+      const faltasAlunos = (Array.isArray(idsFaltas) ? idsFaltas : [])
+        .map((idAl) => alunoPorId.get(String(idAl)))
+        .filter(Boolean);
+
+      return {
+        id: r.id,
+        data: r.data_aula,
+        ordem: Number(r.ordem_aula) || 1,
+        horario: r.horario_inicio || "07:30",
+        horario_fim: r.horario_fim || null,
+        confirmada: true,
+        faltas_alunos: faltasAlunos,
+      };
+    });
+
+    const datasUnicas = [...new Set(aulasParaPlaywright.map((a) => a.data))].sort();
+    const PERFIL_CRED_MAP = { 1: "professor", 2: "secretario", 3: "diretor" };
+    const perfilCredencial = PERFIL_CRED_MAP[Number(cred.perfil_id)] || "professor";
+
+    const metadadosEducaDF = await carregarMetadadosEducaDFChamada({
+      escolaId,
+      userId,
+      reqUser: req.user,
+      perfilCredencial,
+      turmaId,
+      isAgrupamento: isAgrup,
+      disciplina: discNorm,
+      anoLetivo,
+      bimestre: bimNorm,
+      governanca,
+    });
+
+    const dadosChamada = {
+      ...metadadosEducaDF,
+      aulas: aulasParaPlaywright,
+    };
+
+    // 6) Registra job ativo e responde 202 Accepted imediatamente
+    const jobState = {
+      jobKey,
+      status: "running",
+      etapa: "Iniciando navegador seguro para conectar ao EDUCADF...",
+      turmaNome: metadadosEducaDF.turmas,
+      disciplina: discNorm,
+      bimestre: bimNorm,
+      datasProcessadas: 0,
+      totalDatas: datasUnicas.length,
+      aulasExportadas: 0,
+      totalAulas: aulasParaPlaywright.length,
+      avisos: [],
+      message: null,
+      startedAtMs: Date.now(),
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+    _chamadaExportJobs.set(jobKey, jobState);
+
+    res.status(202).json({
+      ok: true,
+      status: "running",
+      message: `Migração iniciada para ${metadadosEducaDF.turmas} (${datasUnicas.length} dia(s), ${aulasParaPlaywright.length} aula(s)).`,
+      job: { ...jobState },
+    });
+
+    // 7) Execução Playwright em Background com atualização incremental no MySQL a cada data salva
+    (async () => {
+      const MAX_TENTATIVAS = 2;
+      const RETRY_DELAY_MS = 15_000;
+      let resultado = null;
+
+      try {
+        for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+          resultado = await EducaDFBrowser.withSession(
+            async (session) =>
+              exportarFrequenciaEducaDF(
+                session,
+                { login: cred.educadf_login, senha: senhaPlain, perfil: perfilCredencial },
+                dadosChamada,
+                async (prog) => {
+                  const atual = _chamadaExportJobs.get(jobKey);
+                  if (atual) {
+                    if (prog.etapa) atual.etapa = prog.etapa;
+                    if (typeof prog.datasProcessadas === "number") {
+                      atual.datasProcessadas = prog.datasProcessadas;
+                    }
+                    if (typeof prog.totalDatas === "number") {
+                      atual.totalDatas = prog.totalDatas;
+                    }
+                    if (typeof prog.aulasExportadas === "number") {
+                      atual.aulasExportadas = prog.aulasExportadas;
+                    }
+                    atual.updatedAtMs = Date.now();
+                  }
+
+                  // Assim que o dia é salvo no EDUCADF, grava imediatamente no banco
+                  if (prog.dataConcluida) {
+                    const ordensConcl = Array.isArray(prog.ordensConcluidas)
+                      ? prog.ordensConcluidas.map(Number).filter(Boolean)
+                      : [];
+                    if (ordensConcl.length > 0) {
+                      const phOrd = ordensConcl.map(() => "?").join(",");
+                      await pool
+                        .query(
+                          `UPDATE professores_chamada_aulas
+                              SET educadf_exportado_em = NOW(),
+                                  educadf_status = 'EXPORTADO'
+                            WHERE escola_id = ?
+                              AND ano_letivo = ?
+                              AND turma_id = ?
+                              AND disciplina = ?
+                              AND data_aula = ?
+                              AND ordem_aula IN (${phOrd})
+                              AND confirmada = 1`,
+                          [escolaId, anoLetivo, turmaId, discNorm, prog.dataConcluida, ...ordensConcl]
+                        )
+                        .catch((e) =>
+                          console.warn("[chamada->educadf] Falha ao gravar status da data:", e.message)
+                        );
+                    } else {
+                      await pool
+                        .query(
+                          `UPDATE professores_chamada_aulas
+                              SET educadf_exportado_em = NOW(),
+                                  educadf_status = 'EXPORTADO'
+                            WHERE escola_id = ?
+                              AND ano_letivo = ?
+                              AND turma_id = ?
+                              AND disciplina = ?
+                              AND data_aula = ?
+                              AND confirmada = 1`,
+                          [escolaId, anoLetivo, turmaId, discNorm, prog.dataConcluida]
+                        )
+                        .catch(() => {});
+                    }
+                  }
+                }
+              ),
+            { escolaId, professorId: userId, headless: true }
+          );
+
+          if (
+            resultado?.ok ||
+            !["PORTAL_INDISPONIVEL", "PORTAL_TIMEOUT", "TIMEOUT_LOGIN"].includes(resultado?.errorCode)
+          ) {
+            break;
+          }
+
+          if (tentativa < MAX_TENTATIVAS) {
+            const atual = _chamadaExportJobs.get(jobKey);
+            if (atual) {
+              atual.etapa = `Portal EDUCADF oscilou (${resultado?.errorCode}). Retentando automaticamente em 15s...`;
+            }
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          }
+        }
+
+        const finalJob = _chamadaExportJobs.get(jobKey);
+        if (finalJob) {
+          finalJob.status = resultado?.ok ? (resultado.parcial ? "partial" : "done") : "error";
+          finalJob.etapa = resultado?.ok
+            ? "Migração concluída!"
+            : "Migração interrompida com alerta.";
+          finalJob.message =
+            resultado?.message || "Processo finalizado.";
+          finalJob.datasProcessadas = resultado?.totalDatasExportadas ?? finalJob.datasProcessadas;
+          finalJob.aulasExportadas = resultado?.totalAulasExportadas ?? finalJob.aulasExportadas;
+          finalJob.avisos = Array.isArray(resultado?.avisos) ? resultado.avisos : [];
+          finalJob.errorCode = resultado?.errorCode || null;
+          finalJob.durationMs = resultado?.durationMs || Date.now() - finalJob.startedAtMs;
+          finalJob.finishedAt = new Date().toISOString();
+        }
+
+        // Registra log de auditoria unificado do Agente EDUCA
+        pool
+          .query(
+            `INSERT INTO agente_audit_log (execucao_id, acao, detalhe, screenshot_path, duracao_ms)
+             VALUES (0, 'EXPORTAR_FREQUENCIA', ?, ?, ?)`,
+            [
+              JSON.stringify({
+                escola_id: escolaId,
+                usuario_id: userId,
+                turma_id: turmaId,
+                turma: metadadosEducaDF.turmas,
+                disciplina: discNorm,
+                bimestre: bimNorm,
+                ok: Boolean(resultado?.ok),
+                datas_exportadas: resultado?.totalDatasExportadas || 0,
+                aulas_exportadas: resultado?.totalAulasExportadas || 0,
+              }),
+              resultado?.screenshotPath || null,
+              resultado?.durationMs || 0,
+            ]
+          )
+          .catch(() => {});
+      } catch (bgErr) {
+        console.error("[PROFESSORES][CHAMADA->EDUCADF][BG]", bgErr);
+        const finalJob = _chamadaExportJobs.get(jobKey);
+        if (finalJob) {
+          finalJob.status = "error";
+          finalJob.etapa = "Erro durante a migração.";
+          finalJob.message =
+            bgErr?.message || "Falha inesperada ao comunicar com o portal EDUCADF.";
+          finalJob.finishedAt = new Date().toISOString();
+        }
+      }
+    })();
+  } catch (err) {
+    console.error("[PROFESSORES][ME/CHAMADA/EXPORTAR-EDUCADF][POST]", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro interno ao iniciar a migração de frequência para o EDUCADF.",
+    });
   }
 });
 
