@@ -550,14 +550,14 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
             <w:footerReference w:type="default" r:id="rIdFooter1"/>
             <w:type w:val="continuous"/>
             <w:pgSz w:w="11906" w:h="16838"/>
-            <w:pgMar w:top="720" w:right="720" w:bottom="1020" w:left="851" w:header="0" w:footer="240" w:gutter="0"/>
+            <w:pgMar w:top="482" w:right="539" w:bottom="794" w:left="539" w:header="0" w:footer="198" w:gutter="0"/>
             <w:pgBorders w:offsetFrom="page">
-              <w:top w:val="single" w:sz="18" w:space="24" w:color="000000"/>
-              <w:left w:val="single" w:sz="18" w:space="24" w:color="000000"/>
-              <w:bottom w:val="single" w:sz="18" w:space="31" w:color="000000"/>
-              <w:right w:val="single" w:sz="18" w:space="24" w:color="000000"/>
+              <w:top w:val="single" w:sz="18" w:space="16" w:color="000000"/>
+              <w:left w:val="single" w:sz="18" w:space="17" w:color="000000"/>
+              <w:bottom w:val="single" w:sz="18" w:space="29" w:color="000000"/>
+              <w:right w:val="single" w:sz="18" w:space="17" w:color="000000"/>
             </w:pgBorders>
-            <w:cols w:num="1" w:space="709"/>
+            <w:cols w:num="1" w:space="431"/>
           </w:sectPr>
         </w:pPr>
       </w:p>`);
@@ -592,7 +592,7 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
     }
 
     // Cabeçalho clonado: QUESTÃO XX + Retângulo sólido laranja (#FF7F00 ou cor da escola) alinhado à direita da coluna
-    const rectWidthPt = is2Col ? '156pt' : '375pt';
+    const rectWidthPt = is2Col ? '175pt' : '395pt';
     const shapeId = `_x0000_s${1026 + idx}`;
     const headerQuestaoXml = `<w:p>
       <w:pPr>
@@ -836,23 +836,22 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
     });
   }
 
-  // Propriedades da Seção A4:
-  // - Moldura preta 2.25pt (sz="18") com space inferior de 31pt (~11mm da borda física do papel)
-  // - Margem inferior do texto em 1020 twips (~18mm) e rodapé a 240 twips (~4.2mm da borda inferior do papel),
-  //   garantindo que o texto do rodapé fique ESTRITAMENTE FORA (abaixo) da linha da moldura da página!
+  // Propriedades da Seção A4 (margens enxutas 5.5–6 mm para otimização de espaço):
+  // - Moldura preta 2.25pt (sz="18") a ~5.6mm topo (16pt), ~6mm laterais (17pt) e ~10.2mm base (29pt)
+  // - Margens internas enxutas (top 482 = 8.5mm, left/right 539 = 9.5mm, bottom 794 = 14mm) e rodapé externo a 198 twips (~3.5mm)
   const colsXml = is2Col
-    ? '<w:cols w:num="2" w:sep="1" w:space="709"/>'
-    : '<w:cols w:num="1" w:space="709"/>';
+    ? '<w:cols w:num="2" w:sep="1" w:space="431"/>'
+    : '<w:cols w:num="1" w:space="431"/>';
 
   const sectPrXml = `<w:sectPr>
     <w:footerReference w:type="default" r:id="rIdFooter1"/>
     <w:pgSz w:w="11906" w:h="16838"/>
-    <w:pgMar w:top="720" w:right="720" w:bottom="1020" w:left="851" w:header="0" w:footer="240" w:gutter="0"/>
+    <w:pgMar w:top="482" w:right="539" w:bottom="794" w:left="539" w:header="0" w:footer="198" w:gutter="0"/>
     <w:pgBorders w:offsetFrom="page">
-      <w:top w:val="single" w:sz="18" w:space="24" w:color="000000"/>
-      <w:left w:val="single" w:sz="18" w:space="24" w:color="000000"/>
-      <w:bottom w:val="single" w:sz="18" w:space="31" w:color="000000"/>
-      <w:right w:val="single" w:sz="18" w:space="24" w:color="000000"/>
+      <w:top w:val="single" w:sz="18" w:space="16" w:color="000000"/>
+      <w:left w:val="single" w:sz="18" w:space="17" w:color="000000"/>
+      <w:bottom w:val="single" w:sz="18" w:space="29" w:color="000000"/>
+      <w:right w:val="single" w:sz="18" w:space="17" w:color="000000"/>
     </w:pgBorders>
     ${colsXml}
     <w:docGrid w:linePitch="360"/>

@@ -471,8 +471,8 @@ export function gerarTexCompleto({ prova, itens, cfg = {}, escola = 'EDUCA.MELHO
       ].filter(Boolean).join(' - ');
 
   const geomOpts = isModelo01
-    ? 'a4paper,lmargin=1.45cm,rmargin=1.45cm,tmargin=1.35cm,bmargin=1.90cm,headheight=15pt,footskip=0.90cm'
-    : `a4paper,lmargin=${comMarg ? '1.1cm' : '0.5cm'},rmargin=${comMarg ? '1.1cm' : '0.5cm'},tmargin=${comMarg ? '1.1cm' : '0.5cm'},bmargin=${comMarg ? '1.4cm' : '0.6cm'},headheight=15pt`;
+    ? 'a4paper,lmargin=0.95cm,rmargin=0.95cm,tmargin=0.85cm,bmargin=1.38cm,headheight=14pt,footskip=0.72cm'
+    : `a4paper,lmargin=${comMarg ? '0.6cm' : '0.4cm'},rmargin=${comMarg ? '0.6cm' : '0.4cm'},tmargin=${comMarg ? '0.6cm' : '0.4cm'},bmargin=${comMarg ? '1.0cm' : '0.5cm'},headheight=14pt`;
 
   let tex = `\\documentclass{article}\n`;
   tex += `\\usepackage{fontspec}\n`;
@@ -501,13 +501,13 @@ export function gerarTexCompleto({ prova, itens, cfg = {}, escola = 'EDUCA.MELHO
 
   tex += `\n\\pagestyle{fancy}\n\\fancyhf{}\n`;
   if (isModelo01) {
-    // Moldura preta 2.25pt fechada + rodapé centralizado ESTRITAMENTE FORA (abaixo) da linha inferior da moldura
+    // Moldura preta 2.25pt otimizada (6mm laterais, 5.5mm topo, 10.5mm base) + rodapé externo fora da margem
     const pgNodeTex = numerarRodape
-      ? `  \\node[anchor=east] at ($(current page.south east) + (-0.95cm,0.68cm)$) {\\fontsize{9pt}{11pt}\\selectfont Pág. \\thepage};\n`
+      ? `  \\node[anchor=east] at ($(current page.south east) + (-0.60cm,0.58cm)$) {\\fontsize{9pt}{11pt}\\selectfont Pág. \\thepage};\n`
       : '';
     tex += `\\fancyhead[L]{%\n\\begin{tikzpicture}[overlay, remember picture]\n`;
-    tex += `  \\draw[draw=black, line width=2.25pt] ($(current page.north west) + (0.95cm,-0.85cm)$) rectangle ($(current page.south east) + (-0.95cm,1.40cm)$);\n`;
-    tex += `  \\node[anchor=center] at ($(current page.south) + (0cm,0.68cm)$) {\\fontsize{11pt}{13pt}\\selectfont ${escapeTex(rodapeExternoM01)}};\n`;
+    tex += `  \\draw[draw=black, line width=2.25pt] ($(current page.north west) + (0.60cm,-0.55cm)$) rectangle ($(current page.south east) + (-0.60cm,1.05cm)$);\n`;
+    tex += `  \\node[anchor=center] at ($(current page.south) + (0cm,0.58cm)$) {\\fontsize{10.5pt}{12.5pt}\\selectfont ${escapeTex(rodapeExternoM01)}};\n`;
     tex += pgNodeTex;
     tex += `\\end{tikzpicture}%\n}\n`;
   } else {
@@ -556,7 +556,7 @@ export function gerarTexCompleto({ prova, itens, cfg = {}, escola = 'EDUCA.MELHO
 
   if (is2col) {
     const envMulticol = isModelo01 ? 'multicols*' : 'multicols';
-    tex += `\\setlength{\\columnsep}{1.05cm}\n\\setlength{\\columnseprule}{0.85pt}\n\\begin{${envMulticol}}{2}\n\n`;
+    tex += `\\setlength{\\columnsep}{0.76cm}\n\\setlength{\\columnseprule}{0.85pt}\n\\begin{${envMulticol}}{2}\n\n`;
   }
 
   let ultimaDisc = '';

@@ -476,15 +476,15 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       break-after: auto;
     }
 
-    /* Moldura retangular 2.25pt igual ao w:pgBorders sz="18" do 9º ANO-EXATAS.docx */
+    /* Moldura retangular 2.25pt otimizada com margens externas enxutas (5.5mm a 6mm) */
     .a4-frame {
       position: absolute;
-      top: 8.5mm;
-      left: 9.5mm;
-      right: 9.5mm;
-      bottom: 14mm;
+      top: 5.5mm;
+      left: 6mm;
+      right: 6mm;
+      bottom: 10.5mm;
       border: 2.25pt solid #000000;
-      padding: 4.5mm 5mm;
+      padding: 3mm 3.5mm;
       background: #ffffff;
     }
 
@@ -493,7 +493,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       height: 100%;
       display: grid;
       grid-template-columns: minmax(0, 1fr) 0.85pt minmax(0, 1fr);
-      column-gap: 5.5mm;
+      column-gap: 3.8mm;
     }
     .a4-col {
       min-width: 0;
@@ -506,18 +506,18 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       background: #000000;
     }
 
-    /* Rodapé posicionado ESTRITAMENTE FORA (abaixo) da linha inferior da moldura */
+    /* Rodapé posicionado ESTRITAMENTE FORA (abaixo) da linha inferior da moldura (bottom < 10.5mm) */
     .a4-footer-outside {
       position: absolute;
-      left: 9.5mm;
-      right: 9.5mm;
-      bottom: 4.2mm;
-      height: 7.5mm;
+      left: 6mm;
+      right: 6mm;
+      bottom: 3.2mm;
+      height: 6.2mm;
       display: flex;
       align-items: center;
       justify-content: center;
       font-family: 'Times New Roman', Times, serif;
-      font-size: 11pt;
+      font-size: 10.5pt;
       color: #000000;
       letter-spacing: 0.02em;
     }
@@ -534,12 +534,12 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       color: #333333;
     }
 
-    /* Sonda de medição com a largura exata de 1 coluna interna: (210 - 19 - 10 - 11 - 0.3) / 2 = ~84.8mm */
+    /* Sonda de medição com a largura exata de 1 coluna interna: (210 - 12 - 7 - 7.6 - 0.3) / 2 = ~91.5mm */
     #flow-probe {
       position: absolute;
       left: -9999px;
       top: 0;
-      width: 84.8mm;
+      width: 91.5mm;
       visibility: hidden;
       pointer-events: none;
     }
@@ -548,7 +548,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       text-align: center;
       font-weight: 700;
       font-size: ${fontHeader};
-      margin: 2px 0 9px;
+      margin: 1px 0 7px;
       letter-spacing: 0.02em;
     }
     .disc-banner span {
@@ -556,7 +556,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
     }
 
     .questao-m01 {
-      margin-bottom: 11px;
+      margin-bottom: 9px;
     }
     .q-hdr-m01 {
       display: flex;
@@ -594,6 +594,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       font-style: italic;
       text-align: justify;
       margin: 3px 0 5px;
+      overflow-wrap: anywhere;
     }
     .fonte-apoio-m01 {
       font-style: normal;
@@ -601,6 +602,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       text-align: right;
       color: #222;
       margin-top: 1px;
+      overflow-wrap: anywhere;
     }
 
     .questao-enunciado {
@@ -629,6 +631,7 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
       color: #333;
       margin-top: 2px;
       font-style: italic;
+      overflow-wrap: anywhere;
     }
 
     .alternativas { margin-top: 3px; }
@@ -1044,7 +1047,7 @@ export function buildProvaHTML(prova, itens, escolaNome = '', showGabarito = fal
   const sh           = (k) => cabItens[k] ?? true;
   const rodapeTxt    = cfg.rodape_texto  ?? '';
   const mostrarInstr = (cabItens.cab_instrucoes ?? true) && comCabecalho;
-  const margem       = comMargem ? '10mm 12mm 14mm' : '4mm';
+  const margem       = comMargem ? '6mm 6mm 10mm' : '4mm';
 
   const isEnem    = template === 'enem';
   const disc      = txt(prova.disciplina || '');
@@ -1246,7 +1249,7 @@ export async function gerarPdf(req, res) {
     const margemPdf = isModelo01Paginado
       ? { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' }
       : comMargem
-        ? { top: '10mm', right: '12mm', bottom: '14mm', left: '12mm' }
+        ? { top: '6mm', right: '6mm', bottom: '10mm', left: '6mm' }
         : { top: '4mm', right: '4mm', bottom: '4mm', left: '4mm' };
 
     const { chromium } = await import('playwright');
