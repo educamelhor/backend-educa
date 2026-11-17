@@ -8,6 +8,12 @@ import multer from "multer";
 import { extrairQuestaoMultimodal, executarCopilotoQuestao } from "../modules/questoes-ai/visionExtractor.agent.js";
 import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from "../modules/questoes-ai/sheetSplitter.agent.js";
 import {
+  obterCatalogoEscolaQuestoes,
+  invalidarCacheCatalogoEscola,
+  expandirAliasesDisciplinaFiltro,
+  expandirAliasesSerieFiltro,
+} from "../modules/questoes-ai/catalogoEscolaQuestoes.js";
+import {
   criarJobExtracaoLista,
   enfileirarPaginaNoJob,
   criarJobPrintUnico,
@@ -114,10 +120,28 @@ function buildWhere(escola_id, professor_id, perfil, filters = {}) {
   const { disciplina, tipo, nivel, serie, bimestre, status, busca,
           habilidade_bncc, compartilhada, professor_id: filtProfId } = filters;
 
-  if (disciplina)     { conditions.push('q.disciplina = ?');          params.push(disciplina); }
+  if (disciplina) {
+    const aliasesDisc = expandirAliasesDisciplinaFiltro(disciplina);
+    if (aliasesDisc.length > 0) {
+      conditions.push(`LOWER(TRIM(q.disciplina)) IN (${aliasesDisc.map(() => '?').join(', ')})`);
+      params.push(...aliasesDisc);
+    } else {
+      conditions.push('q.disciplina = ?');
+      params.push(disciplina);
+    }
+  }
   if (tipo)           { conditions.push('q.tipo = ?');                 params.push(tipo); }
   if (nivel)          { conditions.push('q.nivel = ?');                params.push(nivel); }
-  if (serie)          { conditions.push('q.serie = ?');                params.push(serie); }
+  if (serie) {
+    const aliasesSerie = expandirAliasesSerieFiltro(serie);
+    if (aliasesSerie.length > 0) {
+      conditions.push(`q.serie IN (${aliasesSerie.map(() => '?').join(', ')})`);
+      params.push(...aliasesSerie);
+    } else {
+      conditions.push('q.serie = ?');
+      params.push(serie);
+    }
+  }
   if (bimestre)       { conditions.push('q.bimestre = ?');             params.push(bimestre); }
   if (habilidade_bncc){ conditions.push('q.habilidade_bncc LIKE ?');   params.push(`${habilidade_bncc}%`); }
   if (compartilhada === '1') { conditions.push('q.compartilhada = 1'); }
@@ -248,6 +272,20 @@ export async function statsQuestoes(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 2.5) GET /questoes/opcoes-escola — Catálogo dinâmico de disciplinas, séries e turmas da escola logada
+// ─────────────────────────────────────────────────────────────────────────────
+export async function obterOpcoesEscolaQuestoes(req, res) {
+  try {
+    const forceRefresh = req.query.refresh === '1';
+    const catalogo = await obterCatalogoEscolaQuestoes(req.user.escola_id, { forceRefresh });
+    return res.json(catalogo);
+  } catch (err) {
+    console.error('[obterOpcoesEscolaQuestoes] Erro:', err);
+    return res.status(500).json({ ok: false, message: 'Erro ao carregar catálogo de disciplinas e turmas da escola.' });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 3) GET /questoes/:id
 // ─────────────────────────────────────────────────────────────────────────────
 export async function obterQuestao(req, res) {
@@ -349,6 +387,7 @@ export async function criarQuestao(req, res) {
       await pool.query('INSERT INTO questao_temas (questao_id, fonte, tema) VALUES ?', [temasRows]);
     }
 
+    invalidarCacheCatalogoEscola(escola_id);
     await registrarHistorico(qid, 'criou', uid);
     res.status(201).json({ id: qid, numero_q, codigo, message: 'Questão criada com sucesso.' });
   } catch (err) {
@@ -457,6 +496,7 @@ export async function atualizarQuestao(req, res) {
       }
     } catch { /* não bloqueia a edição se questao_temas falhar */ }
 
+    invalidarCacheCatalogoEscola(escola_id);
     const codigo = formatarCodigoEscola(questao.numero_q, id);
     res.json({ id: Number(id), numero_q: questao.numero_q, codigo, message: 'Questão atualizada com sucesso.' });
   } catch (err) {
@@ -814,9 +854,27 @@ export async function buscarBancoGlobal(req, res) {
   const conds = ["g.status = 'publicada'"];
   const params = [];
 
-  if (disciplina) { conds.push("g.disciplina = ?");    params.push(disciplina); }
+  if (disciplina) {
+    const aliasesDisc = expandirAliasesDisciplinaFiltro(disciplina);
+    if (aliasesDisc.length > 0) {
+      conds.push(`LOWER(TRIM(g.disciplina)) IN (${aliasesDisc.map(() => '?').join(', ')})`);
+      params.push(...aliasesDisc);
+    } else {
+      conds.push("g.disciplina = ?");
+      params.push(disciplina);
+    }
+  }
   if (nivel)      { conds.push("g.nivel = ?");         params.push(nivel); }
-  if (serie)      { conds.push("g.serie = ?");         params.push(serie); }
+  if (serie) {
+    const aliasesSerie = expandirAliasesSerieFiltro(serie);
+    if (aliasesSerie.length > 0) {
+      conds.push(`g.serie IN (${aliasesSerie.map(() => '?').join(', ')})`);
+      params.push(...aliasesSerie);
+    } else {
+      conds.push("g.serie = ?");
+      params.push(serie);
+    }
+  }
   if (tema) {
     // JOIN com questao_temas (indexado) em vez de JSON_SEARCH (full table scan)
     conds.push("EXISTS (SELECT 1 FROM questao_temas qt WHERE qt.questao_id = g.id AND qt.fonte = 'global' AND qt.tema = ?)");
@@ -1141,7 +1199,14 @@ export async function extrairQuestaoImagem(req, res) {
       return res.status(400).json({ ok: false, message: "Nenhuma imagem enviada." });
     }
 
-    const dados = await extrairQuestaoMultimodal(req.file.buffer, req.file.mimetype);
+    const catalogoEscola = req.user?.escola_id
+      ? await obterCatalogoEscolaQuestoes(req.user.escola_id).catch(() => null)
+      : null;
+
+    const dados = await extrairQuestaoMultimodal(req.file.buffer, req.file.mimetype, {
+      disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+      seriesPermitidas: catalogoEscola?.series || [],
+    });
 
     console.log(
       `[extrairQuestaoImagem] OK — tipo=${dados.tipo} | disc=${dados.disciplina}` +
@@ -1173,7 +1238,14 @@ export async function copilotoQuestao(req, res) {
     const { acao, ...payload } = req.body || {};
     if (!acao) return res.status(400).json({ ok: false, message: "Informe a ação do copiloto." });
 
-    const resultado = await executarCopilotoQuestao(acao, payload);
+    const catalogoEscola = req.user?.escola_id
+      ? await obterCatalogoEscolaQuestoes(req.user.escola_id).catch(() => null)
+      : null;
+
+    const resultado = await executarCopilotoQuestao(acao, payload, {
+      disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+      seriesPermitidas: catalogoEscola?.series || [],
+    });
     return res.json({ ok: true, ...resultado });
   } catch (err) {
     console.error("[copilotoQuestao] Erro:", err);
@@ -1206,9 +1278,15 @@ export async function extrairListaImagem(req, res) {
       ultimo_texto_apoio = "",
     } = req.body || {};
 
+    const catalogoEscola = req.user?.escola_id
+      ? await obterCatalogoEscolaQuestoes(req.user.escola_id).catch(() => null)
+      : null;
+
     const dados = await extrairListaDePaginaMultimodal(req.file.buffer, req.file.mimetype, {
       disciplinaSugerida: String(disciplina || "").trim(),
       serieSugerida: String(serie || "").trim(),
+      disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+      seriesPermitidas: catalogoEscola?.series || [],
       paginaNumero: Number(pagina_numero) || 1,
       ultimoTextoApoio: String(ultimo_texto_apoio || "").trim(),
     });
@@ -1244,9 +1322,15 @@ export async function extrairListaTexto(req, res) {
       return res.status(400).json({ ok: false, message: "Cole o texto da lista contendo ao menos uma questão." });
     }
 
+    const catalogoEscola = req.user?.escola_id
+      ? await obterCatalogoEscolaQuestoes(req.user.escola_id).catch(() => null)
+      : null;
+
     const dados = await extrairListaPorTextoIA(texto, {
       disciplinaSugerida: String(disciplina || "").trim(),
       serieSugerida: String(serie || "").trim(),
+      disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+      seriesPermitidas: catalogoEscola?.series || [],
     });
 
     console.log(`[extrairListaTexto] OK — questões=${dados.total_questoes} | modelo=${dados.modelo_ia}`);

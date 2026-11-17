@@ -7,6 +7,10 @@
 import { SchemaType } from '@google/generative-ai';
 import { processarMidiaQuestao, publicarPaginaOriginalLista } from './smartMediaEngine.js';
 import {
+  resolverDisciplinaCatalogoIA,
+  resolverSerieCatalogoIA,
+} from './catalogoEscolaQuestoes.js';
+import {
   DISCIPLINAS_OFICIAIS,
   SERIES_OFICIAIS,
   gerarJsonComFailover,
@@ -381,8 +385,12 @@ function normalizarQuestaoIndividualizada({
   idx,
   mapaTextosCompartilhados,
   ultimoTextoApoio,
+  disciplinaSugerida = '',
+  serieSugerida = '',
   disciplinaFallback,
   serieFallback,
+  disciplinasPermitidas = [],
+  seriesPermitidas = [],
   layoutPagina,
   paginaOriginalUrl,
   paginaNumero,
@@ -406,22 +414,27 @@ function normalizarQuestaoIndividualizada({
     textoApoioCandidato = limparCabecalhoTextoCompartilhado(ultimoTextoApoio);
   }
 
-  const discCandidata = qRaw.disciplina || disciplinaFallback || '';
-  const disciplina = DISCIPLINAS_OFICIAIS.includes(discCandidata)
-    ? discCandidata
-    : (DISCIPLINAS_OFICIAIS.includes(disciplinaFallback) ? disciplinaFallback : 'Matemática');
+  const disciplina = resolverDisciplinaCatalogoIA({
+    iaDisciplina: qRaw.disciplina,
+    disciplinaSugerida,
+    disciplinaPredominante: disciplinaFallback,
+    disciplinasPermitidas,
+    fallbackVazio: disciplinaFallback || '',
+  });
 
-  const serieCandidata = qRaw.serie || serieFallback || '';
-  const serie = SERIES_OFICIAIS.includes(serieCandidata)
-    ? serieCandidata
-    : (SERIES_OFICIAIS.includes(serieFallback) ? serieFallback : '');
+  const serie = resolverSerieCatalogoIA({
+    iaSerie: qRaw.serie,
+    serieSugerida,
+    seriePredominante: serieFallback,
+    seriesPermitidas,
+  });
 
   const nivel = ['facil', 'medio', 'dificil', 'enem'].includes(qRaw.nivel) ? qRaw.nivel : 'medio';
   // Usa estritamente a fonte específica da questão (sem herdar fonte_geral de outra questão nem cabeçalhos de caderno)
   const fonte = limparFonteFalsaCaderno(qRaw.fonte);
 
   const temasExtraidos = Array.isArray(qRaw.temas) ? qRaw.temas.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 5) : [];
-  const temas = temasExtraidos.length > 0 ? temasExtraidos : [disciplina];
+  const temas = temasExtraidos.length > 0 ? temasExtraidos : [disciplina || 'Geral'];
   const tags = Array.isArray(qRaw.tags) ? qRaw.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
 
   const enunciadoBruto = tipo === 'lacuna' && qRaw.texto_lacunado ? qRaw.texto_lacunado : (qRaw.enunciado || '');
@@ -506,10 +519,19 @@ export async function extrairListaDePaginaMultimodal(fileBuffer, mimeType, opcoe
   const {
     disciplinaSugerida = '',
     serieSugerida = '',
+    disciplinasPermitidas = [],
+    seriesPermitidas = [],
     paginaNumero = 1,
     ultimoTextoApoio = '',
     onProgress = null,
   } = opcoes || {};
+
+  const listaDiscsPrompt = Array.isArray(disciplinasPermitidas) && disciplinasPermitidas.length > 0
+    ? disciplinasPermitidas
+    : DISCIPLINAS_OFICIAIS;
+  const listaSeriesPrompt = Array.isArray(seriesPermitidas) && seriesPermitidas.length > 0
+    ? seriesPermitidas
+    : SERIES_OFICIAIS;
 
   const report = (msg) => {
     if (typeof onProgress === 'function') {
@@ -570,7 +592,7 @@ Analise esta PÁGINA INTEIRA de prova/lista de exercícios (Página ${paginaNume
 5. GABARITO OBRIGATÓRIO ("gabarito_letra") E RESOLUÇÃO OBJETIVA PASSO A PASSO:
    - Sempre que a questão possuir "alternativas" (e "questao_incompleta_fim_pagina" não for true), inclusive em questões do tipo "afirmativas" (itens I, II, III, IV), "verdadeiro_falso" em sequência e "associacao" em sequência, preencha OBRIGATORIAMENTE "gabarito_letra" ("A", "B", "C", "D" ou "E") com a letra exata da alternativa correspondente aos itens verdadeiros!
    - Se houver gabarito marcado/impresso na folha para a questão, use gabarito_origem="marcado_na_imagem"; caso contrário, resolva com rigor científico em 2 a 4 passos objetivos em "resolucao_passo_a_passo" (sempre fechando $...$ em qualquer LaTeX) e defina gabarito_origem="resolvido_pela_ia".
-   - Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
+   - Disciplinas da escola aceitas: [${listaDiscsPrompt.join(', ')}]. Séries da escola: [${listaSeriesPrompt.join(', ')}].
 ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
 
   const imagePart = {
@@ -851,8 +873,12 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
       idx: i,
       mapaTextosCompartilhados,
       ultimoTextoApoio,
+      disciplinaSugerida,
+      serieSugerida,
       disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
       serieFallback: serieSugerida || dados.serie_predominante || '',
+      disciplinasPermitidas: listaDiscsPrompt,
+      seriesPermitidas: listaSeriesPrompt,
       layoutPagina,
       paginaOriginalUrl,
       paginaNumero,
@@ -930,7 +956,19 @@ ${contextoHints ? `\nCONTEXTO ADICIONAL:\n${contextoHints}` : ''}`;
  * estruturando cada questão nos 7 modelos universais com LaTeX e gabarito comentado.
  */
 export async function extrairListaPorTextoIA(textoBruto, opcoes = {}) {
-  const { disciplinaSugerida = '', serieSugerida = '', onProgress = null } = opcoes || {};
+  const {
+    disciplinaSugerida = '',
+    serieSugerida = '',
+    disciplinasPermitidas = [],
+    seriesPermitidas = [],
+    onProgress = null,
+  } = opcoes || {};
+  const listaDiscsPrompt = Array.isArray(disciplinasPermitidas) && disciplinasPermitidas.length > 0
+    ? disciplinasPermitidas
+    : DISCIPLINAS_OFICIAIS;
+  const listaSeriesPrompt = Array.isArray(seriesPermitidas) && seriesPermitidas.length > 0
+    ? seriesPermitidas
+    : SERIES_OFICIAIS;
   const report = (msg) => {
     if (typeof onProgress === 'function') {
       try { onProgress(msg); } catch { /* ignore */ }
@@ -955,7 +993,7 @@ REGRAS OBRIGATÓRIAS:
 3. Converta expressões matemáticas, físicas ou químicas informais para LaTeX limpo entre cifrões simples $...$ (ou \`$$...$$\` para equações destacadas em linha própria) e preserve eventuais trechos em negrito com \`**trecho**\`. Como é texto puro, retorne "figuras": [] em todas as questões.
 4. Se o texto trouxer um bloco de "GABARITO" no final da lista ou marcação explícita (ex: "[X]", "*", "Gabarito: C"), use esse gabarito oficial com gabarito_origem="marcado_na_imagem". Caso a questão não tenha gabarito informado no texto, resolva-a com rigor científico e defina gabarito_origem="resolvido_pela_ia". Sempre que houver "alternativas", preencha OBRIGATORIAMENTE "gabarito_letra" ("A" a "E").
 5. Em ambos os casos, escreva a resolução passo a passo objetiva em "resolucao_passo_a_passo".
-6. Disciplinas oficiais aceitas: [${DISCIPLINAS_OFICIAIS.join(', ')}]. Séries oficiais: [${SERIES_OFICIAIS.join(', ')}].
+6. Disciplinas da escola aceitas: [${listaDiscsPrompt.join(', ')}]. Séries da escola: [${listaSeriesPrompt.join(', ')}].
 ${disciplinaSugerida ? `- Disciplina padrão sugerida pelo professor: "${disciplinaSugerida}".` : ''}
 ${serieSugerida ? `- Série padrão sugerida pelo professor: "${serieSugerida}".` : ''}
 
@@ -1002,8 +1040,12 @@ ${trecho}
         idx: i,
         mapaTextosCompartilhados,
         ultimoTextoApoio: '',
+        disciplinaSugerida,
+        serieSugerida,
         disciplinaFallback: disciplinaSugerida || dados.disciplina_predominante || '',
         serieFallback: serieSugerida || dados.serie_predominante || '',
+        disciplinasPermitidas: listaDiscsPrompt,
+        seriesPermitidas: listaSeriesPrompt,
         layoutPagina: 'coluna_unica',
         paginaOriginalUrl: null,
         paginaNumero: 1,

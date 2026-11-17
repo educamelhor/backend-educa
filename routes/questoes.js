@@ -7,6 +7,7 @@ import {
   excluirQuestao,
   criarQuestoesPorTexto,
   statsQuestoes,
+  obterOpcoesEscolaQuestoes,
   duplicarQuestao,
   historicoQuestao,
   extrairQuestaoImagem,
@@ -37,8 +38,9 @@ function verificarEscola(req, res, next) {
   next();
 }
 
-// ── Estatísticas do banco da escola ──────────────────────────────────────────
-router.get("/stats", verificarEscola, statsQuestoes);
+// ── Estatísticas e catálogo dinâmico do banco da escola ──────────────────────
+router.get("/stats",         verificarEscola, statsQuestoes);
+router.get("/opcoes-escola", verificarEscola, obterOpcoesEscolaQuestoes);
 
 // ── Banco Global — rotas estáticas ANTES dos dinâmicos (:id) ─────────────────
 router.get("/global/stats",        verificarEscola, statsGlobal);

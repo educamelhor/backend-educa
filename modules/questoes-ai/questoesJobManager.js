@@ -9,6 +9,7 @@
 import crypto from 'crypto';
 import pool from '../../db.js';
 import { extrairListaDePaginaMultimodal, extrairListaPorTextoIA } from './sheetSplitter.agent.js';
+import { obterCatalogoEscolaQuestoes } from './catalogoEscolaQuestoes.js';
 import {
   extrairQuestaoMultimodal,
   executarCopilotoQuestao,
@@ -513,9 +514,15 @@ function dispararWorkersLocais(jobId) {
           } catch { /* ignore */ }
         }
 
+        const catalogoEscola = task.escolaId
+          ? await obterCatalogoEscolaQuestoes(task.escolaId).catch(() => null)
+          : null;
+
         const resultado = await extrairListaDePaginaMultimodal(task.buffer, task.mimeType, {
           disciplinaSugerida: task.disciplina,
           serieSugerida: task.serie,
+          disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+          seriesPermitidas: catalogoEscola?.series || [],
           paginaNumero: task.paginaNumero,
           ultimoTextoApoio: textoAnterior,
           onProgress: (msg) => {
@@ -630,9 +637,14 @@ export async function criarJobExtracaoLista({
 
     setImmediate(async () => {
       try {
+        const catalogoEscola = escolaId
+          ? await obterCatalogoEscolaQuestoes(escolaId).catch(() => null)
+          : null;
         const resTexto = await extrairListaPorTextoIA(texto, {
           disciplinaSugerida: String(disciplina || '').trim(),
           serieSugerida: String(serie || '').trim(),
+          disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+          seriesPermitidas: catalogoEscola?.series || [],
           onProgress: (msg) => {
             pool.query(
               `UPDATE questoes_ai_jobs SET etapa_atual = ? WHERE job_id = ? AND status = 'processando'`,
@@ -720,6 +732,7 @@ export async function enfileirarPaginaNoJob({
 
   const q = getOrCreateLocalQueue(jobId);
   q.tasks.push({
+    escolaId: job.escola_id,
     ordemLote: ordemNorm,
     paginaNumero: pagNorm,
     totalPaginas: job.total_paginas,
@@ -758,7 +771,13 @@ export async function criarJobPrintUnico({ escolaId, usuarioId = null, fileBuffe
 
   setImmediate(async () => {
     try {
-      const dados = await extrairQuestaoMultimodal(fileBuffer, mimeType);
+      const catalogoEscola = escolaId
+        ? await obterCatalogoEscolaQuestoes(escolaId).catch(() => null)
+        : null;
+      const dados = await extrairQuestaoMultimodal(fileBuffer, mimeType, {
+        disciplinasPermitidas: catalogoEscola?.todas_disciplinas || [],
+        seriesPermitidas: catalogoEscola?.series || [],
+      });
       await pool.query(
         `UPDATE questoes_ai_job_paginas
             SET status_pagina = 'concluida', modelo_ia = ?, questoes_count = 1, questoes_json = ?

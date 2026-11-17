@@ -6,6 +6,12 @@
 
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { processarMidiaQuestao } from './smartMediaEngine.js';
+import {
+  DISCIPLINAS_CATALOGO_GLOBAL,
+  SERIES_CATALOGO_GLOBAL,
+  resolverDisciplinaCatalogoIA,
+  resolverSerieCatalogoIA,
+} from './catalogoEscolaQuestoes.js';
 
 const PREFERENCIA_MODELOS_GEMINI = [
   'gemini-2.5-flash',
@@ -96,16 +102,9 @@ async function obterCascataModelosAtivos(apiKey) {
   return promise;
 }
 
-export const DISCIPLINAS_OFICIAIS = [
-  'Português', 'Matemática', 'Ciências', 'História', 'Geografia',
-  'Inglês', 'Artes', 'Educação Física', 'Biologia', 'Física',
-  'Química', 'Sociologia', 'Filosofia', 'Redação', 'PD',
-];
+export const DISCIPLINAS_OFICIAIS = [...DISCIPLINAS_CATALOGO_GLOBAL];
 
-export const SERIES_OFICIAIS = [
-  '6º Ano EF', '7º Ano EF', '8º Ano EF', '9º Ano EF',
-  '1º EM', '2º EM', '3º EM', 'Ensino Superior',
-];
+export const SERIES_OFICIAIS = [...SERIES_CATALOGO_GLOBAL];
 
 let _gemini = null;
 let _geminiKeyCached = null;
@@ -1164,7 +1163,20 @@ const EXTRACTION_SCHEMA = {
 /**
  * Extrai, classifica, resolve e recorta automaticamente figuras (1 ou 2 colunas) de um print/foto.
  */
-export async function extrairQuestaoMultimodal(fileBuffer, mimeType) {
+export async function extrairQuestaoMultimodal(fileBuffer, mimeType, opcoes = {}) {
+  const {
+    disciplinasPermitidas = [],
+    seriesPermitidas = [],
+    disciplinaSugerida = '',
+    serieSugerida = '',
+  } = opcoes || {};
+  const listaDiscsPrompt = Array.isArray(disciplinasPermitidas) && disciplinasPermitidas.length > 0
+    ? disciplinasPermitidas
+    : DISCIPLINAS_OFICIAIS;
+  const listaSeriesPrompt = Array.isArray(seriesPermitidas) && seriesPermitidas.length > 0
+    ? seriesPermitidas
+    : SERIES_OFICIAIS;
+
   const prompt = `Você é o Agente Extrator Multimodal e Solucionador Científico do EDUCA.STUDIO AI.
 Analise a imagem da questão educacional enviada e estruture TODOS os campos com precisão cirúrgica:
 
@@ -1204,7 +1216,8 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
 4. GABARITO OBRIGATÓRIO E RESOLUÇÃO PASSO A PASSO:
    - Sempre que houver "alternativas" (inclusive em questões do tipo "afirmativas" com itens I, II, III, IV, "verdadeiro_falso" em sequência ou "associacao" em sequência), preencha OBRIGATORIAMENTE "gabarito_letra" ("A", "B", "C", "D" ou "E") com a letra exata da alternativa correspondente aos itens corretos!
    - Se o print trouxer gabarito oficial inequívoco destacado, use gabarito_origem="marcado_na_imagem".
-   - Caso contrário, resolva com rigor científico passo a passo (quebrando linhas entre Passo 1, Passo 2, Conclusão) em "resolucao_passo_a_passo" e defina gabarito_origem="resolvido_pela_ia".`;
+   - Caso contrário, resolva com rigor científico passo a passo (quebrando linhas entre Passo 1, Passo 2, Conclusão) em "resolucao_passo_a_passo" e defina gabarito_origem="resolvido_pela_ia".
+   - Classifique "disciplina" preferencialmente entre as disciplinas ofertadas pela escola: [${listaDiscsPrompt.join(', ')}] e "serie" entre [${listaSeriesPrompt.join(', ')}].`;
 
   const imagePart = {
     inlineData: {
@@ -1218,8 +1231,8 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   "layout_origem": "coluna_unica" | "duas_colunas",
   "coluna_divisao_x": 0,
   "tipo": "objetiva" | "afirmativas" | "verdadeiro_falso" | "associacao" | "lacuna" | "discursiva" | "somatoria",
-  "disciplina": "uma entre [${DISCIPLINAS_OFICIAIS.join(', ')}]",
-  "serie": "uma entre [${SERIES_OFICIAIS.join(', ')}]",
+  "disciplina": "uma entre [${listaDiscsPrompt.join(', ')}]",
+  "serie": "uma entre [${listaSeriesPrompt.join(', ')}]",
   "nivel": "facil" | "medio" | "dificil" | "enem",
   "fonte": "",
   "fonte_confirmada": false,
@@ -1441,8 +1454,17 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     modelo_ia: modeloUsado,
     layout_origem: layoutOrigem,
     tipo,
-    disciplina: DISCIPLINAS_OFICIAIS.includes(dados.disciplina) ? dados.disciplina : '',
-    serie: SERIES_OFICIAIS.includes(dados.serie) ? dados.serie : '',
+    disciplina: resolverDisciplinaCatalogoIA({
+      iaDisciplina: dados.disciplina,
+      disciplinaSugerida,
+      disciplinasPermitidas: listaDiscsPrompt,
+      fallbackVazio: '',
+    }),
+    serie: resolverSerieCatalogoIA({
+      iaSerie: dados.serie,
+      serieSugerida,
+      seriesPermitidas: listaSeriesPrompt,
+    }),
     nivel: ['facil', 'medio', 'dificil', 'enem'].includes(dados.nivel) ? dados.nivel : 'medio',
     fonte: fonteLimpa,
     fonte_confirmada: Boolean(fonteLimpa && dados.fonte_confirmada),
@@ -1562,7 +1584,14 @@ export function montarEstruturaInicialExtraida(tipo, dados) {
 /**
  * Copiloto Pedagógico para a Montagem Guiada (sugestão de BNCC/Temas, distratores, resolução e LaTeX).
  */
-export async function executarCopilotoQuestao(acao, payload = {}) {
+export async function executarCopilotoQuestao(acao, payload = {}, opcoes = {}) {
+  const listaDiscs = Array.isArray(opcoes?.disciplinasPermitidas) && opcoes.disciplinasPermitidas.length > 0
+    ? opcoes.disciplinasPermitidas
+    : DISCIPLINAS_OFICIAIS;
+  const listaSeries = Array.isArray(opcoes?.seriesPermitidas) && opcoes.seriesPermitidas.length > 0
+    ? opcoes.seriesPermitidas
+    : SERIES_OFICIAIS;
+
   if (acao === 'sugerir_metadados') {
     const schema = {
       type: SchemaType.OBJECT,
@@ -1577,8 +1606,8 @@ export async function executarCopilotoQuestao(acao, payload = {}) {
       required: ['disciplina', 'serie', 'nivel', 'habilidade_bncc', 'temas', 'tags'],
     };
     const prompt = `Classifique pedagogicamente a questão abaixo seguindo estritamente:
-- disciplina: uma entre [${DISCIPLINAS_OFICIAIS.join(', ')}]
-- serie: uma entre [${SERIES_OFICIAIS.join(', ')}]
+- disciplina: uma entre [${listaDiscs.join(', ')}]
+- serie: uma entre [${listaSeries.join(', ')}]
 - nivel: facil | medio | dificil | enem
 - habilidade_bncc: código oficial BNCC mais aderente (ex: EF08CI07, EM13MAT302)
 - temas: 2 a 4 temas específicos do currículo
@@ -1595,7 +1624,19 @@ ITENS/ALTERNATIVAS: ${JSON.stringify(payload.alternativas || payload.estrutura_j
       temperature: 0.2,
       openAiJsonHint: 'Retorne JSON com as chaves: disciplina, serie, nivel, habilidade_bncc, temas (array), tags (array).',
     });
-    return sanitizarObjetoIA(parsed);
+    const limpo = sanitizarObjetoIA(parsed);
+    return {
+      ...limpo,
+      disciplina: resolverDisciplinaCatalogoIA({
+        iaDisciplina: limpo.disciplina,
+        disciplinasPermitidas: listaDiscs,
+        fallbackVazio: limpo.disciplina || '',
+      }),
+      serie: resolverSerieCatalogoIA({
+        iaSerie: limpo.serie,
+        seriesPermitidas: listaSeries,
+      }),
+    };
   }
 
   if (acao === 'gerar_distratores') {
