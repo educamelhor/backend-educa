@@ -56,6 +56,7 @@ const DOMINIOS_DIRETOR = {
   'diretor': new Set([
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'administrativo', 'financeiro',
     'aluno', 'biblioteca', 'educador_social', 'merenda',
     'psicologo', 'responsavel', 'vice_diretor',
     'vigilancia', 'visitante',
@@ -63,6 +64,7 @@ const DOMINIOS_DIRETOR = {
   'vice_diretor': new Set([
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'administrativo', 'financeiro',
     'aluno', 'biblioteca', 'educador_social', 'merenda',
     'psicologo', 'responsavel',
     'vigilancia', 'visitante',

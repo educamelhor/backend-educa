@@ -93,6 +93,8 @@ const MODULOS_VALIDOS = new Set([
   'sala_recurso', 'sala_recurso.alunos', 'sala_recurso.adequacoes', 'sala_recurso.impressao', 'sala_recurso.pdi', 'sala_recurso.atendimentos',
   // Administrativo
   'administrativo', 'administrativo.servidores', 'administrativo.frequencia', 'administrativo.ocorrencias', 'administrativo.relatorios', 'administrativo.memorando',
+  // Financeiro
+  'financeiro',
 ]);
 
 /**
@@ -271,7 +273,7 @@ router.use(async (req, _res, next) => {
 const PERFIS_GERENCIAVEIS = new Set([
   'diretor', 'vice_diretor', 'coordenacao', 'coordenador', 'secretaria', 'secretario',
   'orientador', 'supervisor_pedagogico', 'supervisor', 'supervisor_administrativo',
-  'disciplinar', 'administrativo', 'psicopedagogia', 'sala_recurso', 'sala_de_recurso',
+  'disciplinar', 'administrativo', 'financeiro', 'psicopedagogia', 'sala_recurso', 'sala_de_recurso',
   'apoio', 'educador_social', 'vigilancia', 'merenda', 'biblioteca', 'professor',
   'pedagogo', 'aluno', 'responsavel', 'psicologo', 'monitor', 'visitante',
   'subcomandante', 'supervisor_disciplinar', 'monitor_disciplinar'

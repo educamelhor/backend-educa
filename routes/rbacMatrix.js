@@ -99,6 +99,8 @@ export const RBAC_MATRIX = Object.freeze({
   aluno: [],
   responsavel: [],
   merenda: [],
+  administrativo: [],
+  financeiro: [],
   // 'militar' removido — substituído por 'diretor_disciplinar'
 });
 

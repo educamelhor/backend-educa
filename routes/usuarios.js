@@ -168,6 +168,7 @@ const AUTORIDADE_CRIADOR_MAP = {
   'diretor':            [
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'administrativo', 'financeiro',
     'aluno', 'biblioteca', 'educador_social', 'merenda',
     'psicologo', 'responsavel', 'vice_diretor',
     'vigilancia', 'visitante',
@@ -175,6 +176,7 @@ const AUTORIDADE_CRIADOR_MAP = {
   'vice_diretor':       [
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'administrativo', 'financeiro',
     'aluno', 'biblioteca', 'educador_social', 'merenda',
     'psicologo', 'responsavel',
     'vigilancia', 'visitante',
@@ -183,6 +185,7 @@ const AUTORIDADE_CRIADOR_MAP = {
   'admin':              [
     'professor', 'coordenador', 'supervisor', 'pedagogo',
     'secretario', 'secretaria', 'orientador',
+    'administrativo', 'financeiro',
     'aluno', 'biblioteca', 'educador_social', 'merenda',
     'psicologo', 'responsavel', 'vice_diretor',
     'vigilancia', 'visitante',
@@ -349,6 +352,7 @@ router.post("/", verificarEscola, async (req, res) => {
     'diretor':            [
       'professor', 'coordenador', 'supervisor', 'pedagogo',
       'secretario', 'secretaria', 'orientador',
+      'administrativo', 'financeiro',
       'aluno', 'biblioteca', 'educador_social', 'merenda',
       'psicologo', 'responsavel', 'vice_diretor',
       'vigilancia', 'visitante',
@@ -356,6 +360,7 @@ router.post("/", verificarEscola, async (req, res) => {
     'vice_diretor':       [
       'professor', 'coordenador', 'supervisor', 'pedagogo',
       'secretario', 'secretaria', 'orientador',
+      'administrativo', 'financeiro',
       'aluno', 'biblioteca', 'educador_social', 'merenda',
       'psicologo', 'responsavel',
       'vigilancia', 'visitante',
@@ -365,6 +370,7 @@ router.post("/", verificarEscola, async (req, res) => {
     'admin':              [
       'professor', 'coordenador', 'supervisor', 'pedagogo',
       'secretario', 'secretaria', 'orientador',
+      'administrativo', 'financeiro',
       'aluno', 'biblioteca', 'educador_social', 'merenda',
       'psicologo', 'responsavel', 'vice_diretor',
       'vigilancia', 'visitante',
