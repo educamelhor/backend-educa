@@ -548,7 +548,15 @@ async function extrairBlocoIndividual(
   origW,
   origH,
   spec,
-  { scannerClean = false, autoTrim = true, tightTop = false, tightBottom = false, minTopNorm = 0, maxBottomNorm = 1000 }
+  {
+    scannerClean = false,
+    autoTrim = true,
+    recorteManual = false,
+    tightTop = false,
+    tightBottom = false,
+    minTopNorm = 0,
+    maxBottomNorm = 1000,
+  }
 ) {
   let workBuf = normalizedBuf;
   let appliedBbox = null;
@@ -563,22 +571,46 @@ async function extrairBlocoIndividual(
     if (
       Number.isFinite(rawYmin) && Number.isFinite(rawXmin) &&
       Number.isFinite(rawYmax) && Number.isFinite(rawXmax) &&
-      rawYmax - rawYmin >= 14 && rawXmax - rawXmin >= 14
+      rawYmax - rawYmin >= 10 && rawXmax - rawXmin >= 10
     ) {
-      const rescued = resgatarMargensInteligente(fullRgb, origW, origH, [rawYmin, rawXmin, rawYmax, rawXmax], {
-        coluna,
-        divX,
-        minTopNorm,
-        maxBottomNorm,
-        stitchTop: tightTop,
-        stitchBottom: tightBottom,
-      });
+      if (recorteManual) {
+        // Recorte manual definido pelo usuário: respeita ESTRITAMENTE os limites [ymin, xmin, ymax, xmax]
+        // escolhidos na tela, sem expandir para fora (evitando recapturar textos vizinhos do enunciado).
+        const ny1 = clamp(rawYmin, 0, 995);
+        const nx1 = clamp(rawXmin, 0, 995);
+        const ny2 = clamp(rawYmax, ny1 + 5, 1000);
+        const nx2 = clamp(rawXmax, nx1 + 5, 1000);
+        const left = clamp(Math.round((nx1 / 1000) * origW), 0, Math.max(0, origW - 8));
+        const top = clamp(Math.round((ny1 / 1000) * origH), 0, Math.max(0, origH - 8));
+        const right = clamp(Math.round((nx2 / 1000) * origW), Math.min(origW, left + 8), origW);
+        const bottom = clamp(Math.round((ny2 / 1000) * origH), Math.min(origH, top + 8), origH);
 
-      workBuf = await sharp(normalizedBuf)
-        .extract({ left: rescued.left, top: rescued.top, width: rescued.width, height: rescued.height })
-        .toBuffer();
-      appliedBbox = rescued.normBbox;
-      firstInkOrigX = rescued.firstInkOrigX;
+        workBuf = await sharp(normalizedBuf)
+          .extract({
+            left,
+            top,
+            width: Math.max(8, right - left),
+            height: Math.max(8, bottom - top),
+          })
+          .toBuffer();
+        appliedBbox = [Math.round(ny1), Math.round(nx1), Math.round(ny2), Math.round(nx2)];
+        firstInkOrigX = left;
+      } else {
+        const rescued = resgatarMargensInteligente(fullRgb, origW, origH, [rawYmin, rawXmin, rawYmax, rawXmax], {
+          coluna,
+          divX,
+          minTopNorm,
+          maxBottomNorm,
+          stitchTop: tightTop,
+          stitchBottom: tightBottom,
+        });
+
+        workBuf = await sharp(normalizedBuf)
+          .extract({ left: rescued.left, top: rescued.top, width: rescued.width, height: rescued.height })
+          .toBuffer();
+        appliedBbox = rescued.normBbox;
+        firstInkOrigX = rescued.firstInkOrigX;
+      }
     }
   }
 
@@ -594,19 +626,19 @@ async function extrairBlocoIndividual(
       .toBuffer();
   }
 
-  if (appliedBbox) {
+  if (appliedBbox && !recorteManual) {
     workBuf = await limparArtefatosMargem(workBuf);
   }
 
   if (autoTrim) {
     try {
       const trimmed = await sharp(workBuf)
-        .trim({ threshold: 18 })
+        .trim({ threshold: recorteManual ? 10 : 18 })
         .extend({
-          top: tightTop ? 2 : 8,
-          bottom: tightBottom ? 2 : 8,
-          left: 8,
-          right: 8,
+          top: tightTop ? 2 : 6,
+          bottom: tightBottom ? 2 : 6,
+          left: 6,
+          right: 6,
           background: { r: 255, g: 255, b: 255 },
         })
         .toBuffer();
@@ -885,6 +917,7 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     minTopNorm: globalMinTopNorm = 0,
     maxBottomNorm: globalMaxBottomNorm = 1000,
     autoTrim = true,
+    recorteManual = false,
     scannerClean = false,
     keepOriginal = false,
     existingOriginalUrl = null,
@@ -970,6 +1003,7 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
     const single = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, specsList[0], {
       scannerClean,
       autoTrim,
+      recorteManual,
       minTopNorm: specsList[0].minTopNorm ?? globalMinTopNorm,
       maxBottomNorm: specsList[0].maxBottomNorm ?? globalMaxBottomNorm,
     });
@@ -1016,6 +1050,7 @@ export async function processarMidiaQuestao(inputBuffer, opts = {}) {
       const item = await extrairBlocoIndividual(normalizedBuf, fullRgb, origW, origH, curSpec, {
         scannerClean,
         autoTrim,
+        recorteManual,
         tightBottom: nextIsStitch,
         tightTop: curIsStitch,
         minTopNorm,

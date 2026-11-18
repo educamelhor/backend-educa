@@ -70,6 +70,7 @@ router.post('/processar-midia', autenticarToken, upload.single('imagem'), async 
     }
 
     const scannerClean = req.body?.scanner_clean === true || req.body?.scanner_clean === '1' || req.body?.scanner_clean === 'true';
+    const recorteManual = req.body?.recorte_manual !== false && req.body?.recorte_manual !== '0' && req.body?.recorte_manual !== 'false';
 
     const result = await processarMidiaQuestao(buffer, {
       bbox,
@@ -78,6 +79,7 @@ router.post('/processar-midia', autenticarToken, upload.single('imagem'), async 
       colunaDivisaoX: Number(req.body?.coluna_divisao_x || 0),
       layoutOrigem: req.body?.layout_origem || 'coluna_unica',
       autoTrim: req.body?.auto_trim !== false && req.body?.auto_trim !== '0',
+      recorteManual,
       scannerClean,
       keepOriginal: Boolean(!sourceUrl),
       existingOriginalUrl: sourceUrl || null,
