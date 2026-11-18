@@ -191,7 +191,7 @@ async function dismissCookieBanner(session, page) {
     console.log(`[educadf.login] Banner de cookies ignorado: ${err.message}`);
   }
 }
-export async function loginEducaDF(session, { login, senha, perfil = 'professor' }) {
+export async function loginEducaDF(session, { login, senha, perfil = 'professor', loginAlternativoCpf = null }) {
   const startedAt = Date.now();
   const page = session.page;
 
@@ -203,6 +203,33 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
       durationMs: Date.now() - startedAt,
       errorCode: 'SESSION_NOT_ACTIVE',
     };
+  }
+
+  const loginOriginal = String(login || '').trim();
+  const isEmailLogin = loginOriginal.includes('@');
+  const cpfFallback = String(loginAlternativoCpf || '').replace(/\D/g, '');
+  let loginEfetivo = loginOriginal;
+  let usouCpfFallback = false;
+
+  if (isEmailLogin) {
+    if (cpfFallback.length === 11) {
+      console.warn(
+        `[educadf.login] ⚠️ Login salvo é um e-mail ("${loginOriginal}"). ` +
+        `Tentando auto-recuperação com o CPF do cadastro do professor (${cpfFallback})...`
+      );
+      loginEfetivo = cpfFallback;
+      usouCpfFallback = true;
+    } else {
+      return {
+        ok: false,
+        message:
+          `Login falhou: você cadastrou um e-mail ("${loginOriginal}"), mas o portal EDUCADF não aceita e-mail. ` +
+          `Acesse Agente EDUCA > Configurações e informe sua Matrícula SEEDF (se efetivo) ou seu CPF (se contrato temporário).`,
+        screenshotPath: null,
+        durationMs: Date.now() - startedAt,
+        errorCode: 'INVALID_CREDENTIALS',
+      };
+    }
   }
 
   try {
@@ -280,7 +307,7 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     });
 
     // Preencher login (matrícula/CPF)
-    await session.safeFill(LOGIN.form.usernameInput, login, { delay: 500 });
+    await session.safeFill(LOGIN.form.usernameInput, loginEfetivo, { delay: 500 });
 
     // Preencher senha
     await session.safeFill(LOGIN.form.passwordInput, senha, { delay: 500 });
@@ -351,8 +378,10 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
     // VERIFICAÇÃO: Login foi bem-sucedido?
     // Estratégia multicamadas — cobre Professor, Gestão e Servidor:
     //   1. URL saiu de /auth → sucesso universal (qualquer portal)
-    //   2. Seletor CSS do dashboard → confirmação extra
-    //   3. Mensagem de erro visível → falha definitiva
+    //   2. Seletor CSS do dashboard fora de /auth → confirmação extra
+    //   3. Mensagem de erro REAL com texto não-vazio (ex: .tf__falha) → falha definitiva
+    //      IMPORTANTE: <app-aviso-de-erro> já vem montado vazio no DOM antes do submit!
+    //      Nunca usar waitForSelector puro nem retornar 'SUCCESS_URL' quando texto for vazio.
     //   4. Timeout de 45s (portais de Gestão carregam mais devagar)
     // ====================================================================
     console.log('[educadf.login] Verificando resultado do login...');
@@ -368,45 +397,70 @@ export async function loginEducaDF(session, { login, senha, perfil = 'professor'
         )
         .then(() => 'SUCCESS_URL'),
 
-      // ── Sucesso: seletor CSS do dashboard (específico do portal) ───────
+      // ── Sucesso: seletor CSS do dashboard fora de /auth ─────────────────
       page
-        .waitForSelector(LOGIN.state.dashboardLoaded, { timeout: MAX_WAIT_MS })
+        .waitForFunction(
+          (sel) => !window.location.href.includes('/auth') && !!document.querySelector(sel),
+          LOGIN.state.dashboardLoaded,
+          { timeout: MAX_WAIT_MS }
+        )
         .then(() => 'SUCCESS_CSS'),
 
-      // ── Falha: mensagem de erro aparece ────────────────────────────────
+      // ── Falha: mensagem de erro real (com texto não-vazio) aparece ──────
       page
-        .waitForSelector(LOGIN.state.errorMessage, { timeout: MAX_WAIT_MS })
-        .then(async () => {
-          const txt = await page.textContent(LOGIN.state.errorMessage).catch(() => '');
-          return txt?.trim() ? 'ERROR' : 'SUCCESS_URL';
-        }),
+        .waitForFunction(
+          (sel) => {
+            const els = [...document.querySelectorAll(sel)];
+            return els.some(el => {
+              const t = (el.textContent || '').trim();
+              return t.length > 3 && el.offsetParent !== null;
+            });
+          },
+          LOGIN.state.errorMessage,
+          { timeout: MAX_WAIT_MS }
+        )
+        .then(() => 'ERROR'),
 
       // ── Timeout absoluto ───────────────────────────────────────────────
       new Promise(resolve => setTimeout(() => resolve('TIMEOUT'), MAX_WAIT_MS)),
     ]);
 
     await session.delay(1500);
-    const isSuccess = result === 'SUCCESS_URL' || result === 'SUCCESS_CSS';
+    const isSuccess = (result === 'SUCCESS_URL' || result === 'SUCCESS_CSS') && !page.url().includes('/auth');
     const screenshotAfter = await session.screenshot(isSuccess ? 'login_sucesso' : 'login_falha');
 
     if (isSuccess) {
       const urlAtual = page.url().substring(0, 100);
-      console.log(`[educadf.login] ✅ Login bem-sucedido! (${result} | url: ${urlAtual})`);
+      console.log(`[educadf.login] ✅ Login bem-sucedido! (${result} | url: ${urlAtual} | usouCpfFallback=${usouCpfFallback})`);
       return {
         ok: true,
         message: 'Login realizado com sucesso no EducaDF.',
         screenshotPath: screenshotAfter,
         durationMs: Date.now() - startedAt,
         errorCode: null,
+        usedLogin: loginEfetivo,
+        usedCpfFallback: usouCpfFallback,
       };
     }
 
     if (result === 'ERROR') {
-      const errorText = await session.getText(LOGIN.state.errorMessage).catch(() => null);
+      const errorText = await page.evaluate((sel) => {
+        const els = [...document.querySelectorAll(sel)];
+        for (const el of els) {
+          const t = (el.textContent || '').trim();
+          if (t.length > 3) return t;
+        }
+        return '';
+      }, LOGIN.state.errorMessage).catch(() => null);
       console.warn(`[educadf.login] ❌ Login falhou: ${errorText}`);
+
+      const msgEmail = isEmailLogin
+        ? `Seu login salvo está como e-mail ("${loginOriginal}"), mas o portal EDUCADF exige sua Matrícula SEEDF (se efetivo) ou seu CPF (se temporário). Acesse Agente EDUCA > Configurações e atualize seu login e senha do EDUCADF.`
+        : `Login falhou: ${errorText || 'Verifique seu usuário (Matrícula ou CPF) e senha no portal EDUCADF.'}`;
+
       return {
         ok: false,
-        message: `Login falhou: ${errorText || 'Verifique seu usuário e senha no portal EDUCADF.'}`,
+        message: msgEmail,
         screenshotPath: screenshotAfter,
         durationMs: Date.now() - startedAt,
         errorCode: 'INVALID_CREDENTIALS',

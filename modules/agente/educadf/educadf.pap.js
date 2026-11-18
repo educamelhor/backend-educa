@@ -858,8 +858,9 @@ async function selecionarLombada(page, labelPart, valorOuCandidatos, timeout = 1
       }
     }
 
-    // ── 3. Clica no botão para abrir o seletor ───────────────────────────
+    // ── 3. Clica no botão para abrir o seletor (marcando o container ativo) ──
     await page.evaluate((lbl) => {
+      document.querySelectorAll('[data-active-lombada]').forEach(el => el.removeAttribute('data-active-lombada'));
       const lblLow = lbl.toLowerCase();
       const btns = [...document.querySelectorAll('button.dc-lombada-botao')];
       const found = btns.find(b => {
@@ -867,77 +868,118 @@ async function selecionarLombada(page, labelPart, valorOuCandidatos, timeout = 1
         const tit = (b.querySelector('.dc-lombada-titulo')?.textContent || '').toLowerCase();
         return aria.includes(lblLow) || tit.includes(lblLow);
       });
-      if (found) { found.scrollIntoViewIfNeeded?.(); found.click(); }
+      if (found) {
+        const container = found.closest('app-lombada, .dc-lombada') || found.parentElement;
+        if (container) container.setAttribute('data-active-lombada', lblLow);
+        found.scrollIntoViewIfNeeded?.();
+        found.click();
+      }
     }, labelPart);
   } else {
     // Se a lombada já estava em modo ng-select (ex: retry), garante que o dropdown esteja aberto
-    await page.evaluate(() => {
-      const ng = document.querySelector('app-lombada ng-select, .dc-lombada ng-select, ng-select');
+    await page.evaluate((lbl) => {
+      const lblLow = lbl.toLowerCase();
+      const scoped = document.querySelector(`[data-active-lombada="${lblLow}"] ng-select`);
+      const ng = scoped || document.querySelector('app-lombada ng-select, .dc-lombada ng-select, ng-select');
       const container = ng?.querySelector('.ng-select-container');
       if (container && !document.querySelector('.ng-dropdown-panel')) {
         container.click();
       }
-    }).catch(() => {});
+    }, labelPart).catch(() => {});
   }
 
   // ── 4. Aguarda ng-select e o carregamento das opções (.ng-option) ──────
-  const ngSelect = await page.waitForSelector('app-lombada ng-select, .dc-lombada ng-select, ng-select', { timeout: 6000 }).catch(() => null);
+  const lblLowSel = labelPart.toLowerCase();
+  const ngSelect = await page.waitForSelector(
+    `[data-active-lombada="${lblLowSel}"] ng-select, app-lombada ng-select, .dc-lombada ng-select, ng-select`,
+    { timeout: 6000 }
+  ).catch(() => null);
   await page.waitForSelector('.ng-option:not(.ng-option-disabled)', { timeout: Math.min(timeout, 8000) }).catch(() => null);
   await page.waitForTimeout(400);
 
-  // ── 5. Função auxiliar: tenta clicar numa opção matching para qualquer candidato ──
-  const encontrarEClicar = async () => {
-    const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
-    const lidos = [];
-    for (const opt of opts) {
-      const txt = await opt.textContent().catch(() => '');
-      lidos.push({ opt, txt, txtNorm: norm(txt) });
-    }
+  // ── 5. Função auxiliar: tenta clicar numa opção matching (com suporte a virtual scroll) ──
+  const encontrarEClicar = async (tentarScroll = false) => {
+    const vistos = new Map();
+    const maxRounds = tentarScroll ? 15 : 1;
 
-    if (lidos.length > 0) {
-      await page.evaluate(({ lbl, opcoes }) => {
-        window.__ultimasOpcoesLombada = window.__ultimasOpcoesLombada || {};
-        window.__ultimasOpcoesLombada[lbl] = opcoes;
-      }, { lbl: labelPart, opcoes: lidos.map(i => i.txt.trim()) }).catch(() => {});
-    }
-
-    // Passada 1: match exato (em ordem de prioridade dos candidatos)
-    for (const cand of candidatos) {
-      const candNorm = norm(cand);
-      for (const item of lidos) {
-        if (item.txtNorm === candNorm) {
-          await item.opt.click();
-          await page.waitForTimeout(600);
-          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (exato: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
-          return true;
+    for (let round = 0; round < maxRounds; round++) {
+      const opts = await page.$$('.ng-option:not(.ng-option-disabled)');
+      const lidos = [];
+      for (const opt of opts) {
+        const txt = await opt.textContent().catch(() => '');
+        const txtNorm = norm(txt);
+        lidos.push({ opt, txt, txtNorm });
+        if (txt.trim() && !vistos.has(txtNorm)) {
+          vistos.set(txtNorm, txt.trim());
         }
       }
-    }
 
-    // Passada 2: match seguro ou fuzzyFn (em ordem de prioridade dos candidatos)
-    for (const cand of candidatos) {
-      const candNorm = norm(cand);
-      for (const item of lidos) {
-        const match = fuzzyFn
-          ? fuzzyFn(cand, item.txt)
-          : textosCorrespondemSeguros(item.txtNorm, candNorm);
-        if (match) {
-          await item.opt.click();
-          await page.waitForTimeout(600);
-          console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (match: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
-          return true;
+      if (vistos.size > 0) {
+        await page.evaluate(({ lbl, opcoes }) => {
+          window.__ultimasOpcoesLombada = window.__ultimasOpcoesLombada || {};
+          window.__ultimasOpcoesLombada[lbl] = opcoes;
+        }, { lbl: labelPart, opcoes: [...vistos.values()] }).catch(() => {});
+      }
+
+      // Passada 1: match exato (em ordem de prioridade dos candidatos)
+      for (const cand of candidatos) {
+        const candNorm = norm(cand);
+        for (const item of lidos) {
+          if (item.txtNorm === candNorm) {
+            await item.opt.click();
+            await page.waitForTimeout(600);
+            console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (exato: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
+            return true;
+          }
         }
       }
+
+      // Passada 2: match seguro ou fuzzyFn (em ordem de prioridade dos candidatos)
+      for (const cand of candidatos) {
+        const candNorm = norm(cand);
+        for (const item of lidos) {
+          const match = fuzzyFn
+            ? fuzzyFn(cand, item.txt)
+            : textosCorrespondemSeguros(item.txtNorm, candNorm);
+          if (match) {
+            await item.opt.click();
+            await page.waitForTimeout(600);
+            console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (match: "${cand}") = "${item.txt.trim().substring(0, 60)}"`);
+            return true;
+          }
+        }
+      }
+
+      // Se for Unidade escolar e o professor só tiver 1 única escola na lista, seleciona para não deixar ng-select aberto
+      if (lblLowSel.includes('unidade') && round === 0 && lidos.length === 1 && !lidos[0].txtNorm.includes('NO ITEMS')) {
+        await lidos[0].opt.click();
+        await page.waitForTimeout(600);
+        console.log(`[educadf.pap] ✅ Lombada "${labelPart}" (única unidade disponível) = "${lidos[0].txt.trim().substring(0, 60)}"`);
+        return true;
+      }
+
+      if (!tentarScroll) break;
+
+      const canScroll = await page.evaluate(() => {
+        const panel = document.querySelector('.ng-dropdown-panel-items');
+        if (!panel || panel.scrollHeight <= panel.clientHeight + 10) return false;
+        const prev = panel.scrollTop;
+        panel.scrollTop += 260;
+        return panel.scrollTop > prev;
+      }).catch(() => false);
+
+      if (!canScroll) break;
+      await page.waitForTimeout(250);
     }
 
-    if (lidos.length > 0) {
-      console.warn(`[educadf.pap]   Opções na lombada "${labelPart}": ${lidos.map(i => `"${i.txt.trim()}"`).join(' | ')}`);
+    if (vistos.size > 0) {
+      console.warn(`[educadf.pap]   Opções na lombada "${labelPart}": ${[...vistos.values()].map(t => `"${t}"`).join(' | ')}`);
     }
     return false;
   };
 
-  // ── 6. Tenta opções já visíveis (sem digitar) ─────────────────────────
-  if (await encontrarEClicar()) return true;
+  // ── 6. Tenta opções já visíveis + scroll (sem digitar) ─────────────────
+  if (await encontrarEClicar(true)) return true;
 
   // ── 7. Digita para filtrar as opções (preservando números e letras de turma!) ──
   const inp = ngSelect ? await ngSelect.$('input').catch(() => null) : null;
@@ -1705,6 +1747,9 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     if (!loginResult.ok) {
       return { ok: false, message: `Falha no login: ${loginResult.message}`, durationMs: Date.now() - startedAt, errorCode: loginResult.errorCode };
     }
+    if (loginResult.usedCpfFallback && loginResult.usedLogin && typeof credentials?.onCpfFallbackSuccess === 'function') {
+      await Promise.resolve(credentials.onCpfFallbackSuccess(loginResult.usedLogin)).catch(() => {});
+    }
     await session.screenshot('pap_01_pos_login');
     await removerBackdrops(page);
     await session.delay(TIMING.postLoginDelay);
@@ -1717,6 +1762,15 @@ export async function exportarPAPEducaDF(session, credentials, plano) {
     console.log('[educadf.pap] 2/7 Navegando direto para Diário de Classe → Calendário...');
     await session.navigateTo('https://educadf.se.df.gov.br/diario_classe/modulos/calendario');
     await session.delay(TIMING.navigationDelay);
+
+    if (page.url().includes('/auth')) {
+      return {
+        ok: false,
+        message: 'Falha no login do EDUCADF: sessão redirecionada para a tela de autenticação. Verifique sua Matrícula SEEDF ou CPF (não utilize e-mail) e sua senha em Agente EDUCA > Configurações.',
+        durationMs: Date.now() - startedAt,
+        errorCode: 'INVALID_CREDENTIALS',
+      };
+    }
 
     // ── ANTES de removerBackdrops: captura erro visível no portal (modal de erro, HTTP 5xx etc) ──
     // Após removerBackdrops o modal é dismissado e a detecção falha
@@ -2773,7 +2827,10 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     console.log('[educadf.notas] 1/7 Login...');
     const loginResult = await loginEducaDF(session, credenciais);
     if (!loginResult.ok) {
-      return { ok: false, message: `Falha no login: ${loginResult.message}`, durationMs: Date.now() - startedAt };
+      return { ok: false, message: `Falha no login: ${loginResult.message}`, durationMs: Date.now() - startedAt, errorCode: loginResult.errorCode };
+    }
+    if (loginResult.usedCpfFallback && loginResult.usedLogin && typeof credenciais?.onCpfFallbackSuccess === 'function') {
+      await Promise.resolve(credenciais.onCpfFallbackSuccess(loginResult.usedLogin)).catch(() => {});
     }
     await session.screenshot('notas_01_login');
     await removerBackdrops(page);
@@ -2783,6 +2840,15 @@ export async function exportarNotasEducaDF(session, credenciais, plano) {
     console.log('[educadf.notas] 2/7 Navegando direto para Diário de Classe → Calendário...');
     await session.navigateTo('https://educadf.se.df.gov.br/diario_classe/modulos/calendario');
     await session.delay(TIMING.navigationDelay);
+
+    if (page.url().includes('/auth')) {
+      return {
+        ok: false,
+        message: 'Falha no login do EDUCADF: sessão redirecionada para a tela de autenticação. Verifique sua Matrícula SEEDF ou CPF (não utilize e-mail) e sua senha em Agente EDUCA > Configurações.',
+        durationMs: Date.now() - startedAt,
+        errorCode: 'INVALID_CREDENTIALS',
+      };
+    }
     await removerBackdrops(page);
     await session.screenshot('notas_02_calendario');
 

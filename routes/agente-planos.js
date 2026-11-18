@@ -34,7 +34,7 @@ async function buscarCredenciais(db, escolaId, usuarioId) {
   let rows;
   try {
     [rows] = await db.query(
-      `SELECT educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
        FROM agente_credenciais
        WHERE escola_id = ? AND usuario_id = ? AND ativo = 1
        ORDER BY updated_at DESC LIMIT 1`,
@@ -43,14 +43,47 @@ async function buscarCredenciais(db, escolaId, usuarioId) {
   } catch {
     // fallback schema antigo (professor_id)
     [rows] = await db.query(
-      `SELECT educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
+      `SELECT id, educadf_login, educadf_senha_enc, educadf_senha_iv, educadf_senha_tag, perfil_id
        FROM agente_credenciais
        WHERE escola_id = ? AND professor_id = ? AND ativo = 1
        ORDER BY updated_at DESC LIMIT 1`,
       [escolaId, usuarioId]
     );
   }
-  return rows?.[0] || null;
+  const cred = rows?.[0] || null;
+  if (!cred) return null;
+
+  // Se o login salvo contiver '@' (e-mail preenchido por engano/autofill do navegador),
+  // busca o CPF do professor na tabela usuarios para auto-recuperação e auto-heal da credencial
+  if (String(cred.educadf_login || '').includes('@') && usuarioId) {
+    try {
+      const [[u]] = await db.query('SELECT cpf FROM usuarios WHERE id = ? LIMIT 1', [usuarioId]);
+      const cpfLimpo = String(u?.cpf || '').replace(/\D/g, '');
+      if (cpfLimpo.length === 11) {
+        cred.loginAlternativoCpf = cpfLimpo;
+        cred.onCpfFallbackSuccess = async (novoLogin) => {
+          try {
+            if (cred.id) {
+              await db.query(
+                'UPDATE agente_credenciais SET educadf_login = ?, updated_at = NOW() WHERE id = ?',
+                [novoLogin, cred.id]
+              );
+            } else {
+              await db.query(
+                'UPDATE agente_credenciais SET educadf_login = ?, updated_at = NOW() WHERE escola_id = ? AND usuario_id = ? AND ativo = 1',
+                [novoLogin, escolaId, usuarioId]
+              );
+            }
+            console.log(`[agente-planos] ✅ AUTO-HEAL: educadf_login do usuario=${usuarioId} corrigido de e-mail para CPF (${novoLogin}).`);
+          } catch (e) {
+            console.warn('[agente-planos] Falha no auto-heal de educadf_login:', e.message);
+          }
+        };
+      }
+    } catch {}
+  }
+
+  return cred;
 }
 
 // ── Verifica e limpa lock stale ───────────────────────────────────────────────
@@ -118,13 +151,63 @@ async function lerConfigAgente(db, escolaId) {
     [escolaId, chaves]
   );
   const cfg = Object.fromEntries(rows.map(r => [r.chave, r.valor]));
+
+  let escolaNomeBusca   = (cfg['agente.educadf.escola_nome_busca'] || '').trim();
+  let escolaNomeOficial = (cfg['agente.educadf.escola_nome_oficial'] || '').trim();
+
+  if (!escolaNomeBusca && !escolaNomeOficial && escolaId) {
+    try {
+      const [[esc]] = await db.query('SELECT nome FROM escolas WHERE id = ? LIMIT 1', [escolaId]);
+      if (esc?.nome) {
+        escolaNomeBusca   = String(esc.nome).trim();
+        escolaNomeOficial = String(esc.nome).trim();
+      }
+    } catch {}
+  }
+
   return {
-    escolaNomeBusca:   cfg['agente.educadf.escola_nome_busca'] || '',
-    escolaNomeOficial: cfg['agente.educadf.escola_nome_oficial'] || '',
-    calendarioMap:     cfg['agente.educadf.calendario_map'] ? JSON.parse(cfg['agente.educadf.calendario_map']) : {
+    escolaNomeBusca,
+    escolaNomeOficial,
+    calendarioMap: cfg['agente.educadf.calendario_map'] ? JSON.parse(cfg['agente.educadf.calendario_map']) : {
       bimestral: { '1': 3, '2': 5, '3': 8, '4': 10 },
       semestral: { '1': 4, '2': 6, '3': 9, '4': 11 }
     },
+  };
+}
+
+async function buscarTurmasOficiaisPlano(db, escolaId, nomeTurmaPlano, turnoPlano) {
+  const normTurma = (s) => String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[°ºª]/g, '').replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').toUpperCase().trim();
+
+  const alvoNorm = normTurma(nomeTurmaPlano);
+  const turnoLow = String(turnoPlano || '').trim().toLowerCase();
+
+  const [todasTurmas] = await db.query(
+    `SELECT nome, nome_oficial, regime, turno, ano, id
+     FROM turmas
+     WHERE escola_id = ?
+     ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = ?) DESC,
+              (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
+              ano DESC, id DESC`,
+    [escolaId, turnoLow]
+  );
+
+  const turmasRows = (todasTurmas || []).filter(r => {
+    if (String(r.nome || '').trim() === String(nomeTurmaPlano || '').trim()) return true;
+    return alvoNorm && normTurma(r.nome) === alvoNorm;
+  });
+
+  const turmasOficiais = [...new Set(
+    turmasRows
+      .map(r => (r.nome_oficial || '').trim())
+      .filter(Boolean)
+  )];
+  const turmaDb = turmasRows[0] || null;
+  return {
+    turmasOficiais,
+    turmaOficial: turmasOficiais[0] || nomeTurmaPlano,
+    regimeTurma: turmaDb?.regime || 'anual',
   };
 }
 
@@ -406,23 +489,10 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (prioriza o mesmo turno do plano, ex: Noturno EM_3_N_1_B antes de Matutino EM_3_M_1_B)
-    const [turmasRows] = await db.query(
-      `SELECT nome_oficial, regime, turno FROM turmas
-       WHERE nome = ? AND escola_id = ?
-       ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
-                (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
-                ano DESC, id DESC`,
-      [plano.turmas, escolaId, plano.turno || '']
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (com fallback normalizado e priorização por turno)
+    const { turmasOficiais, turmaOficial, regimeTurma } = await buscarTurmasOficiaisPlano(
+      db, escolaId, plano.turmas, plano.turno
     );
-    const turmasOficiais = [...new Set(
-      (turmasRows || [])
-        .map(r => (r.nome_oficial || '').trim())
-        .filter(Boolean)
-    )];
-    const turmaDb = turmasRows?.[0] || null;
-    const turmaOficial = turmasOficiais[0] || plano.turmas;
-    const regimeTurma = turmaDb?.regime || 'anual';
 
     // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
     const [[discDb]] = await db.query(
@@ -467,7 +537,15 @@ router.post('/:id/exportar-estrutura', async (req, res) => {
         resultado = await executarComRetry(db, planoId, 'Estrutura', async () => {
           return await EducaDFBrowser.withSession(
             async (session) => exportarPAPEducaDF(
-              session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
+              session,
+              {
+                login: cred.educadf_login,
+                senha: senhaPlain,
+                perfil,
+                loginAlternativoCpf: cred.loginAlternativoCpf || null,
+                onCpfFallbackSuccess: cred.onCpfFallbackSuccess || null,
+              },
+              dadosPlano
             ),
             { escolaId, professorId: usuarioId, headless: true }
           );
@@ -713,23 +791,10 @@ router.post('/:id/exportar-notas', async (req, res) => {
     const perfil        = PERFIL_MAP[cred.perfil_id] || 'professor';
     const professorNome = await buscarNomeProfessor(db, planoId, usuarioId, perfil);
 
-    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (prioriza o mesmo turno do plano, ex: Noturno EM_3_N_1_B antes de Matutino EM_3_M_1_B)
-    const [turmasRows] = await db.query(
-      `SELECT nome_oficial, regime, turno FROM turmas
-       WHERE nome = ? AND escola_id = ?
-       ORDER BY (LOWER(TRIM(COALESCE(turno, ''))) = LOWER(TRIM(?))) DESC,
-                (TRIM(COALESCE(nome_oficial, '')) <> '') DESC,
-                ano DESC, id DESC`,
-      [plano.turmas, escolaId, plano.turno || '']
+    // Busca todos os nomes oficiais da turma mapeados pela Secretaria (com fallback normalizado e priorização por turno)
+    const { turmasOficiais, turmaOficial, regimeTurma } = await buscarTurmasOficiaisPlano(
+      db, escolaId, plano.turmas, plano.turno
     );
-    const turmasOficiais = [...new Set(
-      (turmasRows || [])
-        .map(r => (r.nome_oficial || '').trim())
-        .filter(Boolean)
-    )];
-    const turmaDb = turmasRows?.[0] || null;
-    const turmaOficial = turmasOficiais[0] || plano.turmas;
-    const regimeTurma = turmaDb?.regime || 'anual';
 
     // Busca nome oficial da disciplina (prioriza disciplina ativa mesclada_em IS NULL, ou herda da disciplina destino se mesclada)
     const [[discDb]] = await db.query(
@@ -775,7 +840,15 @@ router.post('/:id/exportar-notas', async (req, res) => {
         resultado = await executarComRetry(db, planoId, 'Notas', async () => {
           return await EducaDFBrowser.withSession(
             async (session) => exportarNotasEducaDF(
-              session, { login: cred.educadf_login, senha: senhaPlain, perfil }, dadosPlano
+              session,
+              {
+                login: cred.educadf_login,
+                senha: senhaPlain,
+                perfil,
+                loginAlternativoCpf: cred.loginAlternativoCpf || null,
+                onCpfFallbackSuccess: cred.onCpfFallbackSuccess || null,
+              },
+              dadosPlano
             ),
             { escolaId, professorId: usuarioId, headless: true }
           );

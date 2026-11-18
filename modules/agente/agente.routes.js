@@ -187,6 +187,13 @@ router.post('/credenciais', async (req, res) => {
       });
     }
 
+    if (String(educadf_login).trim().includes('@')) {
+      return res.status(400).json({
+        ok: false,
+        message: 'O portal EDUCADF não aceita e-mail como login. Informe sua Matrícula SEEDF (se efetivo) ou seu CPF (se contrato temporário).',
+      });
+    }
+
     const perfilStr = String(perfil_educadf || '').toLowerCase() || 'professor';
     const perfilId = perfilStr === 'professor' ? 1
       : perfilStr === 'secretario' ? 2
@@ -492,6 +499,16 @@ router.post('/credenciais/:id/testar', async (req, res) => {
 
     console.log(`[agente.routes] Teste assíncrono iniciado: credencial #${realCredId} (perfil EDUCADF: ${perfilFinal})`);
 
+    // Se o login salvo contiver '@' (e-mail preenchido por autofill), busca CPF para auto-recuperação
+    let loginAlternativoCpf = null;
+    if (String(cred.educadf_login || '').includes('@') && usuarioId) {
+      try {
+        const [[u]] = await db.query('SELECT cpf FROM usuarios WHERE id = ? LIMIT 1', [usuarioId]);
+        const cpfLimpo = String(u?.cpf || '').replace(/\D/g, '');
+        if (cpfLimpo.length === 11) loginAlternativoCpf = cpfLimpo;
+      } catch {}
+    }
+
     // Dispara o Playwright em background SEM bloquear a resposta HTTP
     (async () => {
       try {
@@ -500,9 +517,18 @@ router.post('/credenciais/:id/testar', async (req, res) => {
             login: cred.educadf_login,
             senha: senhaPlain,
             perfil: perfilFinal,
+            loginAlternativoCpf,
           }),
           { escolaId, professorId: realCredId, headless: true }
         );
+
+        if (result.ok && result.usedCpfFallback && result.usedLogin) {
+          await db.query(
+            'UPDATE agente_credenciais SET educadf_login = ?, updated_at = NOW() WHERE id = ?',
+            [result.usedLogin, realCredId]
+          ).catch(() => {});
+          console.log(`[agente.routes] ✅ AUTO-HEAL no teste: credencial #${realCredId} atualizada para CPF (${result.usedLogin}).`);
+        }
 
         entry.status = result.ok ? 'sucesso' : 'falha';
         entry.result = result;
