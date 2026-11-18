@@ -144,6 +144,7 @@ import secretariaFaltasRouter from "./routes/secretaria-faltas.js"; // ✅ Subm�
 import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
 import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
 import administrativoRouter, { ensureAdministrativoTables } from "./routes/administrativo.js"; // ✅ Módulo ADMINISTRATIVO
+import financeiroRouter, { ensureFinanceiroTables } from "./routes/financeiro.js"; // ✅ Módulo FINANCEIRO (PDAF / PDDE)
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -1920,6 +1921,19 @@ async function bootstrap() {
       next();
     },
     administrativoRouter
+  );
+
+  // ✅ MÓDULO FINANCEIRO — Gestão de Recursos PDAF / PDDE por Escola
+  await ensureFinanceiroTables(pool);
+  app.use(
+    "/api/financeiro",
+    autenticarToken,
+    verificarEscola,
+    (req, _res, next) => {
+      req.db = pool;
+      next();
+    },
+    financeiroRouter
   );
 
   // ✅ Governança — Configurações da escola (Diretor / Vice-Diretor)
