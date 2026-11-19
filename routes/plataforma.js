@@ -72,10 +72,52 @@ async function enviarCodigoEmail(email, codigo) {
 // GET /api/plataforma/escolas
 // Retorna lista completa para o painel global
 // ======================================================
+let _regionaisSchemaReady = false;
+async function ensureRegionaisSchema(db) {
+  if (_regionaisSchemaReady) return;
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS regionais (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        nome VARCHAR(255) NOT NULL,
+        apelido VARCHAR(120) DEFAULT NULL,
+        codigo_cre VARCHAR(40) DEFAULT NULL,
+        cnpj VARCHAR(30) DEFAULT NULL,
+        endereco VARCHAR(255) DEFAULT NULL,
+        cidade VARCHAR(120) DEFAULT NULL,
+        estado VARCHAR(2) DEFAULT 'DF',
+        tipo JSON DEFAULT NULL,
+        origem VARCHAR(30) DEFAULT 'publica',
+        status VARCHAR(30) DEFAULT 'ativa',
+        telefone VARCHAR(40) DEFAULT NULL,
+        email VARCHAR(160) DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    try { await db.query("ALTER TABLE escolas ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+    try { await db.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+    try { await db.query("ALTER TABLE usuarios ADD COLUMN cargo_regional VARCHAR(60) DEFAULT NULL"); } catch {}
+    _regionaisSchemaReady = true;
+  } catch (err) {
+    console.error("[PLATAFORMA][ensureRegionaisSchema] erro:", err?.message);
+  }
+}
+
+const PAPEIS_REGIONAIS_LABELS = {
+  coordenador_regional: "Coordenador(a) Regional de Ensino",
+  chefe_unieb: "Chefe da UNIEB (Educação Básica)",
+  chefe_uniplat: "Chefe da UNIPLAT (Planejamento e Tecnologia)",
+  chefe_unigep: "Chefe da UNIGEP (Gestão de Pessoas)",
+  chefe_uniae: "Chefe da UNIAE (Infraestrutura e Apoio ao Estudante)",
+  chefe_uniag: "Chefe da UNIAG (Administração Geral)",
+};
+
 router.get("/escolas", async (req, res) => {
   const db = req.db;
 
   try {
+    await ensureRegionaisSchema(db);
     const [rows] = await db.query(
       `
       SELECT
@@ -90,6 +132,9 @@ router.get("/escolas", async (req, res) => {
         e.origem,
         e.status,
         e.telefone,
+        e.regional_id,
+        r.nome AS regional_nome,
+        r.apelido AS regional_apelido,
         e.created_at,
         (SELECT dir.nome FROM usuarios dir
          WHERE dir.escola_id = e.id AND dir.perfil = 'diretor'
@@ -100,6 +145,7 @@ router.get("/escolas", async (req, res) => {
          ORDER BY (cmd.ativo = 1) DESC, cmd.id DESC
          LIMIT 1) AS comandante
       FROM escolas e
+      LEFT JOIN regionais r ON r.id = e.regional_id
       ORDER BY e.id DESC
       LIMIT 200
       `
@@ -137,6 +183,7 @@ router.post("/escolas", async (req, res) => {
   const estado   = body.estado ? String(body.estado).trim().toUpperCase().slice(0, 2) : null;
   const endereco = body.endereco ? String(body.endereco).trim() : null;
   const origem   = body.origem ? String(body.origem).trim().toLowerCase() : null;
+  const regionalId = body.regional_id ? Number(body.regional_id) || null : null;
 
   // tipo: array de strings → salva como JSON
   let tipoJson = null;
@@ -145,12 +192,13 @@ router.post("/escolas", async (req, res) => {
   }
 
   try {
+    await ensureRegionaisSchema(db);
     const [result] = await db.query(
       `
-      INSERT INTO escolas (nome, apelido, cnpj, endereco, cidade, estado, tipo, origem)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO escolas (nome, apelido, cnpj, endereco, cidade, estado, tipo, origem, regional_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [nome, apelido, cnpj, endereco, cidade, estado, tipoJson, origem]
+      [nome, apelido, cnpj, endereco, cidade, estado, tipoJson, origem, regionalId]
     );
 
     return res.status(201).json({
@@ -205,6 +253,11 @@ router.put("/escolas/:id", async (req, res) => {
     if (body.estado !== undefined)  { sets.push("estado = ?");  vals.push(body.estado ? String(body.estado).trim().toUpperCase().slice(0,2) : null); }
     if (body.cnpj !== undefined)    { sets.push("cnpj = ?");    vals.push(body.cnpj ? String(body.cnpj).trim() : null); }
     if (body.origem !== undefined)  { sets.push("origem = ?");  vals.push(body.origem ? String(body.origem).trim().toLowerCase() : null); }
+    if (body.regional_id !== undefined) {
+      await ensureRegionaisSchema(db);
+      sets.push("regional_id = ?");
+      vals.push(body.regional_id ? Number(body.regional_id) || null : null);
+    }
     if (body.tipo !== undefined) {
       let tipoJson = null;
       if (Array.isArray(body.tipo) && body.tipo.length > 0) {
@@ -1052,6 +1105,615 @@ router.get("/dashboard", async (req, res) => {
   } catch (err) {
     console.error("[PLATAFORMA][DASHBOARD] erro:", err);
     return res.status(500).json({ ok: false, message: "Erro ao carregar dashboard.", detail: err?.message });
+  }
+});
+
+// ======================================================
+// 4) REGIONAIS (COORDENAÇÕES REGIONAIS DE ENSINO - SEEDF)
+// Mesma estrutura de Escolas, adaptada para as CREs da SEEDF
+// ======================================================
+
+// 4.1) LISTAR REGIONAIS
+// GET /api/plataforma/regionais
+router.get("/regionais", async (req, res) => {
+  const db = req.db;
+  try {
+    await ensureRegionaisSchema(db);
+    const [rows] = await db.query(`
+      SELECT
+        r.id,
+        r.nome,
+        r.apelido,
+        r.codigo_cre,
+        r.cnpj,
+        r.endereco,
+        r.cidade,
+        r.estado,
+        r.tipo,
+        r.origem,
+        r.status,
+        r.telefone,
+        r.email,
+        r.created_at,
+        (SELECT COUNT(*) FROM escolas e WHERE e.regional_id = r.id) AS total_escolas,
+        (SELECT u.nome FROM usuarios u
+         WHERE u.regional_id = r.id
+           AND u.perfil IN ('chefe_regional', 'coordenador_regional')
+           AND COALESCE(u.cargo_regional, 'coordenador_regional') = 'coordenador_regional'
+         ORDER BY (u.ativo = 1) DESC, u.id DESC
+         LIMIT 1) AS coordenador_regional
+      FROM regionais r
+      ORDER BY r.id DESC
+      LIMIT 200
+    `);
+
+    // Busca todos os chefes ativos vinculados às regionais para resumo por unidade (UNIEB, UNIPLAT, UNIGEP, UNIAE, UNIAG)
+    const [chefesRows] = await db.query(`
+      SELECT id, nome, regional_id, COALESCE(cargo_regional, 'coordenador_regional') AS cargo_regional, ativo
+      FROM usuarios
+      WHERE regional_id IS NOT NULL
+        AND perfil IN ('chefe_regional', 'coordenador_regional')
+      ORDER BY (ativo = 1) DESC, id DESC
+    `);
+
+    const chefesPorRegional = {};
+    for (const c of chefesRows || []) {
+      const rid = Number(c.regional_id);
+      if (!chefesPorRegional[rid]) chefesPorRegional[rid] = [];
+      chefesPorRegional[rid].push(c);
+    }
+
+    const regionais = (rows || []).map(r => ({
+      ...r,
+      chefes: chefesPorRegional[Number(r.id)] || [],
+    }));
+
+    return res.json({ ok: true, regionais });
+  } catch (err) {
+    console.error("[PLATAFORMA][LISTAR REGIONAIS] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao listar regionais." });
+  }
+});
+
+// 4.2) CRIAR REGIONAL (CRE)
+// POST /api/plataforma/regionais
+router.post("/regionais", async (req, res) => {
+  const db = req.db;
+  const body = req.body || {};
+
+  const nome = String(body.nome || "").trim();
+  if (!nome) {
+    return res.status(400).json({ ok: false, message: "Nome da regional é obrigatório." });
+  }
+
+  const apelido    = String(body.apelido || nome).trim();
+  const codigoCre  = body.codigo_cre ? String(body.codigo_cre).trim() : null;
+  const cnpj       = body.cnpj ? String(body.cnpj).trim() : null;
+  const cidade     = body.cidade ? String(body.cidade).trim() : null;
+  const estado     = body.estado ? String(body.estado).trim().toUpperCase().slice(0, 2) : "DF";
+  const endereco   = body.endereco ? String(body.endereco).trim() : null;
+  const origem     = body.origem ? String(body.origem).trim().toLowerCase() : "publica";
+
+  let tipoJson = null;
+  if (Array.isArray(body.tipo) && body.tipo.length > 0) {
+    tipoJson = JSON.stringify(body.tipo.map(t => String(t).trim()).filter(Boolean));
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [result] = await db.query(
+      `
+      INSERT INTO regionais (nome, apelido, codigo_cre, cnpj, endereco, cidade, estado, tipo, origem)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [nome, apelido, codigoCre, cnpj, endereco, cidade, estado, tipoJson, origem]
+    );
+
+    return res.status(201).json({
+      ok: true,
+      regional_id: result.insertId,
+      message: "Regional criada com sucesso.",
+    });
+  } catch (err) {
+    console.error("[PLATAFORMA][CRIAR REGIONAL] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao criar regional.", detail: err?.message });
+  }
+});
+
+// 4.3) EDITAR REGIONAL (CRE)
+// PUT /api/plataforma/regionais/:id
+router.put("/regionais/:id", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+  const body = req.body || {};
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [exists] = await db.query("SELECT id FROM regionais WHERE id = ? LIMIT 1", [id]);
+    if (!exists.length) {
+      return res.status(404).json({ ok: false, message: "Regional não encontrada." });
+    }
+
+    const sets = [];
+    const vals = [];
+
+    if (body.nome !== undefined) {
+      const nome = String(body.nome).trim();
+      if (!nome) return res.status(400).json({ ok: false, message: "Nome não pode ser vazio." });
+      sets.push("nome = ?"); vals.push(nome);
+    }
+    if (body.apelido !== undefined)    { sets.push("apelido = ?");    vals.push(String(body.apelido).trim() || null); }
+    if (body.codigo_cre !== undefined) { sets.push("codigo_cre = ?"); vals.push(body.codigo_cre ? String(body.codigo_cre).trim() : null); }
+    if (body.endereco !== undefined)   { sets.push("endereco = ?");   vals.push(body.endereco ? String(body.endereco).trim() : null); }
+    if (body.cidade !== undefined)     { sets.push("cidade = ?");     vals.push(body.cidade ? String(body.cidade).trim() : null); }
+    if (body.estado !== undefined)     { sets.push("estado = ?");     vals.push(body.estado ? String(body.estado).trim().toUpperCase().slice(0, 2) : null); }
+    if (body.cnpj !== undefined)       { sets.push("cnpj = ?");       vals.push(body.cnpj ? String(body.cnpj).trim() : null); }
+    if (body.origem !== undefined)     { sets.push("origem = ?");     vals.push(body.origem ? String(body.origem).trim().toLowerCase() : null); }
+    if (body.tipo !== undefined) {
+      let tipoJson = null;
+      if (Array.isArray(body.tipo) && body.tipo.length > 0) {
+        tipoJson = JSON.stringify(body.tipo.map(t => String(t).trim()).filter(Boolean));
+      }
+      sets.push("tipo = ?"); vals.push(tipoJson);
+    }
+
+    if (!sets.length) {
+      return res.status(400).json({ ok: false, message: "Nenhum campo para atualizar." });
+    }
+
+    vals.push(id);
+    await db.query(`UPDATE regionais SET ${sets.join(", ")} WHERE id = ?`, vals);
+
+    return res.json({ ok: true, message: "Regional atualizada com sucesso." });
+  } catch (err) {
+    console.error("[PLATAFORMA][EDITAR REGIONAL] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao editar regional.", detail: err?.message });
+  }
+});
+
+// 4.4) ALTERAR STATUS DA REGIONAL (CRE)
+// PATCH /api/plataforma/regionais/:id/status
+router.patch("/regionais/:id/status", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+  const novoStatus = String(req.body?.status || "").trim().toLowerCase();
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  const statusValidos = ["ativa", "bloqueada", "cancelada"];
+  if (!statusValidos.includes(novoStatus)) {
+    return res.status(400).json({ ok: false, message: `Status inválido. Use: ${statusValidos.join(", ")}` });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [rows] = await db.query("SELECT id, status FROM regionais WHERE id = ? LIMIT 1", [id]);
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: "Regional não encontrada." });
+    }
+
+    const atual = rows[0].status;
+    if (atual === novoStatus) {
+      return res.json({ ok: true, message: `A regional já está com status '${novoStatus}'.` });
+    }
+
+    if (atual === "cancelada") {
+      return res.status(400).json({ ok: false, message: "Regional cancelada não pode ser reativada. Crie uma nova regional." });
+    }
+
+    if (novoStatus === "cancelada") {
+      const [chefes] = await db.query(
+        `SELECT id, nome FROM usuarios
+         WHERE regional_id = ? AND perfil IN ('chefe_regional','coordenador_regional') AND ativo = 1`,
+        [id]
+      );
+      if (chefes.length > 0) {
+        const nomes = chefes.map(c => c.nome).join(", ");
+        return res.status(409).json({
+          ok: false,
+          message: `Não é possível cancelar esta regional. Ainda há ${chefes.length} chefe(s) ativo(s) vinculado(s): ${nomes}. Cancele ou desvincule os chefes primeiro (menu Chefes).`,
+        });
+      }
+    }
+
+    await db.query("UPDATE regionais SET status = ? WHERE id = ?", [novoStatus, id]);
+    return res.json({ ok: true, message: `Status alterado para '${novoStatus}'.` });
+  } catch (err) {
+    console.error("[PLATAFORMA][STATUS REGIONAL] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao alterar status.", detail: err?.message });
+  }
+});
+
+// ======================================================
+// 4.5) VINCULAR CHEFE À REGIONAL + CONVITE (CEO)
+// POST /api/plataforma/regionais/:regionalId/chefe
+// body: { nome, cpf, email, papel }
+//   papel: "coordenador_regional" | "chefe_unieb" | "chefe_uniplat" | "chefe_unigep" | "chefe_uniae" | "chefe_uniag"
+// ======================================================
+router.post("/regionais/:regionalId/chefe", async (req, res) => {
+  const db = req.db;
+  const regionalId = Number(req.params.regionalId);
+  const { nome, email, cpf, papel } = req.body || {};
+
+  const cpfLimpo = String(cpf || "").replace(/\D/g, "");
+  const emailNorm = email ? String(email).trim().toLowerCase() : null;
+
+  if (!regionalId || Number.isNaN(regionalId)) {
+    return res.status(400).json({ ok: false, message: "regionalId inválido." });
+  }
+  if (!nome || !cpfLimpo || cpfLimpo.length !== 11) {
+    return res.status(400).json({ ok: false, message: "Informe nome e CPF válido (11 dígitos)." });
+  }
+
+  const papelNorm = String(papel || "coordenador_regional").trim().toLowerCase();
+  const papeisValidos = Object.keys(PAPEIS_REGIONAIS_LABELS);
+  if (!papeisValidos.includes(papelNorm)) {
+    return res.status(400).json({ ok: false, message: `Cargo inválido. Use: ${papeisValidos.join(", ")}` });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [regRows] = await db.query(
+      "SELECT id, nome, apelido FROM regionais WHERE id = ? LIMIT 1",
+      [regionalId]
+    );
+    if (!regRows.length) {
+      return res.status(404).json({ ok: false, message: "Regional não encontrada." });
+    }
+
+    // Verifica se já existe um chefe ativo no mesmo cargo nesta regional
+    const [existentes] = await db.query(
+      `SELECT id, nome FROM usuarios
+       WHERE regional_id = ?
+         AND perfil IN ('chefe_regional', 'coordenador_regional')
+         AND COALESCE(cargo_regional, 'coordenador_regional') = ?
+         AND ativo = 1
+       LIMIT 1`,
+      [regionalId, papelNorm]
+    );
+    if (existentes.length) {
+      const labelCargo = PAPEIS_REGIONAIS_LABELS[papelNorm] || "Chefe";
+      return res.status(409).json({
+        ok: false,
+        message: `Esta regional já possui ${labelCargo} ativo(a): ${existentes[0].nome}.`,
+      });
+    }
+
+    const conviteToken = crypto.randomBytes(32).toString("hex");
+    const conviteHash = sha256(conviteToken);
+    const expiraEm = nowPlusHours(72);
+    const senhaProvisoriaHash = await bcrypt.hash(crypto.randomUUID(), 10);
+
+    await db.query("START TRANSACTION");
+
+    const [userIns] = await db.query(
+      `
+      INSERT INTO usuarios (cpf, nome, email, senha_hash, ativo, perfil, escola_id, regional_id, cargo_regional)
+      VALUES (?, ?, ?, ?, 1, 'chefe_regional', 0, ?, ?)
+      `,
+      [
+        cpfLimpo,
+        String(nome).trim().toUpperCase(),
+        emailNorm,
+        senhaProvisoriaHash,
+        regionalId,
+        papelNorm,
+      ]
+    );
+
+    const usuarioId = userIns.insertId;
+
+    await db.query(
+      `
+      INSERT INTO usuarios_convites (usuario_id, token_hash, expira_em)
+      VALUES (?, ?, ?)
+      `,
+      [usuarioId, conviteHash, expiraEm]
+    );
+
+    await db.query("COMMIT");
+
+    const labelPapel = PAPEIS_REGIONAIS_LABELS[papelNorm] || "Chefe Regional";
+
+    return res.status(201).json({
+      ok: true,
+      usuario_id: usuarioId,
+      regional_id: regionalId,
+      papel: papelNorm,
+      papel_label: labelPapel,
+      convite_token: conviteToken,
+      expira_em: expiraEm,
+    });
+  } catch (err) {
+    try { await db.query("ROLLBACK"); } catch {}
+    console.error("[PLATAFORMA][CRIAR CHEFE REGIONAL]", err);
+
+    if (err?.code === "ER_DUP_ENTRY") {
+      if (String(err.message).includes("cpf")) {
+        return res.status(409).json({ ok: false, message: "CPF já cadastrado no sistema." });
+      }
+      if (String(err.message).includes("email")) {
+        return res.status(409).json({ ok: false, message: "E-mail já cadastrado no sistema." });
+      }
+    }
+
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao vincular chefe regional.",
+      detail: err.message,
+    });
+  }
+});
+
+// ======================================================
+// 4.6) LISTAR CHEFES DE REGIONAIS (CEO)
+// GET /api/plataforma/chefes
+// ======================================================
+router.get("/chefes", async (req, res) => {
+  const db = req.db;
+  try {
+    await ensureRegionaisSchema(db);
+    const [rows] = await db.query(`
+      SELECT
+        u.id,
+        u.nome,
+        u.cpf,
+        u.email,
+        u.ativo,
+        u.perfil,
+        u.regional_id,
+        COALESCE(u.cargo_regional, 'coordenador_regional') AS papel,
+        r.nome    AS regional_nome,
+        r.apelido AS regional_apelido,
+        r.cidade,
+        r.estado,
+        r.tipo    AS regional_tipo,
+        c.usado_em  AS convite_usado_em,
+        c.expira_em AS convite_expira_em
+      FROM usuarios u
+      LEFT JOIN regionais r ON r.id = u.regional_id
+      LEFT JOIN (
+        SELECT uc.usuario_id, uc.usado_em, uc.expira_em
+        FROM usuarios_convites uc
+        INNER JOIN (
+          SELECT usuario_id, MAX(id) AS max_id
+          FROM usuarios_convites
+          GROUP BY usuario_id
+        ) latest ON uc.id = latest.max_id
+      ) c ON c.usuario_id = u.id
+      WHERE u.perfil IN ('chefe_regional', 'coordenador_regional')
+      ORDER BY COALESCE(u.regional_id, 999999) DESC, u.id DESC
+      LIMIT 500
+    `);
+    return res.json({ ok: true, chefes: rows || [] });
+  } catch (err) {
+    console.error("[PLATAFORMA][LISTAR CHEFES] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao listar chefes." });
+  }
+});
+
+// ======================================================
+// 4.6.1) REGENERAR CÓDIGO DE ACESSO DO CHEFE (CEO)
+// POST /api/plataforma/chefes/:id/regenerar-codigo
+// ======================================================
+router.post("/chefes/:id/regenerar-codigo", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [uRows] = await db.query(
+      "SELECT id, nome, perfil, ativo FROM usuarios WHERE id = ? AND perfil IN ('chefe_regional','coordenador_regional') LIMIT 1",
+      [id]
+    );
+    if (!uRows.length) {
+      return res.status(404).json({ ok: false, message: "Chefe não encontrado." });
+    }
+
+    const [convUsado] = await db.query(
+      "SELECT id FROM usuarios_convites WHERE usuario_id = ? AND usado_em IS NOT NULL LIMIT 1",
+      [id]
+    );
+    if (convUsado.length) {
+      return res.status(409).json({
+        ok: false,
+        message: "Este chefe já finalizou o cadastro. Não é possível gerar novo código.",
+      });
+    }
+
+    await db.query(
+      "UPDATE usuarios_convites SET expira_em = NOW() WHERE usuario_id = ? AND usado_em IS NULL AND expira_em > NOW()",
+      [id]
+    );
+
+    const conviteToken = crypto.randomBytes(32).toString("hex");
+    const conviteHash = sha256(conviteToken);
+    const expiraEm = nowPlusHours(72);
+
+    await db.query(
+      "INSERT INTO usuarios_convites (usuario_id, token_hash, expira_em) VALUES (?, ?, ?)",
+      [id, conviteHash, expiraEm]
+    );
+
+    return res.status(201).json({
+      ok: true,
+      message: "Novo código de acesso gerado com sucesso.",
+      convite_token: conviteToken,
+      expira_em: expiraEm,
+      chefe_nome: uRows[0].nome,
+    });
+  } catch (err) {
+    console.error("[PLATAFORMA][REGENERAR CÓDIGO CHEFE] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao regenerar código.", detail: err?.message });
+  }
+});
+
+// ======================================================
+// 4.7) EDITAR CHEFE (CEO)
+// PUT /api/plataforma/chefes/:id
+// body: { nome, email, papel }
+// ======================================================
+router.put("/chefes/:id", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+  const body = req.body || {};
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [exists] = await db.query(
+      "SELECT id, perfil FROM usuarios WHERE id = ? AND perfil IN ('chefe_regional','coordenador_regional') LIMIT 1",
+      [id]
+    );
+    if (!exists.length) {
+      return res.status(404).json({ ok: false, message: "Chefe não encontrado." });
+    }
+
+    const sets = [];
+    const vals = [];
+
+    if (body.nome !== undefined) {
+      const nome = String(body.nome).trim();
+      if (!nome) return res.status(400).json({ ok: false, message: "Nome não pode ser vazio." });
+      sets.push("nome = ?"); vals.push(nome.toUpperCase());
+    }
+    if (body.email !== undefined) {
+      sets.push("email = ?");
+      vals.push(body.email ? String(body.email).trim().toLowerCase() : null);
+    }
+    if (body.papel !== undefined) {
+      const papelNorm = String(body.papel).trim().toLowerCase();
+      if (PAPEIS_REGIONAIS_LABELS[papelNorm]) {
+        sets.push("cargo_regional = ?");
+        vals.push(papelNorm);
+      }
+    }
+
+    if (!sets.length) {
+      return res.status(400).json({ ok: false, message: "Nenhum campo para atualizar." });
+    }
+
+    vals.push(id);
+    await db.query(`UPDATE usuarios SET ${sets.join(", ")} WHERE id = ?`, vals);
+
+    return res.json({ ok: true, message: "Chefe atualizado com sucesso." });
+  } catch (err) {
+    console.error("[PLATAFORMA][EDITAR CHEFE] erro:", err);
+    if (err?.code === "ER_DUP_ENTRY" && String(err.message).includes("email")) {
+      return res.status(409).json({ ok: false, message: "E-mail já cadastrado." });
+    }
+    return res.status(500).json({ ok: false, message: "Erro ao editar chefe.", detail: err?.message });
+  }
+});
+
+// ======================================================
+// 4.8) ALTERAR STATUS DO CHEFE (CEO)
+// PATCH /api/plataforma/chefes/:id/status
+// body: { status: "ativo" | "bloqueado" | "cancelado" }
+// ======================================================
+router.patch("/chefes/:id/status", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+  const novoStatus = String(req.body?.status || "").trim().toLowerCase();
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  const statusValidos = ["ativo", "bloqueado", "cancelado"];
+  if (!statusValidos.includes(novoStatus)) {
+    return res.status(400).json({ ok: false, message: `Status inválido. Use: ${statusValidos.join(", ")}` });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [rows] = await db.query(
+      "SELECT id, ativo FROM usuarios WHERE id = ? AND perfil IN ('chefe_regional','coordenador_regional') LIMIT 1",
+      [id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: "Chefe não encontrado." });
+    }
+
+    if (novoStatus === "ativo") {
+      await db.query("UPDATE usuarios SET ativo = 1 WHERE id = ?", [id]);
+      return res.json({ ok: true, message: "Chefe reativado." });
+    }
+
+    if (novoStatus === "bloqueado" || novoStatus === "cancelado") {
+      await db.query("UPDATE usuarios SET ativo = 0 WHERE id = ?", [id]);
+      return res.json({
+        ok: true,
+        message: novoStatus === "bloqueado" ? "Chefe bloqueado." : "Chefe cancelado com sucesso.",
+      });
+    }
+  } catch (err) {
+    console.error("[PLATAFORMA][STATUS CHEFE] erro:", err);
+    return res.status(500).json({ ok: false, message: "Erro ao alterar status.", detail: err?.message });
+  }
+});
+
+// ======================================================
+// 4.9) EXCLUIR CHEFE (CEO)
+// DELETE /api/plataforma/chefes/:id
+// ======================================================
+router.delete("/chefes/:id", async (req, res) => {
+  const db = req.db;
+  const id = Number(req.params.id);
+
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ ok: false, message: "ID inválido." });
+  }
+
+  try {
+    await ensureRegionaisSchema(db);
+    const [rows] = await db.query(
+      "SELECT id, nome, ativo FROM usuarios WHERE id = ? AND perfil IN ('chefe_regional','coordenador_regional') LIMIT 1",
+      [id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: "Chefe não encontrado." });
+    }
+
+    const chefe = rows[0];
+    if (Number(chefe.ativo) === 1) {
+      return res.status(409).json({
+        ok: false,
+        message: "Não é possível excluir um chefe ativo. Desative-o primeiro.",
+      });
+    }
+
+    await db.query("START TRANSACTION");
+    await db.query("DELETE FROM otp_codes WHERE usuario_id = ?", [id]);
+    await db.query("DELETE FROM usuarios_convites WHERE usuario_id = ?", [id]);
+    await db.query("DELETE FROM usuarios WHERE id = ?", [id]);
+    await db.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      message: `Chefe "${chefe.nome}" excluído permanentemente.`,
+    });
+  } catch (err) {
+    try { await db.query("ROLLBACK"); } catch {}
+    console.error("[PLATAFORMA][EXCLUIR CHEFE] erro:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Erro ao excluir chefe.",
+      detail: err?.message,
+    });
   }
 });
 

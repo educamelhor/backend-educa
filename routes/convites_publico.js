@@ -58,11 +58,22 @@ router.post("/:token/validar", async (req, res) => {
   const db = req.db;
   const tokenHash = sha256(req.params.token);
   try {
+    try { await db.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+    try { await db.query("ALTER TABLE usuarios ADD COLUMN cargo_regional VARCHAR(60) DEFAULT NULL"); } catch {}
     const [rows] = await db.query(`
       SELECT c.id AS convite_id, c.usuario_id, c.expira_em, c.usado_em,
-             u.nome, u.email, u.perfil, u.escola_id,
-             e.nome AS escola_nome,
+             u.nome, u.email, u.perfil, u.escola_id, u.regional_id, u.cargo_regional,
+             COALESCE(r.nome, e.nome) AS escola_nome,
              CASE
+               WHEN u.perfil IN ('chefe_regional', 'coordenador_regional') THEN
+                 CASE COALESCE(u.cargo_regional, 'coordenador_regional')
+                   WHEN 'chefe_unieb'   THEN 'Chefe da UNIEB (Educação Básica)'
+                   WHEN 'chefe_uniplat' THEN 'Chefe da UNIPLAT (Planejamento e Tecnologia)'
+                   WHEN 'chefe_unigep'  THEN 'Chefe da UNIGEP (Gestão de Pessoas)'
+                   WHEN 'chefe_uniae'   THEN 'Chefe da UNIAE (Infraestrutura e Apoio ao Estudante)'
+                   WHEN 'chefe_uniag'   THEN 'Chefe da UNIAG (Administração Geral)'
+                   ELSE 'Coordenador(a) Regional de Ensino'
+                 END
                WHEN u.perfil IN ('militar', 'diretor_disciplinar', 'comandante') THEN 'Comandante (Disciplinar)'
                WHEN u.perfil = 'diretor' AND e.tipo LIKE '%CCMDF%' THEN 'Diretor Pedagógico'
                ELSE 'Diretor'
@@ -70,6 +81,7 @@ router.post("/:token/validar", async (req, res) => {
       FROM usuarios_convites c
       JOIN usuarios u ON u.id = c.usuario_id
       LEFT JOIN escolas e ON e.id = u.escola_id
+      LEFT JOIN regionais r ON r.id = u.regional_id
       WHERE c.token_hash = ? LIMIT 1
     `, [tokenHash]);
 
