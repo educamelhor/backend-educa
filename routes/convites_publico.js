@@ -67,12 +67,12 @@ router.post("/:token/validar", async (req, res) => {
              CASE
                WHEN u.perfil IN ('chefe_regional', 'coordenador_regional') THEN
                  CASE COALESCE(u.cargo_regional, 'coordenador_regional')
-                   WHEN 'chefe_unieb'   THEN 'Chefe da UNIEB (Educação Básica)'
-                   WHEN 'chefe_uniplat' THEN 'Chefe da UNIPLAT (Planejamento e Tecnologia)'
-                   WHEN 'chefe_unigep'  THEN 'Chefe da UNIGEP (Gestão de Pessoas)'
-                   WHEN 'chefe_uniae'   THEN 'Chefe da UNIAE (Infraestrutura e Apoio ao Estudante)'
-                   WHEN 'chefe_uniag'   THEN 'Chefe da UNIAG (Administração Geral)'
-                   ELSE 'Coordenador(a) Regional de Ensino'
+                   WHEN 'chefe_unieb'   THEN 'Chefe de Educação Básica (UNIEB)'
+                   WHEN 'chefe_uniplat' THEN 'Chefe de Planejamento e Tecnologia (UNIPLAT)'
+                   WHEN 'chefe_unigep'  THEN 'Chefe de Gestão de Pessoas (UNIGEP)'
+                   WHEN 'chefe_uniae'   THEN 'Chefe de Infraestrutura e Apoio (UNIAE)'
+                   WHEN 'chefe_uniag'   THEN 'Chefe de Administração Geral (UNIAG)'
+                   ELSE 'Coordenador(a) Geral da Regional'
                  END
                WHEN u.perfil IN ('militar', 'diretor_disciplinar', 'comandante') THEN 'Comandante (Disciplinar)'
                WHEN u.perfil = 'diretor' AND e.tipo LIKE '%CCMDF%' THEN 'Diretor Pedagógico'

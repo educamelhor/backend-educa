@@ -105,12 +105,12 @@ async function ensureRegionaisSchema(db) {
 }
 
 const PAPEIS_REGIONAIS_LABELS = {
-  coordenador_regional: "Coordenador(a) Regional de Ensino",
-  chefe_unieb: "Chefe da UNIEB (Educação Básica)",
-  chefe_uniplat: "Chefe da UNIPLAT (Planejamento e Tecnologia)",
-  chefe_unigep: "Chefe da UNIGEP (Gestão de Pessoas)",
-  chefe_uniae: "Chefe da UNIAE (Infraestrutura e Apoio ao Estudante)",
-  chefe_uniag: "Chefe da UNIAG (Administração Geral)",
+  coordenador_regional: "Coordenador(a) Geral da Regional",
+  chefe_unieb: "Chefe de Educação Básica (UNIEB)",
+  chefe_uniplat: "Chefe de Planejamento e Tecnologia (UNIPLAT)",
+  chefe_unigep: "Chefe de Gestão de Pessoas (UNIGEP)",
+  chefe_uniae: "Chefe de Infraestrutura e Apoio (UNIAE)",
+  chefe_uniag: "Chefe de Administração Geral (UNIAG)",
 };
 
 router.get("/escolas", async (req, res) => {
