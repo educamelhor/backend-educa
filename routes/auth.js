@@ -581,124 +581,61 @@ router.post("/login", async (req, res) => {
 
   const cpf = String(req.body?.cpf || "").trim();
   const senha = String(req.body?.senha || "");
+  const contextoReq = String(req.body?.contexto || "").toLowerCase().trim();
 
-  // ✅ MODO A: LOGIN DIRETO POR CPF (Diretor Escolar ou Chefe de Regional CRE)
+  // 🔒 PADRÃO CORPORATIVO UNIFICADO: login exclusivo por E-mail + Senha + 2FA (ou Dispositivo Confiado)
   if (cpf) {
-    try {
-      const cpfLimpo = cpf.replace(/\D/g, "");
-      if (!cpfLimpo || cpfLimpo.length !== 11) {
-        return res.status(400).json({ ok: false, message: "CPF inválido." });
-      }
-
-      const contextoReq = String(req.body?.contexto || "").toLowerCase().trim();
-      try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
-
-      const sqlFiltroPerfil = contextoReq === "cre"
-        ? "AND perfil IN ('chefe_regional', 'coordenador_regional')"
-        : "AND perfil IN ('diretor', 'diretor_disciplinar', 'chefe_regional', 'coordenador_regional')";
-
-      const [[usuario]] = await pool.query(
-        `
-        SELECT id, nome, cpf, escola_id, regional_id, perfil, ativo, senha_hash
-        FROM usuarios
-        WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), '/', '') = ?
-          ${sqlFiltroPerfil}
-        ORDER BY (ativo = 1) DESC, id DESC
-        LIMIT 1
-        `,
-        [cpfLimpo]
-      );
-
-      if (!usuario?.id) {
-        return res.status(404).json({
-          ok: false,
-          message: contextoReq === "cre"
-            ? "Chefe / Coordenador Regional não encontrado para este CPF."
-            : "Usuário gestor não encontrado para este CPF.",
-        });
-      }
-
-      if (Number(usuario.ativo) !== 1) {
-        return res.status(403).json({ ok: false, message: "Conta inativa ou aguardando ativação." });
-      }
-
-      if (!usuario.senha_hash) {
-        return res.status(403).json({ ok: false, message: "Conta sem senha cadastrada." });
-      }
-
-      const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
-      if (!senhaOk) {
-        return res.status(401).json({ ok: false, message: "Senha incorreta." });
-      }
-
-      const perfilReal = usuario.perfil || "diretor";
-      const jwtEscolar = await emitirJwtEscolar({
-        usuarioId: usuario.id,
-        escolaId: usuario.escola_id || 0,
-        perfil: perfilReal,
-        regionalId: usuario.regional_id || null,
-      });
-
-      const fotoUrl = await buscarFotoUsuario(usuario.id, usuario.escola_id);
-
-      // ✅ Registra acesso para Usage Insights (CEO)
-      registrarAcesso(pool, {
-        usuario_id: usuario.id,
-        escola_id: usuario.escola_id || 0,
-        perfil: perfilReal,
-        ip: req.ip || req.headers["x-forwarded-for"],
-        user_agent: req.headers["user-agent"],
-        action: "login",
-      });
-
-      // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
-      const modulos_ativos_diretor = await resolveModulosAtivos(pool, usuario.escola_id, perfilReal);
-
-      // Buscar tipo da escola (ex: ['CCMDF']) para regras de visibilidade no frontend
-      const escola_tipo_diretor = await resolveEscolaTipo(pool, usuario.escola_id);
-
-      return res.json({
-        ok: true,
-        nome: usuario.nome || "Gestor",
-        cpf: String(usuario.cpf || "").replace(/\D/g, ""),
-        foto_url: fotoUrl,
-        modulos_ativos: modulos_ativos_diretor,
-        escola_tipo: escola_tipo_diretor,
-        ...jwtEscolar,
-      });
-    } catch (err) {
-      console.error("Erro no login CPF (diretor/chefe regional):", err);
-      return res.status(500).json({ ok: false, message: "Erro no servidor." });
-    }
+    return res.status(400).json({
+      ok: false,
+      message: "O acesso ao portal utiliza exclusivamente seu e-mail cadastrado e senha.",
+    });
   }
 
-  // ✅ MODO B: LOGIN OTP (fluxo atual) — emailOuCelular + senha => envia código
-  const emailOuCelular = String(req.body?.emailOuCelular || "");
-  const rawLogin = String(emailOuCelular || "").trim();
+  // ✅ LOGIN UNIFICADO POR E-MAIL + SENHA => 2FA por e-mail (ou Dispositivo Confiado 90d)
+  const rawLogin = String(req.body?.email || req.body?.emailOuCelular || "").trim();
   const emailNorm = rawLogin.includes("@") ? rawLogin.toLowerCase() : "";
-  const celularNorm = rawLogin.replace(/\D/g, "");
+
+  if (!emailNorm) {
+    return res.status(400).json({ message: "Informe um endereço de e-mail válido para entrar." });
+  }
 
   // ✅ Device token enviado pelo frontend (dispositivo confiado)
   const deviceTokenRaw = String(req.body?.device_token || "").trim();
 
   try {
+    try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+
     const [[usuario]] = await pool.query(
       `
       SELECT *
       FROM usuarios
-      WHERE
-        (email IS NOT NULL AND email <> '' AND LOWER(email) = ?)
-        OR
-        (
-          celular IS NOT NULL AND celular <> ''
-          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(celular,'(',''),')',''),'-',''),' ',''),'+',''),'.','') = ?
-        )
+      WHERE email IS NOT NULL
+        AND email <> ''
+        AND LOWER(email) = ?
+      ORDER BY (ativo = 1) DESC, id DESC
       LIMIT 1
       `,
-      [emailNorm, celularNorm]
+      [emailNorm]
     );
 
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
+
+    if (Number(usuario.ativo) !== 1) {
+      return res.status(403).json({ message: "Conta inativa ou aguardando ativação pelo link de convite." });
+    }
+
+    // Validação inteligente de esfera (Escola vs CREs)
+    const isChefeCre = ["chefe_regional", "coordenador_regional"].includes(String(usuario.perfil || "").toLowerCase());
+    if (contextoReq === "cre" && !isChefeCre) {
+      return res.status(403).json({
+        message: "Este e-mail pertence a uma Unidade Escolar. Selecione a aba ESCOLA para entrar.",
+      });
+    }
+    if (contextoReq === "escola" && isChefeCre && Number(usuario.escola_id || 0) === 0) {
+      return res.status(403).json({
+        message: "Este e-mail pertence a uma Coordenação Regional. Selecione a aba CREs para entrar.",
+      });
+    }
 
     const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
     if (!senhaOk) return res.status(401).json({ message: "Senha incorreta." });
@@ -771,10 +708,23 @@ router.post("/login", async (req, res) => {
         const escolaIdFinal  = ctx0?.id ?? usuario.escola_id ?? null;
         const perfilFinal    = ctx0?.perfil ?? usuario.perfil ?? "aluno";
 
-        const [[escolaRow]] = await pool.query(
-          `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
-          [escolaIdFinal]
-        );
+        let nomeInstituicaoDevice = null;
+        if (Number(escolaIdFinal) > 0) {
+          const [[escolaRow]] = await pool.query(
+            `SELECT apelido, nome FROM escolas WHERE id = ? LIMIT 1`,
+            [escolaIdFinal]
+          );
+          nomeInstituicaoDevice = escolaRow?.apelido || escolaRow?.nome || null;
+        } else if (Number(usuario?.regional_id) > 0) {
+          try {
+            const [[regRow]] = await pool.query(
+              `SELECT apelido, nome FROM regionais WHERE id = ? LIMIT 1`,
+              [Number(usuario.regional_id)]
+            );
+            nomeInstituicaoDevice = regRow?.apelido || regRow?.nome || null;
+          } catch {}
+        }
+
         const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
 
         const token = jwt.sign(
@@ -783,7 +733,8 @@ router.post("/login", async (req, res) => {
             usuario_id: usuarioIdFinal,
             usuarioId: usuarioIdFinal,
             escola_id: escolaIdFinal,
-            nome_escola: escolaRow?.apelido || null,
+            regional_id: usuario?.regional_id || undefined,
+            nome_escola: nomeInstituicaoDevice,
             perfil: perfilFinal,
             perfis,
             permissoes,
@@ -820,7 +771,8 @@ router.post("/login", async (req, res) => {
           cpf: cpfLoginLimpo,
           foto_url: fotoUrl,
           escola_id: escolaIdFinal,
-          nome_escola: escolaRow?.apelido || "Escola não definida",
+          regional_id: usuario?.regional_id || null,
+          nome_escola: nomeInstituicaoDevice || "Instituição não definida",
           perfil: perfilFinal,
           perfis,
           permissoes,
