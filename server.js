@@ -145,6 +145,7 @@ import merendaRouter from "./routes/merenda.js"; // ✅ Módulo MERENDA
 import aphRoutes from "./routes/aph.js"; // ✅ Módulo APH
 import administrativoRouter, { ensureAdministrativoTables } from "./routes/administrativo.js"; // ✅ Módulo ADMINISTRATIVO
 import financeiroRouter, { ensureFinanceiroTables } from "./routes/financeiro.js"; // ✅ Módulo FINANCEIRO (PDAF / PDDE)
+import creRouter from "./routes/cre.js"; // ✅ Módulo CRE — Coordenações Regionais de Ensino (Gabinete & UNIAG)
 
 // ------------------------- ROTAS OPCIONAIS (blindadas por Feature Flags) -----
 // appPaisRouterModule: importado estaticamente acima (não usa safeImportDefault
@@ -295,6 +296,7 @@ if (FF_MONITORAMENTO && requireEnvForFeature("FF_MONITORAMENTO", ["MONITORAMENTO
 import { autenticarToken } from "./middleware/autenticarToken.js";
 import { verificarEscola } from "./middleware/verificarEscola.js";
 import { exigirEscopo } from "./middleware/verificarEscopo.js";
+import { verificarRegional } from "./middleware/verificarRegional.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1659,6 +1661,18 @@ async function bootstrap() {
   app.use("/api/plataforma/manutencao", autenticarToken, exigirEscopo("plataforma"), manutencaoRouter); // CEO: GET/POST/DELETE
   app.use("/api/sistema", manutencaoRouter); // Público: GET /api/sistema/status (sem auth)
 
+  // ── MÓDULO CRE (Coordenações Regionais de Ensino - SEEDF) — Escopo isolado "cre" ──
+  app.use(
+    "/api/cre",
+    autenticarToken,
+    verificarRegional,
+    (req, _res, next) => {
+      req.db = pool;
+      next();
+    },
+    creRouter
+  );
+
 
   // ─── APP_PAIS PUBLIC LOGIN (router dedicado — sem auth) ─────────────────────
   // Workaround definitivo para bug Express 5 + Docker/DO:
@@ -2046,9 +2060,10 @@ async function bootstrap() {
         // ✅ Monitoramento Embeddings: auth é decidida no próprio router (Worker OU Admin)
         if (p.startsWith("/monitoramento/embeddings")) return next();
 
-        // ✅ Rotas da Plataforma (CEO/Admin Global) — NÃO passam por verificarEscola
+        // ✅ Rotas da Plataforma (CEO/Admin Global) e CRE — NÃO passam por verificarEscola
         if (p.startsWith("/plataforma")) return next();
         if (p.startsWith("/auth-plataforma")) return next();
+        if (p.startsWith("/cre")) return next();
 
         // ✅ Rotas públicas de Impressão de Boletins
         if (p.startsWith("/impressao")) return next();

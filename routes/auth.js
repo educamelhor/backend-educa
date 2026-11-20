@@ -6,6 +6,7 @@ import pool from "../db.js";
 import nodemailer from "nodemailer";
 import { randomInt, createHash, randomBytes } from "crypto";
 import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
+import { CARGOS_CRE_LABELS, resolveModulosCre } from "../middleware/verificarRegional.js";
 
 import multer from "multer";
 import fs from "fs";
@@ -42,7 +43,7 @@ const PERFIS_MILITARES = new Set([
 // PERFIS_DIRECAO_PEDAGOGICO e PERFIS_DIRECAO removidos (16/07/2026):
 // Diretor agora segue a mesma regra de todos os perfis — apenas o CEO determina o acesso.
 
-async function resolveModulosAtivos(dbPool, escola_id, perfil) {
+async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = null) {
   let perfilNorm = String(perfil || '').toLowerCase().trim();
 
   // ── Normalização de Legados (CEO unificou a nomenclatura) ──
@@ -52,10 +53,15 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil) {
   if (perfilNorm === 'supervisor') perfilNorm = 'supervisor_pedagogico';
   if (perfilNorm === 'sala_de_recurso') perfilNorm = 'sala_recurso';
 
+  // ── Coordenações Regionais de Ensino (CRE): escopo isolado, NUNCA retorna null escolar ──
+  if (perfilNorm === 'chefe_regional' || perfilNorm === 'coordenador_regional') {
+    return resolveModulosCre(cargo_regional);
+  }
+
   // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
   if (PERFIS_SUPER.has(perfilNorm)) return null;
 
-  // ── Sem escola_id válido: acesso irrestrito (ex: CEO acessando portal escola) ──
+  // ── Sem escola_id válido: acesso irrestrito apenas para contas globais não-CRE ──
   const escolaIdNum = Number(escola_id);
   if (!escola_id || isNaN(escolaIdNum) || escolaIdNum <= 0) return null;
 
@@ -130,6 +136,111 @@ function getJwtSecret() {
     throw new Error("JWT_SECRET não configurado.");
   }
   return secret;
+}
+
+/**
+ * Emite JWT e payload de sessão isolado para Gestores de Coordenações Regionais (scope: "cre")
+ */
+async function construirSessaoCre(usuarioRow) {
+  const regionalId = Number(usuarioRow?.regional_id || 0);
+  if (!regionalId || Number.isNaN(regionalId) || regionalId <= 0) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Sua conta não possui vínculo ativo com uma Coordenação Regional de Ensino.",
+    };
+  }
+
+  let regRow = null;
+  try {
+    const [[row]] = await pool.query(
+      "SELECT id, nome, apelido, codigo_cre, cidade, estado, status, tipo FROM regionais WHERE id = ? LIMIT 1",
+      [regionalId]
+    );
+    regRow = row || null;
+  } catch (err) {
+    console.error("[AUTH/CRE] Erro ao consultar regional:", err?.message || err);
+  }
+
+  if (!regRow) {
+    return {
+      ok: false,
+      status: 404,
+      message: "Coordenação Regional vinculada não foi localizada.",
+    };
+  }
+
+  const statusRegional = String(regRow.status || "ativa").toLowerCase().trim();
+  if (statusRegional !== "ativa") {
+    return {
+      ok: false,
+      status: 403,
+      message: "Esta Coordenação Regional encontra-se bloqueada ou inativa.",
+    };
+  }
+
+  const cargoRegional = String(usuarioRow?.cargo_regional || "coordenador_regional")
+    .toLowerCase()
+    .trim();
+  const cargoLabel = CARGOS_CRE_LABELS[cargoRegional] || "Gestor(a) Regional";
+  const nomeRegional = regRow.apelido || regRow.nome || "Coordenação Regional";
+  const modulosAtivos = resolveModulosCre(cargoRegional);
+  const usuarioIdNum = Number(usuarioRow.id);
+
+  let unidadesRegional = [];
+  if (regRow.tipo) {
+    try {
+      const parsed = typeof regRow.tipo === "string" ? JSON.parse(regRow.tipo) : regRow.tipo;
+      if (Array.isArray(parsed)) unidadesRegional = parsed;
+    } catch {}
+  }
+
+  const token = jwt.sign(
+    {
+      scope: "cre",
+      usuario_id: usuarioIdNum,
+      usuarioId: usuarioIdNum,
+      escola_id: null,
+      regional_id: Number(regRow.id),
+      codigo_cre: regRow.codigo_cre || null,
+      nome_regional: nomeRegional,
+      nome_escola: nomeRegional,
+      perfil: "chefe_regional",
+      cargo_regional: cargoRegional,
+      cargo_label: cargoLabel,
+      perfis: [cargoRegional],
+      permissoes: [],
+    },
+    getJwtSecret(),
+    { expiresIn: "8h" }
+  );
+
+  const fotoUrl = await buscarFotoUsuario(usuarioIdNum, 0);
+  const cpfLimpo = String(usuarioRow?.cpf || "").replace(/\D/g, "");
+
+  return {
+    ok: true,
+    session: {
+      scope: "cre",
+      token,
+      nome: usuarioRow?.nome || "Gestor Regional",
+      cpf: cpfLimpo,
+      foto_url: fotoUrl,
+      escola_id: null,
+      regional_id: Number(regRow.id),
+      codigo_cre: regRow.codigo_cre || null,
+      nome_regional: nomeRegional,
+      nome_escola: nomeRegional,
+      perfil: "chefe_regional",
+      cargo_regional: cargoRegional,
+      cargo_label: cargoLabel,
+      unidades_regional: unidadesRegional,
+      perfis: [cargoRegional],
+      permissoes: [],
+      modulos_ativos: modulosAtivos,
+      escola_tipo: [],
+    },
+  };
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -604,6 +715,7 @@ router.post("/login", async (req, res) => {
 
   try {
     try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+    try { await pool.query("ALTER TABLE usuarios ADD COLUMN cargo_regional VARCHAR(60) DEFAULT NULL"); } catch {}
 
     const [[usuario]] = await pool.query(
       `
@@ -612,10 +724,17 @@ router.post("/login", async (req, res) => {
       WHERE email IS NOT NULL
         AND email <> ''
         AND LOWER(email) = ?
-      ORDER BY (ativo = 1) DESC, id DESC
+      ORDER BY
+        CASE
+          WHEN ? = 'cre' AND LOWER(COALESCE(perfil, '')) IN ('chefe_regional', 'coordenador_regional') THEN 0
+          WHEN ? = 'escola' AND LOWER(COALESCE(perfil, '')) NOT IN ('chefe_regional', 'coordenador_regional') THEN 0
+          ELSE 1
+        END ASC,
+        (ativo = 1) DESC,
+        id DESC
       LIMIT 1
       `,
-      [emailNorm]
+      [emailNorm, contextoReq, contextoReq]
     );
 
     if (!usuario) return res.status(404).json({ message: "Usuário não encontrado." });
@@ -639,6 +758,21 @@ router.post("/login", async (req, res) => {
 
     const senhaOk = await bcrypt.compare(senha, usuario.senha_hash);
     if (!senhaOk) return res.status(401).json({ message: "Senha incorreta." });
+
+    // Se for conta de CRE, valida previamente se a Regional vinculada está ativa
+    if (isChefeCre) {
+      const rid = Number(usuario.regional_id || 0);
+      if (!rid || rid <= 0) {
+        return res.status(403).json({ message: "Conta regional sem Coordenação Regional vinculada." });
+      }
+      const [[regCheck]] = await pool.query(
+        "SELECT id, status FROM regionais WHERE id = ? LIMIT 1",
+        [rid]
+      ).catch(() => [[null]]);
+      if (!regCheck || String(regCheck.status || "ativa").toLowerCase() !== "ativa") {
+        return res.status(403).json({ message: "Esta Coordenação Regional encontra-se bloqueada ou inativa." });
+      }
+    }
 
     // ✅ DISPOSITIVO CONFIADO: se o frontend enviou um device_token válido, pula o OTP
     if (deviceTokenRaw) {
@@ -666,7 +800,31 @@ router.post("/login", async (req, res) => {
           [dispositivo.id]
         );
 
-        // Descobre contextos do usuário (igual ao fluxo /confirmar)
+        // ── Isolamento nativo de 3ª Esfera: Coordenações Regionais de Ensino (scope: "cre") ──
+        if (isChefeCre) {
+          const creResult = await construirSessaoCre(usuario);
+          if (!creResult.ok) {
+            return res.status(creResult.status || 403).json({ message: creResult.message });
+          }
+
+          registrarAcesso(pool, {
+            usuario_id: usuario.id,
+            escola_id: null,
+            perfil: "chefe_regional",
+            ip: req.ip || req.headers["x-forwarded-for"],
+            user_agent: req.headers["user-agent"],
+            action: "login_cre_dispositivo_confiado",
+          });
+
+          console.log(`[AUTH/login] Dispositivo confiado CRE OK → usuário ${usuario.id}, regional ${usuario.regional_id}`);
+          return res.json({
+            ok: true,
+            dispositivo_confiado: true,
+            ...creResult.session,
+          });
+        }
+
+        // Descobre contextos escolares do usuário (exclui escola_id = 0 de CRE)
         const cpfLimpo = String(usuario.cpf || "").replace(/\D/g, "");
         const [escolasVinculadas] = await pool.query(
           `SELECT DISTINCT
@@ -680,6 +838,7 @@ router.post("/login", async (req, res) => {
            WHERE REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), '/', '') = ?
              AND u.ativo = 1
              AND u.escola_id IS NOT NULL
+             AND u.escola_id > 0
              AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
              AND (
                (u.email IS NOT NULL AND u.email <> '' AND u.email = ?)
@@ -864,8 +1023,9 @@ router.post("/confirmar", async (req, res) => {
 
     // 1) Carrega o usuário base (linha atual)
     try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+    try { await pool.query("ALTER TABLE usuarios ADD COLUMN cargo_regional VARCHAR(60) DEFAULT NULL"); } catch {}
     const [[usuarioBase]] = await pool.query(
-      `SELECT u.id, u.nome, u.cpf, u.email, u.celular, u.escola_id, u.regional_id, u.perfil
+      `SELECT u.id, u.nome, u.cpf, u.email, u.celular, u.escola_id, u.regional_id, u.cargo_regional, u.perfil
        FROM usuarios u
        WHERE u.id = ?
        LIMIT 1`,
@@ -876,9 +1036,51 @@ router.post("/confirmar", async (req, res) => {
       return res.status(404).json({ message: "Usuário não localizado para confirmação." });
     }
 
+    // ── Isolamento nativo de 3ª Esfera: Coordenações Regionais de Ensino (scope: "cre") ──
+    const isChefeCreConfirmar =
+      ["chefe_regional", "coordenador_regional"].includes(String(usuarioBase.perfil || "").toLowerCase()) &&
+      Number(usuarioBase.regional_id || 0) > 0;
+
+    if (isChefeCreConfirmar) {
+      const creResult = await construirSessaoCre(usuarioBase);
+      if (!creResult.ok) {
+        return res.status(creResult.status || 403).json({ message: creResult.message });
+      }
+
+      registrarAcesso(pool, {
+        usuario_id: usuarioBase.id,
+        escola_id: null,
+        perfil: "chefe_regional",
+        ip: req.ip || req.headers["x-forwarded-for"],
+        user_agent: req.headers["user-agent"],
+        action: "login_cre",
+      });
+
+      let deviceTokenCre = null;
+      if (confiar_dispositivo) {
+        const rawToken = randomBytes(32).toString("hex");
+        const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
+        try {
+          await pool.query(
+            `INSERT INTO dispositivos_confiados (usuario_id, token_hash, descricao, expira_em)
+             VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 90 DAY))`,
+            [usuarioBase.id, tokenHash, userAgent]
+          );
+          deviceTokenCre = rawToken;
+        } catch (e) {
+          console.error("[AUTH/confirmar][CRE] Falha ao registrar dispositivo confiado:", e.message);
+        }
+      }
+
+      return res.json({
+        ...creResult.session,
+        ...(deviceTokenCre ? { device_token: deviceTokenCre } : {}),
+      });
+    }
+
     const cpfLimpo = String(usuarioBase.cpf || "").replace(/\D/g, "");
 
-    // 2) Descobre todos os CONTEXTOS ativos para o MESMO CPF (multi-escola e/ou multi-perfil)
+    // 2) Descobre todos os CONTEXTOS escolares ativos para o MESMO CPF (exclui escola_id = 0 de CRE)
     //    Retorna: escola_id + nome + perfil + usuario_ctx_id (id da linha em usuarios)
     const [escolasVinculadas] = await pool.query(
       `
@@ -893,6 +1095,7 @@ router.post("/confirmar", async (req, res) => {
       WHERE REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), '/', '') = ?
         AND u.ativo = 1
         AND u.escola_id IS NOT NULL
+        AND u.escola_id > 0
         AND (u.senha_hash IS NOT NULL AND u.senha_hash <> '')
         AND (
           (u.email IS NOT NULL AND u.email <> '' AND u.email = ?)
@@ -1942,13 +2145,24 @@ router.get('/modulos', async (req, res) => {
       return res.json({ ok: false, modulos_ativos: [] });
     }
 
-    const { escola_id, perfil } = payload;
+    const { escola_id, perfil, scope, cargo_regional } = payload;
 
-    // Sem escola_id → acesso irrestrito (CEO, super_admin, conta global)
+    // ── Esfera CRE: retorna módulos exclusivos da Regional (NUNCA null escolar) ──
+    const perfilJwtNorm = String(perfil || '').toLowerCase().trim();
+    if (
+      String(scope || '').toLowerCase() === 'cre' ||
+      perfilJwtNorm === 'chefe_regional' ||
+      perfilJwtNorm === 'coordenador_regional'
+    ) {
+      const modulosCre = resolveModulosCre(cargo_regional);
+      return res.json({ ok: true, modulos_ativos: modulosCre });
+    }
+
+    // Sem escola_id → acesso irrestrito apenas para contas globais (CEO, super_admin)
     if (!escola_id) return res.json({ ok: true, modulos_ativos: null });
 
     // Usa resolveModulosAtivos com perfil do JWT — hierarquia completa
-    const modulos_ativos = await resolveModulosAtivos(pool, escola_id, perfil || 'diretor');
+    const modulos_ativos = await resolveModulosAtivos(pool, escola_id, perfil || 'diretor', cargo_regional);
 
     console.log(`[AUTH/modulos] escola_id=${escola_id} perfil=${perfil} → ${Array.isArray(modulos_ativos) ? modulos_ativos.length : 'null (irrestrito)'} módulos`);
     return res.json({ ok: true, modulos_ativos });

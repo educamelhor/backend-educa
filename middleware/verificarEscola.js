@@ -3,12 +3,18 @@ export function verificarEscola(req, res, next) {
     // ── CORS preflight: OPTIONS passa direto ──────────────────────────────────
     if (req.method === "OPTIONS") return next();
 
-    // 🔒 Governança de escopo: token de plataforma NÃO pode acessar rotas escolares
+    // 🔒 Governança de escopo: tokens de plataforma ou CRE NÃO podem acessar rotas exclusivas de escola
     const scope = req.user?.scope;
     if (scope === "plataforma") {
       return res.status(403).json({
         ok: false,
         message: "Token de plataforma não pode acessar contexto escolar.",
+      });
+    }
+    if (scope === "cre") {
+      return res.status(403).json({
+        ok: false,
+        message: "Token de Coordenação Regional (CRE) não pode acessar contexto exclusivo de unidade escolar.",
       });
     }
 
