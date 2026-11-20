@@ -21,6 +21,11 @@ import {
   fetchRestricoesInterTurnosPorCpf,
   normalizarRecursosFisicos,
 } from "./solverEtapa3Helper.js";
+import {
+  sincronizarVinculosSubstituicao,
+  calcularCargaEfetivaModulacao,
+  isTurmaSemestral,
+} from "../utils/professorVinculosSubstituicaoHelper.js";
 
 let _etapa4SchemaVerified = false;
 
@@ -1589,7 +1594,15 @@ export async function executarSubstituicaoProfessor(
     if (sincronizar_modulacao) {
       const [modRows] = await conn.query(
         `SELECT m.id, m.escola_id, m.professor_id, m.turma_id, m.disciplina_id, m.aulas, COALESCE(m.semestre, 0) AS semestre,
-                t.turno, t.nome AS turma_nome, d.nome AS disciplina_nome
+                t.turno, t.regime, t.nome AS turma_nome,
+                d.nome AS disciplina_nome, d.carga AS carga_disc,
+                (
+                  SELECT MAX(tc.carga)
+                    FROM turma_cargas tc
+                   WHERE tc.escola_id = m.escola_id
+                     AND tc.turma_id = m.turma_id
+                     AND tc.disciplina_id = m.disciplina_id
+                ) AS carga_turma
            FROM modulacao m
            JOIN turmas t ON t.id = m.turma_id AND t.escola_id = m.escola_id
            LEFT JOIN disciplinas d ON d.id = m.disciplina_id
@@ -1597,8 +1610,39 @@ export async function executarSubstituicaoProfessor(
         [Number(escolaId), titularId, turnoNorm, simulacao.ano_letivo]
       );
 
-      for (const m of modRows || []) {
-        if (filtroTurmasSet && !filtroTurmasSet.has(Number(m.turma_id))) continue;
+      const modsFiltradas = (modRows || []).filter(
+        (m) => !filtroTurmasSet || filtroTurmasSet.has(Number(m.turma_id))
+      );
+
+      let agrRows = [];
+      if (!filtroTurmasSet) {
+        const [agrRes] = await conn
+          .query(
+            `SELECT am.id, am.agrupamento_id, am.professor_id, am.disciplina_id, am.aulas,
+                    a.turno, COALESCE(a.semestre, 0) AS semestre
+               FROM agrupamento_modulacao am
+               JOIN agrupamentos a ON a.id = am.agrupamento_id
+              WHERE am.escola_id = ? AND am.professor_id = ?
+                AND a.ano_letivo = ? AND a.status <> 'ENCERRADO'
+                AND (LOWER(a.turno) = ? OR LOWER(a.turno) = 'integral') FOR UPDATE`,
+            [Number(escolaId), titularId, simulacao.ano_letivo, turnoNorm]
+          )
+          .catch(() => [[]]);
+        agrRows = agrRes || [];
+      }
+
+      // Garante vínculo consolidado em professor_vinculos (soma aulas por disciplina e preserva ANUAL=0)
+      await sincronizarVinculosSubstituicao(conn, {
+        escolaId: Number(escolaId),
+        professorOrigemId: titularId,
+        professorDestinoId: substitutoId,
+        modulacoesTransferidas: modsFiltradas,
+        agrupamentosTransferidos: agrRows,
+      });
+
+      for (const m of modsFiltradas) {
+        const aulasEfetivas = calcularCargaEfetivaModulacao(m);
+        const semMod = m.semestre || 0;
         snapshotModulacao.push({
           id: m.id,
           escola_id: m.escola_id,
@@ -1611,31 +1655,49 @@ export async function executarSubstituicaoProfessor(
           disciplina_nome: m.disciplina_nome,
         });
 
-        // Garante vínculo ativo em professor_vinculos para o substituto
-        await conn
-          .query(
-            `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
-             VALUES (?, ?, ?, ?, ?, ?, 'ativo')`,
-            [substitutoId, Number(escolaId), m.turno || turnoNorm.toUpperCase(), m.disciplina_id, m.aulas || 1, m.semestre || 0]
-          )
-          .catch(async () => {
-            await conn
-              .query(
-                `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
-                 VALUES (?, ?, ?, ?, ?, 'ativo')`,
-                [substitutoId, Number(escolaId), m.turno || turnoNorm.toUpperCase(), m.disciplina_id, m.aulas || 1]
-              )
-              .catch(() => {});
-          });
-
         // Transfere a linha de modulação para o substituto e registra em modulacao_historico
         await conn.query(`DELETE FROM modulacao WHERE id = ? AND escola_id = ?`, [m.id, Number(escolaId)]);
-        const [insMod] = await conn.query(
-          `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
-          [Number(escolaId), substitutoId, m.turma_id, m.disciplina_id, m.aulas || 1, m.semestre || 0]
-        );
+
+        let novoModId = null;
+        if (!isTurmaSemestral(m.regime)) {
+          const [existAnual] = await conn.query(
+            `SELECT id FROM modulacao
+              WHERE escola_id = ? AND professor_id = ? AND turma_id = ? AND disciplina_id = ?
+              ORDER BY id ASC`,
+            [Number(escolaId), substitutoId, m.turma_id, m.disciplina_id]
+          );
+          if (existAnual.length >= 1) {
+            novoModId = existAnual[0].id;
+            await conn.query(
+              `UPDATE modulacao SET aulas = ? WHERE id = ? AND escola_id = ?`,
+              [aulasEfetivas, novoModId, Number(escolaId)]
+            );
+            if (existAnual.length > 1) {
+              const extraIds = existAnual.slice(1).map((r) => Number(r.id));
+              const ph = extraIds.map(() => "?").join(",");
+              await conn.query(
+                `DELETE FROM modulacao WHERE escola_id = ? AND id IN (${ph})`,
+                [Number(escolaId), ...extraIds]
+              );
+            }
+          } else {
+            const [insMod] = await conn.query(
+              `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
+              [Number(escolaId), substitutoId, m.turma_id, m.disciplina_id, aulasEfetivas, semMod]
+            );
+            novoModId = insMod?.insertId || null;
+          }
+        } else {
+          const [insMod] = await conn.query(
+            `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
+            [Number(escolaId), substitutoId, m.turma_id, m.disciplina_id, aulasEfetivas, semMod]
+          );
+          novoModId = insMod?.insertId || null;
+        }
 
         await conn
           .query(
@@ -1643,37 +1705,23 @@ export async function executarSubstituicaoProfessor(
              VALUES (?, ?, ?, ?, ?, ?, ?, 'SUBSTITUICAO_SAIDA', ?),
                     (?, ?, ?, ?, ?, ?, ?, 'SUBSTITUICAO_ENTRADA', ?)`,
             [
-              Number(escolaId), m.id, titularId, m.turma_id, m.disciplina_id, m.semestre || 0, m.aulas || 1, usuario?.id || null,
-              Number(escolaId), insMod?.insertId || null, substitutoId, m.turma_id, m.disciplina_id, m.semestre || 0, m.aulas || 1, usuario?.id || null,
+              Number(escolaId), m.id, titularId, m.turma_id, m.disciplina_id, semMod, aulasEfetivas, usuario?.id || null,
+              Number(escolaId), novoModId, substitutoId, m.turma_id, m.disciplina_id, semMod, aulasEfetivas, usuario?.id || null,
             ]
           )
           .catch(() => {});
       }
 
       // Se não restringiu turmas específicas, transfere também agrupamento_modulacao (IFAs/Eletivas do turno)
-      if (!filtroTurmasSet) {
-        const [agrRows] = await conn
-          .query(
-            `SELECT am.id, am.agrupamento_id, am.professor_id, am.disciplina_id, am.aulas
-               FROM agrupamento_modulacao am
-               JOIN agrupamentos a ON a.id = am.agrupamento_id
-              WHERE am.escola_id = ? AND am.professor_id = ?
-                AND a.ano_letivo = ? AND a.status <> 'ENCERRADO'
-                AND (LOWER(a.turno) = ? OR LOWER(a.turno) = 'integral') FOR UPDATE`,
-            [Number(escolaId), titularId, simulacao.ano_letivo, turnoNorm]
-          )
-          .catch(() => [[]]);
-
-        for (const am of agrRows || []) {
-          snapshotAgrupamentoMod.push({ ...am });
-          await conn
-            .query(`UPDATE agrupamento_modulacao SET professor_id = ? WHERE id = ? AND escola_id = ?`, [
-              substitutoId,
-              am.id,
-              Number(escolaId),
-            ])
-            .catch(() => {});
-        }
+      for (const am of agrRows) {
+        snapshotAgrupamentoMod.push({ ...am });
+        await conn
+          .query(`UPDATE agrupamento_modulacao SET professor_id = ? WHERE id = ? AND escola_id = ?`, [
+            substitutoId,
+            am.id,
+            Number(escolaId),
+          ])
+          .catch(() => {});
       }
     }
 

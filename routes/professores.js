@@ -22,6 +22,13 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { autenticarToken } from "../middleware/autenticarToken.js";
 import { verificarEscola } from "../middleware/verificarEscola.js";
 import { resolverDisciplina, resolverIdsEquivalentes, reconciliarNotasComModulacao } from "../utils/disciplinasHelper.js";
+import {
+  upsertVinculoConsolidado,
+  sincronizarVinculosSubstituicao,
+  reconciliarVinculosFragmentadosSubstituicao,
+  calcularCargaEfetivaModulacao,
+  isTurmaSemestral,
+} from "../utils/professorVinculosSubstituicaoHelper.js";
 import { ensureEtapa4Schema } from "../services/gradeEtapa4Service.js";
 import { decrypt } from "../modules/agente/agente.crypt.js";
 import { EducaDFBrowser } from "../modules/agente/educadf/educadf.browser.js";
@@ -56,6 +63,7 @@ const router = express.Router();
   } catch (err) {
     try { await pool.query("ALTER TABLE modulacao ADD COLUMN semestre TINYINT DEFAULT 0"); } catch (e) {}
   }
+  await reconciliarVinculosFragmentadosSubstituicao(pool);
 })();
 
 // ────────────────────────────────────────────────
@@ -390,7 +398,7 @@ router.get("/", verificarEscola, async (req, res) => {
            FROM professor_vinculos pv
            LEFT JOIN disciplinas d ON d.id = pv.disciplina_id
           WHERE pv.professor_id IN (${ph}) AND pv.escola_id = ?
-          ORDER BY pv.turno, d.nome`,
+          ORDER BY pv.turno, pv.semestre, d.nome, pv.id`,
         [...profIds, escola_id]
       ).catch(() => [[]]); // tabela ainda pode não existir durante transição
       for (const v of vinRows) {
@@ -516,10 +524,18 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       return res.status(400).json({ ok: false, message: "O professor substituto precisa estar com status 'ativo'." });
     }
 
-    // 2. Buscar Alocações Atuais do Professor de Origem (preservando semestre)
+    // 2. Buscar Alocações Atuais do Professor de Origem (preservando semestre e regime da turma)
     const [modulacoesOrigem] = await connection.query(
       `SELECT m.id, m.escola_id, m.professor_id, m.turma_id, m.disciplina_id, m.aulas, COALESCE(m.semestre, 0) AS semestre,
-              t.turno, t.ano, t.nome AS turma_nome, d.nome AS disciplina_nome
+              t.turno, t.ano, t.regime, t.nome AS turma_nome,
+              d.nome AS disciplina_nome, d.carga AS carga_disc,
+              (
+                SELECT MAX(tc.carga)
+                  FROM turma_cargas tc
+                 WHERE tc.escola_id = m.escola_id
+                   AND tc.turma_id = m.turma_id
+                   AND tc.disciplina_id = m.disciplina_id
+              ) AS carga_turma
          FROM modulacao m
          JOIN turmas t ON t.id = m.turma_id
          LEFT JOIN disciplinas d ON d.id = m.disciplina_id
@@ -527,7 +543,20 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       [Number(professor_origem_id), Number(escolaId)]
     );
 
-    if (!modulacoesOrigem.length) {
+    const [agrupamentosOrigem] = await connection
+      .query(
+        `SELECT am.id, am.agrupamento_id, am.professor_id, am.disciplina_id, am.aulas,
+                a.turno, a.ano_letivo, a.nome AS agrupamento_nome, COALESCE(a.semestre, 0) AS semestre,
+                d.nome AS disciplina_nome
+           FROM agrupamento_modulacao am
+           JOIN agrupamentos a ON a.id = am.agrupamento_id
+           LEFT JOIN disciplinas d ON d.id = am.disciplina_id
+          WHERE am.escola_id = ? AND am.professor_id = ? AND a.status <> 'ENCERRADO'`,
+        [Number(escolaId), Number(professor_origem_id)]
+      )
+      .catch(() => [[]]);
+
+    if (!modulacoesOrigem.length && !agrupamentosOrigem.length) {
       await connection.rollback();
       connection.release();
       return res.status(200).json({
@@ -538,46 +567,88 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
       });
     }
 
-    // 3. Garantir Vínculos do Substituto (professor_vinculos)
-    for (const mod of modulacoesOrigem) {
-      const turno = mod.turno || "MATUTINO";
-      const discId = mod.disciplina_id;
-      const aulas = mod.aulas || 1;
+    // 3. Garantir Vínculos Consolidados do Substituto (professor_vinculos)
+    //    - Consolida por (turno, disciplina, semestre_efetivo) somando as aulas (ex.: 1x 30h em vez de 10x 3h)
+    //    - Respeita anualidade (turmas.regime <> 'semestral' -> semestre = 0 ANUAL)
+    await sincronizarVinculosSubstituicao(connection, {
+      escolaId: Number(escolaId),
+      professorOrigemId: Number(professor_origem_id),
+      professorDestinoId: Number(professor_destino_id),
+      modulacoesTransferidas: modulacoesOrigem,
+      agrupamentosTransferidos: agrupamentosOrigem,
+    });
 
-      if (discId) {
-        await connection.query(
-          `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'ativo')`,
-          [Number(professor_destino_id), Number(escolaId), turno, discId, aulas, mod.semestre || 0]
-        ).catch(async () => {
-          await connection.query(
-            `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, status)
-             VALUES (?, ?, ?, ?, ?, 'ativo')`,
-            [Number(professor_destino_id), Number(escolaId), turno, discId, aulas]
-          );
-        });
-      }
-    }
-
-    // 4. Transferir / Clonar Modulação (modulacao) preservando semestre
+    // 4. Transferir / Clonar Modulação (modulacao) preservando semestre e evitando duplicidade em turmas anuais
     const detalhes = [];
     for (const mod of modulacoesOrigem) {
-      await connection.query(
-        `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
-        [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, mod.aulas || 1, mod.semestre || 0]
-      );
+      const aulasEfetivas = calcularCargaEfetivaModulacao(mod);
+      const semMod = mod.semestre || 0;
+
+      if (!isTurmaSemestral(mod.regime)) {
+        const [existAnual] = await connection.query(
+          `SELECT id FROM modulacao
+            WHERE escola_id = ? AND professor_id = ? AND turma_id = ? AND disciplina_id = ?
+            ORDER BY id ASC`,
+          [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id]
+        );
+        if (existAnual.length >= 1) {
+          await connection.query(
+            `UPDATE modulacao SET aulas = ? WHERE id = ? AND escola_id = ?`,
+            [aulasEfetivas, existAnual[0].id, Number(escolaId)]
+          );
+          if (existAnual.length > 1) {
+            const extraIds = existAnual.slice(1).map((r) => Number(r.id));
+            const ph = extraIds.map(() => "?").join(",");
+            await connection.query(
+              `DELETE FROM modulacao WHERE escola_id = ? AND id IN (${ph})`,
+              [Number(escolaId), ...extraIds]
+            );
+          }
+        } else {
+          await connection.query(
+            `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
+            [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, aulasEfetivas, semMod]
+          );
+        }
+      } else {
+        await connection.query(
+          `INSERT INTO modulacao (escola_id, professor_id, turma_id, disciplina_id, aulas, semestre)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE aulas = VALUES(aulas)`,
+          [Number(escolaId), Number(professor_destino_id), mod.turma_id, mod.disciplina_id, aulasEfetivas, semMod]
+        );
+      }
+
       const label = mod.disciplina_nome ? `${mod.turma_nome} - ${mod.disciplina_nome}` : mod.turma_nome;
       detalhes.push(label);
     }
 
     // Se remover_alocacoes_origem === true: Remover alocações da tabela modulacao para o professor de origem
-    if (remover_alocacoes_origem) {
+    if (remover_alocacoes_origem && modulacoesOrigem.length > 0) {
       await connection.query(
         `DELETE FROM modulacao WHERE professor_id = ? AND escola_id = ?`,
         [Number(professor_origem_id), Number(escolaId)]
       );
+    }
+
+    // Transferir também eventuais agrupamentos (Eletivas / Projetos / IFAs)
+    const snapshotAgrupamentoMod = [];
+    for (const agr of agrupamentosOrigem) {
+      snapshotAgrupamentoMod.push({ ...agr });
+      if (remover_alocacoes_origem) {
+        await connection
+          .query(
+            `UPDATE agrupamento_modulacao SET professor_id = ? WHERE id = ? AND escola_id = ?`,
+            [Number(professor_destino_id), agr.id, Number(escolaId)]
+          )
+          .catch(() => {});
+      }
+      const labelAgr = agr.disciplina_nome
+        ? `${agr.agrupamento_nome} - ${agr.disciplina_nome}`
+        : agr.agrupamento_nome;
+      if (labelAgr) detalhes.push(labelAgr);
     }
 
     // 4.5. ETAPA 4: Sincroniza também grade_slot (rascunho e publicado) onde não houver colisão
@@ -625,8 +696,12 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
 
     // 6. Grava auditoria unificada em grade_substituicoes_historico (ETAPA 4)
     try {
-      const turnoRef = String(modulacoesOrigem[0]?.turno || "matutino").toLowerCase();
-      const anoRef = Number(modulacoesOrigem[0]?.ano) || new Date().getFullYear();
+      const turnoRef = String(
+        modulacoesOrigem[0]?.turno || agrupamentosOrigem[0]?.turno || "matutino"
+      ).toLowerCase();
+      const anoRef =
+        Number(modulacoesOrigem[0]?.ano || agrupamentosOrigem[0]?.ano_letivo) ||
+        new Date().getFullYear();
       await connection.query(
         `INSERT INTO grade_substituicoes_historico
            (escola_id, turno, ano_letivo, semestre,
@@ -650,16 +725,27 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
           inativar_origem ? 1 : 0,
           inativar_origem ? "DEFINITIVA" : "ATIVA",
           JSON.stringify({
-            turmas_nomes: [...new Set(modulacoesOrigem.map((m) => m.turma_nome).filter(Boolean))],
-            disciplinas_nomes: [...new Set(modulacoesOrigem.map((m) => m.disciplina_nome).filter(Boolean))],
+            turmas_nomes: [
+              ...new Set([
+                ...modulacoesOrigem.map((m) => m.turma_nome).filter(Boolean),
+                ...agrupamentosOrigem.map((a) => a.agrupamento_nome).filter(Boolean),
+              ]),
+            ],
+            disciplinas_nomes: [
+              ...new Set([
+                ...modulacoesOrigem.map((m) => m.disciplina_nome).filter(Boolean),
+                ...agrupamentosOrigem.map((a) => a.disciplina_nome).filter(Boolean),
+              ]),
+            ],
             slots_transferidos: slotsTransferidos,
             modulacoes_transferidas: modulacoesOrigem.length,
+            agrupamentos_transferidos: agrupamentosOrigem.length,
           }),
           JSON.stringify({
             status_anterior_titular: professorOrigem.status || "ativo",
             slots: snapshotSlots,
             modulacao: modulacoesOrigem,
-            agrupamento_modulacao: [],
+            agrupamento_modulacao: snapshotAgrupamentoMod,
           }),
           req.user?.id || req.user?.usuario_id || null,
           req.user?.nome || req.user?.email || null,
@@ -673,14 +759,15 @@ router.post("/substituir", autenticarToken, verificarEscola, async (req, res) =>
     connection.release();
 
     // 7. Auditoria / Log
+    const totalTransferencias = modulacoesOrigem.length + agrupamentosOrigem.length;
     console.log(
-      `[SUBSTITUICAO] Professor ${professorOrigem.nome} (ID: ${professorOrigem.id}) substituído por ${professorDestino.nome} (ID: ${professorDestino.id}). ${modulacoesOrigem.length} turmas transferidas, ${slotsTransferidos} slots de horário atualizados.${motivo ? ` Motivo: ${motivo}` : ""}`
+      `[SUBSTITUICAO] Professor ${professorOrigem.nome} (ID: ${professorOrigem.id}) substituído por ${professorDestino.nome} (ID: ${professorDestino.id}). ${totalTransferencias} turmas/agrupamentos transferidos, ${slotsTransferidos} slots de horário atualizados.${motivo ? ` Motivo: ${motivo}` : ""}`
     );
 
     return res.json({
       ok: true,
       message: "Substituição realizada com sucesso! Diários preservados e quadro de horários atualizado.",
-      turmas_transferidas: modulacoesOrigem.length,
+      turmas_transferidas: totalTransferencias,
       slots_horario_atualizados: slotsTransferidos,
       detalhes: [...new Set(detalhes)]
     });
@@ -3912,13 +3999,26 @@ router.post("/", verificarEscola, async (req, res) => {
 
     const novoProfId = insertResult.insertId;
 
-    // Se vieram dados de vínculo no body, cria o primeiro vínculo automaticamente
+    // Se vieram dados de vínculo no body, cria o primeiro vínculo automaticamente (sem duplicar quando etapa_id é NULL)
     if (disciplina_id && turno) {
-      await pool.query(
-        `INSERT IGNORE INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, aulas, semestre, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'ativo')`,
-        [novoProfId, escola_id, turno, disciplina_id, aulas || 0, semVal]
-      ).catch(() => null); // Falha silenciosa: tabela pode não existir ainda
+      const connVinc = await pool.getConnection();
+      try {
+        await connVinc.beginTransaction();
+        await upsertVinculoConsolidado(connVinc, {
+          escolaId: escola_id,
+          professorId: novoProfId,
+          turno,
+          disciplinaId: disciplina_id,
+          etapaId: null,
+          aulas: Number(aulas) || 0,
+          semestre: semVal ?? 0,
+        });
+        await connVinc.commit();
+      } catch {
+        try { await connVinc.rollback(); } catch {}
+      } finally {
+        connVinc.release();
+      }
     }
 
     // Cria/atualiza registro na tabela usuarios para habilitar login
@@ -3966,13 +4066,26 @@ router.post("/:id/vinculos", verificarEscola, async (req, res) => {
     const semVal = Number(semestre) || 0;
     const etapaVal = etapa_id ? Number(etapa_id) : null;
 
-    // Insere o vínculo (a chave uk_vinculo inclui semestre, permitindo semestres distintos)
-    await pool.query(
-      `INSERT INTO professor_vinculos (professor_id, escola_id, turno, disciplina_id, etapa_id, aulas, semestre, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'ativo')
-       ON DUPLICATE KEY UPDATE aulas = VALUES(aulas), status = 'ativo'`,
-      [profId, escola_id, turno, disciplina_id, etapaVal, aulas, semVal]
-    );
+    // Insere ou atualiza o vínculo sem gerar linhas duplicadas quando etapa_id é NULL
+    const connVinc = await pool.getConnection();
+    try {
+      await connVinc.beginTransaction();
+      await upsertVinculoConsolidado(connVinc, {
+        escolaId: escola_id,
+        professorId: profId,
+        turno,
+        disciplinaId: disciplina_id,
+        etapaId: etapaVal,
+        aulas: Number(aulas) || 0,
+        semestre: semVal,
+      });
+      await connVinc.commit();
+    } catch (vErr) {
+      try { await connVinc.rollback(); } catch {}
+      throw vErr;
+    } finally {
+      connVinc.release();
+    }
 
     // Atualiza legado (compatibilidade com módulos que ainda leem professores.disciplina_id)
     await pool.query(
