@@ -335,11 +335,23 @@ function hashConviteToken(token) {
   return createHash("sha256").update(raw, "utf8").digest("hex");
 }
 
-async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
-  const [[escolaRow]] = await pool.query(
-    `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
-    [Number(escolaId)]
-  );
+async function emitirJwtEscolar({ usuarioId, escolaId, perfil, regionalId = null }) {
+  let nomeInstituicao = null;
+  if (Number(escolaId) > 0) {
+    const [[escolaRow]] = await pool.query(
+      `SELECT apelido, nome FROM escolas WHERE id = ? LIMIT 1`,
+      [Number(escolaId)]
+    );
+    nomeInstituicao = escolaRow?.apelido || escolaRow?.nome || null;
+  } else if (Number(regionalId) > 0) {
+    try {
+      const [[regRow]] = await pool.query(
+        `SELECT apelido, nome FROM regionais WHERE id = ? LIMIT 1`,
+        [Number(regionalId)]
+      );
+      nomeInstituicao = regRow?.apelido || regRow?.nome || null;
+    } catch {}
+  }
 
   const { perfis, permissoes } = await carregarRbac(Number(usuarioId), Number(escolaId));
 
@@ -348,7 +360,8 @@ async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
     usuario_id: Number(usuarioId), // ✅ contrato novo
     usuarioId: Number(usuarioId),  // ✅ compatibilidade com front atual
     escola_id: Number(escolaId),
-    nome_escola: escolaRow?.apelido || null,
+    regional_id: regionalId ? Number(regionalId) : undefined,
+    nome_escola: nomeInstituicao,
     perfil: perfil || "diretor",
     perfis,
     permissoes,
@@ -359,7 +372,8 @@ async function emitirJwtEscolar({ usuarioId, escolaId, perfil }) {
   return {
     token,
     escola_id: Number(escolaId),
-    nome_escola: escolaRow?.apelido || "Escola não definida",
+    regional_id: regionalId ? Number(regionalId) : null,
+    nome_escola: nomeInstituicao || "Instituição não definida",
     perfil: perfil || "diretor",
     perfis,
     permissoes,
@@ -568,7 +582,7 @@ router.post("/login", async (req, res) => {
   const cpf = String(req.body?.cpf || "").trim();
   const senha = String(req.body?.senha || "");
 
-  // ✅ MODO A: LOGIN ESCOLAR (Diretor) — cpf + senha => JWT (scope="escola")
+  // ✅ MODO A: LOGIN DIRETO POR CPF (Diretor Escolar ou Chefe de Regional CRE)
   if (cpf) {
     try {
       const cpfLimpo = cpf.replace(/\D/g, "");
@@ -576,24 +590,36 @@ router.post("/login", async (req, res) => {
         return res.status(400).json({ ok: false, message: "CPF inválido." });
       }
 
+      const contextoReq = String(req.body?.contexto || "").toLowerCase().trim();
+      try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
+
+      const sqlFiltroPerfil = contextoReq === "cre"
+        ? "AND perfil IN ('chefe_regional', 'coordenador_regional')"
+        : "AND perfil IN ('diretor', 'diretor_disciplinar', 'chefe_regional', 'coordenador_regional')";
+
       const [[usuario]] = await pool.query(
         `
-        SELECT id, nome, cpf, escola_id, perfil, ativo, senha_hash
+        SELECT id, nome, cpf, escola_id, regional_id, perfil, ativo, senha_hash
         FROM usuarios
         WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), '/', '') = ?
-          AND perfil = 'diretor'
-          AND escola_id IS NOT NULL
+          ${sqlFiltroPerfil}
+        ORDER BY (ativo = 1) DESC, id DESC
         LIMIT 1
         `,
         [cpfLimpo]
       );
 
       if (!usuario?.id) {
-        return res.status(404).json({ ok: false, message: "Diretor não encontrado." });
+        return res.status(404).json({
+          ok: false,
+          message: contextoReq === "cre"
+            ? "Chefe / Coordenador Regional não encontrado para este CPF."
+            : "Usuário gestor não encontrado para este CPF.",
+        });
       }
 
       if (Number(usuario.ativo) !== 1) {
-        return res.status(403).json({ ok: false, message: "Conta ainda não ativada." });
+        return res.status(403).json({ ok: false, message: "Conta inativa ou aguardando ativação." });
       }
 
       if (!usuario.senha_hash) {
@@ -605,10 +631,12 @@ router.post("/login", async (req, res) => {
         return res.status(401).json({ ok: false, message: "Senha incorreta." });
       }
 
+      const perfilReal = usuario.perfil || "diretor";
       const jwtEscolar = await emitirJwtEscolar({
         usuarioId: usuario.id,
-        escolaId: usuario.escola_id,
-        perfil: "diretor",
+        escolaId: usuario.escola_id || 0,
+        perfil: perfilReal,
+        regionalId: usuario.regional_id || null,
       });
 
       const fotoUrl = await buscarFotoUsuario(usuario.id, usuario.escola_id);
@@ -616,22 +644,22 @@ router.post("/login", async (req, res) => {
       // ✅ Registra acesso para Usage Insights (CEO)
       registrarAcesso(pool, {
         usuario_id: usuario.id,
-        escola_id: usuario.escola_id,
-        perfil: "diretor",
+        escola_id: usuario.escola_id || 0,
+        perfil: perfilReal,
         ip: req.ip || req.headers["x-forwarded-for"],
         user_agent: req.headers["user-agent"],
         action: "login",
       });
 
       // Buscar módulos ativos — arquitetura 3 camadas (CEO → Diretor → Perfil)
-      const modulos_ativos_diretor = await resolveModulosAtivos(pool, usuario.escola_id, 'diretor');
+      const modulos_ativos_diretor = await resolveModulosAtivos(pool, usuario.escola_id, perfilReal);
 
       // Buscar tipo da escola (ex: ['CCMDF']) para regras de visibilidade no frontend
       const escola_tipo_diretor = await resolveEscolaTipo(pool, usuario.escola_id);
 
       return res.json({
         ok: true,
-        nome: usuario.nome || "Diretor",
+        nome: usuario.nome || "Gestor",
         cpf: String(usuario.cpf || "").replace(/\D/g, ""),
         foto_url: fotoUrl,
         modulos_ativos: modulos_ativos_diretor,
@@ -639,7 +667,7 @@ router.post("/login", async (req, res) => {
         ...jwtEscolar,
       });
     } catch (err) {
-      console.error("Erro no login escolar (diretor):", err);
+      console.error("Erro no login CPF (diretor/chefe regional):", err);
       return res.status(500).json({ ok: false, message: "Erro no servidor." });
     }
   }
@@ -883,8 +911,9 @@ router.post("/confirmar", async (req, res) => {
     // ── FIM DEMO BYPASS ──────────────────────────────────────────────────────
 
     // 1) Carrega o usuário base (linha atual)
+    try { await pool.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
     const [[usuarioBase]] = await pool.query(
-      `SELECT u.id, u.nome, u.cpf, u.email, u.celular, u.escola_id, u.perfil
+      `SELECT u.id, u.nome, u.cpf, u.email, u.celular, u.escola_id, u.regional_id, u.perfil
        FROM usuarios u
        WHERE u.id = ?
        LIMIT 1`,
@@ -940,10 +969,22 @@ router.post("/confirmar", async (req, res) => {
     const escolaIdFinal = ctx0?.id ?? usuarioBase.escola_id ?? null;
     const perfilFinal = ctx0?.perfil ?? usuarioBase.perfil ?? "aluno";
 
-    const [[escolaRow]] = await pool.query(
-      `SELECT apelido FROM escolas WHERE id = ? LIMIT 1`,
-      [escolaIdFinal]
-    );
+    let nomeInstituicaoOtp = null;
+    if (Number(escolaIdFinal) > 0) {
+      const [[escolaRow]] = await pool.query(
+        `SELECT apelido, nome FROM escolas WHERE id = ? LIMIT 1`,
+        [escolaIdFinal]
+      );
+      nomeInstituicaoOtp = escolaRow?.apelido || escolaRow?.nome || null;
+    } else if (Number(usuarioBase?.regional_id) > 0) {
+      try {
+        const [[regRow]] = await pool.query(
+          `SELECT apelido, nome FROM regionais WHERE id = ? LIMIT 1`,
+          [Number(usuarioBase.regional_id)]
+        );
+        nomeInstituicaoOtp = regRow?.apelido || regRow?.nome || null;
+      } catch {}
+    }
 
     const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
 
@@ -953,7 +994,8 @@ router.post("/confirmar", async (req, res) => {
           usuario_id: usuarioIdFinal,
           usuarioId: usuarioIdFinal,
           escola_id: escolaIdFinal,
-          nome_escola: escolaRow?.apelido || null,
+          regional_id: usuarioBase?.regional_id || undefined,
+          nome_escola: nomeInstituicaoOtp,
           perfil: perfilFinal, // compatibilidade
           perfis,
           permissoes,
@@ -1005,7 +1047,8 @@ router.post("/confirmar", async (req, res) => {
         cpf: cpfLoginLimpo,
         foto_url: fotoUrlLogin,
         escola_id: escolaIdFinal,
-        nome_escola: escolaRow?.apelido || "Escola não definida",
+        regional_id: usuarioBase?.regional_id || null,
+        nome_escola: nomeInstituicaoOtp || "Instituição não definida",
         perfil: perfilFinal, // compatibilidade
         perfis,
         permissoes,
