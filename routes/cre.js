@@ -1,10 +1,13 @@
 // routes/cre.js
 // ============================================================================
 // MÓDULO CRE — Coordenações Regionais de Ensino (SEEDF)
-// Passo 1 Técnico: Ambiente isolado (scope: "cre" + verificarRegional)
-// Escopo do Piloto:
-//   1. Gabinete Regional (/api/cre/gabinete) — Visão consolidada da Rede CRE
-//   2. UNIAG (/api/cre/uniag/*) — Acompanhamento Financeiro PDAF & Pré-Análise SEI
+// Ambiente isolado (scope: "cre" + verificarRegional)
+// Escopo Operacional (Passo 1 + Passo 2B):
+//   1. Gabinete Regional (/api/cre/gabinete) — Visão executiva consolidada da Rede CRE
+//   2. UNIAG (/api/cre/uniag/*) — Fluxo Trimestral de Pré-Auditoria SEI do PDAF:
+//      - Consolidação trimestral por escola (Portarias, Emendas, Rendimentos, Despesas)
+//      - Decisão institucional UNIAG (EM_ANALISE, EM_DILIGENCIA com parecer, VALIDADO_SEI)
+//      - Exportação idêntica da Planilha Oficial .xlsx de 5 Abas (Padrão SEEDF)
 // ============================================================================
 
 import express from "express";
@@ -14,116 +17,218 @@ import { fileURLToPath } from "url";
 import multer from "multer";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import pool from "../db.js";
-import { ensureFinanceiroTables } from "./financeiro.js";
-import { CARGOS_CRE_LABELS, exigirCargoRegional } from "../middleware/verificarRegional.js";
+import {
+  ensureFinanceiroTables,
+  parseExercicio,
+  toCents,
+  centsToDecimal,
+  calcularExercicioCompletoPdaf,
+  carregarDadosCompletosPdafEscola,
+  gerarBufferPlanilhaPdaf,
+} from "./financeiro.js";
+import {
+  CARGOS_CRE_LABELS,
+  exigirCargoRegional,
+} from "../middleware/verificarRegional.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _dirname(__filename);
 
 const router = express.Router();
 
-const FONTES_VALIDAS = new Set(["ORDINARIO", "EMENDA", "RENDIMENTO"]);
+function getGestorCreLabel(req) {
+  const nome = String(req.user?.nome || "").trim();
+  const cargo = String(req.cargo_label || req.cargo_regional || "UNIAG/CRE").trim();
+  if (nome && cargo) return `${nome} (${cargo})`;
+  return nome || cargo;
+}
 
-// ── Helpers Monetários (precisão em centavos, espelhando routes/financeiro.js) ──
-function parseExercicio(val) {
+// ── Carregador em lote dos dados PDAF de todas as escolas de uma Regional ──
+async function carregarMapaPdafEscolasRegional(db, escolasRows = [], exercicioRaw) {
+  const exercicio = parseExercicio(exercicioRaw);
+  const escolaIds = (escolasRows || [])
+    .map((e) => Number(e.id))
+    .filter((id) => id > 0);
+
   const anoAtual = new Date().getFullYear();
-  const n = Number(val);
-  if (Number.isInteger(n) && n >= 2020 && n <= 2100) return n;
-  return anoAtual;
-}
+  const anosSet = new Set([anoAtual + 1, anoAtual, anoAtual - 1, exercicio]);
 
-function toCents(val) {
-  if (val === null || val === undefined || val === "") return 0;
-  if (typeof val === "number") {
-    return Number.isFinite(val) ? Math.round(val * 100) : 0;
+  const uexMap = new Map();
+  const portariasMap = new Map();
+  const rendMapPorEscola = new Map();
+  const despesasMap = new Map();
+  const prestacoesMapPorEscola = new Map();
+
+  if (escolaIds.length > 0) {
+    const placeholders = escolaIds.map(() => "?").join(", ");
+    const [
+      [uexRows],
+      [portRows],
+      [rendRows],
+      [despRows],
+      [prestRows],
+      [anosPort],
+      [anosDesp],
+    ] = await Promise.all([
+      db.query(
+        `SELECT escola_id, nome_uex, cnpj, endereco
+           FROM financeiro_uex_config
+          WHERE escola_id IN (${placeholders})`,
+        escolaIds
+      ),
+      db.query(
+        `SELECT
+           id, escola_id, exercicio, tipo, numero_portaria, titulo_portaria,
+           DATE_FORMAT(data_portaria, '%Y-%m-%d') AS data_portaria,
+           eh_reprogramado, trimestre_entrada,
+           credito_custeio, credito_capital,
+           deputado, processo_sei_liberacao,
+           DATE_FORMAT(data_pagamento_credito, '%Y-%m-%d') AS data_pagamento_credito,
+           destinacao_oficio, atualizado_em
+         FROM financeiro_pdaf_portarias
+         WHERE exercicio = ? AND escola_id IN (${placeholders})
+         ORDER BY eh_reprogramado DESC, data_portaria ASC, id ASC`,
+        [exercicio, ...escolaIds]
+      ),
+      db.query(
+        `SELECT escola_id, mes, valor, atualizado_em
+           FROM financeiro_pdaf_rendimentos
+          WHERE exercicio = ? AND escola_id IN (${placeholders})`,
+        [exercicio, ...escolaIds]
+      ),
+      db.query(
+        `SELECT
+           d.id, d.escola_id, d.exercicio, d.trimestre, d.portaria_id,
+           p.numero_portaria, p.titulo_portaria,
+           d.compra,
+           DATE_FORMAT(d.data_pagamento, '%Y-%m-%d') AS data_pagamento,
+           d.documento_fiscal,
+           d.ordem_servico_orcamentos, d.fornecedor, d.cnpj_cpf,
+           d.descricao_geral, d.fonte_recurso, d.processo_incorporacao,
+           d.valor_custeio, d.valor_capital, d.grupo_rateio_uid,
+           d.atualizado_em
+         FROM financeiro_pdaf_despesas d
+         LEFT JOIN financeiro_pdaf_portarias p ON p.id = d.portaria_id
+         WHERE d.exercicio = ? AND d.escola_id IN (${placeholders})
+         ORDER BY d.data_pagamento ASC, d.id ASC`,
+        [exercicio, ...escolaIds]
+      ),
+      db.query(
+        `SELECT
+           escola_id, trimestre, status, processo_sei_prestacao,
+           observacoes_escola, parecer_uniag,
+           enviado_por, enviado_em, analisado_por, analisado_em, atualizado_em
+         FROM financeiro_pdaf_prestacoes
+         WHERE exercicio = ? AND escola_id IN (${placeholders})`,
+        [exercicio, ...escolaIds]
+      ),
+      db.query(
+        `SELECT DISTINCT exercicio FROM financeiro_pdaf_portarias WHERE escola_id IN (${placeholders})`,
+        escolaIds
+      ),
+      db.query(
+        `SELECT DISTINCT exercicio FROM financeiro_pdaf_despesas WHERE escola_id IN (${placeholders})`,
+        escolaIds
+      ),
+    ]);
+
+    for (const r of anosPort || []) if (r?.exercicio) anosSet.add(Number(r.exercicio));
+    for (const r of anosDesp || []) if (r?.exercicio) anosSet.add(Number(r.exercicio));
+
+    for (const u of uexRows || []) {
+      uexMap.set(Number(u.escola_id), u);
+    }
+
+    for (const p of portRows || []) {
+      const eid = Number(p.escola_id);
+      if (!portariasMap.has(eid)) portariasMap.set(eid, []);
+      portariasMap.get(eid).push({
+        ...p,
+        eh_reprogramado: Number(p.eh_reprogramado) === 1,
+        trimestre_entrada: Number(p.trimestre_entrada || 1),
+        credito_custeio: Number(p.credito_custeio || 0),
+        credito_capital: Number(p.credito_capital || 0),
+      });
+    }
+
+    for (const r of rendRows || []) {
+      const eid = Number(r.escola_id);
+      if (!rendMapPorEscola.has(eid)) {
+        const zero = {};
+        for (let m = 0; m <= 12; m++) zero[m] = 0;
+        rendMapPorEscola.set(eid, zero);
+      }
+      const m = Number(r.mes);
+      if (m >= 0 && m <= 12) {
+        rendMapPorEscola.get(eid)[m] = Number(r.valor || 0);
+      }
+    }
+
+    for (const d of despRows || []) {
+      const eid = Number(d.escola_id);
+      if (!despesasMap.has(eid)) despesasMap.set(eid, []);
+      despesasMap.get(eid).push({
+        ...d,
+        trimestre: Number(d.trimestre || 1),
+        portaria_id: d.portaria_id ? Number(d.portaria_id) : null,
+        fonte_codigo:
+          d.fonte_recurso === "RENDIMENTO"
+            ? "Rendimentos"
+            : d.numero_portaria || d.fonte_recurso,
+        valor_custeio: Number(d.valor_custeio || 0),
+        valor_capital: Number(d.valor_capital || 0),
+      });
+    }
+
+    for (const pr of prestRows || []) {
+      const eid = Number(pr.escola_id);
+      if (!prestacoesMapPorEscola.has(eid)) prestacoesMapPorEscola.set(eid, {});
+      prestacoesMapPorEscola.get(eid)[Number(pr.trimestre)] = pr;
+    }
   }
-  let s = String(val).trim().replace(/[R$\s]/g, "");
-  if (!s) return 0;
-  if (s.includes(",") && s.includes(".")) {
-    s = s.replace(/\./g, "").replace(",", ".");
-  } else if (s.includes(",")) {
-    s = s.replace(",", ".");
+
+  const calculosPorEscola = new Map();
+
+  for (const esc of escolasRows || []) {
+    const eid = Number(esc.id);
+    const uexRow = uexMap.get(eid) || null;
+    const uex = {
+      configurada: Boolean(uexRow),
+      nome_uex:
+        uexRow?.nome_uex ||
+        `CAIXA ESCOLAR — ${esc.apelido || esc.nome || "UNIDADE ESCOLAR"}`,
+      cnpj: uexRow?.cnpj || esc.cnpj || "",
+      endereco: uexRow?.endereco || "",
+    };
+
+    const portarias = portariasMap.get(eid) || [];
+    const rendimentosMap = rendMapPorEscola.get(eid) || {};
+    const despesas = despesasMap.get(eid) || [];
+    const prestacoesMap = prestacoesMapPorEscola.get(eid) || {};
+
+    const calc = calcularExercicioCompletoPdaf({
+      exercicio,
+      uex,
+      portarias,
+      rendimentosMap,
+      despesas,
+      prestacoesMap,
+    });
+
+    calculosPorEscola.set(eid, {
+      uex,
+      portarias,
+      rendimentosMap,
+      despesas,
+      prestacoesMap,
+      calculado: calc,
+    });
   }
-  const num = Number(s);
-  return Number.isFinite(num) ? Math.round(num * 100) : 0;
-}
 
-function centsToDecimal(cents) {
-  return Number((cents / 100).toFixed(2));
-}
-
-function criarBucketVazio() {
   return {
-    entradas_custeio_cents: 0,
-    entradas_capital_cents: 0,
-    saidas_custeio_cents: 0,
-    saidas_capital_cents: 0,
-  };
-}
-
-function formatarBucket(b) {
-  const entCust = b.entradas_custeio_cents;
-  const entCap = b.entradas_capital_cents;
-  const saiCust = b.saidas_custeio_cents;
-  const saiCap = b.saidas_capital_cents;
-  const saldoCust = entCust - saiCust;
-  const saldoCap = entCap - saiCap;
-  return {
-    entradas_custeio: centsToDecimal(entCust),
-    entradas_capital: centsToDecimal(entCap),
-    entradas_total: centsToDecimal(entCust + entCap),
-    saidas_custeio: centsToDecimal(saiCust),
-    saidas_capital: centsToDecimal(saiCap),
-    saidas_total: centsToDecimal(saiCust + saiCap),
-    saldo_custeio: centsToDecimal(saldoCust),
-    saldo_capital: centsToDecimal(saldoCap),
-    saldo_total: centsToDecimal(saldoCust + saldoCap),
-  };
-}
-
-function calcularResumoPdaf(entradas = [], despesas = []) {
-  const buckets = {
-    ORDINARIO: criarBucketVazio(),
-    EMENDA: criarBucketVazio(),
-    RENDIMENTO: criarBucketVazio(),
-  };
-
-  for (const e of entradas) {
-    const f = FONTES_VALIDAS.has(e.fonte_recurso) ? e.fonte_recurso : "ORDINARIO";
-    buckets[f].entradas_custeio_cents += toCents(e.valor_custeio);
-    buckets[f].entradas_capital_cents += toCents(e.valor_capital);
-  }
-
-  for (const d of despesas) {
-    const f = FONTES_VALIDAS.has(d.fonte_recurso) ? d.fonte_recurso : "ORDINARIO";
-    buckets[f].saidas_custeio_cents += toCents(d.valor_custeio);
-    buckets[f].saidas_capital_cents += toCents(d.valor_capital);
-  }
-
-  const totalBucket = {
-    entradas_custeio_cents:
-      buckets.ORDINARIO.entradas_custeio_cents +
-      buckets.EMENDA.entradas_custeio_cents +
-      buckets.RENDIMENTO.entradas_custeio_cents,
-    entradas_capital_cents:
-      buckets.ORDINARIO.entradas_capital_cents +
-      buckets.EMENDA.entradas_capital_cents +
-      buckets.RENDIMENTO.entradas_capital_cents,
-    saidas_custeio_cents:
-      buckets.ORDINARIO.saidas_custeio_cents +
-      buckets.EMENDA.saidas_custeio_cents +
-      buckets.RENDIMENTO.saidas_custeio_cents,
-    saidas_capital_cents:
-      buckets.ORDINARIO.saidas_capital_cents +
-      buckets.EMENDA.saidas_capital_cents +
-      buckets.RENDIMENTO.saidas_capital_cents,
-  };
-
-  return {
-    ordinario: formatarBucket(buckets.ORDINARIO),
-    emenda: formatarBucket(buckets.EMENDA),
-    rendimento: formatarBucket(buckets.RENDIMENTO),
-    total: formatarBucket(totalBucket),
+    exercicio,
+    exerciciosDisponiveis: Array.from(anosSet).sort((a, b) => b - a),
+    calculosPorEscola,
   };
 }
 
@@ -222,7 +327,6 @@ router.get("/gabinete", async (req, res) => {
       } catch {}
     }
 
-    // Quadro de chefes cadastrados nesta Regional
     const [chefesRows] = await db.query(
       `SELECT
          id,
@@ -249,7 +353,6 @@ router.get("/gabinete", async (req, res) => {
       cargo_label: CARGOS_CRE_LABELS[c.cargo_regional] || "Gestor(a) Regional",
     }));
 
-    // Escolas vinculadas à Regional + indicadores operacionais e financeiros do exercício
     const [escolasRows] = await db.query(
       `SELECT
          e.id,
@@ -278,64 +381,49 @@ router.get("/gabinete", async (req, res) => {
       [exercicio, regionalId]
     );
 
-    const escolaIds = (escolasRows || []).map((e) => Number(e.id)).filter((id) => id > 0);
-
-    let entradasPorEscola = new Map();
-    let despesasPorEscola = new Map();
-
-    if (escolaIds.length > 0) {
-      const placeholders = escolaIds.map(() => "?").join(", ");
-      const [[entRows], [despRows]] = await Promise.all([
-        db.query(
-          `SELECT escola_id, fonte_recurso, valor_custeio, valor_capital
-           FROM financeiro_pdaf_entradas
-           WHERE exercicio = ? AND escola_id IN (${placeholders})`,
-          [exercicio, ...escolaIds]
-        ),
-        db.query(
-          `SELECT escola_id, fonte_recurso, valor_custeio, valor_capital
-           FROM financeiro_pdaf_despesas
-           WHERE exercicio = ? AND escola_id IN (${placeholders})`,
-          [exercicio, ...escolaIds]
-        ),
-      ]);
-
-      for (const r of entRows || []) {
-        const eid = Number(r.escola_id);
-        if (!entradasPorEscola.has(eid)) entradasPorEscola.set(eid, []);
-        entradasPorEscola.get(eid).push(r);
-      }
-      for (const r of despRows || []) {
-        const eid = Number(r.escola_id);
-        if (!despesasPorEscola.has(eid)) despesasPorEscola.set(eid, []);
-        despesasPorEscola.get(eid).push(r);
-      }
-    }
+    const { exerciciosDisponiveis, calculosPorEscola } =
+      await carregarMapaPdafEscolasRegional(db, escolasRows, exercicio);
 
     let totalAlunosRede = 0;
     let totalTurmasRede = 0;
     let pdafRecebidoCents = 0;
     let pdafExecutadoCents = 0;
     let escolasComPdaf = 0;
+    let remessasAguardandoUniag = 0;
+    let remessasValidadasSei = 0;
 
     const escolas = (escolasRows || []).map((esc) => {
       const eid = Number(esc.id);
-      const entList = entradasPorEscola.get(eid) || [];
-      const despList = despesasPorEscola.get(eid) || [];
-      const resumoEsc = calcularResumoPdaf(entList, despList);
+      const pack = calculosPorEscola.get(eid);
+      const resumoEsc = pack?.calculado?.resumo?.total || {
+        entradas_total: 0,
+        saidas_total: 0,
+        saldo_total: 0,
+      };
 
       const alunosNum = Number(esc.total_alunos || 0);
       const turmasNum = Number(esc.total_turmas || 0);
       totalAlunosRede += alunosNum;
       totalTurmasRede += turmasNum;
 
-      const recCents = toCents(resumoEsc.total.entradas_total);
-      const exeCents = toCents(resumoEsc.total.saidas_total);
+      const recCents = toCents(resumoEsc.entradas_total);
+      const exeCents = toCents(resumoEsc.saidas_total);
       pdafRecebidoCents += recCents;
       pdafExecutadoCents += exeCents;
 
-      const temMovimentacaoPdaf = entList.length > 0 || despList.length > 0;
+      const portCount = pack?.portarias?.length || 0;
+      const despCount = pack?.despesas?.length || 0;
+      const temRend = Object.values(pack?.rendimentosMap || {}).some((v) => Number(v) > 0);
+      const temMovimentacaoPdaf = portCount > 0 || despCount > 0 || temRend;
       if (temMovimentacaoPdaf) escolasComPdaf += 1;
+
+      const statusTrimestres = {};
+      for (let t = 1; t <= 4; t++) {
+        const st = pack?.calculado?.trimestres?.[t]?.status || "EM_ELABORACAO";
+        statusTrimestres[t] = st;
+        if (st === "ENVIADO_UNIAG" || st === "EM_ANALISE") remessasAguardandoUniag += 1;
+        if (st === "VALIDADO_SEI") remessasValidadasSei += 1;
+      }
 
       let tiposArr = [];
       if (esc.tipo) {
@@ -351,7 +439,8 @@ router.get("/gabinete", async (req, res) => {
         apelido: esc.apelido || esc.nome,
         cidade: esc.cidade,
         estado: esc.estado,
-        cnpj: esc.cnpj,
+        cnpj: pack?.uex?.cnpj || esc.cnpj,
+        uex_nome: pack?.uex?.nome_uex || null,
         tipos: tiposArr,
         status: esc.status || "ativa",
         diretor: esc.diretor || null,
@@ -360,20 +449,24 @@ router.get("/gabinete", async (req, res) => {
         total_turmas: turmasNum,
         modulo_financeiro_ativo: Boolean(esc.modulo_financeiro_ativo) || temMovimentacaoPdaf,
         pdaf: {
-          entradas_count: entList.length,
-          despesas_count: despList.length,
-          recebido: resumoEsc.total.entradas_total,
-          executado: resumoEsc.total.saidas_total,
-          saldo: resumoEsc.total.saldo_total,
+          entradas_count: portCount,
+          despesas_count: despCount,
+          recebido: resumoEsc.entradas_total,
+          executado: resumoEsc.saidas_total,
+          saldo: resumoEsc.saldo_total,
+          trimestres_status: statusTrimestres,
         },
       };
     });
 
-    const escolasAtivas = escolas.filter((e) => String(e.status).toLowerCase() === "ativa").length;
+    const escolasAtivas = escolas.filter(
+      (e) => String(e.status).toLowerCase() === "ativa"
+    ).length;
 
     return res.json({
       ok: true,
       exercicio,
+      exercicios_disponiveis: exerciciosDisponiveis,
       regional: {
         id: regional.id,
         nome: regional.nome,
@@ -395,6 +488,8 @@ router.get("/gabinete", async (req, res) => {
         total_alunos: totalAlunosRede,
         total_turmas: totalTurmasRede,
         escolas_com_pdaf: escolasComPdaf,
+        remessas_aguardando_uniag: remessasAguardandoUniag,
+        remessas_validadas_sei: remessasValidadasSei,
         pdaf_recebido: centsToDecimal(pdafRecebidoCents),
         pdaf_executado: centsToDecimal(pdafExecutadoCents),
         pdaf_saldo: centsToDecimal(pdafRecebidoCents - pdafExecutadoCents),
@@ -409,7 +504,7 @@ router.get("/gabinete", async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 2) UNIAG — Painel Consolidado de Acompanhamento Financeiro PDAF da Regional
+// 2) UNIAG — Resumo Modular Trimestral de Todas as Escolas da Regional
 // GET /api/cre/uniag/resumo?exercicio=YYYY
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/uniag/resumo", exigirCargoRegional("chefe_uniag"), async (req, res) => {
@@ -454,82 +549,78 @@ router.get("/uniag/resumo", exigirCargoRegional("chefe_uniag"), async (req, res)
       [regionalId]
     );
 
-    const escolaIds = (escolasRows || []).map((e) => Number(e.id)).filter((id) => id > 0);
-    const anoAtual = new Date().getFullYear();
-    const anosSet = new Set([anoAtual + 1, anoAtual, anoAtual - 1, exercicio]);
+    const { exerciciosDisponiveis, calculosPorEscola } =
+      await carregarMapaPdafEscolasRegional(db, escolasRows, exercicio);
 
-    let todasEntradas = [];
-    let todasDespesas = [];
-    const entradasPorEscola = new Map();
-    const despesasPorEscola = new Map();
-    const ultimaMovPorEscola = new Map();
-
-    if (escolaIds.length > 0) {
-      const placeholders = escolaIds.map(() => "?").join(", ");
-      const [[entRows], [despRows], [anosEnt], [anosDesp]] = await Promise.all([
-        db.query(
-          `SELECT id, escola_id, fonte_recurso, valor_custeio, valor_capital, atualizado_em
-           FROM financeiro_pdaf_entradas
-           WHERE exercicio = ? AND escola_id IN (${placeholders})`,
-          [exercicio, ...escolaIds]
-        ),
-        db.query(
-          `SELECT id, escola_id, fonte_recurso, valor_custeio, valor_capital, atualizado_em
-           FROM financeiro_pdaf_despesas
-           WHERE exercicio = ? AND escola_id IN (${placeholders})`,
-          [exercicio, ...escolaIds]
-        ),
-        db.query(
-          `SELECT DISTINCT exercicio FROM financeiro_pdaf_entradas WHERE escola_id IN (${placeholders})`,
-          escolaIds
-        ),
-        db.query(
-          `SELECT DISTINCT exercicio FROM financeiro_pdaf_despesas WHERE escola_id IN (${placeholders})`,
-          escolaIds
-        ),
-      ]);
-
-      todasEntradas = entRows || [];
-      todasDespesas = despRows || [];
-
-      for (const r of anosEnt || []) if (r?.exercicio) anosSet.add(Number(r.exercicio));
-      for (const r of anosDesp || []) if (r?.exercicio) anosSet.add(Number(r.exercicio));
-
-      const registrarData = (eid, dt) => {
-        if (!dt) return;
-        const ts = new Date(dt).getTime();
-        if (!Number.isFinite(ts)) return;
-        const prev = ultimaMovPorEscola.get(eid) || 0;
-        if (ts > prev) ultimaMovPorEscola.set(eid, ts);
+    // Consolidação por trimestre (1..4) para alimentar os 4 botões modulares da UNIAG
+    const trimestresRede = {};
+    for (let t = 1; t <= 4; t++) {
+      trimestresRede[t] = {
+        trimestre: t,
+        total_escolas: escolasRows.length,
+        aguardando_analise: 0,
+        em_diligencia: 0,
+        validados_sei: 0,
+        em_elaboracao: 0,
+        saldos_rede: {
+          ordinario_cents: 0,
+          emenda_cents: 0,
+          rendimento_cents: 0,
+          total_cents: 0,
+        },
       };
-
-      for (const r of todasEntradas) {
-        const eid = Number(r.escola_id);
-        if (!entradasPorEscola.has(eid)) entradasPorEscola.set(eid, []);
-        entradasPorEscola.get(eid).push(r);
-        registrarData(eid, r.atualizado_em);
-      }
-
-      for (const r of todasDespesas) {
-        const eid = Number(r.escola_id);
-        if (!despesasPorEscola.has(eid)) despesasPorEscola.set(eid, []);
-        despesasPorEscola.get(eid).push(r);
-        registrarData(eid, r.atualizado_em);
-      }
     }
-
-    const resumoRede = calcularResumoPdaf(todasEntradas, todasDespesas);
 
     const escolas = (escolasRows || []).map((esc) => {
       const eid = Number(esc.id);
-      const entList = entradasPorEscola.get(eid) || [];
-      const despList = despesasPorEscola.get(eid) || [];
-      const resEscola = calcularResumoPdaf(entList, despList);
-      const lastTs = ultimaMovPorEscola.get(eid) || null;
+      const pack = calculosPorEscola.get(eid);
+      const trisCalc = pack?.calculado?.trimestres || {};
 
-      let situacao = "SEM_LANCAMENTOS";
-      if (entList.length > 0 || despList.length > 0) {
-        situacao = resEscola.total.saldo_total < -0.005 ? "SALDO_NEGATIVO" : "EM_EXECUCAO";
+      const trimestresResumoEscola = {};
+
+      for (let t = 1; t <= 4; t++) {
+        const td = trisCalc[t] || {};
+        const st = td.status || "EM_ELABORACAO";
+
+        if (st === "ENVIADO_UNIAG" || st === "EM_ANALISE") {
+          trimestresRede[t].aguardando_analise += 1;
+        } else if (st === "EM_DILIGENCIA") {
+          trimestresRede[t].em_diligencia += 1;
+        } else if (st === "VALIDADO_SEI") {
+          trimestresRede[t].validados_sei += 1;
+        } else {
+          trimestresRede[t].em_elaboracao += 1;
+        }
+
+        const sOrd = toCents(td?.saldos_topo?.ordinario || 0);
+        const sEme = toCents(td?.saldos_topo?.emenda || 0);
+        const sRen = toCents(td?.saldos_topo?.rendimento || 0);
+        const sTot = toCents(td?.saldos_topo?.total_recursos || 0);
+
+        trimestresRede[t].saldos_rede.ordinario_cents += sOrd;
+        trimestresRede[t].saldos_rede.emenda_cents += sEme;
+        trimestresRede[t].saldos_rede.rendimento_cents += sRen;
+        trimestresRede[t].saldos_rede.total_cents += sTot;
+
+        const errosCount = (td?.pendencias || []).filter((p) => p.nivel === "ERRO").length;
+        const portariasVigentes =
+          (td?.ordinario?.linhas?.length || 0) + (td?.emendas?.linhas?.length || 0);
+
+        trimestresResumoEscola[t] = {
+          status: st,
+          saldos_topo: td?.saldos_topo || {
+            ordinario: 0,
+            emenda: 0,
+            rendimento: 0,
+            total_recursos: 0,
+          },
+          portarias_count: portariasVigentes,
+          despesas_count: td?.despesas?.length || 0,
+          pendencias_erro_count: errosCount,
+          enviado_em: td?.prestacao?.enviado_em || null,
+          analisado_em: td?.prestacao?.analisado_em || null,
+          processo_sei_prestacao: td?.prestacao?.processo_sei_prestacao || null,
+        };
       }
 
       return {
@@ -538,19 +629,37 @@ router.get("/uniag/resumo", exigirCargoRegional("chefe_uniag"), async (req, res)
         apelido: esc.apelido || esc.nome,
         cidade: esc.cidade || null,
         estado: esc.estado || "DF",
-        cnpj: esc.cnpj || null,
+        cnpj: pack?.uex?.cnpj || esc.cnpj || null,
+        uex_nome: pack?.uex?.nome_uex || null,
         status: esc.status || "ativa",
         diretor: esc.diretor || null,
-        modulo_financeiro_ativo: Boolean(esc.modulo_financeiro_ativo) || entList.length > 0 || despList.length > 0,
-        entradas_count: entList.length,
-        despesas_count: despList.length,
-        resumo: resEscola,
-        situacao,
-        ultima_atualizacao: lastTs ? new Date(lastTs).toISOString() : null,
+        modulo_financeiro_ativo:
+          Boolean(esc.modulo_financeiro_ativo) ||
+          (pack?.portarias?.length || 0) > 0 ||
+          (pack?.despesas?.length || 0) > 0,
+        resumo_anual: pack?.calculado?.resumo || null,
+        trimestres: trimestresResumoEscola,
       };
     });
 
-    const exerciciosDisponiveis = Array.from(anosSet).sort((a, b) => b - a);
+    const trimestresRedeFormatados = {};
+    for (let t = 1; t <= 4; t++) {
+      const tr = trimestresRede[t];
+      trimestresRedeFormatados[t] = {
+        trimestre: t,
+        total_escolas: tr.total_escolas,
+        aguardando_analise: tr.aguardando_analise,
+        em_diligencia: tr.em_diligencia,
+        validados_sei: tr.validados_sei,
+        em_elaboracao: tr.em_elaboracao,
+        saldos_topo: {
+          ordinario: centsToDecimal(tr.saldos_rede.ordinario_cents),
+          emenda: centsToDecimal(tr.saldos_rede.emenda_cents),
+          rendimento: centsToDecimal(tr.saldos_rede.rendimento_cents),
+          total_recursos: centsToDecimal(tr.saldos_rede.total_cents),
+        },
+      };
+    }
 
     return res.json({
       ok: true,
@@ -564,7 +673,7 @@ router.get("/uniag/resumo", exigirCargoRegional("chefe_uniag"), async (req, res)
         cidade: regional.cidade || null,
         estado: regional.estado || "DF",
       },
-      resumo_rede: resumoRede,
+      trimestres_rede: trimestresRedeFormatados,
       escolas,
     });
   } catch (err) {
@@ -574,7 +683,7 @@ router.get("/uniag/resumo", exigirCargoRegional("chefe_uniag"), async (req, res)
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 3) UNIAG — Inspeção Somente-Leitura da Execução PDAF de uma Escola da CRE
+// 3) UNIAG — Espelho Completo da Prestação de Contas PDAF de uma Escola da CRE
 // GET /api/cre/uniag/escolas/:escolaId/pdaf?exercicio=YYYY
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/uniag/escolas/:escolaId/pdaf", exigirCargoRegional("chefe_uniag"), async (req, res) => {
@@ -590,7 +699,7 @@ router.get("/uniag/escolas/:escolaId/pdaf", exigirCargoRegional("chefe_uniag"), 
   try {
     await ensureFinanceiroTables(db);
 
-    // 🔒 Trava territorial estrita: a escola DEVE pertencer à regional do gestor logado
+    // Trava territorial estrita: a escola DEVE pertencer à regional do gestor logado
     const [[escola]] = await db.query(
       `SELECT
          e.id,
@@ -616,65 +725,21 @@ router.get("/uniag/escolas/:escolaId/pdaf", exigirCargoRegional("chefe_uniag"), 
       });
     }
 
-    const [[entradas], [despesas]] = await Promise.all([
-      db.query(
-        `SELECT
-           id, escola_id, exercicio,
-           DATE_FORMAT(data_entrada, '%Y-%m-%d') AS data_entrada,
-           fonte_recurso, descricao, referencia_doc,
-           valor_custeio, valor_capital, observacoes,
-           criado_por, criado_em, atualizado_em
-         FROM financeiro_pdaf_entradas
-         WHERE escola_id = ? AND exercicio = ?
-         ORDER BY data_entrada DESC, id DESC`,
-        [escolaId, exercicio]
-      ),
-      db.query(
-        `SELECT
-           id, escola_id, exercicio, compra,
-           DATE_FORMAT(data_pagamento, '%Y-%m-%d') AS data_pagamento,
-           ordem_servico_orcamentos, fornecedor, cnpj_cpf,
-           descricao_geral, fonte_recurso, processo_incorporacao,
-           valor_custeio, valor_capital, observacoes,
-           criado_por, criado_em, atualizado_em
-         FROM financeiro_pdaf_despesas
-         WHERE escola_id = ? AND exercicio = ?
-         ORDER BY data_pagamento DESC, id DESC`,
-        [escolaId, exercicio]
-      ),
-    ]);
-
-    const entradasFmt = (entradas || []).map((r) => ({
-      ...r,
-      valor_custeio: Number(r.valor_custeio || 0),
-      valor_capital: Number(r.valor_capital || 0),
-    }));
-
-    const despesasFmt = (despesas || []).map((r) => ({
-      ...r,
-      valor_custeio: Number(r.valor_custeio || 0),
-      valor_capital: Number(r.valor_capital || 0),
-    }));
-
-    const resumo = calcularResumoPdaf(entradasFmt, despesasFmt);
+    const dadosPdaf = await carregarDadosCompletosPdafEscola(db, escolaId, exercicio);
 
     return res.json({
-      ok: true,
+      ...dadosPdaf,
       somente_leitura: true,
-      exercicio,
       escola: {
         id: escola.id,
         nome: escola.nome,
         apelido: escola.apelido || escola.nome,
         cidade: escola.cidade || null,
         estado: escola.estado || "DF",
-        cnpj: escola.cnpj || null,
+        cnpj: dadosPdaf?.uex?.cnpj || escola.cnpj || null,
         status: escola.status || "ativa",
         diretor: escola.diretor || null,
       },
-      resumo,
-      entradas: entradasFmt,
-      despesas: despesasFmt,
     });
   } catch (err) {
     console.error("[CRE][GET /uniag/escolas/:escolaId/pdaf] Erro:", err);
@@ -683,7 +748,176 @@ router.get("/uniag/escolas/:escolaId/pdaf", exigirCargoRegional("chefe_uniag"), 
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 4) FOTO DO PERFIL DO GESTOR REGIONAL (compatível com HeaderGlobal)
+// 4) UNIAG — Decisão de Pré-Auditoria SEI sobre o Trimestre da Escola
+// POST /api/cre/uniag/escolas/:escolaId/trimestres/:trimestre/avaliar
+// body: { exercicio, acao: 'EM_ANALISE' | 'EM_DILIGENCIA' | 'VALIDADO_SEI', parecer_uniag, processo_sei_prestacao }
+// ══════════════════════════════════════════════════════════════════════════════
+router.post(
+  "/uniag/escolas/:escolaId/trimestres/:trimestre/avaliar",
+  exigirCargoRegional("chefe_uniag"),
+  async (req, res) => {
+    const db = req.db || pool;
+    const regionalId = Number(req.regional_id);
+    const escolaId = Number(req.params.escolaId);
+    const trimestre = Number(req.params.trimestre);
+    const exercicio = parseExercicio(req.body?.exercicio);
+    const acao = String(req.body?.acao || "").toUpperCase().trim();
+    const parecerUniag = String(req.body?.parecer_uniag || "").trim();
+    const processoSei = req.body?.processo_sei_prestacao
+      ? String(req.body.processo_sei_prestacao).trim()
+      : null;
+
+    if (!escolaId || ![1, 2, 3, 4].includes(trimestre)) {
+      return res.status(400).json({ ok: false, message: "Escola ou trimestre inválido." });
+    }
+
+    const ACOES_PERMITIDAS = new Set(["EM_ANALISE", "EM_DILIGENCIA", "VALIDADO_SEI"]);
+    if (!ACOES_PERMITIDAS.has(acao)) {
+      return res.status(400).json({
+        ok: false,
+        message: "Ação inválida. Use EM_ANALISE, EM_DILIGENCIA ou VALIDADO_SEI.",
+      });
+    }
+
+    if (acao === "EM_DILIGENCIA" && !parecerUniag) {
+      return res.status(400).json({
+        ok: false,
+        message: "Informe no parecer técnico os ajustes que a direção da escola precisa realizar na diligência.",
+      });
+    }
+
+    try {
+      await ensureFinanceiroTables(db);
+
+      const [[escola]] = await db.query(
+        "SELECT id, nome, apelido FROM escolas WHERE id = ? AND regional_id = ? LIMIT 1",
+        [escolaId, regionalId]
+      );
+      if (!escola) {
+        return res.status(404).json({
+          ok: false,
+          message: "Unidade escolar não encontrada ou fora da jurisdição desta CRE.",
+        });
+      }
+
+      if (acao === "VALIDADO_SEI") {
+        const dadosPdaf = await carregarDadosCompletosPdafEscola(db, escolaId, exercicio);
+        const triData = dadosPdaf?.trimestres?.[trimestre];
+        const erros = (triData?.pendencias || []).filter((p) => p.nivel === "ERRO");
+        if (erros.length > 0) {
+          return res.status(422).json({
+            ok: false,
+            message: `Não é possível validar para o SEI enquanto houver ${erros.length} inconsistência(s) contábil(is) bloqueante(s). Devolva em diligência para correção.`,
+            pendencias: erros,
+          });
+        }
+      }
+
+      const gestorLabel = getGestorCreLabel(req);
+
+      await db.query(
+        `INSERT INTO financeiro_pdaf_prestacoes (
+           escola_id, exercicio, trimestre, status,
+           processo_sei_prestacao, parecer_uniag,
+           analisado_por, analisado_em
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE
+           status = VALUES(status),
+           processo_sei_prestacao = COALESCE(VALUES(processo_sei_prestacao), processo_sei_prestacao),
+           parecer_uniag = VALUES(parecer_uniag),
+           analisado_por = VALUES(analisado_por),
+           analisado_em = NOW()`,
+        [
+          escolaId,
+          exercicio,
+          trimestre,
+          acao,
+          processoSei,
+          parecerUniag || null,
+          gestorLabel,
+        ]
+      );
+
+      const mensagens = {
+        EM_ANALISE: `${trimestre}º Trimestre colocado em conferência técnica pela UNIAG.`,
+        EM_DILIGENCIA: `${trimestre}º Trimestre devolvido em diligência para ajustes da escola.`,
+        VALIDADO_SEI: `${trimestre}º Trimestre validado pela UNIAG! Liberado para autuação no SEI.`,
+      };
+
+      return res.json({
+        ok: true,
+        status: acao,
+        message: mensagens[acao],
+      });
+    } catch (err) {
+      console.error("[CRE][POST /uniag/avaliar] Erro:", err);
+      return res.status(500).json({
+        ok: false,
+        message: "Erro ao registrar parecer da UNIAG sobre o trimestre.",
+      });
+    }
+  }
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 5) UNIAG — Exportar Planilha Oficial .xlsx de 5 Abas de uma Escola da CRE
+// GET /api/cre/uniag/escolas/:escolaId/exportar-xlsx?exercicio=YYYY
+// ══════════════════════════════════════════════════════════════════════════════
+router.get(
+  "/uniag/escolas/:escolaId/exportar-xlsx",
+  exigirCargoRegional("chefe_uniag"),
+  async (req, res) => {
+    const db = req.db || pool;
+    const regionalId = Number(req.regional_id);
+    const escolaId = Number(req.params.escolaId);
+    const exercicio = parseExercicio(req.query?.exercicio);
+
+    if (!escolaId || Number.isNaN(escolaId) || escolaId <= 0) {
+      return res.status(400).json({ ok: false, message: "ID de unidade escolar inválido." });
+    }
+
+    try {
+      await ensureFinanceiroTables(db);
+
+      const [[escola]] = await db.query(
+        "SELECT id, nome, apelido FROM escolas WHERE id = ? AND regional_id = ? LIMIT 1",
+        [escolaId, regionalId]
+      );
+      if (!escola) {
+        return res.status(404).json({
+          ok: false,
+          message: "Unidade escolar não encontrada ou não vinculada a esta Coordenação Regional.",
+        });
+      }
+
+      const dadosPdaf = await carregarDadosCompletosPdafEscola(db, escolaId, exercicio);
+      const buffer = gerarBufferPlanilhaPdaf(dadosPdaf);
+
+      const apelidoLimpo = String(escola.apelido || escola.nome || `ESCOLA_${escolaId}`)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9_-]+/g, "_")
+        .toUpperCase();
+      const filename = `UEx_CONTROLE_DE_DESPESAS_${dadosPdaf.exercicio}_${apelidoLimpo}.xlsx`;
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (err) {
+      console.error("[CRE][EXPORTAR XLSX ESCOLA] Erro:", err);
+      return res.status(500).json({
+        ok: false,
+        message: "Erro ao gerar planilha oficial .xlsx da unidade escolar.",
+      });
+    }
+  }
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6) FOTO DO PERFIL DO GESTOR REGIONAL (compatível com HeaderGlobal)
 // GET & POST /api/cre/me/foto
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/me/foto", async (req, res) => {
