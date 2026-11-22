@@ -168,6 +168,70 @@ export function textoParaTex(str = '', { inlineOnly = false } = {}) {
   return texOut;
 }
 
+function parseBlocosTextoApoioTex(raw = '') {
+  const s = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!s) return [];
+  const linhas = s.split('\n');
+  const blocos = [];
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length > 0) {
+      const joined = buffer.join('\n').trim();
+      if (joined) blocos.push({ tipo: 'paragrafo', texto: joined });
+      buffer = [];
+    }
+  };
+  for (const ln of linhas) {
+    const t = ln.trim();
+    if (!t) {
+      flush();
+      continue;
+    }
+    const mSub = t.match(/^#{2,3}\s+(.+)$/);
+    if (mSub) {
+      flush();
+      blocos.push({ tipo: 'subtitulo', texto: mSub[1].trim() });
+      continue;
+    }
+    const mTit = t.match(/^#\s+(.+)$/);
+    if (mTit) {
+      flush();
+      blocos.push({ tipo: 'titulo', texto: mTit[1].trim() });
+      continue;
+    }
+    buffer.push(ln);
+  }
+  flush();
+  return blocos;
+}
+
+function textoApoioParaTex(textoRaw = '', fonte = '') {
+  const blocos = parseBlocosTextoApoioTex(textoRaw);
+  if (!blocos.length) return '';
+
+  let out = `{\\par\\leftskip=0.35cm\\small\\normalfont\n`;
+  blocos.forEach((b, idx) => {
+    const isLast = idx === blocos.length - 1;
+    if (b.tipo === 'titulo') {
+      out += `{\\centering\\bfseries ${textoParaTex(b.texto, { inlineOnly: true })}\\par}\\vspace{1.5pt}\n`;
+    } else if (b.tipo === 'subtitulo') {
+      out += `{\\centering\\bfseries\\itshape ${textoParaTex(b.texto, { inlineOnly: true })}\\par}\\vspace{2pt}\n`;
+    } else {
+      const linhasPar = String(b.texto)
+        .split('\n')
+        .map((ln) => textoParaTex(ln, { inlineOnly: true }))
+        .filter(Boolean);
+      out += `${linhasPar.join('\\par\\noindent ')}\\par${isLast ? '' : '\\vspace{2.5pt}'}\n`;
+    }
+  });
+  out += `}\n`;
+  if (fonte) {
+    out += `{\\raggedleft\\footnotesize (${escapeTex(fonte)})\\par}\n`;
+  }
+  out += `\\vspace{2pt}\n\n`;
+  return out;
+}
+
 function parseJsonObj(raw, fallback = null) {
   if (!raw) return fallback;
   if (typeof raw === 'object') return raw;
@@ -316,12 +380,22 @@ function gerarTexQuestao(item, idx, imgBundle, colunas, opts = {}) {
     tex += `\\leavevmode{\\bfseries QUESTÃO ${num}}${fonteHdr} {\\color{laranja}\\rule{${regraW}}{0.4pt}} {\\small\\color{gray}(${pontos} pt)}\\par\\nopagebreak\\vspace{2pt}\n\n`;
   }
 
+  const midiaApoio = midia?.midia_apoio?.url ? midia.midia_apoio : null;
+  const posApoio = midiaApoio?.posicao_apoio === 'acima_texto_apoio'
+    ? 'acima_texto_apoio'
+    : 'abaixo_texto_apoio';
+  const figApoioTex = renderFiguraTex(imgBundle?.apoio || null, midiaApoio, alts.length > 3);
+
+  if (posApoio === 'acima_texto_apoio' && figApoioTex) {
+    tex += figApoioTex;
+  }
+
   if (item.texto_apoio && String(item.texto_apoio).trim()) {
-    tex += `{\\par\\leftskip=0.42cm\\small\\itshape ${textoParaTex(item.texto_apoio)}\\par}\n`;
-    if (item.fonte) {
-      tex += `{\\raggedleft\\footnotesize (${escapeTex(item.fonte)})\\par}\n`;
-    }
-    tex += `\\vspace{2pt}\n\n`;
+    tex += textoApoioParaTex(item.texto_apoio, item.fonte);
+  }
+
+  if (posApoio === 'abaixo_texto_apoio' && figApoioTex) {
+    tex += figApoioTex;
   }
 
   const figTex = renderFiguraTex(imgBundle?.main || null, midia, alts.length > 3);
@@ -654,8 +728,14 @@ export async function exportarPdfLatex(req, res) {
     const imgBundles = await Promise.all(
       itens.map(async (it, idx) => {
         const midia = parseJsonObj(it.midia_json, null);
-        const mainSrc = midia?.url || it.imagem_url || it.imagem_base64;
-        const main = await salvarImagem(mainSrc, jobDir, `${idx}_main`);
+        const midiaApoio = midia?.midia_apoio?.url ? midia.midia_apoio : null;
+        const apoio = midiaApoio?.url
+          ? await salvarImagem(midiaApoio.url, jobDir, `${idx}_apoio`)
+          : null;
+
+        const semPrincipal = Boolean(midia?.sem_midia_principal || (!midia?.url && midiaApoio));
+        const mainSrc = semPrincipal ? null : (midia?.url || it.imagem_url || it.imagem_base64);
+        const main = mainSrc ? await salvarImagem(mainSrc, jobDir, `${idx}_main`) : null;
         const alts = {};
         const altsArr = parseAlts(it.alternativas_json);
         for (const a of altsArr) {
@@ -664,7 +744,7 @@ export async function exportarPdfLatex(req, res) {
             if (pAlt) alts[a.letra] = pAlt;
           }
         }
-        return { main, alts };
+        return { apoio, main, alts };
       })
     );
 

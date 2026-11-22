@@ -69,20 +69,74 @@ function ltx(text = '') {
     .replace(/\r?\n/g, '<br>');
 }
 
-function renderFigura(item, maxHeightPx = 240) {
-  const midia = parseJsonObj(item.midia_json, null);
-  const imgSrc = midia?.url || item.imagem_url || item.imagem_base64;
-  if (!imgSrc) return { html: '', posicao: 'entre_enunciado_e_comando' };
+function parseBlocosTextoApoio(raw = '') {
+  const s = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!s) return [];
+  const linhas = s.split('\n');
+  const blocos = [];
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length > 0) {
+      const joined = buffer.join('\n').trim();
+      if (joined) blocos.push({ tipo: 'paragrafo', texto: joined });
+      buffer = [];
+    }
+  };
+  for (const ln of linhas) {
+    const t = ln.trim();
+    if (!t) {
+      flush();
+      continue;
+    }
+    const mSub = t.match(/^#{2,3}\s+(.+)$/);
+    if (mSub) {
+      flush();
+      blocos.push({ tipo: 'subtitulo', texto: mSub[1].trim() });
+      continue;
+    }
+    const mTit = t.match(/^#\s+(.+)$/);
+    if (mTit) {
+      flush();
+      blocos.push({ tipo: 'titulo', texto: mTit[1].trim() });
+      continue;
+    }
+    buffer.push(ln);
+  }
+  flush();
+  return blocos;
+}
+
+function formatarTextoApoioHtml(textoRaw = '', fonte = '', isModelo01 = false) {
+  const blocos = parseBlocosTextoApoio(textoRaw);
+  if (!blocos.length) return '';
+
+  const innerHtml = blocos.map((b, idx) => {
+    const isLast = idx === blocos.length - 1;
+    if (b.tipo === 'titulo') {
+      return `<div class="ta-titulo">${ltx(b.texto)}</div>`;
+    }
+    if (b.tipo === 'subtitulo') {
+      return `<div class="ta-subtitulo">${ltx(b.texto)}</div>`;
+    }
+    return `<div class="ta-paragrafo" style="margin-bottom:${isLast ? '0' : '4px'};">${ltx(b.texto)}</div>`;
+  }).join('');
+
+  if (isModelo01) {
+    return `<div class="texto-apoio-m01">${innerHtml}${fonte ? `<div class="fonte-apoio-m01">(${txt(fonte)})</div>` : ''}</div>`;
+  }
+  return `<blockquote class="texto-apoio">${innerHtml}${fonte ? `<footer>— ${txt(fonte)}</footer>` : ''}</blockquote>`;
+}
+
+function renderFiguraObj(midiaObj, fallbackSrc = null, maxHeightPx = 240) {
+  const imgSrc = midiaObj?.url || fallbackSrc;
+  if (!imgSrc) return '';
 
   const presetMap = { P: '38%', M: '62%', G: '86%', '100%': '100%' };
-  const widthCss = presetMap[midia?.preset] || '62%';
-  const align = ['left', 'center', 'right'].includes(midia?.alinhamento) ? midia.alinhamento : 'center';
-  const posicao = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(midia?.posicao)
-    ? midia.posicao
-    : 'entre_enunciado_e_comando';
+  const widthCss = presetMap[midiaObj?.preset] || '62%';
+  const align = ['left', 'center', 'right'].includes(midiaObj?.alinhamento) ? midiaObj.alinhamento : 'center';
 
-  const legLimpa = String(midia?.legenda || '').trim();
-  const credBruto = String(midia?.credito || '').trim();
+  const legLimpa = String(midiaObj?.legenda || '').trim();
+  const credBruto = String(midiaObj?.credito || '').trim();
   const credEhRodape = /^(?:humanas|linguagens|matem[aá]tica|ci[êe]ncias|exatas)[\s\-–—_/0-9º°ªa-z]*$/i.test(credBruto);
   const credUtil = credBruto && !credEhRodape && !legLimpa.toLowerCase().includes(credBruto.toLowerCase())
     ? `Fonte: ${credBruto}`
@@ -90,13 +144,29 @@ function renderFigura(item, maxHeightPx = 240) {
   const legendaTxt = [legLimpa, credUtil].filter(Boolean).join(' — ');
 
   const justifyMap = { left: 'flex-start', center: 'center', right: 'flex-end' };
-  const html = `
+  return `
     <figure class="questao-figura" style="display:flex;flex-direction:column;align-items:${justifyMap[align]};margin:5px 0;">
       <img src="${txt(imgSrc)}" alt="Figura da questão" style="width:${widthCss};max-width:100%;height:auto;max-height:${maxHeightPx}px;object-fit:contain;" />
       ${legendaTxt ? `<figcaption class="questao-legenda" style="width:${widthCss};text-align:${align};">${txt(legendaTxt)}</figcaption>` : ''}
     </figure>`;
+}
 
-  return { html, posicao };
+function renderFigura(item, maxHeightPx = 240) {
+  const midia = parseJsonObj(item.midia_json, null);
+  const midiaApoio = midia?.midia_apoio?.url ? midia.midia_apoio : null;
+  const posicaoApoio = midiaApoio?.posicao_apoio === 'acima_texto_apoio'
+    ? 'acima_texto_apoio'
+    : 'abaixo_texto_apoio';
+  const htmlApoio = midiaApoio ? renderFiguraObj(midiaApoio, null, maxHeightPx) : '';
+
+  const semPrincipal = Boolean(midia?.sem_midia_principal || (!midia?.url && midiaApoio));
+  const mainFallback = semPrincipal ? null : (item.imagem_url || item.imagem_base64 || null);
+  const posicao = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(midia?.posicao)
+    ? midia.posicao
+    : 'entre_enunciado_e_comando';
+  const html = semPrincipal ? '' : renderFiguraObj(midia, mainFallback, maxHeightPx);
+
+  return { html, posicao, htmlApoio, posicaoApoio };
 }
 
 function renderAlternativas(altsJson, correta, showGabarito = false, estiloAlt = 'maiuscula_parenteses') {
@@ -359,11 +429,9 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
     const comandoFinal = item.comando_final && !comandoPosCorpo
       ? `<div class="comando-final">${ltx(item.comando_final)}</div>`
       : '';
-    const { html: figuraHtml, posicao } = renderFigura(item, 210);
+    const { html: figuraHtml, posicao, htmlApoio, posicaoApoio } = renderFigura(item, 210);
 
-    const textoApoio = item.texto_apoio
-      ? `<div class="texto-apoio-m01">${ltx(item.texto_apoio)}${item.fonte ? `<div class="fonte-apoio-m01">(${txt(item.fonte)})</div>` : ''}</div>`
-      : '';
+    const textoApoio = formatarTextoApoioHtml(item.texto_apoio, item.fonte, true);
 
     const metaInline = mostrarMetaQuestao
       ? `<span class="meta-m01">${Number(item.valor_pontos || 1).toFixed(1)} pt</span>`
@@ -376,7 +444,9 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
           <span class="q-bar-m01"></span>
           ${metaInline}
         </div>
+        ${posicaoApoio === 'acima_texto_apoio' ? htmlApoio : ''}
         ${textoApoio}
+        ${posicaoApoio === 'abaixo_texto_apoio' ? htmlApoio : ''}
         ${posicao === 'apos_texto_apoio' ? figuraHtml : ''}
         <div class="questao-enunciado">${enunciado}</div>
         ${posicao === 'entre_enunciado_e_comando' ? figuraHtml : ''}
@@ -591,17 +661,39 @@ function buildModelo01CadernoHTML(prova, itensRender, cfg = {}, showGabarito = f
 
     .texto-apoio-m01 {
       font-size: calc(${fontBody} - 0.6pt);
-      font-style: italic;
+      font-style: normal;
       text-align: justify;
       margin: 3px 0 5px;
       overflow-wrap: anywhere;
+    }
+    .ta-titulo {
+      font-weight: 700;
+      font-style: normal;
+      text-align: center;
+      font-size: ${fontBody};
+      line-height: 1.3;
+      margin-bottom: 3px;
+    }
+    .ta-subtitulo {
+      font-weight: 600;
+      font-style: italic;
+      text-align: center;
+      font-size: calc(${fontBody} - 0.8pt);
+      line-height: 1.32;
+      color: #222;
+      margin-bottom: 4px;
+    }
+    .ta-paragrafo {
+      font-style: normal;
+      text-align: justify;
+      line-height: 1.36;
     }
     .fonte-apoio-m01 {
       font-style: normal;
       font-size: 8pt;
       text-align: right;
       color: #222;
-      margin-top: 1px;
+      margin-top: 2px;
       overflow-wrap: anywhere;
     }
 
@@ -865,11 +957,9 @@ function renderQuestao(item, idx, template, showGabarito) {
   const pontos = item.valor_pontos || 1;
   const bncc = item.habilidade_bncc ? `<span class="bncc-tag">${txt(item.habilidade_bncc)}</span>` : '';
 
-  const { html: figuraHtml, posicao } = renderFigura(item);
+  const { html: figuraHtml, posicao, htmlApoio, posicaoApoio } = renderFigura(item);
 
-  const textoApoio = item.texto_apoio
-    ? `<blockquote class="texto-apoio">${ltx(item.texto_apoio)}${item.fonte ? `<footer>— ${txt(item.fonte)}</footer>` : ''}</blockquote>`
-    : '';
+  const textoApoio = formatarTextoApoioHtml(item.texto_apoio, item.fonte, false);
 
   return `
   <div class="questao" data-nivel="${txt(item.nivel || 'medio')}">
@@ -881,7 +971,9 @@ function renderQuestao(item, idx, template, showGabarito) {
         <span class="pts-tag">${pontos} pt${pontos != 1 ? 's' : ''}</span>
       </span>
     </div>
+    ${posicaoApoio === 'acima_texto_apoio' ? htmlApoio : ''}
     ${textoApoio}
+    ${posicaoApoio === 'abaixo_texto_apoio' ? htmlApoio : ''}
     ${posicao === 'apos_texto_apoio' ? figuraHtml : ''}
     <div class="questao-enunciado">${enunciado || '(sem enunciado)'}</div>
     ${posicao === 'entre_enunciado_e_comando' ? figuraHtml : ''}
@@ -934,8 +1026,11 @@ function buildCSS(template, margem = '10mm 12mm 14mm') {
     .questao-enunciado { font-size: 10pt; line-height: 1.55; margin-bottom: 4px; text-align: justify; }
     .math-block { display: block; text-align: center; margin: 6px 0; overflow-x: auto; }
     .comando-final { font-size: 10pt; line-height: 1.5; margin: 4px 0 5px; font-weight: 600; text-align: justify; }
-    .texto-apoio { background: #f9f9f9; border-left: 3px solid #555; padding: 5px 8px; margin-bottom: 5px; font-size: 9pt; font-style: italic; color: #222; }
-    .texto-apoio footer { font-size: 8pt; font-style: normal; margin-top: 3px; color: #555; }
+    .texto-apoio { background: #f9f9f9; border-left: 3px solid #555; padding: 6px 9px; margin-bottom: 5px; font-size: 9.2pt; font-style: normal; color: #222; }
+    .texto-apoio .ta-titulo { font-weight: 700; font-style: normal; text-align: center; font-size: 10pt; line-height: 1.3; margin-bottom: 3px; color: #000; }
+    .texto-apoio .ta-subtitulo { font-weight: 600; font-style: italic; text-align: center; font-size: 9pt; line-height: 1.32; margin-bottom: 4px; color: #333; }
+    .texto-apoio .ta-paragrafo { font-style: normal; text-align: justify; line-height: 1.48; }
+    .texto-apoio footer { font-size: 8pt; font-style: normal; text-align: right; margin-top: 3px; color: #555; }
     .questao-legenda { font-size: 7.5pt; color: #444; margin-top: 2px; font-style: italic; }
 
     .alternativas { margin-top: 4px; }

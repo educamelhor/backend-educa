@@ -550,9 +550,11 @@ export function limparFonteFalsaCaderno(rawFonte = '') {
 
 function normalizarComparacaoTexto(str = '') {
   return String(str || '')
+    .replace(/^#{1,3}\s+/gm, '')
     .replace(/[“”«»]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/\s+/g, ' ')
     .trim()
@@ -560,11 +562,51 @@ function normalizarComparacaoTexto(str = '') {
 }
 
 /**
+ * Empacota de forma retrocompatível a figura principal do enunciado (`midiaPrincipal`) e a
+ * imagem/exemplo pré-questão (`midiaApoio`) para persistência em `midia_json` sem duplicação.
+ */
+export function empacotarMidiasExtraidas(midiaPrincipal = null, midiaApoio = null) {
+  const principalLimpa = midiaPrincipal?.url
+    ? (() => {
+        const clone = { ...midiaPrincipal };
+        delete clone.midia_apoio;
+        delete clone.sem_midia_principal;
+        return clone;
+      })()
+    : null;
+
+  const apoioLimpa = midiaApoio?.url
+    ? {
+        ...midiaApoio,
+        posicao_apoio:
+          midiaApoio.posicao_apoio === 'acima_texto_apoio'
+            ? 'acima_texto_apoio'
+            : 'abaixo_texto_apoio',
+      }
+    : null;
+
+  let midiaCombinada = null;
+  if (principalLimpa && apoioLimpa) {
+    midiaCombinada = { ...principalLimpa, midia_apoio: apoioLimpa };
+  } else if (principalLimpa) {
+    midiaCombinada = principalLimpa;
+  } else if (apoioLimpa) {
+    midiaCombinada = { url: null, sem_midia_principal: true, midia_apoio: apoioLimpa };
+  }
+
+  return {
+    midia: midiaCombinada,
+    midia_apoio: apoioLimpa,
+    imagem_url: principalLimpa?.url || null,
+  };
+}
+
+/**
  * Elimina duplicação quando a IA copia a frase inicial da questão tanto em `texto_apoio` quanto em `enunciado`
  * (ex: Questão 11 "Se não têm pão, que comam brioches!").
  */
 export function deduplicarTextoApoioEnunciado(textoApoioRaw = '', enunciadoRaw = '', opts = {}) {
-  const { temIdCompartilhado = false, fonteLimpa = '' } = opts || {};
+  const { temIdCompartilhado = false, fonteLimpa = '', temMidiaApoio = false } = opts || {};
   const apoio = String(textoApoioRaw || '').trim();
   const enunc = String(enunciadoRaw || '').trim();
   if (!apoio || !enunc) return { textoApoio: apoio, enunciado: enunc };
@@ -574,12 +616,15 @@ export function deduplicarTextoApoioEnunciado(textoApoioRaw = '', enunciadoRaw =
   if (!apoioNorm || !enuncNorm) return { textoApoio: apoio, enunciado: enunc };
 
   if (apoioNorm === enuncNorm) {
-    return temIdCompartilhado ? { textoApoio: apoio, enunciado: '' } : { textoApoio: '', enunciado: enunc };
+    return (temIdCompartilhado || temMidiaApoio)
+      ? { textoApoio: apoio, enunciado: '' }
+      : { textoApoio: '', enunciado: enunc };
   }
 
   if (apoioNorm.length >= 20 && enuncNorm.startsWith(apoioNorm)) {
     // Constrói regex tolerante a aspas/espaços/negrito para remover o prefixo duplicado do enunciado
     const palavras = apoio
+      .replace(/^#{1,3}\s+/gm, ' ')
       .replace(/[“”«»"‘’'*_]/g, ' ')
       .trim()
       .split(/\s+/)
@@ -589,7 +634,7 @@ export function deduplicarTextoApoioEnunciado(textoApoioRaw = '', enunciadoRaw =
     let restoEnunc = '';
     if (palavras.length > 0) {
       const prefixRe = new RegExp(
-        `^[\\s“”«»"‘’'*_]*${palavras.join('[\\s“”«»"‘’\'*_]+')}[\\s“”«»"‘’'*_.,;:!?-]*`,
+        `^[\\s“”«»"‘’'*_#]*${palavras.join('[\\s“”«»"‘’\'*_#]+')}[\\s“”«»"‘’'*_.,;:!?-]*`,
         'i'
       );
       restoEnunc = enunc.replace(prefixRe, '').trim();
@@ -599,13 +644,13 @@ export function deduplicarTextoApoioEnunciado(textoApoioRaw = '', enunciadoRaw =
       /\([^()\n]{10,}\)\s*\.?$/.test(apoio) ||
       /\b(?:dispon[ií]vel\s+em|acesso\s+em|adaptado\s+de|edi[çc][aã]o\s+\d+|in:\s+[A-ZÀ-Ÿ])/i.test(apoio);
 
-    if ((temIdCompartilhado || Boolean(fonteLimpa) || temReferenciaBibliografica) && restoEnunc.length >= 12) {
+    if ((temIdCompartilhado || temMidiaApoio || Boolean(fonteLimpa) || temReferenciaBibliografica) && restoEnunc.length >= 12) {
       return { textoApoio: apoio, enunciado: restoEnunc };
     }
     return { textoApoio: '', enunciado: enunc };
   }
 
-  if (enuncNorm.length >= 20 && apoioNorm.startsWith(enuncNorm) && !temIdCompartilhado && !fonteLimpa) {
+  if (enuncNorm.length >= 20 && apoioNorm.startsWith(enuncNorm) && !temIdCompartilhado && !temMidiaApoio && !fonteLimpa) {
     return { textoApoio: '', enunciado: apoio };
   }
 
@@ -967,11 +1012,11 @@ const EXTRACTION_SCHEMA = {
     },
     texto_apoio: {
       type: SchemaType.STRING,
-      description: 'Texto base, trecho literário ou reportagem introdutória ANTES do enunciado (vazio se não houver).',
+      description: 'Texto base, explicação/chamada de exemplo prévio, trecho literário ou reportagem ANTES do enunciado numerado (vazio se não houver). Preserve estrutura editorial: "# Título" na 1ª linha se houver título impresso, "## Subtítulo" se houver subtítulo, "\\n\\n" entre parágrafos/estrofes, "**negrito**", "*itálico*" e "__sublinhado__".',
     },
     enunciado: {
       type: SchemaType.STRING,
-      description: 'Texto principal do enunciado que vem ANTES das figuras (ou enunciado completo caso não haja texto pós-figura). Sem número inicial da questão.',
+      description: 'Texto principal do enunciado que vem ANTES das figuras da questão (ou enunciado completo caso não haja texto pós-figura). Sem número inicial da questão.',
     },
     comando_final: {
       type: SchemaType.STRING,
@@ -979,13 +1024,13 @@ const EXTRACTION_SCHEMA = {
     },
     figuras: {
       type: SchemaType.ARRAY,
-      description: 'SOMENTE ilustrações gráficas reais (esquemas biológicos/físicos, gráficos cartesianos, figuras geométricas, estruturas químicas 2D com ligações desenhadas, tirinhas, charges, mapas ou tabelas visuais). PROIBIDO incluir equações matemáticas tipográficas, sistemas lineares, matrizes ou legendas de variáveis — esses elementos devem ser transcritos em LaTeX no enunciado com figuras=[].',
+      description: 'SOMENTE ilustrações gráficas reais, exemplos resolvidos visuais com desenho/esquema, tirinhas, charges, mapas, gráficos cartesianos, figuras geométricas, estruturas químicas 2D ou tabelas visuais. Use alvo="apoio" para imagem/exemplo/tirinha situados ANTES do enunciado numerado da questão, e alvo="principal" para figura situada DENTRO do enunciado da questão. PROIBIDO incluir equações matemáticas puramente tipográficas sem desenho — transcreva-as em LaTeX no enunciado com figuras=[].',
       items: {
         type: SchemaType.OBJECT,
         properties: {
           alvo: {
             type: SchemaType.STRING,
-            description: 'principal (para cada figura/esquema gráfico real do enunciado — pode haver vários itens "principal") | alt_A | alt_B | alt_C | alt_D | alt_E',
+            description: 'apoio (para exemplo visual ilustrado, tirinha, charge ou quadro-base situado ANTES do número/enunciado da questão) | principal (para cada figura/esquema gráfico real pertencente ao enunciado da questão) | alt_A | alt_B | alt_C | alt_D | alt_E',
           },
           natureza_visual: {
             type: SchemaType.STRING,
@@ -1006,11 +1051,11 @@ const EXTRACTION_SCHEMA = {
           bbox: {
             type: SchemaType.ARRAY,
             items: { type: SchemaType.INTEGER },
-            description: 'Coordenadas exatas [ymin, xmin, ymax, xmax] de 0 a 1000 englobando APENAS a ilustração/esquema/fórmula estrutural 2D, sem invadir a coluna vizinha nem parágrafos de texto.',
+            description: 'Coordenadas exatas [ymin, xmin, ymax, xmax] de 0 a 1000 englobando APENAS a ilustração/esquema/exemplo visual/fórmula estrutural 2D, sem invadir a coluna vizinha nem parágrafos de texto.',
           },
           posicao_sugerida: {
             type: SchemaType.STRING,
-            description: 'apos_texto_apoio | entre_enunciado_e_comando | abaixo_comando',
+            description: 'Para alvo="apoio": acima_texto_apoio | abaixo_texto_apoio. Para alvo="principal": apos_texto_apoio | entre_enunciado_e_comando | abaixo_comando',
           },
           legenda_original: {
             type: SchemaType.STRING,
@@ -1196,18 +1241,28 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
    - "somatoria": proposições numeradas em potências de 2 (01, 02, 04, 08, 16...) cuja resposta é a soma.
    - "discursiva": questão aberta sem alternativas (use formato_espaco_discursiva="quadro_calculo" se exigir conta/desenho ou "linhas" se textual).
 
-2. FIDELIDADE ESPACIAL, DESTAQUES EM NEGRITO (**...**), EQUAÇÕES ($$...$$) E FONTES:
+2. FIDELIDADE ESPACIAL, ESTRUTURA RICA DO TEXTO DE APOIO, EXEMPLOS PRÉ-QUESTÃO, NEGRITO (**...**), EQUAÇÕES ($$...$$) E FONTES:
    - Remova numeração inicial da prova original (ex: "6.", "04.", "Questão 12 -") e remova a sigla de banca oficial do início do enunciado colocando-a em "fonte" (ex: "(UECE)" -> fonte: "UECE").
    - NUNCA invente banca em "fonte" e NUNCA use cabeçalhos/rodapés escolares genéricos (ex: "HUMANAS-8ºANO", "1º BIMESTRE", " HISTÓRIA ") como "fonte" — nesses casos deixe "fonte": "" e "fonte_confirmada": false.
-   - PRESERVAÇÃO DE NEGRITO E ITÁLICO ORIGINAIS: quando uma frase, expressão ou pergunta dentro do enunciado, texto de apoio, proposições ou alternativas estiver impressa em **negrito** no original (ex: "...muito elevados. **Qual continente possui o crescimento demográfico mais intenso na atualidade?**" ou "Assinale a alternativa **INCORRETA**:"), preserve exatamente esse destaque usando duplo asterisco \`**trecho em negrito**\` (e \`*trecho*\` para itálico editorial relevante, como títulos de obras). NUNCA coloque o enunciado inteiro em negrito e não aplique negrito ao título removido "QUESTÃO X".
-   - PROIBIDO DUPLICAR TEXTO ENTRE "texto_apoio" E "enunciado": se a questão começa diretamente com uma citação curta ou parágrafo introdutório sem bloco externo separado, mantenha o texto APENAS em "enunciado" (deixando "texto_apoio": ""). Se houver um texto-base separado real em "texto_apoio", NUNCA repita esse mesmo parágrafo no início de "enunciado"!
+   - EXEMPLOS RESOLVIDOS, TIRINHAS E QUADROS VISUAIS ANTES DA QUESTÃO (alvo="apoio"):
+     * Muitas questões didáticas trazem ACIMA da questão numerada um bloco introdutório ou exemplo resolvido ilustrado (ex.: uma frase contextual como "AGORA, POR MEIO DO CÁLCULO DE ÁREA..." + um desenho/exemplo resolvido de retângulo antes da questão "7. O monômio que representa o volume desse paralelepípedo..." que possui sua própria figura do paralelepípedo).
+     * NUNCA ignore nem descarte a parte superior/exemplo! Transcreva a frase/explicação introdutória superior em "texto_apoio", recorte a imagem/esquema/tirinha superior em "figuras" com alvo="apoio" (usando posicao_sugerida="abaixo_texto_apoio" se ela vier abaixo do texto de apoio, ou "acima_texto_apoio" se vier antes do texto de apoio) e recorte separadamente a figura própria do enunciado numerado com alvo="principal"!
+   - FORMATAÇÃO EDITORIAL RICA DE "texto_apoio" (Português, Inglês, Espanhol, Literatura, Humanas e Exatas):
+     * Quando houver "texto_apoio", NUNCA entregue o texto achatado sem estrutura! Preserve fielmente:
+       - TÍTULO do texto-base (quando impresso em destaque/centralizado/negrito/caixa-alta no topo): escreva na 1ª linha como \`# Título exato\` seguido de quebra dupla \`\\n\\n\`.
+       - SUBTÍTULO / linha fina / lead (quando houver abaixo do título): escreva como \`## Subtítulo exato\` seguido de \`\\n\\n\`.
+       - PARÁGRAFOS E ESTROFES: separe OBRIGATORIAMENTE cada parágrafo de prosa ou estrofe de poema com linha em branco dupla (\`\\n\\n\`). Em poemas, canções ou diálogos, separe os versos/falas da mesma estrofe com quebra simples (\`\\n\`).
+       - DESTAQUES INTERNOS DO TEXTO: preserve palavras/expressões em **negrito** com \`**trecho**\`, em *itálico* (estrangeirismos, obras, ênfases) com \`*trecho*\` e termos __sublinhados__ (muito cobrados em questões de línguas/gramática) com \`__trecho__\`.
+   - PRESERVAÇÃO DE NEGRITO E ITÁLICO NO ENUNCIADO E ALTERNATIVAS: quando uma frase, expressão ou pergunta dentro do enunciado, proposições ou alternativas estiver impressa em **negrito** no original (ex: "...muito elevados. **Qual continente possui o crescimento demográfico mais intenso na atualidade?**" ou "Assinale a alternativa **INCORRETA**:"), preserve exatamente esse destaque usando duplo asterisco \`**trecho em negrito**\` (e \`*trecho*\` para itálico editorial relevante). NUNCA coloque o enunciado inteiro em negrito e não aplique negrito ao título removido "QUESTÃO X".
+   - PROIBIDO DUPLICAR TEXTO ENTRE "texto_apoio" E "enunciado": se a questão começa diretamente com uma citação curta ou parágrafo introdutório sem bloco externo separado, mantenha o texto APENAS em "enunciado" (deixando "texto_apoio": ""). Se houver um texto-base separado real ou chamada de exemplo em "texto_apoio", NUNCA repita esse mesmo parágrafo no início de "enunciado"!
    - Ignore artefatos de interface de editores de texto (Word/Google Docs) em prints de tela, como barra vertical de cursor de digitação colada no fim de palavras ("meias-vidas|" -> transcreva "meias-vidas") e sublinhados ondulados de corretor ortográfico.
    - Use notação LaTeX inline SEMPRE envolvida por cifrões simples ($...$) para variáveis ($m_0$, $f(x)$), frações inline ($\\frac{a}{b}$), raízes ($\\sqrt{x}$), potências ($10^{-3}$), setas ($\\rightarrow$) e fórmulas químicas lineares ($\\text{H}_2\\text{O}$, $\\text{CH}_3$). NUNCA escreva \\text{} ou _0 fora de $...$!
-   - EQUAÇÕES EM DESTAQUE E LEGENDAS DE VARIÁVEIS NÃO SÃO FIGURAS: quando a questão apresentar uma função/equação centralizada em destaque (ex: $f(x) = \\frac{m_0}{2^x}$), sistema linear, matriz ou definições de variáveis (ex: "$x \\rightarrow$ quantidade de meias-vidas", "$m_0 \\rightarrow$ massa inicial", "$f(x) \\rightarrow$ massa final"), NUNCA recorte isso em "figuras" (retorne "figuras": [] se não houver ilustração gráfica real!). Transcreva a equação centralizada usando cifrão duplo \`$$...$$\` em linha própria dentro de "enunciado" (ex: \`\\n$$f(x) = \\\\frac{m_0}{2^x}$$\\n\`) seguida em linhas separadas (\`\\n\`) de TODAS as linhas de legenda/significado das variáveis sem omitir nenhuma!
-   - Separe o texto que vem ANTES das figuras reais em "enunciado", e o comando/pergunta de fechamento em "comando_final".
+   - EQUAÇÕES EM DESTAQUE E LEGENDAS DE VARIÁVEIS NÃO SÃO FIGURAS: quando a questão apresentar apenas uma função/equação centralizada tipográfica (ex: $f(x) = \\frac{m_0}{2^x}$), sistema linear, matriz ou definições de variáveis sem desenho geométrico/esquema visual ao lado, NUNCA recorte isso em "figuras" (retorne "figuras": [] se não houver ilustração gráfica real!). Transcreva a equação centralizada usando cifrão duplo \`$$...$$\` em linha própria dentro de "enunciado" seguida das linhas de legenda das variáveis.
+   - Separe o texto que vem ANTES das figuras reais do enunciado em "enunciado", e o comando/pergunta de fechamento em "comando_final".
 
 3. DETECÇÃO COMPLETA E RECORTE INTEGRAL MULTI-FIGURA ("figuras"):
-   - Retorne em "figuras" SOMENTE blocos visuais genuinamente gráficos/ilustrativos: gravuras históricas, fotografias, esquemas biológicos/físicos, gráficos com eixos, desenhos geométricos, estruturas químicas 2D com ligações desenhadas (traços/anéis), circuitos, tirinhas, charges, mapas ou tabelas visuais complexas. NUNCA inclua citações em texto puro, parágrafos introdutórios, faixas de título "QUESTÃO X" nem equações algébricas tipográficas em "figuras"!
+   - Retorne em "figuras" SOMENTE blocos visuais genuinamente gráficos/ilustrativos: exemplos resolvidos com figuras/diagramas/setas explicativas (alvo="apoio"), gravuras históricas, fotografias, esquemas biológicos/físicos, gráficos com eixos, desenhos geométricos, estruturas químicas 2D com ligações desenhadas, circuitos, tirinhas, charges, mapas ou tabelas visuais complexas. NUNCA inclua citações em texto puro, faixas de título "QUESTÃO X" nem equações algébricas puramente tipográficas sem desenho em "figuras"!
+   - Diferencie com rigor o "alvo": use alvo="apoio" para qualquer ilustração, tirinha ou exemplo visual situado ANTES do número/enunciado da questão; use alvo="principal" para ilustrações pertencentes ao corpo/enunciado da questão; e use alvo="alt_A".."alt_E" para figuras nas alternativas.
    - Se a questão possuir 2 ou 3 regiões visuais gráficas separadas (ex: um esquema de membrana celular na coluna esquerda + fórmulas estruturais 2D de aminoácidos no rodapé esquerdo e/ou topo da coluna direita), retorne UM ITEM SEPARADO em "figuras" (com alvo="principal") para CADA região visual!
    - Se na virada da coluna esquerda para a coluna direita uma MESMA fórmula estrutural 2D ou tabela foi partida ao meio (ex: cadeia principal —N—C—C— no rodapé da coluna esquerda e radicais |CH3 alanina, serina, aspartato no topo da coluna direita), retorne o bbox da metade no rodapé esquerdo (coluna="esquerda", continuacao_quebra_coluna=false) E o bbox da metade no topo direito (coluna="direita", continuacao_quebra_coluna=true)!
    - RECORTE 100% INTEGRAL (DO TOPO À BASE DA ILUSTRAÇÃO): em cada bbox [ymin, xmin, ymax, xmax] (0 a 1000), garanta que \`ymin\` comece ACIMA da borda superior completa da gravura/desenho/foto (nunca corte cabeças de personagens ou metade superior de gravuras!) e que \`ymax\` vá até o limite inferior completo da imagem/rótulos periféricos, sem invadir parágrafos de texto nem ultrapassar "coluna_divisao_x" para a coluna vizinha.
@@ -1276,7 +1331,8 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   });
   const dados = sanitizarObjetoIA(rawParsed);
 
-  // ── Processamento independente das figuras detectadas (1 ou 2 colunas) via Sharp -> DO Spaces ──
+  // ── Processamento independente das figuras detectadas (apoio pré-questão + principal + alternativas) via Sharp -> DO Spaces ──
+  let midiaApoio = null;
   let midiaPrincipal = null;
   const midiasAlternativas = {};
 
@@ -1296,53 +1352,99 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     return Number.isFinite(y1) && Number.isFinite(x1) && (y2 - y1) >= 16 && (x2 - x1) >= 16;
   });
 
+  const apoioRaw = validFiguras.filter(
+    (f) => String(f.alvo || '').toLowerCase().startsWith('apoio')
+  );
   const principaisRaw = validFiguras.filter(
     (f) => f.alvo === 'principal' || String(f.alvo || '').toLowerCase().startsWith('principal')
   );
   const alternativasRaw = validFiguras.filter((f) => /^alt_[A-E]$/i.test(String(f.alvo || '')));
 
-  // Ordenação geométrica determinística: em 2 colunas, SEMPRE coluna esquerda (topo->base) antes da direita (topo->base)
-  if (principaisRaw.length > 1) {
-    principaisRaw.sort((a, b) => {
-      if (layoutOrigem === 'duas_colunas' && colunaDivisaoX > 0) {
-        const cxA = (Number(a.bbox[1]) + Number(a.bbox[3])) / 2;
-        const cxB = (Number(b.bbox[1]) + Number(b.bbox[3])) / 2;
-        const colA = a.coluna === 'esquerda' ? 0 : a.coluna === 'direita' ? 1 : (cxA < colunaDivisaoX ? 0 : 1);
-        const colB = b.coluna === 'esquerda' ? 0 : b.coluna === 'direita' ? 1 : (cxB < colunaDivisaoX ? 0 : 1);
-        if (colA !== colB) return colA - colB;
+  const ordenarEDeduplicarGrupoFiguras = (lista) => {
+    const copia = [...lista];
+    if (copia.length > 1) {
+      copia.sort((a, b) => {
+        if (layoutOrigem === 'duas_colunas' && colunaDivisaoX > 0) {
+          const cxA = (Number(a.bbox[1]) + Number(a.bbox[3])) / 2;
+          const cxB = (Number(b.bbox[1]) + Number(b.bbox[3])) / 2;
+          const colA = a.coluna === 'esquerda' ? 0 : a.coluna === 'direita' ? 1 : (cxA < colunaDivisaoX ? 0 : 1);
+          const colB = b.coluna === 'esquerda' ? 0 : b.coluna === 'direita' ? 1 : (cxB < colunaDivisaoX ? 0 : 1);
+          if (colA !== colB) return colA - colB;
+          return Number(a.bbox[0]) - Number(b.bbox[0]);
+        }
+        const ordA = Number(a.ordem) || 99;
+        const ordB = Number(b.ordem) || 99;
+        if (ordA !== ordB) return ordA - ordB;
         return Number(a.bbox[0]) - Number(b.bbox[0]);
-      }
-      const ordA = Number(a.ordem) || 99;
-      const ordB = Number(b.ordem) || 99;
-      if (ordA !== ordB) return ordA - ordB;
-      return Number(a.bbox[0]) - Number(b.bbox[0]);
-    });
-  }
-
-  // Remove eventuais caixas duplicadas sobrepostas (IoU > 0.80)
-  const principaisUnicas = [];
-  for (const fig of principaisRaw) {
-    const boxNum = fig.bbox.map(Number);
-    const duplicada = principaisUnicas.some((prev) => bboxIoU(prev.bbox, boxNum) > 0.8);
-    if (!duplicada) {
-      const cx = (boxNum[1] + boxNum[3]) / 2;
-      const colInferida = layoutOrigem === 'duas_colunas'
-        ? (fig.coluna === 'esquerda' || fig.coluna === 'direita' ? fig.coluna : (cx < colunaDivisaoX ? 'esquerda' : 'direita'))
-        : 'unica';
-      principaisUnicas.push({
-        ...fig,
-        bbox: boxNum,
-        coluna: colInferida,
       });
     }
-  }
+    const unicas = [];
+    for (const fig of copia) {
+      const boxNum = fig.bbox.map(Number);
+      const duplicada = unicas.some((prev) => bboxIoU(prev.bbox, boxNum) > 0.8);
+      if (!duplicada) {
+        const cx = (boxNum[1]) + (boxNum[3] - boxNum[1]) / 2;
+        const colInferida = layoutOrigem === 'duas_colunas'
+          ? (fig.coluna === 'esquerda' || fig.coluna === 'direita' ? fig.coluna : (cx < colunaDivisaoX ? 'esquerda' : 'direita'))
+          : 'unica';
+        unicas.push({
+          ...fig,
+          bbox: boxNum,
+          coluna: colInferida,
+        });
+      }
+    }
+    return unicas;
+  };
+
+  const apoioUnicas = ordenarEDeduplicarGrupoFiguras(apoioRaw);
+  const principaisUnicas = ordenarEDeduplicarGrupoFiguras(principaisRaw);
 
   let sharedOriginalUrl = null;
+
+  if (apoioUnicas.length > 0) {
+    try {
+      const usarScannerCleanApoio = apoioUnicas.some((f) => Boolean(f.foto_papel_cinza));
+      const posApoioSugerida = apoioUnicas[0]?.posicao_sugerida === 'acima_texto_apoio'
+        ? 'acima_texto_apoio'
+        : 'abaixo_texto_apoio';
+      const legendasApoio = apoioUnicas.map((f) => String(f.legenda_original || '').trim()).filter(Boolean);
+
+      const procApoio = await processarMidiaQuestao(fileBuffer, {
+        bboxes: apoioUnicas.map((f) => ({
+          bbox: f.bbox,
+          coluna: f.coluna,
+          coluna_divisao_x: colunaDivisaoX,
+          continuacao_quebra_coluna: Boolean(f.continuacao_quebra_coluna),
+        })),
+        layoutOrigem,
+        colunaDivisaoX,
+        composicaoLayout: 'auto',
+        autoTrim: true,
+        scannerClean: usarScannerCleanApoio,
+        keepOriginal: true,
+        posicao: 'apos_texto_apoio',
+        legenda: legendasApoio.join(' · '),
+        credito: '',
+      });
+
+      midiaApoio = {
+        ...procApoio.midia,
+        posicao_apoio: posApoioSugerida,
+      };
+      sharedOriginalUrl = procApoio.midia?.original_url || sharedOriginalUrl;
+    } catch (apoioErr) {
+      console.warn('[visionExtractor] Falha ao compor imagem/exemplo de apoio pré-questão:', apoioErr.message);
+    }
+  }
 
   if (principaisUnicas.length > 0) {
     try {
       const usarScannerClean = principaisUnicas.some((f) => Boolean(f.foto_papel_cinza));
-      const posicaoSugerida = principaisUnicas[0]?.posicao_sugerida || 'entre_enunciado_e_comando';
+      const posBruta = principaisUnicas[0]?.posicao_sugerida || 'entre_enunciado_e_comando';
+      const posicaoSugerida = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(posBruta)
+        ? posBruta
+        : 'entre_enunciado_e_comando';
       const legendas = principaisUnicas.map((f) => String(f.legenda_original || '').trim()).filter(Boolean);
 
       const procPrincipal = await processarMidiaQuestao(fileBuffer, {
@@ -1357,14 +1459,15 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
         composicaoLayout: 'auto',
         autoTrim: true,
         scannerClean: usarScannerClean,
-        keepOriginal: true,
+        keepOriginal: !sharedOriginalUrl,
+        existingOriginalUrl: sharedOriginalUrl,
         posicao: posicaoSugerida,
         legenda: legendas.join(' · '),
         credito: fonteLimpa,
       });
 
       midiaPrincipal = procPrincipal.midia;
-      sharedOriginalUrl = procPrincipal.midia.original_url;
+      sharedOriginalUrl = procPrincipal.midia?.original_url || sharedOriginalUrl;
     } catch (cropErr) {
       console.warn('[visionExtractor] Falha ao compor figura(s) principal(is):', cropErr.message);
     }
@@ -1423,7 +1526,7 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
   const { textoApoio: textoApoioLimpo, enunciado: enunciadoLimpo } = deduplicarTextoApoioEnunciado(
     dadosComAltsTexto.texto_apoio || '',
     enunciadoBruto,
-    { temIdCompartilhado: false, fonteLimpa }
+    { temIdCompartilhado: false, fonteLimpa, temMidiaApoio: Boolean(midiaApoio?.url) }
   );
 
   // Normaliza alternativas e reconcilia deterministicamente o gabarito (ex: proposições I–IV -> letra D)
@@ -1448,6 +1551,8 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     explicacao: dadosComAltsTexto.resolucao_passo_a_passo,
     comandoContexto: `${enunciadoLimpo} ${dadosComAltsTexto.comando_final || ''}`,
   });
+
+  const pacoteMidias = empacotarMidiasExtraidas(midiaPrincipal, midiaApoio);
 
   return {
     ok: true,
@@ -1476,8 +1581,9 @@ Analise a imagem da questão educacional enviada e estruture TODOS os campos com
     comando_final: dados.comando_final || '',
     alternativas,
     estrutura_json: estrutura,
-    midia: midiaPrincipal,
-    imagem_url: midiaPrincipal?.url || null,
+    midia: pacoteMidias.midia,
+    midia_apoio: pacoteMidias.midia_apoio,
+    imagem_url: pacoteMidias.imagem_url,
     resposta_aberta: dados.resposta_aberta || '',
     gabarito: gabaritoReconciliado,
     gabarito_origem: dados.gabarito_origem === 'marcado_na_imagem' ? 'marcado_na_imagem' : 'resolvido_pela_ia',
@@ -1711,6 +1817,39 @@ ${payload.texto || ''}`;
       responseSchema: schema,
       temperature: 0.1,
       openAiJsonHint: 'Retorne JSON com a chave: texto_formatado (string).',
+    });
+    return sanitizarObjetoIA(parsed);
+  }
+
+  if (acao === 'formatar_texto_apoio') {
+    const schema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        texto_formatado: { type: SchemaType.STRING },
+        fonte_extraida: { type: SchemaType.STRING },
+      },
+      required: ['texto_formatado', 'fonte_extraida'],
+    };
+    const prompt = `Você é um editor tipográfico de provas oficiais (ENEM/Vestibulares) especializado em Português, Inglês, Espanhol, Literatura e Humanas.
+Reestruture editorialmente o TEXTO DE APOIO abaixo SEM alterar, resumir nem traduzir nenhuma palavra do autor, aplicando estritamente:
+1. Se houver um TÍTULO no início do texto (mesmo colado na primeira linha), destaque-o em linha própria iniciada por "# " seguido de linha em branco (\\n\\n).
+2. Se houver SUBTÍTULO / linha fina logo após o título, coloque-o em linha própria iniciada por "## " seguido de linha em branco (\\n\\n).
+3. Separe claramente os PARÁGRAFOS de prosa (ou ESTROFES de poema/música) usando quebra dupla (\\n\\n). Em poemas ou diálogos, use quebra simples (\\n) entre versos/falas da mesma estrofe.
+4. Preserve eventuais destaques em **negrito**, *itálico* (estrangeirismos/obras) e __sublinhado__.
+5. Se no final do texto houver referência bibliográfica/crédito explícito entre parênteses ou "Disponível em...", extraia essa referência para "fonte_extraida" e remova-a do final de "texto_formatado" para não duplicar; se não houver referência clara, retorne "fonte_extraida": "".
+
+DISCIPLINA: ${payload.disciplina || ''}
+TEXTO BRUTO:
+"""
+${payload.texto || ''}
+"""`;
+
+    const { parsed } = await gerarJsonComFailover({
+      contents: prompt,
+      promptTextOnly: prompt,
+      responseSchema: schema,
+      temperature: 0.1,
+      openAiJsonHint: 'Retorne JSON com as chaves: texto_formatado (string), fonte_extraida (string).',
     });
     return sanitizarObjetoIA(parsed);
   }

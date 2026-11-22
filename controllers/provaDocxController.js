@@ -294,6 +294,43 @@ function textoRicoParaRunsXml(text = '', opts = {}) {
   return renderMarkdownWithMath(masked, bold, italic, underline);
 }
 
+function parseBlocosTextoApoioDocx(raw = '') {
+  const s = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!s) return [];
+  const linhas = s.split('\n');
+  const blocos = [];
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length > 0) {
+      const joined = buffer.join('\n').trim();
+      if (joined) blocos.push({ tipo: 'paragrafo', texto: joined });
+      buffer = [];
+    }
+  };
+  for (const ln of linhas) {
+    const t = ln.trim();
+    if (!t) {
+      flush();
+      continue;
+    }
+    const mSub = t.match(/^#{2,3}\s+(.+)$/);
+    if (mSub) {
+      flush();
+      blocos.push({ tipo: 'subtitulo', texto: mSub[1].trim() });
+      continue;
+    }
+    const mTit = t.match(/^#\s+(.+)$/);
+    if (mTit) {
+      flush();
+      blocos.push({ tipo: 'titulo', texto: mTit[1].trim() });
+      continue;
+    }
+    buffer.push(ln);
+  }
+  flush();
+  return blocos;
+}
+
 function paragrafoTextoMultilinhaXml(text = '', opts = {}) {
   const {
     jc = 'both',
@@ -495,7 +532,13 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
   const itemMediaMap = await Promise.all(
     itens.map(async (it) => {
       const midia = parseJsonSafe(it.midia_json, null);
-      const mainSrc = midia?.url || it.imagem_url || it.imagem_base64;
+      const midiaApoio = midia?.midia_apoio?.url ? midia.midia_apoio : null;
+      const apoioImg = midiaApoio?.url
+        ? await registrarImagem(midiaApoio.url, maxImgW, midiaApoio.preset || 'M')
+        : null;
+
+      const semPrincipal = Boolean(midia?.sem_midia_principal || (!midia?.url && midiaApoio));
+      const mainSrc = semPrincipal ? null : (midia?.url || it.imagem_url || it.imagem_base64);
       const mainImg = mainSrc ? await registrarImagem(mainSrc, maxImgW, midia?.preset || 'M') : null;
       const altsArr = parseJsonSafe(it.alternativas_json, []) || [];
       const altImgs = {};
@@ -505,7 +548,7 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
           if (regAlt) altImgs[a.letra] = regAlt;
         }
       }
-      return { mainImg, altImgs, midia };
+      return { apoioImg, midiaApoio, mainImg, altImgs, midia };
     })
   );
 
@@ -612,27 +655,86 @@ export async function buildProvaDocxBuffer(prova, itens, opcoes = {}) {
     </w:p>`;
     bodyParts.push(headerQuestaoXml);
 
-    // Texto de apoio (se existir)
+    const midiaApoio = mediaInfo.midiaApoio || null;
+    const posApoio = midiaApoio?.posicao_apoio === 'acima_texto_apoio'
+      ? 'acima_texto_apoio'
+      : 'abaixo_texto_apoio';
+    const legApoioLimpa = String(midiaApoio?.legenda || '').trim();
+    const credApoioBruto = String(midiaApoio?.credito || '').trim();
+    const credApoioUtil = credApoioBruto && !legApoioLimpa.toLowerCase().includes(credApoioBruto.toLowerCase())
+      ? `Fonte: ${credApoioBruto}`
+      : '';
+    const legendaApoio = [legApoioLimpa, credApoioUtil].filter(Boolean).join(' — ');
+
+    const blocoFiguraApoioXml = mediaInfo.apoioImg
+      ? renderImagemInlineXml(
+          mediaInfo.apoioImg.rId,
+          mediaInfo.apoioImg.docPrId,
+          mediaInfo.apoioImg.cx,
+          mediaInfo.apoioImg.cy,
+          midiaApoio?.alinhamento || 'center',
+          legendaApoio
+        )
+      : '';
+
+    if (posApoio === 'acima_texto_apoio' && blocoFiguraApoioXml) {
+      bodyParts.push(blocoFiguraApoioXml);
+    }
+
+    // Texto de apoio rico (Título, Subtítulo, Parágrafos justificados e destaques tipográficos)
     if (it.texto_apoio && String(it.texto_apoio).trim()) {
-      bodyParts.push(
-        paragrafoTextoMultilinhaXml(it.texto_apoio, {
-          jc: 'both',
-          fontHalfPt: Math.max(18, fontHalfPt - 2),
-          italic: true,
-          leftIndTwips: 180,
-          afterTwips: it.fonte ? 20 : 80,
-        })
-      );
+      const blocosApoio = parseBlocosTextoApoioDocx(it.texto_apoio);
+      blocosApoio.forEach((bloco, bIdx) => {
+        const isLastBloco = bIdx === blocosApoio.length - 1;
+        if (bloco.tipo === 'titulo') {
+          bodyParts.push(
+            paragrafoTextoMultilinhaXml(bloco.texto, {
+              jc: 'center',
+              fontHalfPt,
+              bold: true,
+              italic: false,
+              leftIndTwips: 120,
+              afterTwips: 40,
+            })
+          );
+        } else if (bloco.tipo === 'subtitulo') {
+          bodyParts.push(
+            paragrafoTextoMultilinhaXml(bloco.texto, {
+              jc: 'center',
+              fontHalfPt: Math.max(18, fontHalfPt - 2),
+              bold: true,
+              italic: true,
+              color: '222222',
+              leftIndTwips: 120,
+              afterTwips: 50,
+            })
+          );
+        } else {
+          bodyParts.push(
+            paragrafoTextoMultilinhaXml(bloco.texto, {
+              jc: 'both',
+              fontHalfPt: Math.max(18, fontHalfPt - 2),
+              italic: false,
+              leftIndTwips: 140,
+              afterTwips: isLastBloco ? (it.fonte ? 20 : 75) : 55,
+            })
+          );
+        }
+      });
       if (it.fonte) {
         bodyParts.push(
           paragrafoTextoMultilinhaXml(`(${it.fonte})`, {
             jc: 'right',
             fontHalfPt: Math.max(16, fontHalfPt - 4),
             color: '333333',
-            afterTwips: 80,
+            afterTwips: 75,
           })
         );
       }
+    }
+
+    if (posApoio === 'abaixo_texto_apoio' && blocoFiguraApoioXml) {
+      bodyParts.push(blocoFiguraApoioXml);
     }
 
     const posFig = ['apos_texto_apoio', 'entre_enunciado_e_comando', 'abaixo_comando'].includes(midia?.posicao)

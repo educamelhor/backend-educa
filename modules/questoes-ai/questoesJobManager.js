@@ -13,6 +13,7 @@ import { obterCatalogoEscolaQuestoes } from './catalogoEscolaQuestoes.js';
 import {
   extrairQuestaoMultimodal,
   executarCopilotoQuestao,
+  empacotarMidiasExtraidas,
   normalizarLetraAlternativa,
   reconciliarGabaritoQuestao,
 } from './visionExtractor.agent.js';
@@ -888,7 +889,7 @@ export async function consultarStatusJob({ jobId, escolaId }) {
       try {
         const arr = JSON.parse(r.questoes_json);
         if (Array.isArray(arr)) {
-          // Vincula figura/texto de chamada de fim da página anterior (ex: Pág 5 rodapé -> Q18 no topo da Pág 6)
+          // Vincula figura/texto de chamada/exemplo de fim da página anterior (ex: Pág 5 rodapé -> Q18 no topo da Pág 6)
           if (carryOverDaPaginaAnterior && arr.length > 0) {
             const primeira = { ...arr[0] };
             if (carryOverDaPaginaAnterior.texto) {
@@ -897,9 +898,25 @@ export async function consultarStatusJob({ jobId, escolaId }) {
                 .join('\n\n')
                 .trim();
             }
-            if (carryOverDaPaginaAnterior.midia && !primeira.midia) {
-              primeira.midia = carryOverDaPaginaAnterior.midia;
-              primeira.imagem_url = carryOverDaPaginaAnterior.midia.url || null;
+            if (carryOverDaPaginaAnterior.midia?.url) {
+              const jaTemPrincipal = Boolean(primeira.midia?.url);
+              if (jaTemPrincipal || carryOverDaPaginaAnterior.texto) {
+                const apoioCarry = primeira.midia_apoio?.url
+                  ? primeira.midia_apoio
+                  : {
+                      ...carryOverDaPaginaAnterior.midia,
+                      posicao_apoio: carryOverDaPaginaAnterior.texto ? 'abaixo_texto_apoio' : 'acima_texto_apoio',
+                    };
+                const pacote = empacotarMidiasExtraidas(jaTemPrincipal ? primeira.midia : null, apoioCarry);
+                primeira.midia = pacote.midia;
+                primeira.midia_apoio = pacote.midia_apoio;
+                primeira.imagem_url = pacote.imagem_url;
+              } else {
+                const pacote = empacotarMidiasExtraidas(carryOverDaPaginaAnterior.midia, primeira.midia_apoio);
+                primeira.midia = pacote.midia;
+                primeira.midia_apoio = pacote.midia_apoio;
+                primeira.imagem_url = pacote.imagem_url;
+              }
             }
             arr[0] = primeira;
           }
