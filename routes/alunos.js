@@ -53,19 +53,127 @@ function verificarEscola(req, res, next) {
 //   exibam e ordenem pelo Nome Social sem expor o nome civil.
 // -----------------------------------------------------------------------------
 let _nomeSocialSchemaPromise = null;
+let _alunosCodigoEhInt32 = true;
+
+export function sanitizarCpfEstudante(rawCpf) {
+  const texto = String(rawCpf ?? "").trim();
+  if (!texto) return { ok: true, value: null };
+  const digitos = texto.replace(/\D/g, "");
+  if (!digitos || /^0+$/.test(digitos)) return { ok: true, value: null };
+  if (digitos.length !== 11) {
+    return {
+      ok: false,
+      message: "CPF do estudante inválido: informe os 11 dígitos numéricos ou deixe o campo em branco.",
+    };
+  }
+  return { ok: true, value: digitos };
+}
+
+export function sanitizarDataNascimentoIso(rawData) {
+  const texto = String(rawData ?? "").trim();
+  if (!texto) return { ok: true, value: null };
+
+  let ano;
+  let mes;
+  let dia;
+
+  const mIso = texto.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  const mBr = !mIso ? texto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/) : null;
+
+  if (mIso) {
+    ano = Number(mIso[1]);
+    mes = Number(mIso[2]);
+    dia = Number(mIso[3]);
+  } else if (mBr) {
+    dia = Number(mBr[1]);
+    mes = Number(mBr[2]);
+    ano = Number(mBr[3]);
+  } else {
+    return { ok: false, message: "Data de nascimento inválida." };
+  }
+
+  const anoMax = new Date().getFullYear() + 1;
+  if (ano < 1900 || ano > anoMax || mes < 1 || mes > 12 || dia < 1 || dia > 31) {
+    return { ok: false, message: "Data de nascimento inválida." };
+  }
+  const dt = new Date(Date.UTC(ano, mes - 1, dia));
+  if (
+    dt.getUTCFullYear() !== ano ||
+    dt.getUTCMonth() + 1 !== mes ||
+    dt.getUTCDate() !== dia
+  ) {
+    return { ok: false, message: "Data de nascimento inválida." };
+  }
+
+  return {
+    ok: true,
+    value: `${String(ano).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`,
+  };
+}
+
+export function sanitizarCodigoReEstudante(rawCodigo, codigoEhInt32 = _alunosCodigoEhInt32) {
+  const bruto = String(rawCodigo ?? "").trim();
+  if (!bruto) {
+    return { ok: false, message: "Informe o RE (Registro Estudantil) do estudante." };
+  }
+  const limpo = bruto.replace(/[.\-\s/]/g, "");
+  if (!limpo) {
+    return { ok: false, message: "Informe o RE (Registro Estudantil) do estudante." };
+  }
+
+  if (codigoEhInt32) {
+    if (!/^\d+$/.test(limpo)) {
+      return {
+        ok: false,
+        message: "RE (Registro Estudantil) inválido: informe apenas os dígitos numéricos do código do estudante.",
+      };
+    }
+    const num = Number(limpo);
+    if (!Number.isSafeInteger(num) || num <= 0 || num > 2147483647) {
+      return {
+        ok: false,
+        message: "RE (Registro Estudantil) inválido ou fora da faixa permitida (informe o código RE do EducaDF, não o CPF).",
+      };
+    }
+    return { ok: true, value: String(num) };
+  }
+
+  return { ok: true, value: limpo.slice(0, 30) };
+}
+
 function ensureNomeSocialReady() {
   if (!_nomeSocialSchemaPromise) {
     _nomeSocialSchemaPromise = (async () => {
       try {
         const [cols] = await pool.query(`
-          SELECT COLUMN_NAME
+          SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
             FROM INFORMATION_SCHEMA.COLUMNS
            WHERE TABLE_SCHEMA = DATABASE()
              AND TABLE_NAME = 'alunos'
-             AND COLUMN_NAME IN ('nome_registro', 'usa_nome_social', 'nome_social', 'atendimento_diferencial', 'anees')
+             AND COLUMN_NAME IN ('codigo', 'estudante', 'cpf', 'nome_registro', 'usa_nome_social', 'nome_social', 'atendimento_diferencial', 'anees')
         `);
+        const colMap = new Map(cols.map((c) => [c.COLUMN_NAME, c]));
         const exist = new Set(cols.map((c) => c.COLUMN_NAME));
+
+        const colCodigo = colMap.get("codigo");
+        if (colCodigo) {
+          const dt = String(colCodigo.DATA_TYPE || "").toLowerCase();
+          _alunosCodigoEhInt32 = ["int", "mediumint", "smallint", "tinyint"].includes(dt);
+        }
+
         const alters = [];
+        const colEstudante = colMap.get("estudante");
+        if (colEstudante && Number(colEstudante.CHARACTER_MAXIMUM_LENGTH || 0) > 0 && Number(colEstudante.CHARACTER_MAXIMUM_LENGTH) < 255) {
+          alters.push(`MODIFY COLUMN estudante VARCHAR(255) DEFAULT NULL`);
+        }
+        if (!exist.has("cpf")) {
+          alters.push(`ADD COLUMN cpf VARCHAR(14) DEFAULT NULL`);
+        } else {
+          const colCpf = colMap.get("cpf");
+          if (colCpf && Number(colCpf.CHARACTER_MAXIMUM_LENGTH || 0) > 0 && Number(colCpf.CHARACTER_MAXIMUM_LENGTH) < 14) {
+            alters.push(`MODIFY COLUMN cpf VARCHAR(14) DEFAULT NULL`);
+          }
+        }
         if (!exist.has("atendimento_diferencial")) {
           alters.push(`ADD COLUMN atendimento_diferencial TINYINT(1) NOT NULL DEFAULT 0`);
         }
@@ -979,8 +1087,39 @@ router.post("/", verificarEscola, async (req, res) => {
     const { escola_id } = req.user;
 
     const nomeRegistroLimpo = String(nome_registro ?? estudante ?? "").trim();
-    if (!codigo || !nomeRegistroLimpo) {
-      return res.status(400).json({ message: "Código e nome são obrigatórios." });
+    const codigoCheck = sanitizarCodigoReEstudante(codigo);
+    if (!codigoCheck.ok) {
+      return res.status(400).json({ message: codigoCheck.message });
+    }
+    const codigoLimpo = codigoCheck.value;
+
+    if (!nomeRegistroLimpo) {
+      return res.status(400).json({ message: "Código (RE) e nome do estudante são obrigatórios." });
+    }
+
+    const cpfCheck = sanitizarCpfEstudante(cpf);
+    if (!cpfCheck.ok) {
+      return res.status(400).json({ message: cpfCheck.message });
+    }
+    const cpfLimpo = cpfCheck.value;
+
+    const dataCheck = sanitizarDataNascimentoIso(data_nascimento);
+    if (!dataCheck.ok) {
+      return res.status(400).json({ message: dataCheck.message });
+    }
+    const dataIso = dataCheck.value;
+
+    const turmaNum = Number(turma_id);
+    if (!turmaNum || turmaNum <= 0) {
+      return res.status(400).json({ message: "Selecione a turma do estudante." });
+    }
+
+    const [[turmaValidada]] = await pool.query(
+      "SELECT id, nome, turno, ano FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+      [turmaNum, escola_id]
+    );
+    if (!turmaValidada) {
+      return res.status(400).json({ message: "Turma selecionada não encontrada nesta escola." });
     }
 
     const usaSocialFlag =
@@ -991,80 +1130,150 @@ router.post("/", verificarEscola, async (req, res) => {
     if (usaSocialFlag && !nomeSocialLimpo) {
       return res.status(400).json({ message: "Informe o Nome Social do estudante." });
     }
-    const estudanteExibicao = usaSocialFlag ? nomeSocialLimpo : nomeRegistroLimpo;
+    const estudanteExibicao = (usaSocialFlag ? nomeSocialLimpo : nomeRegistroLimpo).slice(0, 255);
+    const nomeRegistroFinal = nomeRegistroLimpo.slice(0, 255);
+    const nomeSocialFinal = usaSocialFlag ? nomeSocialLimpo.slice(0, 255) : null;
+    const sexoLimpo = sexo ? String(sexo).trim().slice(0, 10) || null : null;
     const aeeAtivoFlag = atendimento_diferencial ? 1 : 0;
     const aneesLimpo =
       aeeAtivoFlag && anees ? String(anees).trim().slice(0, 500) || null : null;
 
     const anoLetivoAtual = anoLetivoPadrao();
+    const anoMatriculaAlvo =
+      turmaValidada.ano && Number(turmaValidada.ano) > 2000
+        ? Number(turmaValidada.ano)
+        : anoLetivoAtual;
 
-    // Verifica se jÃ¡ existe na base global da escola
+    // IMPORTANTE: `alunos` possui UNIQUE KEY global `unq_codigo (codigo)` (sem escola_id).
+    // Por isso consultamos globalmente pelo `codigo` (RE SEEDF) para tratar tanto alunos
+    // inativos desta escola quanto estudantes vindos transferidos de outra escola na base.
     const [[existe]] = await pool.query(
-      "SELECT id, status FROM alunos WHERE codigo = ? AND escola_id = ?",
-      [codigo, escola_id]
+      `SELECT a.id, a.codigo, a.estudante, a.escola_id, a.status, a.turma_id
+         FROM alunos a
+        WHERE a.codigo = ?
+        ORDER BY (a.escola_id = ?) DESC, a.id DESC
+        LIMIT 1`,
+      [codigoLimpo, escola_id]
     );
+
+    if (cpfLimpo) {
+      const [[cpfConflito]] = await pool.query(
+        `SELECT id, codigo, estudante, escola_id
+           FROM alunos
+          WHERE REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', '') = ?
+          LIMIT 1`,
+        [cpfLimpo]
+      );
+      if (cpfConflito && (!existe || Number(cpfConflito.id) !== Number(existe.id))) {
+        return res.status(409).json({
+          message: `Já existe outro estudante cadastrado com este CPF (RE ${cpfConflito.codigo} — ${cpfConflito.estudante}).`,
+        });
+      }
+    }
 
     let alunoId;
 
     if (existe) {
       alunoId = existe.id;
 
-      // Se existe, verifica se jÃ¡ estÃ¡ matriculado ATIVO neste mesmo ano letivo
-      const [[matr]] = await pool.query(
-        "SELECT id, status FROM matriculas WHERE aluno_id = ? AND ano_letivo = ? AND escola_id = ?",
-        [alunoId, anoLetivoAtual, escola_id]
+      // Verifica se já está matriculado ATIVO nesta escola no ano letivo da turma
+      const [matrRows] = await pool.query(
+        `SELECT m.id, m.status, m.turma_id, t.nome AS turma_nome, t.turno AS turma_turno
+           FROM matriculas m
+           LEFT JOIN turmas t ON t.id = m.turma_id
+          WHERE m.aluno_id = ? AND m.ano_letivo = ? AND m.escola_id = ?
+          ORDER BY (m.status = 'ativo') DESC, m.id DESC`,
+        [alunoId, anoMatriculaAlvo, escola_id]
       );
-      if (matr && matr.status === "ativo") {
-        return res.status(409).json({ message: "Este estudante já possui uma matrícula ativa no ano corrente." });
+      const matrAtiva = matrRows.find((r) => String(r.status || "").toLowerCase() === "ativo");
+      if (matrAtiva) {
+        const descTurma = matrAtiva.turma_nome
+          ? ` na turma ${matrAtiva.turma_nome}${matrAtiva.turma_turno ? ` — ${matrAtiva.turma_turno}` : ""}`
+          : "";
+        return res.status(409).json({
+          message: `O estudante ${existe.estudante || nomeRegistroFinal} (RE ${codigoLimpo}) já possui matrícula ativa nesta escola${descTurma} (${anoMatriculaAlvo}).`,
+        });
       }
 
-      // Se ele jÃ¡ estava na base, apenas atualizamos seus dados e o validamos como ativo
+      // Fallback legado: aluno ativo na mesma escola sem linha em `matriculas`, mas já vinculado a turma ativa do mesmo ano
+      if (
+        matrRows.length === 0 &&
+        Number(existe.escola_id) === Number(escola_id) &&
+        String(existe.status || "").toLowerCase() === "ativo" &&
+        Number(existe.turma_id) > 0
+      ) {
+        const [[turmaLegada]] = await pool.query(
+          "SELECT id, nome, turno, ano FROM turmas WHERE id = ? AND escola_id = ? LIMIT 1",
+          [existe.turma_id, escola_id]
+        );
+        if (turmaLegada && Number(turmaLegada.ano) === Number(anoMatriculaAlvo)) {
+          return res.status(409).json({
+            message: `O estudante ${existe.estudante || nomeRegistroFinal} (RE ${codigoLimpo}) já está ativo nesta escola na turma ${turmaLegada.nome}${turmaLegada.turno ? ` — ${turmaLegada.turno}` : ""} (${anoMatriculaAlvo}).`,
+          });
+        }
+      }
+
+      // Atualiza/reativa o registro existente (inclusive se veio transferido de outra escola)
       await pool.query(
         `UPDATE alunos
             SET estudante = ?,
                 nome_registro = ?,
                 usa_nome_social = ?,
                 nome_social = ?,
-                data_nascimento = ?,
-                sexo = ?,
+                data_nascimento = COALESCE(?, data_nascimento),
+                sexo = COALESCE(?, sexo),
                 turma_id = ?,
-                cpf = ?,
+                cpf = COALESCE(?, cpf),
                 atendimento_diferencial = ?,
                 anees = ?,
+                escola_id = ?,
                 status = 'ativo'
           WHERE id = ?`,
         [
           estudanteExibicao,
-          nomeRegistroLimpo,
+          nomeRegistroFinal,
           usaSocialFlag,
-          usaSocialFlag ? nomeSocialLimpo : null,
-          data_nascimento || null,
-          sexo || null,
-          turma_id || null,
-          cpf || null,
+          nomeSocialFinal,
+          dataIso,
+          sexoLimpo,
+          turmaValidada.id,
+          cpfLimpo,
           aeeAtivoFlag,
           aneesLimpo,
+          escola_id,
           alunoId,
         ]
       );
     } else {
-      // InserÃ§Ã£o inÃ©dita na base global
+      // Inserção inédita na base global (protegida contra concorrência via ON DUPLICATE KEY)
       const [result] = await pool.query(
-        `
-        INSERT INTO alunos
+        `INSERT INTO alunos
           (codigo, estudante, nome_registro, usa_nome_social, nome_social, data_nascimento, sexo, turma_id, cpf, atendimento_diferencial, anees, escola_id, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
-        `,
+        ON DUPLICATE KEY UPDATE
+          id = LAST_INSERT_ID(id),
+          estudante = VALUES(estudante),
+          nome_registro = VALUES(nome_registro),
+          usa_nome_social = VALUES(usa_nome_social),
+          nome_social = VALUES(nome_social),
+          data_nascimento = COALESCE(VALUES(data_nascimento), data_nascimento),
+          sexo = COALESCE(VALUES(sexo), sexo),
+          turma_id = VALUES(turma_id),
+          cpf = COALESCE(VALUES(cpf), cpf),
+          atendimento_diferencial = VALUES(atendimento_diferencial),
+          anees = VALUES(anees),
+          escola_id = VALUES(escola_id),
+          status = 'ativo'`,
         [
-          codigo,
+          codigoLimpo,
           estudanteExibicao,
-          nomeRegistroLimpo,
+          nomeRegistroFinal,
           usaSocialFlag,
-          usaSocialFlag ? nomeSocialLimpo : null,
-          data_nascimento || null,
-          sexo || null,
-          turma_id || null,
-          cpf || null,
+          nomeSocialFinal,
+          dataIso,
+          sexoLimpo,
+          turmaValidada.id,
+          cpfLimpo,
           aeeAtivoFlag,
           aneesLimpo,
           escola_id,
@@ -1073,19 +1282,49 @@ router.post("/", verificarEscola, async (req, res) => {
       alunoId = result.insertId;
     }
 
-    // âœ… Cria matrÃ­cula automaticamente ao cadastrar o aluno
-    if (turma_id && alunoId) {
-      await pool.query(
-        `INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status)
-         VALUES (?, ?, ?, ?, 'ativo')
-         ON DUPLICATE KEY UPDATE status = 'ativo', turma_id = ?, updated_at = CURRENT_TIMESTAMP`,
-        [escola_id, alunoId, turma_id, anoLetivoAtual, turma_id]
+    // Sincroniza matrícula ativa no ano letivo da turma (evitando registros órfãos em outra turma do mesmo ano)
+    if (alunoId) {
+      const [matrAno] = await pool.query(
+        `SELECT id, turma_id
+           FROM matriculas
+          WHERE aluno_id = ? AND escola_id = ? AND ano_letivo = ?
+          ORDER BY (turma_id = ?) DESC, id DESC`,
+        [alunoId, escola_id, anoMatriculaAlvo, turmaValidada.id]
       );
+
+      if (matrAno.length > 0) {
+        const principalId = matrAno[0].id;
+        await pool.query(
+          `UPDATE matriculas
+              SET turma_id = ?, status = 'ativo', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?`,
+          [turmaValidada.id, principalId]
+        );
+        if (matrAno.length > 1) {
+          const extras = matrAno.slice(1).map((r) => r.id);
+          await pool.query(
+            `UPDATE matriculas SET status = 'inativo', updated_at = CURRENT_TIMESTAMP WHERE id IN (?)`,
+            [extras]
+          );
+        }
+      } else {
+        await pool.query(
+          `INSERT INTO matriculas (escola_id, aluno_id, turma_id, ano_letivo, status)
+           VALUES (?, ?, ?, ?, 'ativo')
+           ON DUPLICATE KEY UPDATE status = 'ativo', turma_id = VALUES(turma_id), updated_at = CURRENT_TIMESTAMP`,
+          [escola_id, alunoId, turmaValidada.id, anoMatriculaAlvo]
+        );
+      }
     }
 
     res.status(201).json({ id: alunoId, message: "Aluno cadastrado com sucesso." });
   } catch (err) {
     console.error("Erro ao criar aluno:", err);
+    if (err?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "Já existe um estudante cadastrado com este RE ou CPF no sistema.",
+      });
+    }
     res.status(500).json({ message: "Erro ao criar aluno." });
   }
 });
@@ -1202,9 +1441,38 @@ router.put("/:id", verificarEscola, async (req, res) => {
       }
     }
 
-    if (typeof data_nascimento !== "undefined") { campos.push("data_nascimento = ?"); valores.push(data_nascimento || null); }
-    if (typeof sexo !== "undefined") { campos.push("sexo = ?"); valores.push(sexo || null); }
-    if (typeof cpf !== "undefined") { campos.push("cpf = ?"); valores.push(cpf || null); }
+    if (typeof data_nascimento !== "undefined") {
+      const dCheck = sanitizarDataNascimentoIso(data_nascimento);
+      if (!dCheck.ok) {
+        return res.status(400).json({ message: dCheck.message });
+      }
+      campos.push("data_nascimento = ?");
+      valores.push(dCheck.value);
+    }
+    if (typeof sexo !== "undefined") { campos.push("sexo = ?"); valores.push(sexo ? String(sexo).trim().slice(0, 10) || null : null); }
+    if (typeof cpf !== "undefined") {
+      const cCheck = sanitizarCpfEstudante(cpf);
+      if (!cCheck.ok) {
+        return res.status(400).json({ message: cCheck.message });
+      }
+      if (cCheck.value) {
+        const [[cpfDupl]] = await pool.query(
+          `SELECT id, codigo, estudante
+             FROM alunos
+            WHERE REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', '') = ?
+              AND id <> ?
+            LIMIT 1`,
+          [cCheck.value, id]
+        );
+        if (cpfDupl) {
+          return res.status(409).json({
+            message: `Já existe outro estudante cadastrado com este CPF (RE ${cpfDupl.codigo} — ${cpfDupl.estudante}).`,
+          });
+        }
+      }
+      campos.push("cpf = ?");
+      valores.push(cCheck.value);
+    }
     if (typeof atendimento_diferencial !== "undefined") { campos.push("atendimento_diferencial = ?"); valores.push(atendimento_diferencial ? 1 : 0); }
     if (typeof anees !== "undefined") {
       const desmarcouAee = typeof atendimento_diferencial !== "undefined" && !atendimento_diferencial;
@@ -1284,6 +1552,11 @@ router.put("/:id", verificarEscola, async (req, res) => {
     res.json({ message: "Aluno atualizado com sucesso." });
   } catch (err) {
     console.error("Erro ao atualizar aluno:", err);
+    if (err?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "Já existe outro estudante cadastrado com este CPF ou código no sistema.",
+      });
+    }
     res.status(500).json({ message: "Erro ao atualizar aluno." });
   }
 });
