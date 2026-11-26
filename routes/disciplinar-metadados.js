@@ -57,11 +57,25 @@ router.get("/", async (req, res) => {
     `);
 
     // ── 2. Distribuição de comportamento (faixas de pontuação) ─
-    // Calcula pontuação de cada aluno e agrupa por conceito
+    // Calcula pontuação de cada aluno ativo e agrupa por conceito com lista nominal
     const [pontosAlunos] = await pool.query(`
       SELECT a.id AS aluno_id,
-             8.0 + COALESCE(SUM(CASE WHEN o2.status != 'CANCELADA' THEN r2.pontos ELSE 0 END), 0) AS pts
+             ANY_VALUE(a.codigo) AS re,
+             ANY_VALUE(a.estudante) AS nome,
+             COALESCE(ANY_VALUE(t.nome), '—') AS turma,
+             8.0 + COALESCE(SUM(
+               CASE
+                 WHEN o2.status != 'CANCELADA' THEN
+                   CASE
+                     WHEN COALESCE(r2.medida_disciplinar, '') = 'Suspensão'
+                       THEN COALESCE(r2.pontos, 0) * COALESCE(o2.dias_suspensao, 1)
+                     ELSE COALESCE(r2.pontos, 0)
+                   END
+                 ELSE 0
+               END
+             ), 0) AS pts
       FROM alunos a
+      LEFT JOIN turmas t ON t.id = a.turma_id
       LEFT JOIN ocorrencias_disciplinares o2 ON o2.aluno_id = a.id AND o2.escola_id = a.escola_id
       LEFT JOIN registros_ocorrencias r2
         ON r2.descricao_ocorrencia = o2.motivo AND r2.tipo_ocorrencia = o2.tipo_ocorrencia
@@ -69,21 +83,38 @@ router.get("/", async (req, res) => {
       GROUP BY a.id
     `);
 
+    const alunosComPts = pontosAlunos.map(a => {
+      const p = Math.round(Math.max(0, Math.min(10, Number(a.pts))) * 100) / 100;
+      return {
+        id: a.aluno_id,
+        re: a.re != null && String(a.re).trim() !== "" ? String(a.re) : "—",
+        nome: a.nome || "—",
+        turma: a.turma || "—",
+        pts: p,
+      };
+    });
+
     const conceitos = [
-      { label: "I - Excepcional",   nota: "10.00",   min: 10,  max: 10,   cor: "#16a34a", bg: "#dcfce7" },
-      { label: "II - Ótimo",        nota: "9.0–9.9", min: 9,   max: 9.99, cor: "#3b82f6", bg: "#dbeafe" },
-      { label: "III - Bom",         nota: "7.0–8.9", min: 7,   max: 8.99, cor: "#22c55e", bg: "#dcfce7" },
-      { label: "IV - Regular",      nota: "5.0–6.9", min: 5,   max: 6.99, cor: "#f59e0b", bg: "#fef9c3" },
-      { label: "V - Insuficiente",  nota: "2.0–4.9", min: 2,   max: 4.99, cor: "#ea580c", bg: "#fff7ed" },
-      { label: "VI - Incompatível", nota: "0–1.9",   min: 0,   max: 1.99, cor: "#ef4444", bg: "#fee2e2" },
+      { key: "excepcional",  label: "I - Excepcional",   nota: "10.00",   check: p => p >= 10,          cor: "#16a34a", bg: "#dcfce7" },
+      { key: "otimo",        label: "II - Ótimo",        nota: "9.0–9.9", check: p => p >= 9 && p < 10, cor: "#3b82f6", bg: "#dbeafe" },
+      { key: "bom",          label: "III - Bom",         nota: "7.0–8.9", check: p => p >= 7 && p < 9,  cor: "#22c55e", bg: "#dcfce7" },
+      { key: "regular",      label: "IV - Regular",      nota: "5.0–6.9", check: p => p >= 5 && p < 7,  cor: "#f59e0b", bg: "#fef9c3" },
+      { key: "insuficiente", label: "V - Insuficiente",  nota: "2.0–4.9", check: p => p >= 2 && p < 5,  cor: "#ea580c", bg: "#fff7ed" },
+      { key: "incompativel", label: "VI - Incompatível", nota: "0–1.9",   check: p => p < 2,            cor: "#ef4444", bg: "#fee2e2" },
     ];
-    const totalAlunos = pontosAlunos.length;
-    const comportamento = conceitos.map(c => {
-      const qtd = pontosAlunos.filter(a => {
-        const p = Math.max(0, Math.min(10, Number(a.pts)));
-        return p >= c.min && p <= c.max;
-      }).length;
-      return { ...c, qtd, pct: totalAlunos ? Math.round((qtd / totalAlunos) * 100) : 0 };
+    const totalAlunos = alunosComPts.length;
+    const collator = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "base" });
+    const comportamento = conceitos.map(({ check, ...c }) => {
+      const alunos = alunosComPts
+        .filter(a => check(a.pts))
+        .sort((a, b) => collator.compare(a.turma, b.turma) || collator.compare(a.nome, b.nome));
+      const qtd = alunos.length;
+      return {
+        ...c,
+        qtd,
+        pct: totalAlunos ? Math.round((qtd / totalAlunos) * 100) : 0,
+        alunos,
+      };
     });
 
     // ── 3. Top ocorrências por motivo ─────────────────────────
