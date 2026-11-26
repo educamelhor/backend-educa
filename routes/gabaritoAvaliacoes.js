@@ -12,6 +12,7 @@
 
 import { Router } from "express";
 import pool from "../db.js";
+import { normalizarConfigFormato, calcularCorrecaoGabarito } from "../utils/gabaritoScoring.js";
 
 const router = Router();
 
@@ -31,11 +32,7 @@ router.get("/", async (req, res) => {
     const { status, bimestre, limit } = req.query;
 
     let sql = `
-      SELECT 
-        id, titulo, tipo, bimestre, num_questoes, num_alternativas,
-        nota_total, modelo, gabarito_oficial, disciplinas_config,
-        turmas_ids, turno, status, criado_por,
-        created_at, updated_at
+      SELECT *
       FROM gabarito_avaliacoes
       WHERE escola_id = ?
     `;
@@ -62,6 +59,9 @@ router.get("/", async (req, res) => {
     // Parse JSON fields
     const parsed = rows.map((r) => ({
       ...r,
+      formato_questoes: r.formato_questoes || "multipla_escolha",
+      questoes_ce: safeJson(r.questoes_ce),
+      penalidade_ce: Number(r.penalidade_ce) ? 1 : 0,
       gabarito_oficial: safeJson(r.gabarito_oficial),
       disciplinas_config: safeJson(r.disciplinas_config),
       turmas_ids: safeJson(r.turmas_ids),
@@ -93,6 +93,9 @@ router.get("/:id", async (req, res) => {
     const r = rows[0];
     res.json({
       ...r,
+      formato_questoes: r.formato_questoes || "multipla_escolha",
+      questoes_ce: safeJson(r.questoes_ce),
+      penalidade_ce: Number(r.penalidade_ce) ? 1 : 0,
       gabarito_oficial: safeJson(r.gabarito_oficial),
       disciplinas_config: safeJson(r.disciplinas_config),
       turmas_ids: safeJson(r.turmas_ids),
@@ -195,6 +198,9 @@ router.post("/", async (req, res) => {
       turmas_ids,
       turno,
       data_aplicacao,  // ← DATA DA PROVA BIMESTRAL (definida pela direção)
+      formato_questoes,
+      questoes_ce,
+      penalidade_ce,
     } = req.body;
 
     // Validações
@@ -208,7 +214,24 @@ router.post("/", async (req, res) => {
     if (!nQ || nQ < 1 || nQ > 100) {
       return res.status(400).json({ error: "Número de questões inválido (1-100)." });
     }
-    const nA = Number(num_alternativas);
+
+    const fmtNorm = normalizarConfigFormato({
+      formato_questoes,
+      questoes_ce,
+      penalidade_ce,
+      num_questoes: nQ,
+    });
+
+    if (fmtNorm.formato === "mista") {
+      if (fmtNorm.questoesCe.length === 0) {
+        return res.status(400).json({ error: "Na Prova Mista, selecione ao menos 1 questão do tipo Certo/Errado." });
+      }
+      if (fmtNorm.questoesCe.length >= nQ) {
+        return res.status(400).json({ error: "Todas as questões foram marcadas como C/E. Use o formato 'Certo / Errado' ou mantenha ao menos 1 questão de Múltipla Escolha." });
+      }
+    }
+
+    const nA = fmtNorm.formato === "certo_errado" ? 2 : Number(num_alternativas);
     if (!nA || nA < 2 || nA > 6) {
       return res.status(400).json({ error: "Alternativas inválidas (2-6)." });
     }
@@ -232,29 +255,68 @@ router.post("/", async (req, res) => {
       ? "publicada"
       : "rascunho";
 
-    const [result] = await pool.query(
-      `INSERT INTO gabarito_avaliacoes 
-       (escola_id, titulo, tipo, bimestre, num_questoes, num_alternativas, nota_total, 
-        modelo, gabarito_oficial, disciplinas_config, turmas_ids, turno, status, criado_por, data_aplicacao)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        escola_id,
-        titulo.trim(),
-        tipo || null,
-        bimestre || null,
-        nQ,
-        nA,
-        Number(nota_total) || 10,
-        modelo || "padrao",
-        gabarito_oficial ? JSON.stringify(gabarito_oficial) : null,
-        disciplinas_config ? JSON.stringify(disciplinas_config) : null,
-        turmas_ids ? JSON.stringify(turmas_ids) : null,
-        turno || null,
-        status,
-        userId,
-        data_aplicacao || null,
-      ]
-    );
+    const questoesCeJson = fmtNorm.formato === "mista"
+      ? JSON.stringify(fmtNorm.questoesCe)
+      : null;
+
+    let result;
+    try {
+      [result] = await pool.query(
+        `INSERT INTO gabarito_avaliacoes 
+         (escola_id, titulo, tipo, bimestre, num_questoes, num_alternativas, nota_total, 
+          modelo, formato_questoes, questoes_ce, penalidade_ce,
+          gabarito_oficial, disciplinas_config, turmas_ids, turno, status, criado_por, data_aplicacao)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          escola_id,
+          titulo.trim(),
+          tipo || null,
+          bimestre || null,
+          nQ,
+          nA,
+          Number(nota_total) || 10,
+          modelo || "padrao",
+          fmtNorm.formato,
+          questoesCeJson,
+          fmtNorm.penalidadeAtiva ? 1 : 0,
+          gabarito_oficial ? JSON.stringify(gabarito_oficial) : null,
+          disciplinas_config ? JSON.stringify(disciplinas_config) : null,
+          turmas_ids ? JSON.stringify(turmas_ids) : null,
+          turno || null,
+          status,
+          userId,
+          data_aplicacao || null,
+        ]
+      );
+    } catch (insErr) {
+      if (insErr.code === "ER_BAD_FIELD_ERROR") {
+        [result] = await pool.query(
+          `INSERT INTO gabarito_avaliacoes 
+           (escola_id, titulo, tipo, bimestre, num_questoes, num_alternativas, nota_total, 
+            modelo, gabarito_oficial, disciplinas_config, turmas_ids, turno, status, criado_por, data_aplicacao)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            escola_id,
+            titulo.trim(),
+            tipo || null,
+            bimestre || null,
+            nQ,
+            nA,
+            Number(nota_total) || 10,
+            modelo || "padrao",
+            gabarito_oficial ? JSON.stringify(gabarito_oficial) : null,
+            disciplinas_config ? JSON.stringify(disciplinas_config) : null,
+            turmas_ids ? JSON.stringify(turmas_ids) : null,
+            turno || null,
+            status,
+            userId,
+            data_aplicacao || null,
+          ]
+        );
+      } else {
+        throw insErr;
+      }
+    }
 
     // Retornar o registro criado
     const [created] = await pool.query(
@@ -298,6 +360,9 @@ router.post("/", async (req, res) => {
 
     res.status(201).json({
       ...r,
+      formato_questoes: r.formato_questoes || "multipla_escolha",
+      questoes_ce: safeJson(r.questoes_ce),
+      penalidade_ce: Number(r.penalidade_ce) ? 1 : 0,
       gabarito_oficial: safeJson(r.gabarito_oficial),
       disciplinas_config: safeJson(r.disciplinas_config),
       turmas_ids: safeJson(r.turmas_ids),
@@ -317,7 +382,7 @@ router.put("/:id", async (req, res) => {
 
     // Verificar se existe
     const [existing] = await pool.query(
-      "SELECT id, status FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
+      "SELECT id, status, num_questoes, formato_questoes, questoes_ce, penalidade_ce FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?",
       [id, escola_id]
     );
     if (existing.length === 0) {
@@ -331,6 +396,9 @@ router.put("/:id", async (req, res) => {
       num_alternativas,
       nota_total,
       modelo,
+      formato_questoes,
+      questoes_ce,
+      penalidade_ce,
       gabarito_oficial,
       disciplinas_config,
       turmas_ids,
@@ -349,6 +417,21 @@ router.put("/:id", async (req, res) => {
     if (num_alternativas !== undefined) { sets.push("num_alternativas = ?"); params.push(Number(num_alternativas)); }
     if (nota_total !== undefined) { sets.push("nota_total = ?"); params.push(Number(nota_total)); }
     if (modelo !== undefined) { sets.push("modelo = ?"); params.push(modelo); }
+    if (formato_questoes !== undefined || questoes_ce !== undefined || penalidade_ce !== undefined) {
+      const nQRef = Number(num_questoes || existing[0].num_questoes || 10);
+      const fmtNorm = normalizarConfigFormato({
+        formato_questoes: formato_questoes !== undefined ? formato_questoes : existing[0].formato_questoes,
+        questoes_ce: questoes_ce !== undefined ? questoes_ce : safeJson(existing[0].questoes_ce),
+        penalidade_ce: penalidade_ce !== undefined ? penalidade_ce : existing[0].penalidade_ce,
+        num_questoes: nQRef,
+      });
+      sets.push("formato_questoes = ?");
+      params.push(fmtNorm.formato);
+      sets.push("questoes_ce = ?");
+      params.push(fmtNorm.formato === "mista" ? JSON.stringify(fmtNorm.questoesCe) : null);
+      sets.push("penalidade_ce = ?");
+      params.push(fmtNorm.penalidadeAtiva ? 1 : 0);
+    }
     if (gabarito_oficial !== undefined) {
       sets.push("gabarito_oficial = ?");
       params.push(gabarito_oficial ? JSON.stringify(gabarito_oficial) : null);
@@ -427,6 +510,9 @@ router.put("/:id", async (req, res) => {
     }
     res.json({
       ...r,
+      formato_questoes: r.formato_questoes || "multipla_escolha",
+      questoes_ce: safeJson(r.questoes_ce),
+      penalidade_ce: Number(r.penalidade_ce) ? 1 : 0,
       gabarito_oficial: safeJson(r.gabarito_oficial),
       disciplinas_config: safeJson(r.disciplinas_config),
       turmas_ids: safeJson(r.turmas_ids),
@@ -872,103 +958,68 @@ function safeJson(val) {
  *   "desconsiderar" → questão excluída do total (nota / N-1 questões)
  */
 async function recalcularRespostasEmLote(conn, avaliacaoId, escola_id) {
-  // Buscar avaliação com gabarito oficial + questões canceladas
+  // Buscar avaliação com gabarito oficial + questões canceladas + formato C/E
   const [[av]] = await conn.query(
-    `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config, questoes_canceladas
-     FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+    `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
     [avaliacaoId, escola_id]
   );
   if (!av) throw new Error("Avaliação não encontrada no recálculo.");
 
-  const gabOficial       = safeJson(av.gabarito_oficial) || [];
-  const numQuestoes      = av.num_questoes || gabOficial.length;
-  const notaTotal        = Number(av.nota_total) || 10;
+  const gabOficial        = safeJson(av.gabarito_oficial) || [];
+  const numQuestoes       = av.num_questoes || gabOficial.length;
+  const notaTotal         = Number(av.nota_total) || 10;
   const disciplinasConfig = safeJson(av.disciplinas_config) || [];
-  const canceladas       = safeJson(av.questoes_canceladas) || [];
+  const canceladas        = safeJson(av.questoes_canceladas) || [];
+  const formatoQuestoes   = av.formato_questoes || "multipla_escolha";
+  const questoesCe        = safeJson(av.questoes_ce);
+  const penalidadeCe      = Number(av.penalidade_ce) ? 1 : 0;
 
-  // Indexar cancelamentos por número de questão
-  const cancelMap = {};
-  for (const c of canceladas) {
-    cancelMap[c.numero] = c.modo; // "bonificar" | "desconsiderar"
-  }
-
-  // Contar questões efetivas (excluindo as desconsideradas)
   const numDesconsideradas = canceladas.filter(c => c.modo === "desconsiderar").length;
   const numQuestoesEfetivas = Math.max(1, numQuestoes - numDesconsideradas);
 
-  // Buscar todas as respostas desta avaliação
-  const [respostas] = await conn.query(
-    `SELECT id, codigo_aluno, respostas_aluno
-     FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?`,
-    [avaliacaoId, escola_id]
-  );
+  // Buscar respostas regulares (preservando nota = 0.00 de gabaritos anulados por cola)
+  let respostas;
+  try {
+    [respostas] = await conn.query(
+      `SELECT id, codigo_aluno, respostas_aluno
+       FROM gabarito_respostas
+       WHERE avaliacao_id = ? AND escola_id = ? AND (status IS NULL OR status != 'anulado')`,
+      [avaliacaoId, escola_id]
+    );
+  } catch {
+    [respostas] = await conn.query(
+      `SELECT id, codigo_aluno, respostas_aluno
+       FROM gabarito_respostas WHERE avaliacao_id = ? AND escola_id = ?`,
+      [avaliacaoId, escola_id]
+    );
+  }
 
   let totalAtualizados = 0;
 
   for (const resp of respostas) {
     const respostasAluno = safeJson(resp.respostas_aluno) || [];
-    const detalhes = [];
-
-    for (let i = 0; i < numQuestoes; i++) {
-      const questaoNum = i + 1;
-      const modo = cancelMap[questaoNum];
-
-      if (modo === "desconsiderar") continue; // pula — não entra no cálculo
-
-      if (modo === "bonificar") {
-        // Todos ganham o ponto independente da resposta
-        detalhes.push({
-          numero: questaoNum,
-          resposta: respostasAluno[i] || null,
-          correto: gabOficial[i] || "",
-          acertou: true,
-          cancelada: "bonificada",
-        });
-        continue;
-      }
-
-      // Questão normal
-      const resp_aluno = respostasAluno[i] || null;
-      const correto    = gabOficial[i] || "";
-      const isNulo     = resp_aluno === "N";
-      detalhes.push({
-        numero: questaoNum,
-        resposta: resp_aluno,
-        correto,
-        acertou: !isNulo && resp_aluno !== null && resp_aluno === correto,
-      });
-    }
-
-    const acertos      = detalhes.filter(d => d.acertou).length;
-    const valorQuestao = notaTotal / numQuestoesEfetivas;
-    const nota         = parseFloat((acertos * valorQuestao).toFixed(2));
-
-    // Acertos por disciplina (exclui questões desconsideradas)
-    let acertosPorDisciplina = null;
-    if (disciplinasConfig.length > 0) {
-      acertosPorDisciplina = disciplinasConfig.map(dc => {
-        const questoesDc = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
-        return {
-          nome: dc.nome,
-          disciplina_id: dc.disciplina_id,
-          de: dc.de,
-          ate: dc.ate,
-          total: questoesDc.length,
-          acertos: questoesDc.filter(d => d.acertou).length,
-        };
-      });
-    }
+    const calc = calcularCorrecaoGabarito({
+      respostasAluno,
+      gabaritoOficial: gabOficial,
+      numQuestoes,
+      notaTotal,
+      disciplinasConfig,
+      questoesCanceladas: canceladas,
+      formatoQuestoes,
+      questoesCe,
+      penalidadeCe,
+    });
 
     await conn.query(
       `UPDATE gabarito_respostas
        SET acertos = ?, total_questoes = ?, nota = ?, detalhes = ?, acertos_por_disciplina = ?
        WHERE id = ?`,
       [
-        acertos,
-        numQuestoesEfetivas,
-        nota,
-        JSON.stringify(detalhes),
-        acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
+        calc.acertos,
+        calc.numQuestoesEfetivas,
+        calc.nota,
+        JSON.stringify(calc.detalhes),
+        calc.acertosPorDisciplina ? JSON.stringify(calc.acertosPorDisciplina) : null,
         resp.id,
       ]
     );

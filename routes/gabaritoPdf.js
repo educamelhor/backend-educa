@@ -19,6 +19,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import sharp from "sharp";
+import { normalizarConfigFormato } from "../utils/gabaritoScoring.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -182,10 +183,66 @@ function renderFotoAluno(doc, fotoBuffer, cx, cy, radius) {
 
 // ─── Geração do PDF OMR ─────────────────────────────────────────────────────
 
-async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, numAlternativas, alunos, turma }) {
+async function resolverConfigAvaliacaoPdf(escolaId, body = {}) {
+  let {
+    formato_questoes,
+    questoes_ce,
+    penalidade_ce,
+    avaliacao_id,
+    num_questoes,
+    num_alternativas,
+  } = body;
+
+  if (avaliacao_id && formato_questoes === undefined) {
+    try {
+      const [[av]] = await pool.query(
+        `SELECT formato_questoes, questoes_ce, penalidade_ce, num_questoes, num_alternativas
+         FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+        [avaliacao_id, escolaId]
+      );
+      if (av) {
+        formato_questoes = av.formato_questoes;
+        questoes_ce = av.questoes_ce;
+        penalidade_ce = av.penalidade_ce;
+        if (!num_questoes) num_questoes = av.num_questoes;
+        if (!num_alternativas) num_alternativas = av.num_alternativas;
+      }
+    } catch { /* fallback silencioso */ }
+  }
+
+  return {
+    formatoQuestoes: formato_questoes || "multipla_escolha",
+    questoesCe: questoes_ce || null,
+    penalidadeCe: penalidade_ce || 0,
+    avaliacaoId: avaliacao_id || null,
+    numQuestoes: num_questoes || 25,
+    numAlternativas: num_alternativas || 4,
+  };
+}
+
+async function gerarPdfGabarito(res, {
+  escola,
+  descricao,
+  modelo,
+  numQuestoes,
+  numAlternativas,
+  formatoQuestoes = "multipla_escolha",
+  questoesCe = null,
+  penalidadeCe = 0,
+  avaliacaoId = null,
+  alunos,
+  turma,
+}) {
   const nQ = Number(numQuestoes) || 25;
-  const nA = Number(numAlternativas) || 4;
-  const letras = "ABCDEFGH".slice(0, nA);
+  const fmtNorm = normalizarConfigFormato({
+    formato_questoes: formatoQuestoes,
+    questoes_ce: questoesCe,
+    penalidade_ce: penalidadeCe,
+    num_questoes: nQ,
+  });
+
+  const nA = fmtNorm.formato === "certo_errado" ? 2 : (Number(numAlternativas) || 4);
+  const letras = fmtNorm.formato === "certo_errado" ? "CE" : "ABCDEFGH".slice(0, nA);
   const nomeEscola = (escola.apelido || escola.nome || "ESCOLA").toUpperCase();
   // nomeTurma global (fallback) — será sobrescrito por aluno.turmaNome quando disponível
   const nomeTurmaGlobal = (turma?.turma || "").toUpperCase();
@@ -217,14 +274,17 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
     // Busca foto do aluno (com LGPD: só se tiver consentimento)
     const fotoBuffer = await buscarFotoBuffer(aluno.foto_url || null);
 
-    // Gerar QR Code com dados do aluno
+    // Gerar QR Code com dados do aluno + metadados compactos do formato OMR
     const qrData = {
-      c: codigo,                          // código do aluno
-      t: turmaId,                         // ID da turma DO ALUNO (não global)
-      e: escola.id || "",                 // ID da escola
-      a: descricao || "AVALIACAO",        // título da avaliação
-      q: nQ,                              // total de questões
-      n: nA,                              // total de alternativas
+      c: codigo,                                            // código do aluno
+      t: turmaId,                                           // ID da turma DO ALUNO
+      e: escola.id || "",                                   // ID da escola
+      a: String(descricao || "AVALIACAO").slice(0, 36),     // título compacto (preserva baixa densidade do QR)
+      q: nQ,                                                // total de questões
+      n: nA,                                                // total de colunas de bolhas
+      ...(avaliacaoId ? { v: Number(avaliacaoId) } : {}),
+      ...(fmtNorm.formato === "certo_errado" ? { f: "CE" } : {}),
+      ...(fmtNorm.formato === "mista" ? { f: "M", ce: fmtNorm.ceCompacto } : {}),
     };
     const qrBuffer = await gerarQRBuffer(qrData);
 
@@ -238,6 +298,9 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
       nA,
       letras,
       modelo,
+      formato: fmtNorm.formato,
+      ceSet: fmtNorm.ceSet,
+      penalidadeAtiva: fmtNorm.penalidadeAtiva,
       qrBuffer,
       fotoBuffer,
     });
@@ -247,7 +310,14 @@ async function gerarPdfGabarito(res, { escola, descricao, modelo, numQuestoes, n
 }
 
 function renderPaginaOMR(doc, opts) {
-  const { nomeEscola, descricao, nomeTurma, nomeAluno, codigoAluno, nQ, nA, letras, modelo, qrBuffer, fotoBuffer } = opts;
+  const {
+    nomeEscola, descricao, nomeTurma, nomeAluno, codigoAluno,
+    nQ, nA, letras, modelo,
+    formato = "multipla_escolha",
+    ceSet = new Set(),
+    penalidadeAtiva = false,
+    qrBuffer, fotoBuffer,
+  } = opts;
 
   const pageW = doc.page.width;
   const pageH = doc.page.height;
@@ -389,41 +459,44 @@ function renderPaginaOMR(doc, opts) {
   y += instrH + 6;
 
   // ── Exemplo visual de preenchimento ──
-  // Centralizado horizontalmente na página
+  // Se houver questões C/E, exibe legenda na mesma linha horizontal (preserva startY ≈ 184pt exato para o OMR!)
   const exemploY = y;
+  const temCE = ceSet && ceSet.size > 0;
   const centroX = mL + contentW / 2;
-
-  // "Exemplo:   errado →  ○✕    correto →  ●"
-  // Posicionar tudo relativo ao centro da página
-  const exemploStartX = centroX - 100;
+  const exemploStartX = temCE ? mL + 8 : (centroX - 100);
 
   doc.font("Helvetica").fontSize(6.5).fillColor("#666");
-  doc.text("Exemplo:", exemploStartX, exemploY);
-
-  doc.font("Helvetica").fontSize(6.5).fillColor("#666");
-  doc.text("errado", exemploStartX + 48, exemploY);
-
-  // Seta errado
-  doc.font("Helvetica").fontSize(6.5).fillColor("#666");
-  doc.text("→", exemploStartX + 72, exemploY);
+  doc.text("Exemplo:", exemploStartX, exemploY, { lineBreak: false });
+  doc.text("errado", exemploStartX + 44, exemploY, { lineBreak: false });
+  doc.text("→", exemploStartX + 68, exemploY, { lineBreak: false });
 
   // Bolha errada (com X dentro)
-  const exX1 = exemploStartX + 90;
+  const exX1 = exemploStartX + 84;
   const exCY = exemploY + 4;
   doc.circle(exX1, exCY, 5).lineWidth(0.8).strokeColor("#000").stroke();
   doc.font("Helvetica").fontSize(5).fillColor("#000");
-  doc.text("✕", exX1 - 2.5, exemploY + 1);
+  doc.text("✕", exX1 - 2.5, exemploY + 1, { lineBreak: false });
 
   // Espaço e "correto →"
   doc.font("Helvetica").fontSize(6.5).fillColor("#666");
-  doc.text("correto", exX1 + 24, exemploY);
-
-  doc.font("Helvetica").fontSize(6.5).fillColor("#666");
-  doc.text("→", exX1 + 52, exemploY);
+  doc.text("correto", exX1 + 18, exemploY, { lineBreak: false });
+  doc.text("→", exX1 + 44, exemploY, { lineBreak: false });
 
   // Bolha correta (preenchida)
-  const exX2 = exX1 + 66;
+  const exX2 = exX1 + 58;
   doc.circle(exX2, exCY, 5).fill("#000");
+
+  if (temCE) {
+    const legendaCE = penalidadeAtiva
+      ? "ITENS C/E: C = Certo · E = Errado  |  ATENÇÃO: 1 marcação errada em C/E anula 1 certa (em branco = 0)"
+      : "ITENS C/E: C = Certo · E = Errado";
+    doc.font("Helvetica-Bold").fontSize(6).fillColor("#222");
+    doc.text(legendaCE, exX2 + 16, exemploY + 0.5, {
+      width: (pageW - mR) - (exX2 + 16),
+      align: "right",
+      lineBreak: false,
+    });
+  }
 
   y = exemploY + 16;
 
@@ -441,6 +514,8 @@ function renderPaginaOMR(doc, opts) {
     nQ,
     nA,
     letras,
+    formato,
+    ceSet,
     pageH,
     mBottom: doc.page.margins.bottom,
   });
@@ -451,14 +526,20 @@ function renderPaginaOMR(doc, opts) {
   const footerY = pageH - doc.page.margins.bottom - 20;
   doc.moveTo(mL, footerY).lineTo(pageW - mR, footerY).strokeColor("#ccc").lineWidth(0.3).stroke();
 
+  const resumoFormato = formato === "certo_errado"
+    ? `Certo/Errado (C/E)${penalidadeAtiva ? " · c/ fator de correção" : ""}`
+    : formato === "mista"
+      ? `Prova Mista (${ceSet.size} C/E + ${nQ - ceSet.size} Múlt. Escolha A-${letras[nA - 1]})${penalidadeAtiva ? " · c/ fator C/E" : ""}`
+      : `${nA} alternativas`;
+
   doc.font("Helvetica").fontSize(5.5).fillColor("#aaa");
   doc.text(
-    `EDUCA.MELHOR — Sistema de Correção Automática — ${nQ} questões · ${nA} alternativas · Modelo: ${modelo} — Gerado em ${new Date().toLocaleDateString("pt-BR")}`,
+    `EDUCA.MELHOR — Sistema de Correção Automática — ${nQ} questões · ${resumoFormato} · Modelo: ${modelo} — Gerado em ${new Date().toLocaleDateString("pt-BR")}`,
     mL, footerY + 4, { width: contentW, align: "center" }
   );
 }
 
-function renderGradeOMR(doc, { startX, startY, contentW, nQ, nA, letras, pageH, mBottom }) {
+function renderGradeOMR(doc, { startX, startY, contentW, nQ, nA, letras, formato = "multipla_escolha", ceSet = new Set(), pageH, mBottom }) {
   // ── Constantes internas ──
   const numLabelW = 28;          // espaço para "01", "02"...
   const colPadding = 16;         // padding interno da borda da coluna (8 cada lado)
@@ -524,13 +605,32 @@ function renderGradeOMR(doc, { startX, startY, contentW, nQ, nA, letras, pageH, 
     const colX = startX + col * (colWidth + COL_GAP);
     let y = startY;
 
-    // ── Cabeçalho da coluna: Nº | A | B | C | D ──
+    const qStart = col * questoesPorColuna + 1;
+    const qEnd = Math.min(qStart + questoesPorColuna - 1, nQ);
+
+    // Verificar composição desta coluna (só C/E, só ME ou Mista)
+    let countCECol = 0;
+    const totalCol = Math.max(0, qEnd - qStart + 1);
+    for (let q = qStart; q <= qEnd; q++) {
+      if (ceSet && ceSet.has(q)) countCECol++;
+    }
+    const colSomenteCE = totalCol > 0 && countCECol === totalCol;
+
+    // ── Cabeçalho da coluna: Nº | C | E (se coluna 100% C/E) ou Nº | A | B | C | D ──
     doc.font("Helvetica-Bold").fontSize(hdrFontSize).fillColor("#000");
     doc.text("Nº", colX, y + 2, { width: numLabelW, align: "center" });
 
-    for (let a = 0; a < nA; a++) {
-      const bx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
-      doc.text(letras[a], bx - 5, y + 2, { width: 10, align: "center" });
+    if (colSomenteCE) {
+      const letrasCE = "CE";
+      for (let a = 0; a < 2; a++) {
+        const bx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
+        doc.text(letrasCE[a], bx - 5, y + 2, { width: 10, align: "center" });
+      }
+    } else {
+      for (let a = 0; a < nA; a++) {
+        const bx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
+        doc.text(letras[a], bx - 5, y + 2, { width: 10, align: "center" });
+      }
     }
 
     // Linha abaixo do cabeçalho
@@ -540,10 +640,9 @@ function renderGradeOMR(doc, { startX, startY, contentW, nQ, nA, letras, pageH, 
     y += 4;
 
     // ── Questões ──
-    const qStart = col * questoesPorColuna + 1;
-    const qEnd = Math.min(qStart + questoesPorColuna - 1, nQ);
-
     for (let q = qStart; q <= qEnd; q++) {
+      const isRowCE = formato === "certo_errado" || (ceSet && ceSet.has(q));
+
       // Fundo zebrado (para legibilidade)
       if ((q - qStart) % 2 === 0) {
         doc.rect(colX - 2, y - 2, numLabelW + nA * bubbleGapX + 12, rowHeight)
@@ -554,15 +653,39 @@ function renderGradeOMR(doc, { startX, startY, contentW, nQ, nA, letras, pageH, 
       doc.font("Helvetica-Bold").fontSize(qFontSize).fillColor("#000");
       doc.text(String(q).padStart(2, "0"), colX, y + (rowHeight - qFontSize) / 2, { width: numLabelW, align: "center" });
 
-      // Bolhas — círculos VAZIOS, sem texto dentro
-      for (let a = 0; a < nA; a++) {
-        const cx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
-        const cy = y + rowHeight / 2;
+      if (isRowCE) {
+        // Questão Certo/Errado: APENAS 2 bolhas vazias nas posições matriciais a=0 e a=1
+        const letrasCE = ["C", "E"];
+        const mostrarRotuloInline = formato === "mista" && !colSomenteCE && bubbleGapX >= 20;
+        for (let a = 0; a < 2; a++) {
+          const cx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
+          const cy = y + rowHeight / 2;
 
-        doc.circle(cx, cy, bubbleRadius)
-          .lineWidth(1.0)
-          .strokeColor("#555")
-          .stroke();
+          doc.circle(cx, cy, bubbleRadius)
+            .lineWidth(1.0)
+            .strokeColor("#555")
+            .stroke();
+
+          // Rótulo externo "C" e "E" fora do círculo (preserva interior 100% branco p/ mediana OMR)
+          if (mostrarRotuloInline) {
+            const lblSize = bubbleGapX >= 26 ? 6.2 : 5.5;
+            doc.font("Helvetica-Bold").fontSize(lblSize).fillColor("#333");
+            doc.text(letrasCE[a], cx + bubbleRadius + 1.8, cy - lblSize / 2 - 0.3, {
+              lineBreak: false,
+            });
+          }
+        }
+      } else {
+        // Questão Múltipla Escolha: nA bolhas vazias normais
+        for (let a = 0; a < nA; a++) {
+          const cx = colX + numLabelW + a * bubbleGapX + bubbleGapX / 2;
+          const cy = y + rowHeight / 2;
+
+          doc.circle(cx, cy, bubbleRadius)
+            .lineWidth(1.0)
+            .strokeColor("#555")
+            .stroke();
+        }
       }
 
       y += rowHeight;
@@ -584,7 +707,8 @@ router.post("/gerar-turma/:turmaId", async (req, res) => {
   try {
     const { turmaId } = req.params;
     const { escola_id } = req.user;
-    const { descricao, num_questoes, num_alternativas, modelo } = req.body;
+    const { descricao, modelo } = req.body;
+    const cfg = await resolverConfigAvaliacaoPdf(escola_id, req.body);
 
     const turma = await buscarTurma(turmaId, escola_id);
     if (!turma) return res.status(404).json({ error: "Turma não encontrada." });
@@ -598,8 +722,7 @@ router.post("/gerar-turma/:turmaId", async (req, res) => {
       escola,
       descricao: descricao || "AVALIAÇÃO",
       modelo: modelo || "padrao",
-      numQuestoes: num_questoes || 25,
-      numAlternativas: num_alternativas || 4,
+      ...cfg,
       alunos,
       turma,
     });
@@ -614,7 +737,8 @@ router.post("/gerar-turma/:turmaId", async (req, res) => {
 router.post("/gerar-turmas", async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { turma_ids, descricao, num_questoes, num_alternativas, modelo } = req.body;
+    const { turma_ids, descricao, modelo } = req.body;
+    const cfg = await resolverConfigAvaliacaoPdf(escola_id, req.body);
 
     if (!turma_ids || !Array.isArray(turma_ids) || turma_ids.length === 0) {
       return res.status(400).json({ error: "Selecione pelo menos uma turma." });
@@ -640,8 +764,7 @@ router.post("/gerar-turmas", async (req, res) => {
       escola,
       descricao: descricao || "AVALIAÇÃO",
       modelo: modelo || "padrao",
-      numQuestoes: num_questoes || 25,
-      numAlternativas: num_alternativas || 4,
+      ...cfg,
       alunos: todosAlunos,
       turma: { turma: "", id: null }, // global vazio; cada aluno tem sua turma
     });
@@ -656,7 +779,8 @@ router.post("/gerar-turno/:turno", async (req, res) => {
   try {
     const { turno } = req.params;
     const { escola_id } = req.user;
-    const { descricao, num_questoes, num_alternativas, modelo } = req.body;
+    const { descricao, modelo } = req.body;
+    const cfg = await resolverConfigAvaliacaoPdf(escola_id, req.body);
     const anoLetivo = anoLetivoAtual();
 
     const [turmas] = await pool.query(
@@ -679,8 +803,7 @@ router.post("/gerar-turno/:turno", async (req, res) => {
       escola,
       descricao: descricao || "AVALIAÇÃO",
       modelo: modelo || "padrao",
-      numQuestoes: num_questoes || 25,
-      numAlternativas: num_alternativas || 4,
+      ...cfg,
       alunos: todosAlunos,
       turma: { turma: `Turno ${turno}`, id: null },
     });
@@ -694,7 +817,8 @@ router.post("/gerar-turno/:turno", async (req, res) => {
 router.post("/gerar-individual", async (req, res) => {
   try {
     const { escola_id } = req.user;
-    const { aluno_codigo, turma_id, descricao, num_questoes, num_alternativas, modelo } = req.body;
+    const { aluno_codigo, turma_id, descricao, modelo } = req.body;
+    const cfg = await resolverConfigAvaliacaoPdf(escola_id, req.body);
 
     if (!aluno_codigo) return res.status(400).json({ error: "Código do aluno é obrigatório." });
 
@@ -735,8 +859,7 @@ router.post("/gerar-individual", async (req, res) => {
       escola,
       descricao: descricao || "AVALIAÇÃO",
       modelo: modelo || "padrao",
-      numQuestoes: num_questoes || 25,
-      numAlternativas: num_alternativas || 4,
+      ...cfg,
       alunos: [aluno],
       turma,
     });

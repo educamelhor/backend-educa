@@ -18,8 +18,38 @@ import FormData from "form-data";
 import fetch from "node-fetch";
 import pool from "../db.js";
 import { uploadFileBufferToSpaces, downloadBufferFromSpaces } from "../storage/spacesUpload.js";
+import { normalizarConfigFormato, calcularCorrecaoGabarito } from "../utils/gabaritoScoring.js";
 
 const router = Router();
+
+/**
+ * Envia hints de layout (nQ, nA, f, ce) ao serviço Python OMR como fallback caso o QR Code esteja ilegível.
+ */
+async function anexarHintsAvaliacaoOMR(formBolhas, avaliacaoId, escolaId) {
+  if (!avaliacaoId) return;
+  try {
+    const [[av]] = await pool.query(
+      `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      [avaliacaoId, escolaId]
+    );
+    if (!av) return;
+    const fmt = normalizarConfigFormato({
+      formato_questoes: av.formato_questoes,
+      questoes_ce: av.questoes_ce,
+      num_questoes: av.num_questoes,
+    });
+    const nQ = Number(av.num_questoes) || 25;
+    const nA = fmt.formato === "certo_errado" ? 2 : (Number(av.num_alternativas) || 4);
+    formBolhas.append("nQ", String(nQ));
+    formBolhas.append("nA", String(nA));
+    if (fmt.formato === "certo_errado") {
+      formBolhas.append("f", "CE");
+    } else if (fmt.formato === "mista") {
+      formBolhas.append("f", "M");
+      if (fmt.ceCompacto) formBolhas.append("ce", fmt.ceCompacto);
+    }
+  } catch { /* fallback silencioso */ }
+}
 
 // ─── Diretório base do backend (relativo a este arquivo) ────────────────────
 const __filename_route = fileURLToPath(import.meta.url);
@@ -199,6 +229,13 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
       });
     }
 
+    // Buscar avaliacao_id do lote para passar hints de formato (C/E / Mista) ao OMR
+    const [[loteMeta]] = await pool.query(
+      `SELECT avaliacao_id FROM gabarito_lotes WHERE id = ? AND escola_id = ?`,
+      [loteId, escola_id]
+    );
+    const loteAvaliacaoId = loteMeta?.avaliacao_id || null;
+
     for (const arq of arquivos) {
       try {
         // Baixar arquivo do Spaces (ou disco legado)
@@ -254,6 +291,7 @@ router.post("/:id/processar-qr", verificarEscola, async (req, res) => {
         // 2. Ler bolhas + QR Code
         const formBolhas = new FormData();
         formBolhas.append("file", cropBuffer, { filename: "crop.png" });
+        await anexarHintsAvaliacaoOMR(formBolhas, loteAvaliacaoId, escola_id);
 
         const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
           method: "POST",
@@ -675,6 +713,7 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
         // 2. Ler bolhas
         const formBolhas = new FormData();
         formBolhas.append("file", cropBuffer, { filename: "crop.png" });
+        await anexarHintsAvaliacaoOMR(formBolhas, arq.avaliacao_id, escola_id);
         const respBolhas = await fetchWithTimeout(`${OMR_URL}/corrigir-bolhas`, {
           method: "POST",
           body: formBolhas,
@@ -728,29 +767,24 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
       }
     }
 
-    // Buscar gabarito oficial da avaliação (inclui questoes_canceladas)
+    // Buscar gabarito oficial da avaliação (inclui questoes_canceladas e formato mista/CE)
     const [avRows] = await pool.query(
-      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config, questoes_canceladas
-       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
       [arq.avaliacao_id, escola_id]
     );
     if (avRows.length === 0) {
       return res.status(404).json({ error: "Avaliação não encontrada." });
     }
 
-    const avaliacao    = avRows[0];
-    const gabOficial   = safeJson(avaliacao.gabarito_oficial) || [];
-    const numQuestoes  = avaliacao.num_questoes || gabOficial.length;
-    const notaTotal    = Number(avaliacao.nota_total) || 10;
+    const avaliacao         = avRows[0];
+    const gabOficial        = safeJson(avaliacao.gabarito_oficial) || [];
+    const numQuestoes       = avaliacao.num_questoes || gabOficial.length;
+    const notaTotal         = Number(avaliacao.nota_total) || 10;
     const disciplinasConfig = safeJson(avaliacao.disciplinas_config) || [];
-    const canceladas   = safeJson(avaliacao.questoes_canceladas) || [];
-
-    // Mapear questões canceladas
-    const cancelMap = {};
-    for (const c of canceladas) cancelMap[c.numero] = c.modo; // "bonificar" | "desconsiderar"
-
-    const numDesconsideradas  = canceladas.filter(c => c.modo === "desconsiderar").length;
-    const numQuestoesEfetivas = Math.max(1, numQuestoes - numDesconsideradas);
+    const canceladas        = safeJson(avaliacao.questoes_canceladas) || [];
+    const formatoQuestoes   = avaliacao.formato_questoes || "multipla_escolha";
+    const questoesCe        = safeJson(avaliacao.questoes_ce);
+    const penalidadeCe      = Number(avaliacao.penalidade_ce) ? 1 : 0;
 
     // ─── Buscar ajustes manuais existentes para este arquivo ─────────────────
     // aprovados  → aplicados no DB (nota oficial)
@@ -776,78 +810,40 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
     }
 
     // ─── Cálculo OFICIAL (apenas ajustes aprovados) → salvo no banco ─────────
-    const detalhesOficial = [];
-    for (let i = 0; i < numQuestoes; i++) {
-      const questaoNum    = i + 1;
-      const modoCancelada = cancelMap[questaoNum];
-      if (modoCancelada === "desconsiderar") continue;
-
-      const resp    = respostasAluno[i] || null;
-      const correto = gabOficial[i] || "";
-      const isNulo  = resp === "N";
-      let acertou   = !isNulo && resp !== null && resp === correto;
-
-      if (ajustesAprovados[questaoNum] !== undefined) {
-        acertou = ajustesAprovados[questaoNum] === "acerto"; // ajuste aprovado tem prioridade
-      } else if (modoCancelada === "bonificar") {
-        acertou = true;
-      }
-
-      detalhesOficial.push({
-        numero: questaoNum, resposta: resp, correto, acertou,
-        ...(modoCancelada === "bonificar" ? { cancelada: "bonificada" } : {}),
-        ...(ajustesAprovados[questaoNum] !== undefined ? { ajuste_manual: ajustesAprovados[questaoNum] } : {}),
-      });
-    }
-
-    const acertosOficial  = detalhesOficial.filter(d => d.acertou).length;
-    const valorQOficial   = numQuestoesEfetivas > 0 ? notaTotal / numQuestoesEfetivas : 0;
-    const notaOficial     = parseFloat((acertosOficial * valorQOficial).toFixed(2));
+    const calcOficial = calcularCorrecaoGabarito({
+      respostasAluno,
+      gabaritoOficial: gabOficial,
+      numQuestoes,
+      notaTotal,
+      disciplinasConfig,
+      questoesCanceladas: canceladas,
+      ajustesMap: ajustesAprovados,
+      formatoQuestoes,
+      questoesCe,
+      penalidadeCe,
+    });
+    const detalhesOficial     = calcOficial.detalhes;
+    const acertosOficial      = calcOficial.acertos;
+    const notaOficial         = calcOficial.nota;
+    const numQuestoesEfetivas = calcOficial.numQuestoesEfetivas;
 
     // ─── Cálculo DISPLAY (aprovados + pendentes) → retornado ao frontend ──────
-    const detalhes = [];
-    for (let i = 0; i < numQuestoes; i++) {
-      const questaoNum    = i + 1;
-      const modoCancelada = cancelMap[questaoNum];
-      if (modoCancelada === "desconsiderar") continue;
-
-      const resp    = respostasAluno[i] || null;
-      const correto = gabOficial[i] || "";
-      const isNulo  = resp === "N";
-      let acertou   = !isNulo && resp !== null && resp === correto;
-
-      if (ajustesTodos[questaoNum] !== undefined) {
-        acertou = ajustesTodos[questaoNum] === "acerto";
-      } else if (modoCancelada === "bonificar") {
-        acertou = true;
-      }
-
-      detalhes.push({
-        numero: questaoNum, resposta: resp, correto, acertou,
-        ...(modoCancelada === "bonificar" ? { cancelada: "bonificada" } : {}),
-        ...(ajustesTodos[questaoNum] !== undefined ? { ajuste_manual: ajustesTodos[questaoNum] } : {}),
-      });
-    }
-
-    const acertos     = detalhes.filter(d => d.acertou).length;
-    const valorQuestao = numQuestoesEfetivas > 0 ? notaTotal / numQuestoesEfetivas : 0;
-    const nota        = parseFloat((acertos * valorQuestao).toFixed(2));
-
-    // Acertos por disciplina (baseado no cálculo display)
-    let acertosPorDisciplina = null;
-    if (disciplinasConfig.length > 0) {
-      acertosPorDisciplina = disciplinasConfig.map(dc => {
-        const questoesDisciplina = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
-        const acertosDisciplina  = questoesDisciplina.filter(d => d.acertou).length;
-        return {
-          nome: dc.nome,
-          disciplina_id: dc.disciplina_id,
-          de: dc.de, ate: dc.ate,
-          total: questoesDisciplina.length,
-          acertos: acertosDisciplina,
-        };
-      });
-    }
+    const calcDisplay = calcularCorrecaoGabarito({
+      respostasAluno,
+      gabaritoOficial: gabOficial,
+      numQuestoes,
+      notaTotal,
+      disciplinasConfig,
+      questoesCanceladas: canceladas,
+      ajustesMap: ajustesTodos,
+      formatoQuestoes,
+      questoesCe,
+      penalidadeCe,
+    });
+    const detalhes             = calcDisplay.detalhes;
+    const acertos              = calcDisplay.acertos;
+    const nota                 = calcDisplay.nota;
+    const acertosPorDisciplina = calcDisplay.acertosPorDisciplina;
 
     // Persistir nota OFICIAL (apenas ajustes aprovados) no banco
     await pool.query(
@@ -909,6 +905,10 @@ router.post("/arquivos/:id/corrigir", verificarEscola, async (req, res) => {
     res.json({
       success: true,
       acertos,                          // com todos os ajustes (para exibição)
+      errosPenalizados: calcDisplay.errosPenalizados,
+      pontosLiquidos: calcDisplay.pontosLiquidos,
+      penalidadeAtiva: calcDisplay.penalidadeAtiva,
+      formatoQuestoes,
       totalQuestoes: numQuestoesEfetivas,
       nota,                             // com todos os ajustes (para exibição)
       notaTotal,
@@ -1856,6 +1856,7 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
     // 3. Ler bolhas
     const formBolhas = new FormData();
     formBolhas.append("file", cropBuffer, { filename: "crop.png" });
+    await anexarHintsAvaliacaoOMR(formBolhas, avaliacao_id, escola_id);
 
     const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
       method: "POST",
@@ -1889,10 +1890,9 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
       if (alunoRows.length > 0) nomeAluno = alunoRows[0].estudante;
     }
 
-    // 5. Buscar gabarito oficial
+    // 5. Buscar gabarito oficial + config mista/CE
     const [avRows] = await pool.query(
-      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
-       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
       [avaliacao_id, escola_id]
     );
     if (avRows.length === 0) {
@@ -1904,16 +1904,20 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
     const numQuestoes = av.num_questoes || gabOficial.length;
     const notaTotal = Number(av.nota_total) || 10;
 
-    // 6. Comparar respostas
-    let acertos = 0;
-    for (let i = 0; i < numQuestoes; i++) {
-      const resp = respostasAluno[i] || "";
-      const correto = gabOficial[i] || "";
-      if (resp && resp !== "N" && resp === correto) acertos++;
-    }
-
-    const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
-    const nota = parseFloat((acertos * valorQuestao).toFixed(2));
+    // 6. Comparar respostas usando o motor central (suporta ME, C/E, Mista e fator Cebraspe)
+    const calcScan = calcularCorrecaoGabarito({
+      respostasAluno,
+      gabaritoOficial: gabOficial,
+      numQuestoes,
+      notaTotal,
+      disciplinasConfig: safeJson(av.disciplinas_config) || [],
+      questoesCanceladas: safeJson(av.questoes_canceladas) || [],
+      formatoQuestoes: av.formato_questoes || "multipla_escolha",
+      questoesCe: safeJson(av.questoes_ce),
+      penalidadeCe: Number(av.penalidade_ce) ? 1 : 0,
+    });
+    const acertos = calcScan.acertos;
+    const nota = calcScan.nota;
 
     // 7. Confiança: usar o valor calculado pelo OMR (n_det/nQ) — mais preciso
     // que recalcular com base em avisos
@@ -1926,6 +1930,9 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
     const respPayload = {
       respostas: respostasAluno,
       gabaritoOficial: gabOficial,
+      formatoQuestoes: av.formato_questoes || "multipla_escolha",
+      questoesCe: safeJson(av.questoes_ce) || [],
+      penalidadeCe: Number(av.penalidade_ce) ? 1 : 0,
       qrData,
       nomeAluno: nomeAluno || null,
       codigoAluno: codigoAluno || null,
@@ -1933,7 +1940,9 @@ router.post("/scan-mobile", verificarEscola, upload.single("file"), async (req, 
       nota,
       notaTotal,
       acertos,
-      totalQuestoes: numQuestoes,
+      errosPenalizados: calcScan.errosPenalizados,
+      pontosLiquidos: calcScan.pontosLiquidos,
+      totalQuestoes: calcScan.numQuestoesEfetivas,
       avisos,
       confianca: parseFloat(confianca.toFixed(1)),
       arquivoId: arquivo_id ? Number(arquivo_id) : null,
@@ -1965,10 +1974,9 @@ router.post("/scan-mobile/confirmar", verificarEscola, async (req, res) => {
   }
 
   try {
-    // Buscar avaliação
+    // Buscar avaliação completa
     const [avRows] = await pool.query(
-      `SELECT gabarito_oficial, num_questoes, nota_total, disciplinas_config
-       FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+      `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
       [avaliacao_id, escola_id]
     );
     if (avRows.length === 0) {
@@ -1979,30 +1987,25 @@ router.post("/scan-mobile/confirmar", verificarEscola, async (req, res) => {
     const gabOficial = safeJson(av.gabarito_oficial) || [];
     const numQuestoes = av.num_questoes || gabOficial.length;
     const notaTotal = Number(av.nota_total) || 10;
-
-    // Comparar
-    const detalhes = [];
-    let acertos = 0;
-    for (let i = 0; i < numQuestoes; i++) {
-      const resp = respostas[i] || "";
-      const correto = gabOficial[i] || "";
-      const acertou = resp && resp !== "N" && resp === correto;
-      if (acertou) acertos++;
-      detalhes.push({ numero: i + 1, resposta: resp, correto, acertou });
-    }
-
-    const valorQuestao = numQuestoes > 0 ? notaTotal / numQuestoes : 0;
-    const nota = parseFloat((acertos * valorQuestao).toFixed(2));
-
-    // Acertos por disciplina
     const discConfig = safeJson(av.disciplinas_config) || [];
-    let acertosPorDisciplina = null;
-    if (discConfig.length > 0) {
-      acertosPorDisciplina = discConfig.map(dc => {
-        const qDisc = detalhes.filter(d => d.numero >= dc.de && d.numero <= dc.ate);
-        return { nome: dc.nome, disciplina_id: dc.disciplina_id, de: dc.de, ate: dc.ate, total: qDisc.length, acertos: qDisc.filter(d => d.acertou).length };
-      });
-    }
+
+    const calcConfirm = calcularCorrecaoGabarito({
+      respostasAluno: respostas,
+      gabaritoOficial: gabOficial,
+      numQuestoes,
+      notaTotal,
+      disciplinasConfig: discConfig,
+      questoesCanceladas: safeJson(av.questoes_canceladas) || [],
+      formatoQuestoes: av.formato_questoes || "multipla_escolha",
+      questoesCe: safeJson(av.questoes_ce),
+      penalidadeCe: Number(av.penalidade_ce) ? 1 : 0,
+    });
+
+    const detalhes = calcConfirm.detalhes;
+    const acertos = calcConfirm.acertos;
+    const nota = calcConfirm.nota;
+    const acertosPorDisciplina = calcConfirm.acertosPorDisciplina;
+    const totalQuestoesEfetivas = calcConfirm.numQuestoesEfetivas;
 
     const codigoFinal = codigo_aluno || `SCAN_${Date.now()}`;
     const nomeFinal = nome_aluno || `Scan Mobile ${new Date().toLocaleString("pt-BR")}`;
@@ -2024,7 +2027,7 @@ router.post("/scan-mobile/confirmar", verificarEscola, async (req, res) => {
          corrigido_em = CURRENT_TIMESTAMP`,
       [
         avaliacao_id, escola_id, codigoFinal, nomeFinal,
-        JSON.stringify(respostas), acertos, numQuestoes, nota,
+        JSON.stringify(respostas), acertos, totalQuestoesEfetivas, nota,
         acertosPorDisciplina ? JSON.stringify(acertosPorDisciplina) : null,
         JSON.stringify(detalhes),
       ]
@@ -2535,6 +2538,7 @@ router.post("/scan-mobile/save-image", upload.single("file"), async (req, res) =
     try {
       const formBolhas = new FormData();
       formBolhas.append("file", alignedBuffer, { filename: "aligned.png" });
+      await anexarHintsAvaliacaoOMR(formBolhas, avaliacao_id, escola_id);
 
       const respBolhas = await fetch(`${OMR_URL}/corrigir-bolhas`, {
         method: "POST",

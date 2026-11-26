@@ -1072,6 +1072,42 @@ async function bootstrap() {
     console.warn("[MIGRATION] Erro ao aplicar migration gabarito_arquivos (não crítico):", migErr.message);
   }
 
+  // [2026-11-26] Módulo Gabarito — Suporte a Certo/Errado e Prova Mista (gabarito_avaliacoes)
+  try {
+    const [colsAval] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gabarito_avaliacoes'
+        AND COLUMN_NAME IN ('formato_questoes', 'questoes_ce', 'penalidade_ce')
+    `);
+    const existentesAval = new Set(colsAval.map(c => c.COLUMN_NAME));
+    const avalDefs = [
+      {
+        col: 'formato_questoes',
+        def: `ADD COLUMN formato_questoes ENUM('multipla_escolha', 'certo_errado', 'mista') NOT NULL DEFAULT 'multipla_escolha' COMMENT 'Formato: multipla_escolha, certo_errado ou mista'`
+      },
+      {
+        col: 'questoes_ce',
+        def: `ADD COLUMN questoes_ce JSON DEFAULT NULL COMMENT 'Lista 1-based das questões do tipo Certo/Errado em provas mistas'`
+      },
+      {
+        col: 'penalidade_ce',
+        def: `ADD COLUMN penalidade_ce TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = fator de correção Cebraspe/PAS (1 errada anula 1 certa nas questões C/E)'`
+      }
+    ];
+    for (const item of avalDefs) {
+      if (!existentesAval.has(item.col)) {
+        try {
+          await pool.query(`ALTER TABLE gabarito_avaliacoes ${item.def}`);
+          console.log(`[MIGRATION] Coluna '${item.col}' adicionada em 'gabarito_avaliacoes' ✅`);
+        } catch (colErr) {
+          console.warn(`[MIGRATION] Aviso ao adicionar '${item.col}' em 'gabarito_avaliacoes':`, colErr.message);
+        }
+      }
+    }
+  } catch (migErr) {
+    console.warn("[MIGRATION] Erro ao aplicar migration formato mista em gabarito_avaliacoes (não crítico):", migErr.message);
+  }
+
 
   // ─────────────────────────────────────────────────────────────────────────────
   // [2026-05-01] Banco Global de Questões — correta_texto + temas + tabelas

@@ -5,6 +5,7 @@
 
 import express from "express";
 import pool from "../db.js";
+import { calcularCorrecaoGabarito } from "../utils/gabaritoScoring.js";
 
 const router = express.Router();
 
@@ -54,6 +55,36 @@ router.post("/corrigir", verificarEscola, async (req, res) => {
     }
 
     try {
+      // Recalcular no servidor com base na configuração oficial da avaliação (suporta ME, C/E, Mista e penalidade_ce)
+      let acertosFinal = acertos || 0;
+      let totalQuestoesFinal = total_questoes || respostas.length;
+      let notaFinal = nota || 0;
+      let acertosDiscFinal = acertos_por_disciplina || null;
+      let detalhesFinal = detalhes || null;
+
+      const [[av]] = await pool.query(
+        `SELECT * FROM gabarito_avaliacoes WHERE id = ? AND escola_id = ?`,
+        [avaliacao_id, escola_id]
+      );
+      if (av && av.gabarito_oficial) {
+        const calc = calcularCorrecaoGabarito({
+          respostasAluno: respostas,
+          gabaritoOficial: safeJson(av.gabarito_oficial) || [],
+          numQuestoes: av.num_questoes,
+          notaTotal: av.nota_total,
+          disciplinasConfig: safeJson(av.disciplinas_config) || [],
+          questoesCanceladas: safeJson(av.questoes_canceladas) || [],
+          formatoQuestoes: av.formato_questoes || "multipla_escolha",
+          questoesCe: safeJson(av.questoes_ce),
+          penalidadeCe: Number(av.penalidade_ce) ? 1 : 0,
+        });
+        acertosFinal = calc.acertos;
+        totalQuestoesFinal = calc.numQuestoesEfetivas;
+        notaFinal = calc.nota;
+        acertosDiscFinal = calc.acertosPorDisciplina;
+        detalhesFinal = calc.detalhes;
+      }
+
       // UPSERT: atualiza se já existe resultado para este aluno nesta avaliação
       await pool.query(
         `INSERT INTO gabarito_respostas 
@@ -80,11 +111,11 @@ router.post("/corrigir", verificarEscola, async (req, res) => {
           turma_id || null,
           turma_nome || turma || null,
           JSON.stringify(respostas),
-          acertos || 0,
-          total_questoes || respostas.length,
-          nota || 0,
-          acertos_por_disciplina ? JSON.stringify(acertos_por_disciplina) : null,
-          detalhes ? JSON.stringify(detalhes) : null,
+          acertosFinal,
+          totalQuestoesFinal,
+          notaFinal,
+          acertosDiscFinal ? JSON.stringify(acertosDiscFinal) : null,
+          detalhesFinal ? JSON.stringify(detalhesFinal) : null,
           avisos ? JSON.stringify(avisos) : null,
         ]
       );
@@ -147,7 +178,8 @@ router.get("/resultados", verificarEscola, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT r.*, a.titulo as avaliacao_titulo, a.num_questoes, a.nota_total,
-              a.gabarito_oficial, a.disciplinas_config
+              a.gabarito_oficial, a.disciplinas_config,
+              a.formato_questoes, a.questoes_ce, a.penalidade_ce
        FROM gabarito_respostas r
        JOIN gabarito_avaliacoes a ON a.id = r.avaliacao_id
        WHERE r.avaliacao_id = ? AND r.escola_id = ?
@@ -164,6 +196,7 @@ router.get("/resultados", verificarEscola, async (req, res) => {
       avisos: safeJson(r.avisos),
       gabarito_oficial: safeJson(r.gabarito_oficial),
       disciplinas_config: safeJson(r.disciplinas_config),
+      questoes_ce: safeJson(r.questoes_ce),
     }));
 
     res.json(parsed);
