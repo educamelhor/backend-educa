@@ -518,6 +518,62 @@ router.get("/avaliacao-config", async (req, res) => {
   }
 });
 
+// ── GET /api/governanca/secretaria-config?escola_id=X ────────────
+// Leitura rápida das flags da categoria Secretaria (sem sync).
+// Acessível por qualquer perfil autenticado da escola (ex.: Secretaria).
+// ─────────────────────────────────────────────────────────────────
+const SECRETARIA_DEFAULTS = {
+  "secretaria.importa_alunos": "1",
+  "secretaria.edita_notas": "0",
+};
+
+router.get("/secretaria-config", async (req, res) => {
+  const db = req.db;
+  const escolaId = Number(
+    req.query.escola_id || req.user?.escola_id || req.headers["x-escola-id"]
+  );
+  if (!escolaId)
+    return res.status(400).json({ ok: false, message: "escola_id é obrigatório." });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT chave, valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave LIKE 'secretaria.%'`,
+      [escolaId]
+    );
+
+    const config = { ...SECRETARIA_DEFAULTS };
+    for (const row of rows) {
+      config[row.chave] = String(row.valor);
+    }
+
+    const editaNotas =
+      config["secretaria.edita_notas"] === "1" ||
+      config["secretaria.edita_notas"] === "true";
+    const importaAlunos =
+      config["secretaria.importa_alunos"] !== "0" &&
+      config["secretaria.importa_alunos"] !== "false";
+
+    return res.json({
+      ok: true,
+      config,
+      edita_notas: editaNotas,
+      importa_alunos: importaAlunos,
+    });
+  } catch (err) {
+    if (err?.code === "ER_NO_SUCH_TABLE") {
+      return res.json({
+        ok: true,
+        config: { ...SECRETARIA_DEFAULTS },
+        edita_notas: false,
+        importa_alunos: true,
+      });
+    }
+    console.error("[GOVERNANCA][SECRETARIA-CONFIG]", err);
+    return res.status(500).json({ ok: false, message: "Erro ao buscar config da secretaria." });
+  }
+});
+
 // ── GET /api/governanca/conteudo-modo?escola_id=X ─────────────────
 // Retorna o modo ativo de governança de conteúdos programáticos.
 // Modos:

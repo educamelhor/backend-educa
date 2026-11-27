@@ -3773,6 +3773,7 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
     } = req.body;
 
     let cpf = req.user?.cpf;
+    let nomeUsuario = req.user?.nome || null;
     const userId =
       req.user?.id ||
       req.user?.usuario_id ||
@@ -3781,29 +3782,57 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
       req.user?.user_id ||
       req.user?.id_usuario;
 
-    if (!cpf && userId) {
-      const [urows] = await pool.query("SELECT cpf FROM usuarios WHERE id = ? LIMIT 1", [userId]);
-      cpf = urows?.[0]?.cpf ? String(urows[0].cpf) : null;
+    if ((!cpf || !nomeUsuario) && userId) {
+      const [urows] = await pool.query("SELECT cpf, nome FROM usuarios WHERE id = ? LIMIT 1", [userId]);
+      if (!cpf && urows?.[0]?.cpf) cpf = String(urows[0].cpf);
+      if (!nomeUsuario && urows?.[0]?.nome) nomeUsuario = String(urows[0].nome);
     }
 
-    if (!escolaId || !cpf || !turma_id || !disciplina_id || !bimestre || !Array.isArray(lancamentos)) {
+    if (!escolaId || !turma_id || !disciplina_id || !bimestre || !Array.isArray(lancamentos)) {
       return res.status(400).json({ ok: false, message: "Dados de requisição inválidos ou incompletos." });
     }
 
-    const cleanCpf = String(cpf).replace(/\D/g, "");
+    const cleanCpf = String(cpf || "").replace(/\D/g, "");
     const perfil = String(req.user?.perfil || "").toLowerCase().trim();
-    const perfisGestao = [
+    const perfisDirecao = [
       "diretor",
       "direcao",
       "vice_diretor",
-      "secretaria",
-      "secretario",
-      "coordenacao",
-      "coordenador",
       "admin",
       "administrador",
     ];
-    const isGestor = perfisGestao.includes(perfil);
+    const isDirecao = perfisDirecao.includes(perfil);
+    const isSecretaria = perfil === "secretaria" || perfil === "secretario";
+
+    let secretariaAutorizada = false;
+    if (isSecretaria) {
+      try {
+        const [[cfgSec]] = await pool.query(
+          `SELECT valor FROM configuracoes_escola
+           WHERE escola_id = ? AND chave = 'secretaria.edita_notas'
+           LIMIT 1`,
+          [escolaId]
+        );
+        const val = String(cfgSec?.valor ?? "0").toLowerCase().trim();
+        secretariaAutorizada = val === "1" || val === "true";
+      } catch (cfgErr) {
+        console.warn("[boletim/salvar] Erro ao consultar secretaria.edita_notas:", cfgErr.message);
+        secretariaAutorizada = false;
+      }
+
+      if (!secretariaAutorizada) {
+        return res.status(403).json({
+          ok: false,
+          message: "Acesso negado: a edição direta de notas pela Secretaria está desativada na Governança da escola.",
+        });
+      }
+    }
+
+    const isGestor = isDirecao || secretariaAutorizada;
+
+    if (!isGestor && !cleanCpf) {
+      return res.status(400).json({ ok: false, message: "CPF do docente não identificado para validar modulação." });
+    }
 
     let isAgr = is_agrupamento === 1 || is_agrupamento === true || is_agrupamento === "1" || is_agrupamento === "true";
     if (!isAgr && is_agrupamento == null) {
@@ -3892,6 +3921,31 @@ router.post("/boletim/salvar", autenticarToken, verificarEscola, async (req, res
     }
 
     await conn.commit();
+
+    if (isGestor) {
+      const ipOrigem =
+        String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "")
+          .split(",")[0]
+          .trim() || null;
+      const detalheAuditoria = JSON.stringify({
+        perfil,
+        turma_id,
+        is_agrupamento: Boolean(isAgr),
+        disciplina_id,
+        bimestre,
+        ano,
+        total_lancamentos: lancamentos.length,
+      });
+      pool
+        .query(
+          `INSERT INTO governanca_auditoria_logs
+             (escola_id, usuario_id, nome_usuario, cpf_usuario, acao, detalhe, ip_origem)
+           VALUES (?, ?, ?, ?, 'BOLETIM_EDICAO_ADMINISTRATIVA', ?, ?)`,
+          [escolaId, userId || 0, nomeUsuario, cleanCpf || null, detalheAuditoria, ipOrigem]
+        )
+        .catch(() => {});
+    }
+
     reconciliarNotasComModulacao(pool, escolaId).catch(() => {});
     return res.json({ ok: true, message: "Notas e faltas do boletim salvas com sucesso." });
   } catch (err) {
