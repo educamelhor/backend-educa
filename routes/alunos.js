@@ -44,6 +44,57 @@ function verificarEscola(req, res, next) {
   next();
 }
 
+/*
+ * Middleware de Governança: valida a chave 'secretaria.importa_alunos'
+ * Direção tem permissão nata; Secretaria (e demais perfis não-direção) depende
+ * de 'secretaria.importa_alunos' !== '0' em configuracoes_escola (default = '1').
+ */
+async function verificarGovernancaImportacaoAlunos(req, res, next) {
+  const escolaId = Number(req.user?.escola_id || 0);
+  if (!escolaId) {
+    return res.status(403).json({ status: "erro", ok: false, message: "Acesso negado: escola não definida." });
+  }
+
+  const perfil = String(req.user?.perfil || "").toLowerCase().trim();
+  const perfisDirecao = new Set([
+    "diretor",
+    "direcao",
+    "vice_diretor",
+    "admin",
+    "administrador",
+    "ceo",
+    "super_admin",
+    "admin_global",
+  ]);
+  if (perfisDirecao.has(perfil)) {
+    return next();
+  }
+
+  try {
+    const [[cfgRow]] = await pool.query(
+      `SELECT valor FROM configuracoes_escola
+       WHERE escola_id = ? AND chave = 'secretaria.importa_alunos'
+       LIMIT 1`,
+      [escolaId]
+    );
+    const val = cfgRow?.valor !== undefined && cfgRow?.valor !== null
+      ? String(cfgRow.valor).toLowerCase().trim()
+      : "1";
+
+    if (val === "0" || val === "false") {
+      return res.status(403).json({
+        status: "erro",
+        ok: false,
+        message: "Acesso negado: a importação de alunos via planilha/lista pela Secretaria está desativada na Governança da escola.",
+      });
+    }
+    return next();
+  } catch (err) {
+    console.warn("[alunos/importar] Aviso ao consultar secretaria.importa_alunos:", err.message);
+    return next();
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Governança de Nome Social (Resolução CNE/CP nº 1/2018 · Decreto DF nº 37.982/2017)
 // - `nome_registro`: preserva o nome civil de registro do estudante.
@@ -1808,7 +1859,7 @@ router.post("/:id/foto", upload.single("foto"), async (req, res) => {
  *   semTurma=true â†’ importa sem turma (turma_id=null) quando turma nÃ£o existe
  * ========================================================================== */
 const uploadPdf = multer(); // usa buffer
-router.post("/importar-pdf", uploadPdf.single("file"), async (req, res) => {
+router.post("/importar-pdf", verificarGovernancaImportacaoAlunos, uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "PDF nÃ£o enviado." });
   }
@@ -3174,7 +3225,7 @@ export function parseEducaDfCsvBuffer(buffer, originalname = "") {
   };
 }
 
-router.post("/importar-csv", uploadPdf.single("file"), async (req, res) => {
+router.post("/importar-csv", verificarGovernancaImportacaoAlunos, uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "CSV não enviado." });
   }
@@ -3829,7 +3880,7 @@ async function upsertResponsavelCsv(pool, e, alunoId, escola_id) {
  * Inativa alunos selecionados pelo secretÃ¡rio apÃ³s importaÃ§Ã£o de PDF.
  * Usado quando o PDF nÃ£o contÃ©m alunos que estÃ£o no banco (transferidos).
  * ========================================================================== */
-router.post("/inativar-lote", async (req, res) => {
+router.post("/inativar-lote", verificarGovernancaImportacaoAlunos, async (req, res) => {
   try {
     const { escola_id } = req.user;
     const { alunoIds } = req.body || {};
@@ -3877,7 +3928,7 @@ router.post("/inativar-lote", async (req, res) => {
  * Move apenas os alunos explicitamente confirmados pela secretaria quando um
  * CSV do EDUCADF contém alunos que já estavam ativos em outra turma da escola.
  * ========================================================================== */
-router.post("/remanejar-lote", verificarEscola, async (req, res) => {
+router.post("/remanejar-lote", verificarEscola, verificarGovernancaImportacaoAlunos, async (req, res) => {
   try {
     const { escola_id } = req.user;
     const { turmaDestinoId, alunoIds } = req.body || {};
@@ -3960,7 +4011,7 @@ router.post("/remanejar-lote", verificarEscola, async (req, res) => {
  * - Nome do arquivo (sem extensÃ£o) = nome da turma
  * ========================================================================== */
 const uploadXlsx = multer(); // usa buffer
-router.post("/importar-xlsx", uploadXlsx.single("file"), async (req, res) => {
+router.post("/importar-xlsx", verificarGovernancaImportacaoAlunos, uploadXlsx.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "XLSX nÃ£o enviado." });
   }
@@ -4983,7 +5034,7 @@ router.delete("/:id/ocorrencias-pedagogicas/:ocorrenciaId", verificarEscola, asy
 // =========================================================================
 // Rota EXCLUSIVA para a Lista IEDUCAR
 // =========================================================================
-router.post("/importar-pdf-ieducar", uploadPdf.single("file"), async (req, res) => {
+router.post("/importar-pdf-ieducar", verificarGovernancaImportacaoAlunos, uploadPdf.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "PDF não enviado." });
   }
