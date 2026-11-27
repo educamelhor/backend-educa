@@ -98,6 +98,10 @@ async function ensureRegionaisSchema(db) {
     try { await db.query("ALTER TABLE escolas ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
     try { await db.query("ALTER TABLE usuarios ADD COLUMN regional_id INT DEFAULT NULL"); } catch {}
     try { await db.query("ALTER TABLE usuarios ADD COLUMN cargo_regional VARCHAR(60) DEFAULT NULL"); } catch {}
+    // Higieniza legado: todas as escolas criadas anteriormente sem origem explícita pertencem à rede pública
+    try {
+      await db.query("UPDATE escolas SET origem = 'publica' WHERE origem IS NULL OR TRIM(origem) = ''");
+    } catch {}
     _regionaisSchemaReady = true;
   } catch (err) {
     console.error("[PLATAFORMA][ensureRegionaisSchema] erro:", err?.message);
@@ -129,7 +133,7 @@ router.get("/escolas", async (req, res) => {
         e.cidade,
         e.estado,
         e.tipo,
-        e.origem,
+        COALESCE(NULLIF(LOWER(TRIM(e.origem)), ''), 'publica') AS origem,
         e.status,
         e.telefone,
         e.regional_id,
@@ -182,13 +186,32 @@ router.post("/escolas", async (req, res) => {
   const cidade   = body.cidade ? String(body.cidade).trim() : null;
   const estado   = body.estado ? String(body.estado).trim().toUpperCase().slice(0, 2) : null;
   const endereco = body.endereco ? String(body.endereco).trim() : null;
-  const origem   = body.origem ? String(body.origem).trim().toLowerCase() : null;
-  const regionalId = body.regional_id ? Number(body.regional_id) || null : null;
+  const origem   = body.origem ? String(body.origem).trim().toLowerCase() : "";
+
+  if (!["publica", "particular"].includes(origem)) {
+    return res.status(400).json({
+      ok: false,
+      message: "Selecione obrigatoriamente a natureza da instituição: Pública ou Particular.",
+    });
+  }
+
+  // Escola particular nunca possui vínculo com Coordenação Regional de Ensino (CRE) nem classificação CCMDF
+  const regionalId =
+    origem === "particular"
+      ? null
+      : body.regional_id
+      ? Number(body.regional_id) || null
+      : null;
 
   // tipo: array de strings → salva como JSON
   let tipoJson = null;
   if (Array.isArray(body.tipo) && body.tipo.length > 0) {
-    tipoJson = JSON.stringify(body.tipo.map((t) => String(t).trim()).filter(Boolean));
+    const listaTipos = body.tipo
+      .map((t) => String(t).trim())
+      .filter((t) => Boolean(t) && (origem !== "particular" || t !== "CCMDF"));
+    if (listaTipos.length > 0) {
+      tipoJson = JSON.stringify(listaTipos);
+    }
   }
 
   try {
@@ -233,14 +256,32 @@ router.put("/escolas/:id", async (req, res) => {
   }
 
   try {
-    // Verifica se existe
-    const [exists] = await db.query("SELECT id FROM escolas WHERE id = ? LIMIT 1", [id]);
+    await ensureRegionaisSchema(db);
+    // Verifica se existe e obtém origem/tipo atuais para blindar regras cruzadas
+    const [exists] = await db.query(
+      "SELECT id, COALESCE(NULLIF(LOWER(TRIM(origem)), ''), 'publica') AS origem, tipo FROM escolas WHERE id = ? LIMIT 1",
+      [id]
+    );
     if (!exists.length) {
       return res.status(404).json({ ok: false, message: "Escola não encontrada." });
     }
 
     const sets = [];
     const vals = [];
+
+    let origemEfetiva = exists[0].origem || "publica";
+    if (body.origem !== undefined) {
+      const origemNorm = String(body.origem || "").trim().toLowerCase();
+      if (!["publica", "particular"].includes(origemNorm)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Natureza inválida. Use 'publica' ou 'particular'.",
+        });
+      }
+      origemEfetiva = origemNorm;
+      sets.push("origem = ?");
+      vals.push(origemNorm);
+    }
 
     if (body.nome !== undefined) {
       const nome = String(body.nome).trim();
@@ -252,18 +293,31 @@ router.put("/escolas/:id", async (req, res) => {
     if (body.cidade !== undefined)  { sets.push("cidade = ?");  vals.push(body.cidade ? String(body.cidade).trim() : null); }
     if (body.estado !== undefined)  { sets.push("estado = ?");  vals.push(body.estado ? String(body.estado).trim().toUpperCase().slice(0,2) : null); }
     if (body.cnpj !== undefined)    { sets.push("cnpj = ?");    vals.push(body.cnpj ? String(body.cnpj).trim() : null); }
-    if (body.origem !== undefined)  { sets.push("origem = ?");  vals.push(body.origem ? String(body.origem).trim().toLowerCase() : null); }
-    if (body.regional_id !== undefined) {
-      await ensureRegionaisSchema(db);
+
+    if (origemEfetiva === "particular") {
+      sets.push("regional_id = ?");
+      vals.push(null);
+    } else if (body.regional_id !== undefined) {
       sets.push("regional_id = ?");
       vals.push(body.regional_id ? Number(body.regional_id) || null : null);
     }
-    if (body.tipo !== undefined) {
-      let tipoJson = null;
-      if (Array.isArray(body.tipo) && body.tipo.length > 0) {
-        tipoJson = JSON.stringify(body.tipo.map(t => String(t).trim()).filter(Boolean));
+
+    if (body.tipo !== undefined || origemEfetiva === "particular") {
+      let baseTipos = [];
+      if (body.tipo !== undefined) {
+        baseTipos = Array.isArray(body.tipo) ? body.tipo : [];
+      } else if (exists[0].tipo) {
+        try {
+          const parsed = typeof exists[0].tipo === "string" ? JSON.parse(exists[0].tipo) : exists[0].tipo;
+          if (Array.isArray(parsed)) baseTipos = parsed;
+        } catch {}
       }
-      sets.push("tipo = ?"); vals.push(tipoJson);
+      const filtrados = baseTipos
+        .map((t) => String(t).trim())
+        .filter((t) => Boolean(t) && (origemEfetiva !== "particular" || t !== "CCMDF"));
+      const tipoJson = filtrados.length > 0 ? JSON.stringify(filtrados) : null;
+      sets.push("tipo = ?");
+      vals.push(tipoJson);
     }
 
     if (!sets.length) {

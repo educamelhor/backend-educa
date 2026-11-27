@@ -6,7 +6,11 @@ import pool from "../db.js";
 import nodemailer from "nodemailer";
 import { randomInt, createHash, randomBytes } from "crypto";
 import { getPermissoesPorPerfil } from "../routes/rbacMatrix.js";
-import { CARGOS_CRE_LABELS, resolveModulosCre } from "../middleware/verificarRegional.js";
+import {
+  CARGOS_CRE_LABELS,
+  resolveModulosCre,
+  resolveModulosCreDinamico,
+} from "../middleware/verificarRegional.js";
 
 import multer from "multer";
 import fs from "fs";
@@ -43,7 +47,33 @@ const PERFIS_MILITARES = new Set([
 // PERFIS_DIRECAO_PEDAGOGICO e PERFIS_DIRECAO removidos (16/07/2026):
 // Diretor agora segue a mesma regra de todos os perfis — apenas o CEO determina o acesso.
 
-async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = null) {
+const MODULOS_EXCLUSIVOS_PUBLICA = new Set([
+  'agente_educa', 'agente_educa.credenciais', 'agente_educa.planos', 'agente_educa.notas',
+  'secretaria.sincronizar_seedf', 'secretaria.agente', 'secretaria.tabela_codigos',
+  'financeiro.pdaf', 'financeiro.pdde',
+]);
+
+const MODULOS_EXCLUSIVOS_PARTICULAR = new Set([
+  'financeiro.mensalidades', 'financeiro.boletos_pix', 'financeiro.contratos',
+  'financeiro.inadimplencia', 'financeiro.caixa_dre',
+]);
+
+async function resolveEscolaOrigem(dbPool, escola_id) {
+  const escolaIdNum = Number(escola_id);
+  if (!escola_id || isNaN(escolaIdNum) || escolaIdNum <= 0) return 'publica';
+  try {
+    const [[row]] = await dbPool.query(
+      'SELECT origem FROM escolas WHERE id = ? LIMIT 1',
+      [escolaIdNum]
+    );
+    const orig = String(row?.origem || '').toLowerCase().trim();
+    return orig === 'particular' ? 'particular' : 'publica';
+  } catch {
+    return 'publica';
+  }
+}
+
+async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = null, regional_id = null) {
   let perfilNorm = String(perfil || '').toLowerCase().trim();
 
   // ── Normalização de Legados (CEO unificou a nomenclatura) ──
@@ -53,9 +83,9 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = 
   if (perfilNorm === 'supervisor') perfilNorm = 'supervisor_pedagogico';
   if (perfilNorm === 'sala_de_recurso') perfilNorm = 'sala_recurso';
 
-  // ── Coordenações Regionais de Ensino (CRE): escopo isolado, NUNCA retorna null escolar ──
+  // ── Coordenações Regionais de Ensino (CRE): escopo isolado, modulado pelo CEO ──
   if (perfilNorm === 'chefe_regional' || perfilNorm === 'coordenador_regional') {
-    return resolveModulosCre(cargo_regional);
+    return resolveModulosCreDinamico(dbPool, regional_id, cargo_regional);
   }
 
   // ── CEO / Super Admin: acesso IRRESTRITO (null = sem filtragem) ──────────────────
@@ -71,28 +101,21 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = 
     return [...new Set([...lista, ...pais])];
   };
 
+  const escolaOrigem = await resolveEscolaOrigem(dbPool, escolaIdNum);
+
   // ── Camada 1: teto geral da escola (escola_modulos) ──────────────────────────
   const [ceoCeilingRows] = await dbPool.query(
     'SELECT modulo FROM escola_modulos WHERE escola_id = ? AND ativo = 1',
     [escolaIdNum]
   ).catch(() => [[]]);
   const ceoCeiling = ceoCeilingRows.map(r => r.modulo);
-  const ceoCeilingSet = new Set(ceoCeiling);
 
   // ── Perfis MILITARES: SEMPRE recebem disciplinar.* — Regra de Ouro ───────────
-  // Não passam pelo CEO por-perfil: disciplinar é fixo para qualquer perfil militar.
-  // Cobre: diretor_disciplinar, comandante, disciplinar (agente), subcomandante,
-  //        supervisor_disciplinar, monitor_disciplinar
   if (PERFIS_MILITARES.has(perfilNorm)) {
     return normalizarPais(ceoCeiling.filter(m => m.startsWith('disciplinar')));
   }
 
   // ── TODOS os demais perfis (diretor, vice_diretor, professor, coordenador, merenda, etc.) ─
-  // REGRA ÚNICA E DETERMINANTE (até segunda ordem):
-  //   O CEO configura os módulos por perfil na plataforma (escola_perfil_modulos).
-  //   Isso é o único determinante de acesso — sem camada do Diretor, sem UNIÃO.
-  //   CEO não configurou o perfil → acesso zero (apenas Home e Suporte renderizam no front).
-
   const [ceoPorPerfilRows] = await dbPool.query(
     'SELECT modulo FROM escola_perfil_modulos WHERE escola_id = ? AND perfil = ? AND ativo = 1',
     [escolaIdNum, perfilNorm]
@@ -103,10 +126,33 @@ async function resolveModulosAtivos(dbPool, escola_id, perfil, cargo_regional = 
     return [];
   }
 
-  // CEO por perfil é a ÚNICA fonte de verdade.
-  // NÃO filtramos pelo teto geral (escola_modulos) porque esse teto
-  // é legado e pode não conter módulos novos (ex: merenda, recém-adicionados).
-  const ceoPorPerfil = ceoPorPerfilRows.map(r => r.modulo);
+  let ceoPorPerfil = ceoPorPerfilRows.map(r => r.modulo);
+
+  // Retrocompatibilidade Rede Pública: se tinha 'financeiro' legado ativo sem filhos explícitos, garante PDAF + PDDE
+  if (
+    escolaOrigem === 'publica' &&
+    ceoPorPerfil.includes('financeiro') &&
+    !ceoPorPerfil.some(m => m.startsWith('financeiro.'))
+  ) {
+    ceoPorPerfil.push('financeiro.pdaf', 'financeiro.pdde');
+  }
+
+  // Blindagem de fronteira institucional: impede vazamento de módulos públicos em particular e vice-versa
+  ceoPorPerfil = ceoPorPerfil.filter((mod) => {
+    if (escolaOrigem === 'particular' && MODULOS_EXCLUSIVOS_PUBLICA.has(mod)) return false;
+    if (escolaOrigem === 'publica' && MODULOS_EXCLUSIVOS_PARTICULAR.has(mod)) return false;
+    return true;
+  });
+
+  // Se após filtragem 'financeiro' ficou sem filhos ativos e há estrutura granular esperada em particular, limpa órfão
+  if (
+    escolaOrigem === 'particular' &&
+    ceoPorPerfil.includes('financeiro') &&
+    !ceoPorPerfil.some(m => m.startsWith('financeiro.'))
+  ) {
+    ceoPorPerfil = ceoPorPerfil.filter(m => m !== 'financeiro');
+  }
+
   return normalizarPais(ceoPorPerfil);
 }
 
@@ -184,7 +230,7 @@ async function construirSessaoCre(usuarioRow) {
     .trim();
   const cargoLabel = CARGOS_CRE_LABELS[cargoRegional] || "Gestor(a) Regional";
   const nomeRegional = regRow.apelido || regRow.nome || "Coordenação Regional";
-  const modulosAtivos = resolveModulosCre(cargoRegional);
+  const modulosAtivos = await resolveModulosCreDinamico(pool, regRow.id, cargoRegional);
   const usuarioIdNum = Number(usuarioRow.id);
 
   let unidadesRegional = [];
@@ -831,6 +877,7 @@ router.post("/login", async (req, res) => {
              u.escola_id AS id,
              e.nome      AS nome,
              e.apelido   AS apelido,
+             COALESCE(NULLIF(LOWER(TRIM(e.origem)), ''), 'publica') AS origem,
              u.perfil    AS perfil,
              u.id        AS usuario_ctx_id
            FROM usuarios u
@@ -885,6 +932,7 @@ router.post("/login", async (req, res) => {
         }
 
         const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
+        const escola_origem_device = await resolveEscolaOrigem(pool, escolaIdFinal);
 
         const token = jwt.sign(
           {
@@ -892,6 +940,7 @@ router.post("/login", async (req, res) => {
             usuario_id: usuarioIdFinal,
             usuarioId: usuarioIdFinal,
             escola_id: escolaIdFinal,
+            escola_origem: escola_origem_device,
             regional_id: usuario?.regional_id || undefined,
             nome_escola: nomeInstituicaoDevice,
             perfil: perfilFinal,
@@ -930,6 +979,7 @@ router.post("/login", async (req, res) => {
           cpf: cpfLoginLimpo,
           foto_url: fotoUrl,
           escola_id: escolaIdFinal,
+          escola_origem: escola_origem_device,
           regional_id: usuario?.regional_id || null,
           nome_escola: nomeInstituicaoDevice || "Instituição não definida",
           perfil: perfilFinal,
@@ -1088,6 +1138,7 @@ router.post("/confirmar", async (req, res) => {
         u.escola_id AS id,
         e.nome      AS nome,
         e.apelido   AS apelido,
+        COALESCE(NULLIF(LOWER(TRIM(e.origem)), ''), 'publica') AS origem,
         u.perfil    AS perfil,
         u.id        AS usuario_ctx_id
       FROM usuarios u
@@ -1142,6 +1193,7 @@ router.post("/confirmar", async (req, res) => {
     }
 
     const { perfis, permissoes } = await carregarRbac(usuarioIdFinal, escolaIdFinal);
+    const escola_origem_confirmar = await resolveEscolaOrigem(pool, escolaIdFinal);
 
       const token = jwt.sign(
         {
@@ -1149,6 +1201,7 @@ router.post("/confirmar", async (req, res) => {
           usuario_id: usuarioIdFinal,
           usuarioId: usuarioIdFinal,
           escola_id: escolaIdFinal,
+          escola_origem: escola_origem_confirmar,
           regional_id: usuarioBase?.regional_id || undefined,
           nome_escola: nomeInstituicaoOtp,
           perfil: perfilFinal, // compatibilidade
@@ -1202,6 +1255,7 @@ router.post("/confirmar", async (req, res) => {
         cpf: cpfLoginLimpo,
         foto_url: fotoUrlLogin,
         escola_id: escolaIdFinal,
+        escola_origem: escola_origem_confirmar,
         regional_id: usuarioBase?.regional_id || null,
         nome_escola: nomeInstituicaoOtp || "Instituição não definida",
         perfil: perfilFinal, // compatibilidade
@@ -2030,6 +2084,7 @@ router.post("/confirmar-escola", async (req, res) => {
     }
 
     const { perfis, permissoes } = await carregarRbac(usuarioEscola.id, usuarioEscola.escola_id);
+    const escola_origem_ce = await resolveEscolaOrigem(pool, usuarioEscola.escola_id);
 
     const token = jwt.sign(
       {
@@ -2040,6 +2095,7 @@ router.post("/confirmar-escola", async (req, res) => {
         usuarioId: usuarioEscola.id, // ✅ id do contexto escolhido
 
         escola_id: usuarioEscola.escola_id,
+        escola_origem: escola_origem_ce,
         nome_escola: usuarioEscola.nome_escola || null,
         perfil: usuarioEscola.perfil || "aluno", // ✅ perfil REAL do contexto
         perfis,
@@ -2062,6 +2118,7 @@ router.post("/confirmar-escola", async (req, res) => {
       cpf: cpfEscolaLimpo,
       foto_url: fotoUrlEscola,
       escola_id: usuarioEscola.escola_id,
+      escola_origem: escola_origem_ce,
       nome_escola: usuarioEscola.nome_escola || "Escola não definida",
       perfil: usuarioEscola.perfil || "aluno",
       perfis,
@@ -2145,27 +2202,30 @@ router.get('/modulos', async (req, res) => {
       return res.json({ ok: false, modulos_ativos: [] });
     }
 
-    const { escola_id, perfil, scope, cargo_regional } = payload;
+    const { escola_id, perfil, scope, cargo_regional, regional_id } = payload;
 
-    // ── Esfera CRE: retorna módulos exclusivos da Regional (NUNCA null escolar) ──
+    // ── Esfera CRE: retorna módulos exclusivos da Regional modulados pelo CEO ──
     const perfilJwtNorm = String(perfil || '').toLowerCase().trim();
     if (
       String(scope || '').toLowerCase() === 'cre' ||
       perfilJwtNorm === 'chefe_regional' ||
       perfilJwtNorm === 'coordenador_regional'
     ) {
-      const modulosCre = resolveModulosCre(cargo_regional);
-      return res.json({ ok: true, modulos_ativos: modulosCre });
+      const modulosCre = await resolveModulosCreDinamico(pool, regional_id, cargo_regional);
+      return res.json({ ok: true, modulos_ativos: modulosCre, escola_origem: null });
     }
 
     // Sem escola_id → acesso irrestrito apenas para contas globais (CEO, super_admin)
-    if (!escola_id) return res.json({ ok: true, modulos_ativos: null });
+    if (!escola_id) return res.json({ ok: true, modulos_ativos: null, escola_origem: null });
 
-    // Usa resolveModulosAtivos com perfil do JWT — hierarquia completa
-    const modulos_ativos = await resolveModulosAtivos(pool, escola_id, perfil || 'diretor', cargo_regional);
+    // Usa resolveModulosAtivos com perfil do JWT + resolveEscolaOrigem em paralelo
+    const [modulos_ativos, escola_origem] = await Promise.all([
+      resolveModulosAtivos(pool, escola_id, perfil || 'diretor', cargo_regional, regional_id),
+      resolveEscolaOrigem(pool, escola_id),
+    ]);
 
-    console.log(`[AUTH/modulos] escola_id=${escola_id} perfil=${perfil} → ${Array.isArray(modulos_ativos) ? modulos_ativos.length : 'null (irrestrito)'} módulos`);
-    return res.json({ ok: true, modulos_ativos });
+    console.log(`[AUTH/modulos] escola_id=${escola_id} origem=${escola_origem} perfil=${perfil} → ${Array.isArray(modulos_ativos) ? modulos_ativos.length : 'null (irrestrito)'} módulos`);
+    return res.json({ ok: true, modulos_ativos, escola_origem });
   } catch (err) {
     console.error('[AUTH/modulos] erro:', err);
     return res.json({ ok: false, modulos_ativos: [] });
